@@ -170,23 +170,35 @@ ALTER TABLE queries    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE actions    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE outbox     ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY tenants_self ON tenants
-  USING (id = current_setting('app.current_tenant', true)::uuid);
-CREATE POLICY users_tenant ON users
-  USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
-CREATE POLICY events_tenant ON events
-  USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
-CREATE POLICY plug_ins_tenant ON plug_ins
-  USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
-CREATE POLICY adapters_tenant ON adapters
-  USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
-CREATE POLICY queries_tenant ON queries
-  USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
-CREATE POLICY actions_tenant ON actions
-  USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
-CREATE POLICY outbox_tenant ON outbox
-  USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
+-- Idempotent policy creation (CREATE POLICY has no IF NOT EXISTS).
+DO $$
+DECLARE
+  t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY[
+    'tenants', 'users', 'events', 'plug_ins',
+    'adapters', 'queries', 'actions', 'outbox'
+  ] LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I_tenant ON %I', t, t);
+    IF t = 'tenants' THEN
+      EXECUTE format(
+        'CREATE POLICY %I_tenant ON %I USING '
+        '(id = current_setting(''app.current_tenant'', true)::uuid)', t, t);
+    ELSE
+      EXECUTE format(
+        'CREATE POLICY %I_tenant ON %I USING '
+        '(tenant_id = current_setting(''app.current_tenant'', true)::uuid)', t, t);
+    END IF;
+  END LOOP;
+END $$;
 
--- The local dev role bypasses RLS for convenience. Production replaces this
--- with a per-request JWT-bound role.
-ALTER ROLE james_os WITH BYPASSRLS;
+-- Local Docker dev uses a 'james_os' role that bypasses RLS for
+-- convenience. On Supabase the connecting role is 'postgres' (or the
+-- service role), which already bypasses RLS, and ALTER ROLE is not
+-- permitted — so only run this if the role exists.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'james_os') THEN
+    ALTER ROLE james_os WITH BYPASSRLS;
+  END IF;
+END $$;

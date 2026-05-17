@@ -13,11 +13,16 @@ _pool: asyncpg.Pool | None = None
 async def init_pool() -> asyncpg.Pool:
     global _pool
     if _pool is None:
+        ssl = None if settings.db_ssl == "disable" else settings.db_ssl
         _pool = await asyncpg.create_pool(
             settings.database_url,
             min_size=1,
             max_size=10,
             init=_init_connection,
+            ssl=ssl,
+            # 0 disables prepared statements — required behind a
+            # transaction-mode connection pooler (e.g. Supabase :6543).
+            statement_cache_size=settings.db_statement_cache_size,
         )
     return _pool
 

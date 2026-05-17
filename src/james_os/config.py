@@ -16,6 +16,14 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://james_os:james_os@localhost:5433/james_os"
     default_tenant_id: UUID = UUID("00000000-0000-0000-0000-000000000001")
 
+    # Connection tuning. Supabase requires SSL; its transaction-mode pooler
+    # (port 6543) does not support prepared statements, so set
+    # DB_STATEMENT_CACHE_SIZE=0 if you use that pooler. The session pooler
+    # and direct connection support our set_config-based RLS and prepared
+    # statements — prefer those.
+    db_ssl: str = "prefer"  # disable | prefer | require
+    db_statement_cache_size: int = 256  # set 0 for transaction-mode poolers
+
     embedding_provider: str = "stub"  # voyage | openai | stub
     embedding_model: str = "voyage-3-large"
     embedding_dim: int = 1024
