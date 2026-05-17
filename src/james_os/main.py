@@ -3,10 +3,12 @@
 import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 
 from .ask import ask
 from .db import acquire, close_pool, init_pool
@@ -34,6 +36,16 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+# ─────────────────────────────────────────────────────────────────────── ui ──
+
+_STATIC = Path(__file__).parent / "static"
+
+
+@app.get("/", include_in_schema=False)
+async def index() -> FileResponse:
+    return FileResponse(_STATIC / "index.html")
 
 
 # ─────────────────────────────────────────────────────────────────────── ops ──

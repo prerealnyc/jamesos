@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>JAMES OS</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2230;
+    --border: #2d333b;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #4493f8;
+    --good: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    min-height: 100vh;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 18px 28px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header h1 { font-size: 18px; letter-spacing: .5px; font-weight: 650; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--good); box-shadow: 0 0 8px var(--good); }
+  .sub { color: var(--muted); font-size: 13px; margin-left: auto; }
+  main {
+    max-width: 880px; margin: 0 auto; padding: 28px 20px 80px;
+    display: flex; flex-direction: column; gap: 24px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+  }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px;
+             color: var(--muted); margin-bottom: 14px; font-weight: 600; }
+  textarea, input, select {
+    width: 100%; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 14px; font: inherit; resize: vertical;
+  }
+  textarea:focus, input:focus, select:focus {
+    outline: none; border-color: var(--accent);
+  }
+  .row { display: flex; gap: 10px; margin-top: 12px; align-items: center; }
+  button {
+    background: var(--accent); color: #fff; border: 0;
+    border-radius: 8px; padding: 11px 20px; font: inherit; font-weight: 600;
+    cursor: pointer; transition: opacity .15s;
+  }
+  button:hover { opacity: .88; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.ghost { background: var(--panel-2); color: var(--text);
+                 border: 1px solid var(--border); }
+  .ask-input { display: flex; gap: 10px; }
+  .ask-input input { flex: 1; }
+  .answer {
+    margin-top: 16px; padding: 16px; border-radius: 10px;
+    background: var(--panel-2); border: 1px solid var(--border);
+    display: none;
+  }
+  .answer.show { display: block; }
+  .answer.refused { border-color: var(--warn); }
+  .answer-text { font-size: 16px; line-height: 1.65; white-space: pre-wrap; }
+  .refused-banner {
+    display: inline-flex; align-items: center; gap: 7px;
+    color: var(--warn); font-weight: 600; font-size: 13px;
+    text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px;
+  }
+  .meta {
+    display: flex; gap: 18px; flex-wrap: wrap;
+    margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 12px;
+  }
+  .meta b { color: var(--text); font-weight: 600; }
+  .cites { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+  .cite {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px; font-size: 13px;
+  }
+  .cite .span { color: var(--text); }
+  .cite .id { color: var(--muted); font-size: 11px; font-family: ui-monospace, monospace;
+               margin-top: 4px; }
+  .badge {
+    display: inline-block; font-size: 11px; font-weight: 600;
+    padding: 2px 8px; border-radius: 999px; text-transform: uppercase;
+    letter-spacing: .5px;
+  }
+  .badge.decision   { background: #1f3a5f; color: #79c0ff; }
+  .badge.commitment { background: #3d2f12; color: #e3b341; }
+  .badge.note       { background: #21262d; color: #8b949e; }
+  .badge.document   { background: #2b2342; color: #b392f0; }
+  .badge.message    { background: #1a3326; color: #56d364; }
+  .badge.voice_memo { background: #3a1f2b; color: #f0789a; }
+  .events { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+  .event {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 14px;
+  }
+  .event .top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .event .when { color: var(--muted); font-size: 11px; margin-left: auto; }
+  .event .body { font-size: 14px; }
+  .empty { color: var(--muted); font-size: 14px; padding: 10px 0; }
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--good); color: #06250f; font-weight: 600;
+    padding: 10px 20px; border-radius: 999px; font-size: 13px;
+    opacity: 0; transition: opacity .25s; pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+  .toast.err { background: var(--bad); color: #2b0606; }
+  .spinner {
+    width: 15px; height: 15px; border: 2px solid rgba(255,255,255,.3);
+    border-top-color: #fff; border-radius: 50%;
+    display: inline-block; animation: spin .7s linear infinite; vertical-align: -2px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="status-dot"></span>
+  <h1>JAMES OS</h1>
+  <span class="sub" id="status-text">connecting…</span>
+</header>
+
+<main>
+  <!-- ASK -->
+  <section class="card">
+    <h2>Ask the memory</h2>
+    <div class="ask-input">
+      <input id="q" type="text" placeholder="e.g. What did we decide about pilot pricing?"
+             autocomplete="off" />
+      <button id="ask-btn" onclick="ask()">Ask</button>
+    </div>
+    <div class="answer" id="answer">
+      <div class="refused-banner" id="refused-banner" style="display:none">
+        ⚠ Refused — not grounded in memory
+      </div>
+      <div class="answer-text" id="answer-text"></div>
+      <div class="cites" id="cites"></div>
+      <div class="meta" id="meta"></div>
+    </div>
+  </section>
+
+  <!-- CAPTURE -->
+  <section class="card">
+    <h2>Capture a memory</h2>
+    <div class="row" style="margin-top:0">
+      <select id="etype" style="max-width:180px">
+        <option value="note">note</option>
+        <option value="decision">decision</option>
+        <option value="commitment">commitment</option>
+        <option value="document">document</option>
+        <option value="message">message</option>
+        <option value="voice_memo">voice_memo</option>
+      </select>
+    </div>
+    <div class="row">
+      <textarea id="content" rows="3"
+        placeholder="Type anything — a decision, a commitment, a note. It becomes searchable memory."></textarea>
+    </div>
+    <div class="row">
+      <button id="cap-btn" onclick="capture()">Capture</button>
+      <span class="sub" style="margin:0">Stored permanently, embedded, citable.</span>
+    </div>
+  </section>
+
+  <!-- RECENT -->
+  <section class="card">
+    <h2>Recent memory <button class="ghost" style="float:right;padding:5px 12px;font-size:12px" onclick="loadEvents()">Refresh</button></h2>
+    <div class="events" id="events"><div class="empty">Loading…</div></div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = ""; // same origin
+
+function toast(msg, isErr) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.className = "toast show" + (isErr ? " err" : "");
+  setTimeout(() => { t.className = "toast"; }, 2600);
+}
+
+async function checkHealth() {
+  try {
+    const r = await fetch(API + "/health");
+    if (r.ok) {
+      document.getElementById("status-dot").className = "dot ok";
+      document.getElementById("status-text").textContent = "memory online";
+      return;
+    }
+  } catch (e) {}
+  document.getElementById("status-text").textContent = "offline";
+}
+
+async function ask() {
+  const q = document.getElementById("q").value.trim();
+  if (!q) return;
+  const btn = document.getElementById("ask-btn");
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  const ansBox = document.getElementById("answer");
+  ansBox.className = "answer show";
+  document.getElementById("answer-text").textContent = "Thinking…";
+  document.getElementById("cites").innerHTML = "";
+  document.getElementById("meta").innerHTML = "";
+  document.getElementById("refused-banner").style.display = "none";
+
+  try {
+    const r = await fetch(API + "/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: q }),
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
+
+    ansBox.className = "answer show" + (d.refused ? " refused" : "");
+    document.getElementById("refused-banner").style.display = d.refused ? "inline-flex" : "none";
+    document.getElementById("answer-text").textContent =
+      d.refused ? (d.refusal_reason || "No answer could be grounded in memory.")
+                : d.response;
+
+    const cites = document.getElementById("cites");
+    cites.innerHTML = "";
+    (d.citations || []).forEach(c => {
+      const el = document.createElement("div");
+      el.className = "cite";
+      el.innerHTML = `<div class="span">“${escapeHtml(c.span)}”</div>
+                      <div class="id">source ${c.event_id} · confidence ${(c.confidence*100).toFixed(0)}%</div>`;
+      cites.appendChild(el);
+    });
+
+    document.getElementById("meta").innerHTML =
+      `<span>confidence <b>${(d.confidence*100).toFixed(0)}%</b></span>` +
+      `<span>retrieved <b>${(d.retrieved_event_ids||[]).length}</b> events</span>` +
+      `<span>model <b>${d.model}</b></span>` +
+      `<span>latency <b>${d.latency_ms} ms</b></span>`;
+  } catch (e) {
+    ansBox.className = "answer show refused";
+    document.getElementById("answer-text").textContent = "Error: " + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Ask";
+  }
+}
+
+async function capture() {
+  const content = document.getElementById("content").value.trim();
+  const etype = document.getElementById("etype").value;
+  if (!content) return;
+  const btn = document.getElementById("cap-btn");
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  try {
+    const dedupe = "ui-" + Date.now();
+    const r = await fetch(API + "/events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        event_type: etype,
+        payload: { text: content },
+        raw_content: content,
+        source: { adapter: "manual", dedupe_key: dedupe },
+      }),
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    document.getElementById("content").value = "";
+    toast("Captured to memory");
+    loadEvents();
+  } catch (e) {
+    toast("Capture failed: " + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Capture";
+  }
+}
+
+async function loadEvents() {
+  const box = document.getElementById("events");
+  try {
+    const r = await fetch(API + "/events?limit=15");
+    const list = await r.json();
+    if (!list.length) { box.innerHTML = '<div class="empty">No memory yet. Capture something above.</div>'; return; }
+    box.innerHTML = "";
+    list.forEach(e => {
+      const el = document.createElement("div");
+      el.className = "event";
+      const when = new Date(e.effective_at).toLocaleString();
+      el.innerHTML =
+        `<div class="top"><span class="badge ${e.event_type}">${e.event_type}</span>
+         <span class="when">${when}</span></div>
+         <div class="body">${escapeHtml(e.raw_content || JSON.stringify(e.payload))}</div>`;
+      box.appendChild(el);
+    });
+  } catch (e) {
+    box.innerHTML = '<div class="empty">Could not load events.</div>';
+  }
+}
+
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>"]/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+document.getElementById("q").addEventListener("keydown", e => {
+  if (e.key === "Enter") ask();
+});
+
+checkHealth();
+loadEvents();
+</script>
+</body>
+</html>
