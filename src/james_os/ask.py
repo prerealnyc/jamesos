@@ -87,7 +87,7 @@ async def _verify(answer: dict, retrieved: list[RetrievedEvent]) -> bool:
     if not claims:
         # No claims to verify is OK if the answer text is empty/refused;
         # otherwise it's a violation of cite-or-refuse.
-        return not answer.get("answer", "").strip()
+        return not (answer.get("answer") or "").strip()
 
     messages = build_verification_messages(answer, retrieved)
     result = await get_llm().complete_json(
@@ -111,8 +111,10 @@ def _to_response(
     avg_conf = (
         sum(c.confidence for c in citations) / len(citations) if citations else 0.0
     )
+    # Claude returns answer:null on refusal; coerce to "" since the key
+    # exists (so .get's default never fires).
     return AskResponse(
-        response=answer.get("answer", ""),
+        response=answer.get("answer") or "",
         citations=citations,
         refused=bool(answer.get("refused", False)),
         refusal_reason=answer.get("refusal_reason"),

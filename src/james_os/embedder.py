@@ -10,9 +10,18 @@ from abc import ABC, abstractmethod
 
 import httpx
 import numpy as np
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from .config import settings
+
+
+class RateLimited(Exception):
+    """Provider returned 429 — wait and retry with long backoff."""
 
 
 class Embedder(ABC):
@@ -60,7 +69,14 @@ class VoyageEmbedder(Embedder):
         self.model_name = model
         self.dim = dim
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    @retry(
+        # 5 attempts, exponential backoff up to 60s — enough to clear a
+        # 1-minute rate-limit window on Voyage's free tier.
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=2, max=60),
+        retry=retry_if_exception_type((RateLimited, httpx.HTTPStatusError)),
+        reraise=True,
+    )
     async def embed(self, texts: list[str]) -> list[list[float]]:
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(
@@ -72,6 +88,8 @@ class VoyageEmbedder(Embedder):
                     "input_type": "document",
                 },
             )
+            if r.status_code == 429:
+                raise RateLimited(r.text)
             r.raise_for_status()
             data = r.json()
             return [item["embedding"] for item in data["data"]]
