@@ -28,19 +28,22 @@ def _action_to_queue_item(row: dict) -> dict:
     payload = row["payload"]
     if isinstance(payload, str):
         payload = json.loads(payload)
+    body = payload.get("content") or payload.get("text") or ""
     return {
         "id": str(row["id"]),
         "status": row["status"],
         "platform": payload.get("platform", "—"),
         "pillar": payload.get("pillar", "—"),
         "format": payload.get("format", row["action_type"]),
-        "content": payload.get("content") or payload.get("text") or "",
-        "caption": payload.get("content") or payload.get("text") or "",
+        "content": body,
+        "caption": body,
         "voiceScore": payload.get("voice_score"),
+        "imageUrl": payload.get("image_url"),
+        "mediaUrl": payload.get("media_url"),
         "proposedBy": row["proposed_by"],
         "createdAt": row["created_at"].isoformat() if row["created_at"] else None,
-        "scheduledFor": None,
-        "reason": row["approval_reason"],
+        "scheduledFor": payload.get("scheduled_for"),
+        "reason": row["approval_reason"] or row["rejection_reason_code"],
     }
 
 
@@ -160,9 +163,32 @@ _EMPTY_LIST = [
 ]
 
 
+# Illustrative peer cohort so the peer-comparison / market-research pages
+# render their real UI. NOT real metrics — the actual cohort is "to be
+# locked with James per P47" (unlocked in the foundational docs). Replace
+# when the real cohort + a social-metrics source exist.
+_PEER_SAMPLE = [
+    {"id": "p1", "name": "[sample] RE Thought Leader", "platform": "Instagram",
+     "category": "real-estate", "handle": "@sample_re", "followers": 142000,
+     "engagementRate": 3.1, "sample": True},
+    {"id": "p2", "name": "[sample] NM Civic Voice", "platform": "X",
+     "category": "civic", "handle": "@sample_civic", "followers": 88000,
+     "engagementRate": 2.4, "sample": True},
+    {"id": "p3", "name": "[sample] Mindset / Neville-adjacent", "platform": "YouTube",
+     "category": "mindset", "handle": "@sample_mindset", "followers": 310000,
+     "engagementRate": 4.6, "sample": True},
+    {"id": "p4", "name": "[sample] Education Reform Operator", "platform": "LinkedIn",
+     "category": "education", "handle": "@sample_edu", "followers": 51000,
+     "engagementRate": 1.9, "sample": True},
+    {"id": "p5", "name": "[sample] Real Estate Macro Caller", "platform": "Substack",
+     "category": "real-estate", "handle": "@sample_macro", "followers": 67000,
+     "engagementRate": 5.2, "sample": True},
+]
+
+
 @router.get("/peer-creators")
 async def _peer_creators() -> list:
-    return []
+    return _PEER_SAMPLE
 
 
 @router.get("/market-research")
@@ -181,8 +207,37 @@ async def _clip_library() -> list:
 
 
 @router.get("/social-content")
-async def _social_content() -> list:
-    return []
+async def _social_content() -> list[dict]:
+    """Real ingested events surfaced as the content feed.
+
+    Engagement metrics are honestly zero — JAMES OS has no social-metrics
+    source wired. This is real content, not fabricated performance.
+    """
+    async with acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, event_type, raw_content, payload, created_at "
+            "FROM events WHERE superseded_by IS NULL "
+            "ORDER BY created_at DESC LIMIT 60"
+        )
+    out = []
+    for r in rows:
+        payload = r["payload"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        caption = r["raw_content"] or payload.get("text") or ""
+        out.append({
+            "id": str(r["id"]),
+            "platform": payload.get("platform") or r["event_type"],
+            "caption": caption,
+            "publishedAt": r["created_at"].isoformat() if r["created_at"] else None,
+            "engagement": 0,
+            "views": 0,
+            "likes": 0,
+            "comments": 0,
+            "shares": 0,
+            "metricsAvailable": False,
+        })
+    return out
 
 
 @router.get("/design-content")
