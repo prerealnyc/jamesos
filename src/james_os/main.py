@@ -9,8 +9,10 @@ from uuid import UUID
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .ask import ask
+from .dashboard_api import router as dashboard_api_router
 from .db import acquire, close_pool, init_pool
 from .documents import document_to_events
 from .ingestion import ingest, ingest_many
@@ -42,11 +44,27 @@ app = FastAPI(
 # ─────────────────────────────────────────────────────────────────────── ui ──
 
 _STATIC = Path(__file__).parent / "static"
+_DASH = Path(__file__).parent / "dashboard"
+
+# Dashboard compatibility API (must be registered before the static mount
+# and before the root route so /api/* is owned by the router).
+app.include_router(dashboard_api_router)
 
 
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
+    """Polished JP Brand Manager dashboard is the landing page."""
+    return FileResponse(_DASH / "index.html")
+
+
+@app.get("/classic", include_in_schema=False)
+async def classic_ui() -> FileResponse:
+    """The minimal, fully-working substrate UI (ask / capture / docs / plug-ins)."""
     return FileResponse(_STATIC / "index.html")
+
+
+# Serve the dashboard's hashed assets. index.html references ./assets/...
+app.mount("/assets", StaticFiles(directory=_DASH / "assets"), name="dash-assets")
 
 
 # ─────────────────────────────────────────────────────────────────────── ops ──
