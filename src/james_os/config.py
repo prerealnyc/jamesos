@@ -36,6 +36,22 @@ class Settings(BaseSettings):
 
     cohere_api_key: str = ""
 
+    # ─── Integration credentials (loaded, not yet all wired) ───
+    # These make the keys AVAILABLE to JAMES OS. They become ACTIVE only
+    # when the subsystem that uses each one is built (see /api/integrations
+    # for live status). Never logged, never returned by any endpoint —
+    # only their presence (bool) is ever exposed.
+    openai_api_key: str = ""       # Whisper transcription, GPT, Sora
+    elevenlabs_api_key: str = ""   # voice synthesis / cloning
+    heygen_api_key: str = ""       # avatar video
+    descript_api_key: str = ""     # audio/video editing
+    runway_api_key: str = ""       # video generation
+    minimax_api_key: str = ""      # video generation
+    postproxy_api_key: str = ""    # multi-platform publishing
+    meta_access_token: str = ""    # Meta Graph (IG/FB/Threads)
+    twitter_bearer_token: str = "" # X/Twitter
+    xpoz_api_key: str = ""         # social engagement read
+
     log_level: str = "INFO"
 
     # Retrieval tuning

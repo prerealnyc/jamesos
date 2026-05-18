@@ -17,9 +17,41 @@ from uuid import UUID
 
 from fastapi import APIRouter, Body
 
+from .config import settings
 from .db import acquire
 
 router = APIRouter(prefix="/api")
+
+
+# ─────────────────────────────────── integration status (bools only) ──
+
+@router.get("/integrations")
+async def integrations() -> dict:
+    """Which credentials are present. Booleans only — values never leave
+    the process. `active` = JAMES OS has code that actually uses it today.
+    """
+    def cfg(v: str) -> bool:
+        return bool(v and v.strip())
+
+    return {
+        "configured": {
+            "anthropic": cfg(settings.anthropic_api_key),
+            "voyage": cfg(settings.voyage_api_key),
+            "cohere": cfg(settings.cohere_api_key),
+            "openai": cfg(settings.openai_api_key),
+            "elevenlabs": cfg(settings.elevenlabs_api_key),
+            "heygen": cfg(settings.heygen_api_key),
+            "descript": cfg(settings.descript_api_key),
+            "runway": cfg(settings.runway_api_key),
+            "minimax": cfg(settings.minimax_api_key),
+            "postproxy": cfg(settings.postproxy_api_key),
+            "meta": cfg(settings.meta_access_token),
+            "twitter": cfg(settings.twitter_bearer_token),
+            "xpoz": cfg(settings.xpoz_api_key),
+        },
+        # Only these are wired to real code paths today.
+        "active": ["anthropic", "voyage", "cohere"],
+    }
 
 
 # ─────────────────────────────────────── approval queue (REAL) ──
