@@ -7,12 +7,13 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
 from .ask import ask
 from .db import acquire, close_pool, init_pool
-from .ingestion import ingest
+from .documents import document_to_events
+from .ingestion import ingest, ingest_many
 from .models import (
     AskRequest,
     AskResponse,
@@ -137,6 +138,29 @@ async def list_plug_ins(slot: str | None = None) -> list[PlugIn]:
     async with acquire() as conn:
         rows = await conn.fetch(sql, *params)
     return [_row_to_plug_in(r) for r in rows]
+
+
+# ───────────────────────────────────────────────────────────── documents ──
+
+@app.post("/ingest/document", status_code=201)
+async def ingest_document(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Upload a file → extract text → chunk → store as events.
+
+    Embeddings for all chunks are batched into one provider call, so a big
+    document is one embedding request (matters for rate-limited free tiers).
+    """
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty file")
+    events = document_to_events(file.filename or "upload", data)
+    if not events:
+        raise HTTPException(status_code=422, detail="no extractable text")
+    stored = await ingest_many(events)
+    return {
+        "filename": file.filename,
+        "chunks_created": len(stored),
+        "event_ids": [str(e.id) for e in stored],
+    }
 
 
 # ──────────────────────────────────────────────────────────────────── ask ──

@@ -24,6 +24,23 @@ settings.llm_provider = "stub"
 embedder_module._embedder = None
 llm_module._llm = None
 
+# CRITICAL SAFETY: tests TRUNCATE tables. load_dotenv(override=True) in
+# config.py means .env (which may point at Supabase / production) would
+# otherwise win here. Pin the test DB to local Docker so the suite can
+# never wipe a cloud database. Override via TEST_DATABASE_URL if needed.
+import os  # noqa: E402
+
+settings.database_url = os.environ.get(
+    "TEST_DATABASE_URL",
+    "postgresql://james_os:james_os@localhost:5433/james_os",
+)
+settings.db_ssl = "disable"
+if "supabase.co" in settings.database_url or "pooler.supabase.com" in settings.database_url:
+    raise RuntimeError(
+        "Refusing to run tests against a Supabase database — tests "
+        "truncate tables. Point TEST_DATABASE_URL at a local Postgres."
+    )
+
 
 @pytest_asyncio.fixture(autouse=True)
 async def fresh_pool():
