@@ -2,21 +2,103 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { --font-sans: "General Sans", -apple-system, system-ui, sans-serif; }
-
-html, body { height: 100%; }
-body {
-  background: #0d1117;
-  color: #e6edf3;
-  -webkit-font-smoothing: antialiased;
+/* Design tokens extracted verbatim from the approved dashboard build
+   (Tailwind + shadcn). Gold primary, teal accent, near-black sidebar. */
+@layer base {
+  :root {
+    --background: 220 15% 96%;
+    --foreground: 220 20% 10%;
+    --border: 220 10% 88%;
+    --card: 220 12% 98%;
+    --card-foreground: 220 20% 10%;
+    --sidebar: 220 20% 8%;
+    --sidebar-foreground: 40 20% 90%;
+    --sidebar-border: 220 15% 14%;
+    --sidebar-primary: 40 75% 52%;
+    --sidebar-accent: 220 15% 14%;
+    --sidebar-accent-foreground: 40 20% 90%;
+    --popover: 220 12% 98%;
+    --popover-foreground: 220 20% 10%;
+    --primary: 40 75% 52%;
+    --primary-foreground: 220 20% 8%;
+    --secondary: 220 10% 92%;
+    --secondary-foreground: 220 20% 10%;
+    --muted: 220 10% 93%;
+    --muted-foreground: 220 8% 46%;
+    --accent: 183 60% 28%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 72% 50%;
+    --destructive-foreground: 0 0% 98%;
+    --input: 220 10% 78%;
+    --ring: 40 75% 52%;
+    --radius: 0.5rem;
+    --font-sans: "General Sans", "Inter", ui-sans-serif, system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, monospace;
+    --shadow-sm: 0px 2px 4px hsl(0 0% 0% / 0.06);
+    --shadow: 0px 2px 6px hsl(0 0% 0% / 0.08);
+    --shadow-lg: 0px 6px 16px hsl(0 0% 0% / 0.12);
+  }
+  .dark {
+    --background: 220 16% 8%;
+    --foreground: 40 8% 94%;
+    --border: 220 10% 22%;
+    --card: 220 14% 11%;
+    --card-foreground: 40 8% 94%;
+    --sidebar: 220 20% 6%;
+    --sidebar-foreground: 40 12% 92%;
+    --sidebar-border: 220 12% 16%;
+    --sidebar-primary: 40 75% 56%;
+    --sidebar-accent: 220 12% 14%;
+    --sidebar-accent-foreground: 40 12% 92%;
+    --popover: 220 14% 13%;
+    --popover-foreground: 40 8% 94%;
+    --primary: 40 75% 56%;
+    --primary-foreground: 220 20% 8%;
+    --secondary: 220 10% 18%;
+    --secondary-foreground: 40 8% 92%;
+    --muted: 220 10% 18%;
+    --muted-foreground: 220 6% 72%;
+    --accent: 183 50% 40%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 0 0% 98%;
+    --input: 220 10% 26%;
+    --ring: 40 75% 56%;
+    --shadow-sm: 0px 2px 4px hsl(0 0% 0% / 0.2);
+    --shadow: 0px 2px 6px hsl(0 0% 0% / 0.25);
+    --shadow-lg: 0px 6px 16px hsl(0 0% 0% / 0.35);
+  }
+  * {
+    border-color: hsl(var(--border));
+  }
+  body {
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    -webkit-font-smoothing: antialiased;
+  }
 }
 
-@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 .spinner {
-  width: 15px; height: 15px; border: 2px solid rgba(255,255,255,.25);
-  border-top-color: #fff; border-radius: 50%;
-  display: inline-block; animation: spin .7s linear infinite; vertical-align: -2px;
+  width: 15px;
+  height: 15px;
+  border: 2px solid hsl(var(--primary-foreground) / 0.35);
+  border-top-color: hsl(var(--primary-foreground));
+  border-radius: 50%;
+  display: inline-block;
+  animation: spin 0.7s linear infinite;
+  vertical-align: -2px;
 }
 
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: #2d333b; border-radius: 6px; }
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 6px;
+}

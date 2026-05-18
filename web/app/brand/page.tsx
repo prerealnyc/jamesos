@@ -61,11 +61,14 @@ export default function BrandPage() {
     }
   }
 
+  const dropClass =
+    drop.tone === "ok" ? "text-accent" : drop.tone === "bad" ? "text-destructive" : "text-muted-foreground";
+
   return (
     <div className="flex flex-col gap-6">
       <header>
         <h1 className="text-2xl font-semibold">Brand voice &amp; rules</h1>
-        <p className="text-muted text-sm mt-1">
+        <p className="text-muted-foreground text-sm mt-1">
           Everything here is loaded into the model on <b>every</b> answer and cannot be
           overridden by a prompt. This is how the brand&apos;s tone and strict guidelines are enforced.
         </p>
@@ -106,10 +109,10 @@ export default function BrandPage() {
             e.preventDefault();
             if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]);
           }}
-          className="border-2 border-dashed border-border rounded-xl p-7 text-center text-muted cursor-pointer hover:border-accent hover:bg-panel2 transition-colors"
+          className="border-2 border-dashed border-border rounded-lg p-7 text-center text-muted-foreground cursor-pointer hover:border-primary hover:bg-secondary transition-colors"
         >
-          {busy ? <Spinner /> : <b className="text-ink">Drag a file here</b>} — .txt .md .pdf .docx
-          and audio (.mp3 .m4a .wav → Whisper). Chunked, embedded, becomes brand memory.
+          {busy ? <Spinner /> : <b className="text-foreground">Drag a file here</b>} — .txt .md .pdf
+          .docx and audio (.mp3 .m4a .wav → Whisper). Chunked, embedded, becomes brand memory.
           <input
             ref={fileRef}
             type="file"
@@ -118,21 +121,15 @@ export default function BrandPage() {
             onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])}
           />
         </div>
-        {drop.msg && (
-          <div
-            className={`mt-3 text-sm ${
-              drop.tone === "ok" ? "text-ok" : drop.tone === "bad" ? "text-bad" : "text-muted"
-            }`}
-          >
-            {drop.msg}
-          </div>
-        )}
+        {drop.msg && <div className={`mt-3 text-sm ${dropClass}`}>{drop.msg}</div>}
       </Card>
 
       <Card>
         <CardTitle>Rules governing the voice now</CardTitle>
         {items.length === 0 ? (
-          <p className="text-muted text-sm">Nothing yet. Add a rule or ingest a document above.</p>
+          <p className="text-muted-foreground text-sm">
+            Nothing yet. Add a rule or ingest a document above.
+          </p>
         ) : (
           <div className="flex flex-col gap-2">
             {items.map((p) => {
@@ -140,9 +137,9 @@ export default function BrandPage() {
                 (p.content && ((p.content.rule as string) || (p.content.text as string))) ||
                 JSON.stringify(p.content);
               return (
-                <div key={p.id} className="bg-bg border border-border rounded-lg p-3">
+                <div key={p.id} className="bg-background border border-border rounded-md p-3">
                   <div className="flex items-center gap-2 mb-1">
-                    <Badge tone="accent">{p.slot}</Badge>
+                    <Badge tone="primary">{p.slot}</Badge>
                     <span className="text-[13px] font-semibold">{p.name}</span>
                   </div>
                   <div className="text-[13px] whitespace-pre-wrap">{body}</div>

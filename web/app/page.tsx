@@ -29,7 +29,7 @@ export default function AskPage() {
     <div className="flex flex-col gap-6">
       <header>
         <h1 className="text-2xl font-semibold">Ask the memory</h1>
-        <p className="text-muted text-sm mt-1">
+        <p className="text-muted-foreground text-sm mt-1">
           Every answer is grounded in ingested events and cited. If it can&apos;t be grounded,
           it refuses — it does not guess.
         </p>
@@ -50,20 +50,20 @@ export default function AskPage() {
         </div>
 
         {err && (
-          <div className="mt-4 text-sm text-bad border border-bad/40 rounded-lg p-3">
+          <div className="mt-4 text-sm text-destructive border border-destructive/40 rounded-md p-3">
             Error: {err}
           </div>
         )}
 
         {res && (
           <div
-            className={`mt-5 rounded-xl border p-4 bg-panel2 ${
-              res.refused ? "border-warn" : "border-border"
+            className={`mt-5 rounded-lg border p-4 bg-background ${
+              res.refused ? "border-primary" : "border-border"
             }`}
           >
             {res.refused ? (
               <>
-                <div className="text-warn font-semibold text-xs uppercase tracking-[.5px] mb-2">
+                <div className="text-primary font-semibold text-xs uppercase tracking-[.5px] mb-2">
                   ⚠ Refused — not grounded in memory
                 </div>
                 <p className="text-[15px] leading-relaxed">{res.refusal_reason}</p>
@@ -75,36 +75,40 @@ export default function AskPage() {
             {res.citations.length > 0 && (
               <div className="mt-4 flex flex-col gap-2">
                 {res.citations.map((c, i) => (
-                  <div key={i} className="bg-bg border border-border rounded-lg p-3 text-[13px]">
+                  <div
+                    key={i}
+                    className="bg-card border border-border rounded-md p-3 text-[13px]"
+                  >
                     <div>&ldquo;{c.span}&rdquo;</div>
-                    <div className="text-muted text-[11px] font-mono mt-1">
-                      source {c.event_id.slice(0, 8)} · confidence {(c.confidence * 100).toFixed(0)}%
+                    <div className="text-muted-foreground text-[11px] font-mono mt-1">
+                      source {c.event_id.slice(0, 8)} · confidence{" "}
+                      {(c.confidence * 100).toFixed(0)}%
                     </div>
                   </div>
                 ))}
               </div>
             )}
 
-            <div className="mt-4 pt-3 border-t border-border flex flex-wrap gap-4 text-[12px] text-muted">
+            <div className="mt-4 pt-3 border-t border-border flex flex-wrap gap-4 text-[12px] text-muted-foreground">
               <span>
-                confidence <b className="text-ink">{(res.confidence * 100).toFixed(0)}%</b>
+                confidence <b className="text-foreground">{(res.confidence * 100).toFixed(0)}%</b>
               </span>
               <span>
-                retrieved <b className="text-ink">{res.retrieved_event_ids.length}</b> events
+                retrieved <b className="text-foreground">{res.retrieved_event_ids.length}</b> events
               </span>
               <span>
-                model <b className="text-ink">{res.model}</b>
+                model <b className="text-foreground">{res.model}</b>
               </span>
               <span>
-                latency <b className="text-ink">{res.latency_ms} ms</b>
+                latency <b className="text-foreground">{res.latency_ms} ms</b>
               </span>
             </div>
           </div>
         )}
       </Card>
 
-      <div className="text-xs text-muted flex items-center gap-2">
-        <Badge tone="accent">cite-or-refuse</Badge>
+      <div className="text-xs text-muted-foreground flex items-center gap-2">
+        <Badge tone="primary">cite-or-refuse</Badge>
         <span>+ independent verification pass before any answer is shown.</span>
       </div>
     </div>
