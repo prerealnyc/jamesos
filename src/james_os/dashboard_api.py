@@ -49,8 +49,9 @@ async def integrations() -> dict:
             "twitter": cfg(settings.twitter_bearer_token),
             "xpoz": cfg(settings.xpoz_api_key),
         },
-        # Only these are wired to real code paths today.
-        "active": ["anthropic", "voyage", "cohere"],
+        # Only these are wired to real code paths today. openai = Whisper
+        # audio transcription in the ingestion pipeline.
+        "active": ["anthropic", "voyage", "cohere", "openai"],
     }
 
 

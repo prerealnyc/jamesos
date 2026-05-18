@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""       # Whisper transcription, GPT, Sora
     elevenlabs_api_key: str = ""   # voice synthesis / cloning
     heygen_api_key: str = ""       # avatar video
+    heygen_avatar_id: str = ""     # default avatar for renders
     descript_api_key: str = ""     # audio/video editing
     runway_api_key: str = ""       # video generation
     minimax_api_key: str = ""      # video generation

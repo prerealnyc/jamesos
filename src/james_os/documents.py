@@ -72,10 +72,9 @@ def chunk_text(text: str, target: int = CHUNK_TARGET, overlap: int = CHUNK_OVERL
     return chunks
 
 
-def document_to_events(
-    filename: str, data: bytes, event_type: str = "document"
+def _build_events(
+    filename: str, data: bytes, text: str, event_type: str
 ) -> list[EventCreate]:
-    text = extract_text(filename, data)
     chunks = chunk_text(text)
     file_hash = hashlib.sha256(data).hexdigest()[:16]
     now = datetime.now(UTC)
@@ -98,3 +97,30 @@ def document_to_events(
             )
         )
     return events
+
+
+def document_to_events(
+    filename: str, data: bytes, event_type: str = "document"
+) -> list[EventCreate]:
+    """Synchronous path — text documents only. Audio raises (use the async
+    path); this keeps the sync test suite free of network dependencies."""
+    from .transcription import is_audio
+
+    if is_audio(filename):
+        raise ValueError(
+            f"{filename} is audio — use document_to_events_async (Whisper path)"
+        )
+    return _build_events(filename, data, extract_text(filename, data), event_type)
+
+
+async def document_to_events_async(
+    filename: str, data: bytes, event_type: str = "document"
+) -> list[EventCreate]:
+    """Async path. Audio → Whisper transcript → events (event_type
+    'voice_memo'); everything else → normal text extraction."""
+    from .transcription import is_audio, transcribe
+
+    if is_audio(filename):
+        text = await transcribe(filename, data)
+        return _build_events(filename, data, text, "voice_memo")
+    return _build_events(filename, data, extract_text(filename, data), event_type)

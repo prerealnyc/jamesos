@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from .ask import ask
 from .dashboard_api import router as dashboard_api_router
 from .db import acquire, close_pool, init_pool
-from .documents import document_to_events
+from .documents import document_to_events_async
 from .ingestion import ingest, ingest_many
 from .models import (
     AskRequest,
@@ -170,7 +170,10 @@ async def ingest_document(file: UploadFile = File(...)) -> dict[str, Any]:
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="empty file")
-    events = document_to_events(file.filename or "upload", data)
+    try:
+        events = await document_to_events_async(file.filename or "upload", data)
+    except Exception as e:  # noqa: BLE001 — surface transcription/parse errors cleanly
+        raise HTTPException(status_code=422, detail=str(e)) from e
     if not events:
         raise HTTPException(status_code=422, detail="no extractable text")
     stored = await ingest_many(events)
