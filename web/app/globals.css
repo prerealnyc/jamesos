@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { --font-sans: "General Sans", -apple-system, system-ui, sans-serif; }
+
+html, body { height: 100%; }
+body {
+  background: #0d1117;
+  color: #e6edf3;
+  -webkit-font-smoothing: antialiased;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner {
+  width: 15px; height: 15px; border: 2px solid rgba(255,255,255,.25);
+  border-top-color: #fff; border-radius: 50%;
+  display: inline-block; animation: spin .7s linear infinite; vertical-align: -2px;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #2d333b; border-radius: 6px; }
