@@ -22,6 +22,84 @@ from .db import acquire
 
 router = APIRouter(prefix="/api")
 
+SOCIAL_PLATFORMS = [
+    "instagram", "tiktok", "x", "facebook",
+    "linkedin", "youtube", "threads", "substack",
+]
+
+
+# ─────────────────────────────────── profile (lightweight, not auth) ──
+
+@router.get("/profile")
+async def get_profile() -> dict:
+    async with acquire() as conn:
+        cfg = await conn.fetchval(
+            "SELECT config FROM tenants WHERE id = "
+            "current_setting('app.current_tenant', true)::uuid"
+        )
+    if isinstance(cfg, str):
+        cfg = json.loads(cfg)
+    return (cfg or {}).get("profile", {"name": "", "email": "", "brand": "JP Brand Manager"})
+
+
+@router.post("/profile")
+async def set_profile(body: dict = Body(...)) -> dict:
+    prof = {
+        "name": str(body.get("name", ""))[:120],
+        "email": str(body.get("email", ""))[:200],
+        "brand": str(body.get("brand", "JP Brand Manager"))[:120],
+    }
+    async with acquire() as conn:
+        await conn.execute(
+            "UPDATE tenants SET config = jsonb_set("
+            "coalesce(config,'{}'::jsonb), '{profile}', $1::jsonb) "
+            "WHERE id = current_setting('app.current_tenant', true)::uuid",
+            json.dumps(prof),
+        )
+    return {"ok": True, "profile": prof}
+
+
+# ─────────────────────────────────── social connections (config) ──
+
+@router.get("/connections")
+async def get_connections() -> list[dict]:
+    async with acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT platform, handle, enabled, status FROM connections"
+        )
+    have = {r["platform"]: dict(r) for r in rows}
+    out = []
+    for p in SOCIAL_PLATFORMS:
+        r = have.get(p)
+        out.append({
+            "platform": p,
+            "handle": r["handle"] if r else "",
+            "enabled": r["enabled"] if r else False,
+            "status": r["status"] if r else "not_connected",
+        })
+    return out
+
+
+@router.post("/connections")
+async def upsert_connection(body: dict = Body(...)) -> dict:
+    platform = str(body.get("platform", "")).lower().strip()
+    if platform not in SOCIAL_PLATFORMS:
+        return {"ok": False, "error": f"unknown platform '{platform}'"}
+    handle = str(body.get("handle", "")).strip()[:120]
+    enabled = bool(body.get("enabled", False))
+    status = "configured" if handle else "not_connected"
+    async with acquire() as conn:
+        await conn.execute(
+            "INSERT INTO connections (platform, handle, enabled, status) "
+            "VALUES ($1,$2,$3,$4) "
+            "ON CONFLICT (tenant_id, platform) DO UPDATE SET "
+            "handle=$2, enabled=$3, status=$4, updated_at=now()",
+            platform, handle, enabled, status,
+        )
+    return {"ok": True, "platform": platform, "status": status}
+
+
+
 
 # ─────────────────────────────────── integration status (bools only) ──
 

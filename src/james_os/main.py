@@ -63,6 +63,12 @@ async def classic_ui() -> FileResponse:
     return FileResponse(_STATIC / "index.html")
 
 
+@app.get("/settings", include_in_schema=False)
+async def settings_ui() -> FileResponse:
+    """Brand voice & guidelines, social connections, profile."""
+    return FileResponse(_STATIC / "settings.html")
+
+
 # Serve the dashboard's hashed assets. index.html references ./assets/...
 app.mount("/assets", StaticFiles(directory=_DASH / "assets"), name="dash-assets")
 

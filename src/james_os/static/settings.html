@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Settings · JP Brand Manager</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2230;--bd:#2d333b;
+    --tx:#e6edf3;--mut:#8b949e;--ac:#4493f8;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--r:12px}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--tx);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;min-height:100vh}
+  header{display:flex;align-items:center;gap:12px;padding:18px 28px;
+    border-bottom:1px solid var(--bd);background:var(--panel)}
+  header h1{font-size:18px;font-weight:650;letter-spacing:.5px}
+  header a{margin-left:auto;color:var(--ac);text-decoration:none;font-size:14px}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 90px;
+    display:flex;flex-direction:column;gap:22px}
+  .card{background:var(--panel);border:1px solid var(--bd);border-radius:var(--r);padding:20px}
+  .card h2{font-size:13px;text-transform:uppercase;letter-spacing:1px;
+    color:var(--mut);margin-bottom:6px;font-weight:600}
+  .card p.sub{color:var(--mut);font-size:13px;margin-bottom:14px}
+  label{display:block;font-size:12px;color:var(--mut);margin:10px 0 4px}
+  input,textarea,select{width:100%;background:var(--bg);color:var(--tx);
+    border:1px solid var(--bd);border-radius:8px;padding:10px 12px;font:inherit;resize:vertical}
+  input:focus,textarea:focus,select:focus{outline:none;border-color:var(--ac)}
+  button{background:var(--ac);color:#fff;border:0;border-radius:8px;
+    padding:10px 18px;font:inherit;font-weight:600;cursor:pointer;transition:opacity .15s}
+  button:hover{opacity:.88}button:disabled{opacity:.5;cursor:not-allowed}
+  button.ghost{background:var(--panel2);color:var(--tx);border:1px solid var(--bd)}
+  .row{display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap}
+  .grid{display:grid;grid-template-columns:130px 1fr 90px 110px;gap:10px;align-items:center;
+    padding:9px 0;border-bottom:1px solid var(--bd);font-size:14px}
+  .grid:last-child{border-bottom:0}
+  .pill{font-size:11px;font-weight:600;padding:2px 9px;border-radius:999px;text-transform:uppercase;letter-spacing:.4px}
+  .pill.ok{background:#13351f;color:var(--ok)}
+  .pill.no{background:#21262d;color:var(--mut)}
+  .pill.cfg{background:#16304f;color:var(--ac)}
+  .pi{background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin-top:8px}
+  .pi .b{font-size:12px;font-weight:600;color:var(--ac);text-transform:uppercase;letter-spacing:.4px}
+  .pi .body{font-size:13px;margin-top:4px;white-space:pre-wrap}
+  .dz{border:2px dashed var(--bd);border-radius:10px;padding:26px;text-align:center;
+    cursor:pointer;color:var(--mut);transition:.15s}
+  .dz:hover,.dz.over{border-color:var(--ac);background:var(--panel2)}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
+    background:var(--ok);color:#06250f;font-weight:600;padding:10px 20px;border-radius:999px;
+    font-size:13px;opacity:0;transition:.25s;pointer-events:none}
+  .toast.show{opacity:1}.toast.err{background:var(--bad);color:#2b0606}
+  .note{color:var(--warn);font-size:12px;margin-top:8px}
+  .sp{width:14px;height:14px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;
+    border-radius:50%;display:inline-block;animation:s .7s linear infinite;vertical-align:-2px}
+  @keyframes s{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>⚙ Settings</h1>
+  <a href="/">← Back to dashboard</a>
+</header>
+<main>
+
+  <!-- PROFILE -->
+  <section class="card">
+    <h2>Profile</h2>
+    <p class="sub">Lightweight profile (stored, not authentication — no login system yet).</p>
+    <label>Brand</label><input id="pf-brand" placeholder="JP Brand Manager" />
+    <label>Operator name</label><input id="pf-name" placeholder="e.g. James Prendamano" />
+    <label>Email</label><input id="pf-email" placeholder="you@example.com" />
+    <div class="row"><button id="pf-save" onclick="saveProfile()">Save profile</button></div>
+  </section>
+
+  <!-- BRAND VOICE & GUIDELINES -->
+  <section class="card">
+    <h2>Brand voice &amp; guidelines</h2>
+    <p class="sub">Everything here governs <b>every AI answer</b> — loaded into the model on
+      each call, never overridable by a prompt. Identity/voice, hard rules, and frustrations
+      (what NOT to do) all shape the brand voice.</p>
+    <label>Type</label>
+    <select id="pi-slot">
+      <option value="identity">identity — who/what the brand is, voice</option>
+      <option value="guideline">guideline — a rule to follow</option>
+      <option value="protocol">protocol — a hard, non-negotiable rule</option>
+      <option value="framework">framework — a playbook (EOS, pillars…)</option>
+      <option value="frustration">frustration — what NOT to do / past mistakes</option>
+    </select>
+    <label>Name</label><input id="pi-name" placeholder="e.g. Voice spine, Banned phrases" />
+    <label>Content</label>
+    <textarea id="pi-content" rows="4"
+      placeholder="The actual voice rule / guideline / lesson. Be specific — this is enforced verbatim."></textarea>
+    <div class="row"><button id="pi-save" onclick="addPlugIn()">Add to brand rules</button></div>
+
+    <label style="margin-top:18px">Or drop a brand document (.txt .md .pdf .docx .mp3 .m4a .wav)</label>
+    <div class="dz" id="dz">
+      <div><b>Drag a file here</b> or click — it's chunked, embedded, and becomes brand memory.
+      Audio is transcribed (Whisper).</div>
+      <input type="file" id="file" hidden
+        accept=".txt,.md,.markdown,.csv,.json,.pdf,.docx,.mp3,.m4a,.wav,.mp4,.webm,.flac,.ogg" />
+    </div>
+    <div id="dz-res" class="sub" style="margin-top:8px"></div>
+
+    <label style="margin-top:18px">Current brand rules (governing the voice now)</label>
+    <div id="pi-list"><div class="sub">Loading…</div></div>
+  </section>
+
+  <!-- SOCIAL CONNECTIONS -->
+  <section class="card">
+    <h2>Social connections</h2>
+    <p class="sub">Record each handle and enable it. <b>Honest scope:</b> this saves config +
+      shows status. Real OAuth posting/reading per platform is a separate build — not faked here.</p>
+    <div id="conn-list"><div class="sub">Loading…</div></div>
+    <div class="note" id="intg-note">API credential status loading…</div>
+  </section>
+
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+const A="";
+function toast(m,e){const t=document.getElementById("toast");t.textContent=m;
+  t.className="toast show"+(e?" err":"");setTimeout(()=>t.className="toast",2600)}
+function esc(s){return(s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
+
+async function loadProfile(){
+  try{const p=await(await fetch(A+"/api/profile")).json();
+    document.getElementById("pf-brand").value=p.brand||"";
+    document.getElementById("pf-name").value=p.name||"";
+    document.getElementById("pf-email").value=p.email||"";}catch(e){}
+}
+async function saveProfile(){
+  const b=document.getElementById("pf-save");b.disabled=1;b.innerHTML='<span class="sp"></span>';
+  try{const r=await fetch(A+"/api/profile",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({brand:val("pf-brand"),name:val("pf-name"),email:val("pf-email")})});
+    if(!r.ok)throw new Error("HTTP "+r.status);toast("Profile saved");}
+  catch(e){toast("Save failed: "+e.message,1)}finally{b.disabled=0;b.textContent="Save profile"}
+}
+function val(id){return document.getElementById(id).value.trim()}
+
+async function addPlugIn(){
+  const name=val("pi-name"),content=val("pi-content"),slot=document.getElementById("pi-slot").value;
+  if(!name||!content){toast("Name and content required",1);return}
+  const b=document.getElementById("pi-save");b.disabled=1;b.innerHTML='<span class="sp"></span>';
+  try{const r=await fetch(A+"/plug-ins",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({slot,name,content:{rule:content},applies_to:[]})});
+    if(!r.ok)throw new Error("HTTP "+r.status);
+    document.getElementById("pi-name").value="";document.getElementById("pi-content").value="";
+    toast("Added — now governs every answer");loadPlugIns();}
+  catch(e){toast("Failed: "+e.message,1)}finally{b.disabled=0;b.textContent="Add to brand rules"}
+}
+async function loadPlugIns(){
+  const box=document.getElementById("pi-list");
+  try{const l=await(await fetch(A+"/plug-ins")).json();
+    if(!l.length){box.innerHTML='<div class="sub">Nothing yet. Add a voice rule or drop a document.</div>';return}
+    box.innerHTML="";l.forEach(p=>{const d=document.createElement("div");d.className="pi";
+      const body=(p.content&&(p.content.rule||p.content.text))||JSON.stringify(p.content);
+      d.innerHTML='<div class="b">'+esc(p.slot)+' · '+esc(p.name)+'</div><div class="body">'+esc(body)+'</div>';
+      box.appendChild(d)})}
+  catch(e){box.innerHTML='<div class="sub">Could not load.</div>'}
+}
+
+// document drop
+const dz=document.getElementById("dz"),fi=document.getElementById("file");
+dz.onclick=()=>fi.click();
+dz.ondragover=e=>{e.preventDefault();dz.classList.add("over")};
+dz.ondragleave=()=>dz.classList.remove("over");
+dz.ondrop=e=>{e.preventDefault();dz.classList.remove("over");if(e.dataTransfer.files[0])up(e.dataTransfer.files[0])};
+fi.onchange=()=>{if(fi.files[0])up(fi.files[0])};
+async function up(f){const r=document.getElementById("dz-res");
+  r.innerHTML='<span class="sp"></span> Ingesting "'+esc(f.name)+'"…';
+  try{const fd=new FormData();fd.append("file",f);
+    const x=await fetch(A+"/ingest/document",{method:"POST",body:fd});
+    const d=await x.json();if(!x.ok)throw new Error(d.detail||("HTTP "+x.status));
+    r.style.color="var(--ok)";r.textContent='✓ "'+d.filename+'" → '+d.chunks_created+' memory chunk(s).';}
+  catch(e){r.style.color="var(--bad)";r.textContent="✗ "+e.message}}
+
+// social connections
+async function loadConns(){
+  const box=document.getElementById("conn-list");
+  try{const l=await(await fetch(A+"/api/connections")).json();box.innerHTML="";
+    l.forEach(c=>{const g=document.createElement("div");g.className="grid";
+      const st=c.status==="configured"?'<span class="pill cfg">configured</span>'
+        :c.status==="connected"?'<span class="pill ok">connected</span>'
+        :'<span class="pill no">not set</span>';
+      g.innerHTML='<div style="text-transform:capitalize;font-weight:600">'+c.platform+'</div>'+
+        '<input data-p="'+c.platform+'" class="h" placeholder="@handle" value="'+esc(c.handle)+'"/>'+
+        '<label style="margin:0;display:flex;gap:6px;align-items:center;color:var(--tx)">'+
+        '<input type="checkbox" data-e="'+c.platform+'" '+(c.enabled?"checked":"")+
+        ' style="width:auto"/> on</label>'+st;
+      box.appendChild(g)});
+    const btn=document.createElement("div");btn.className="row";
+    btn.innerHTML='<button id="conn-save" onclick="saveConns()">Save connections</button>';
+    box.appendChild(btn);}
+  catch(e){box.innerHTML='<div class="sub">Could not load.</div>'}
+}
+async function saveConns(){
+  const b=document.getElementById("conn-save");b.disabled=1;b.innerHTML='<span class="sp"></span>';
+  try{const hs=[...document.querySelectorAll(".h")];
+    for(const h of hs){const p=h.dataset.p;
+      const en=document.querySelector('[data-e="'+p+'"]').checked;
+      await fetch(A+"/api/connections",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({platform:p,handle:h.value.trim(),enabled:en})});}
+    toast("Connections saved");loadConns();}
+  catch(e){toast("Save failed: "+e.message,1)}finally{b.disabled=0;b.textContent="Save connections"}
+}
+async function loadIntg(){
+  try{const d=await(await fetch(A+"/api/integrations")).json();
+    const on=Object.entries(d.configured).filter(([k,v])=>v).map(([k])=>k);
+    document.getElementById("intg-note").textContent=
+      "API credentials configured: "+(on.join(", ")||"none")+
+      " · actively wired: "+d.active.join(", ");}catch(e){}
+}
+
+loadProfile();loadPlugIns();loadConns();loadIntg();
+</script>
+</body>
+</html>
