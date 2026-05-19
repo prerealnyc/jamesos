@@ -103,6 +103,31 @@ async def upsert_connection(body: dict = Body(...)) -> dict:
 
 
 
+# ─────────────────────────────────── API credentials (tenant-managed) ──
+# Drop keys in from the Settings UI; they persist per-tenant in the DB and
+# take effect on the next request (no restart). Raw values NEVER leave the
+# process — GET returns masked previews only.
+
+@router.get("/credentials")
+async def get_credentials() -> dict:
+    from .credentials import status
+
+    return await status()
+
+
+@router.post("/credentials")
+async def set_credentials(body: dict = Body(...)) -> dict:
+    """Body: {"updates": {"perplexity_api_key": "pplx-...", ...}}.
+    Empty string clears a key (reverts to the .env default)."""
+    from .credentials import save
+
+    updates = body.get("updates")
+    if not isinstance(updates, dict):
+        return {"ok": False, "error": "expected {'updates': {field: value}}"}
+    result = await save({str(k): str(v) for k, v in updates.items()})
+    return {"ok": True, **result}
+
+
 # ─────────────────────────────────── integration status (bools only) ──
 
 @router.get("/integrations")

@@ -64,8 +64,34 @@ export type QueueStats = {
   total: number;
 };
 
+export type CredentialField = {
+  name: string;
+  label: string;
+  group: string;
+  secret: boolean;
+  placeholder: string;
+  configured: boolean;
+  masked: string;
+  source: "ui" | "env" | "none";
+};
+
+export type CredentialStatus = {
+  fields: CredentialField[];
+  research_provider: string;
+  note: string;
+};
+
+export type IntegrationCheck = {
+  checked_at: string;
+  results: Record<string, { status: string; detail: string }>;
+};
+
 export const api = {
   health: () => jget<{ status: string }>("/health"),
+  getCredentials: () => jget<CredentialStatus>("/api/credentials"),
+  setCredentials: (updates: Record<string, string>) =>
+    jpost<{ ok: boolean } & CredentialStatus>("/api/credentials", { updates }),
+  checkIntegrations: () => jget<IntegrationCheck>("/api/integrations/check"),
   queue: () => jget<QueueItem[]>("/api/queue"),
   queueStats: () => jget<QueueStats>("/api/queue/stats"),
   approve: (id: string, reason = "approved via dashboard") =>

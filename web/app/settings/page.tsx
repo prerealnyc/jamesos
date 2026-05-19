@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { api, type PlugIn } from "@/lib/api";
+import {
+  api,
+  type PlugIn,
+  type CredentialField,
+  type IntegrationCheck,
+} from "@/lib/api";
 import {
   Button,
   Card,
@@ -176,6 +181,183 @@ const SLOTS = [
   { v: "frustration", d: "frustration — what NOT to do / past mistakes" },
 ];
 
+// Credential field → live connectivity probe name (only those with a
+// real probe in /api/integrations/check).
+const PROBE_FOR: Record<string, string> = {
+  anthropic_api_key: "anthropic",
+  voyage_api_key: "voyage",
+  cohere_api_key: "cohere",
+  openai_api_key: "openai",
+  perplexity_api_key: "perplexity",
+  google_search_api_key: "google_search",
+  heygen_api_key: "heygen",
+  descript_api_key: "descript",
+  runway_api_key: "runway",
+};
+
+function statusTone(s: string): "ok" | "destructive" | "accent" | "muted" {
+  if (s === "ok") return "ok";
+  if (s === "bad_key") return "destructive";
+  if (s === "rate_limited") return "accent";
+  return "muted";
+}
+
+function ApiKeys() {
+  const [fields, setFields] = useState<CredentialField[]>([]);
+  const [note, setNote] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [checks, setChecks] = useState<IntegrationCheck["results"]>({});
+
+  async function load() {
+    try {
+      const s = await api.getCredentials();
+      setFields(s.fields);
+      setNote(s.note);
+    } catch {}
+  }
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function saveAll() {
+    const updates: Record<string, string> = {};
+    for (const [k, v] of Object.entries(drafts)) {
+      if (v.trim()) updates[k] = v.trim();
+    }
+    if (Object.keys(updates).length === 0) return;
+    setBusy(true);
+    try {
+      const s = await api.setCredentials(updates);
+      setFields(s.fields);
+      setNote(s.note);
+      setDrafts({});
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearOne(name: string) {
+    setBusy(true);
+    try {
+      const s = await api.setCredentials({ [name]: "" });
+      setFields(s.fields);
+      setNote(s.note);
+      setDrafts((d) => {
+        const { [name]: _omit, ...rest } = d;
+        return rest;
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function testConnections() {
+    setTesting(true);
+    try {
+      const r = await api.checkIntegrations();
+      setChecks(r.results);
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  const groups = Array.from(new Set(fields.map((f) => f.group)));
+  const pending = Object.values(drafts).filter((v) => v.trim()).length;
+
+  return (
+    <Card>
+      <div className="flex items-baseline justify-between gap-3">
+        <CardTitle>API keys & connections</CardTitle>
+        <Button onClick={testConnections} disabled={testing}>
+          {testing ? <Spinner /> : "Test live connections"}
+        </Button>
+      </div>
+      <p className="text-muted-foreground text-sm mb-3">
+        Drop in your own keys — Perplexity, Google Custom Search, OpenAI,
+        etc. They save to your tenant and connect automatically on the next
+        request. No restart, no editing files.
+      </p>
+
+      {groups.map((g) => (
+        <div key={g} className="mt-4">
+          <h3 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+            {g}
+          </h3>
+          <div className="flex flex-col gap-2">
+            {fields
+              .filter((f) => f.group === g)
+              .map((f) => {
+                const probe = PROBE_FOR[f.name];
+                const chk = probe ? checks[probe] : undefined;
+                return (
+                  <div
+                    key={f.name}
+                    className="grid grid-cols-[minmax(180px,1fr)_1.5fr_auto] gap-3 items-center"
+                  >
+                    <div className="flex flex-col">
+                      <span className="text-sm font-medium">{f.label}</span>
+                      <span className="text-[11px] text-muted-foreground">
+                        {f.configured ? (
+                          <>
+                            set{" "}
+                            <span className="font-mono">{f.masked}</span> ·{" "}
+                            {f.source === "ui"
+                              ? "from Settings"
+                              : f.source === "env"
+                              ? "from .env"
+                              : ""}
+                          </>
+                        ) : (
+                          "not set"
+                        )}
+                      </span>
+                    </div>
+                    <Input
+                      type={f.secret ? "password" : "text"}
+                      placeholder={
+                        f.placeholder ||
+                        (f.configured ? "replace…" : "paste key…")
+                      }
+                      value={drafts[f.name] ?? ""}
+                      onChange={(e) =>
+                        setDrafts((d) => ({ ...d, [f.name]: e.target.value }))
+                      }
+                    />
+                    <div className="flex items-center gap-2 justify-end">
+                      {chk && (
+                        <Badge tone={statusTone(chk.status)}>
+                          {chk.status}
+                        </Badge>
+                      )}
+                      {f.configured && f.source === "ui" && (
+                        <button
+                          onClick={() => clearOne(f.name)}
+                          disabled={busy}
+                          className="text-[11px] text-muted-foreground hover:text-destructive"
+                        >
+                          clear
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+        </div>
+      ))}
+
+      <div className="mt-4 flex items-center gap-3">
+        <Button onClick={saveAll} disabled={busy || pending === 0}>
+          {busy ? <Spinner /> : `Save ${pending || ""} key${pending === 1 ? "" : "s"}`}
+        </Button>
+        <span className="text-xs text-muted-foreground">{note}</span>
+      </div>
+    </Card>
+  );
+}
+
 export default function SettingsPage() {
   const [profile, setProfile] = useState({ brand: "", name: "", email: "" });
   const [savingProfile, setSavingProfile] = useState(false);
@@ -242,6 +424,8 @@ export default function SettingsPage() {
         title="Settings"
         sub="Each upload area below is a category. Files stage first, then you press Upload — they go to Supabase as tagged brand memory the content engine weights differently."
       />
+
+      <ApiKeys />
 
       <div>
         <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground mb-3">

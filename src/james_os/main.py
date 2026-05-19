@@ -33,6 +33,11 @@ from .research import get_research_provider, research_to_events
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_pool()
+    # Overlay any tenant-saved API keys from the DB onto the .env baseline
+    # so UI-entered credentials are live from the first request.
+    from .credentials import load_into_settings
+
+    await load_into_settings()
     yield
     await close_pool()
 
