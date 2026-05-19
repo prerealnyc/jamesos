@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -167,8 +167,13 @@ async def list_plug_ins(slot: str | None = None) -> list[PlugIn]:
 # ───────────────────────────────────────────────────────────── documents ──
 
 @app.post("/ingest/document", status_code=201)
-async def ingest_document(file: UploadFile = File(...)) -> dict[str, Any]:
-    """Upload a file → extract text → chunk → store as events.
+async def ingest_document(
+    file: UploadFile = File(...),
+    category: str = Form("reference"),
+) -> dict[str, Any]:
+    """Upload a file → extract text → chunk → store as events, tagged with
+    its category (thesis / guideline / frustration / voice_corpus /
+    reference) so retrieval and the content engine can weight it.
 
     Embeddings for all chunks are batched into one provider call, so a big
     document is one embedding request (matters for rate-limited free tiers).
@@ -177,7 +182,9 @@ async def ingest_document(file: UploadFile = File(...)) -> dict[str, Any]:
     if not data:
         raise HTTPException(status_code=400, detail="empty file")
     try:
-        events = await document_to_events_async(file.filename or "upload", data)
+        events = await document_to_events_async(
+            file.filename or "upload", data, category=category
+        )
     except Exception as e:  # noqa: BLE001 — surface transcription/parse errors cleanly
         raise HTTPException(status_code=422, detail=str(e)) from e
     if not events:

@@ -72,8 +72,20 @@ def chunk_text(text: str, target: int = CHUNK_TARGET, overlap: int = CHUNK_OVERL
     return chunks
 
 
+# Upload categories — drive retrieval weighting + the future content
+# engine. Stored on every chunk (payload.category + entities) so a query
+# can prefer voice material, treat protocols as hard constraints, etc.
+CATEGORIES = {
+    "thesis": "Founder thesis / vision (point of view)",
+    "guideline": "Brand guidelines / voice rules (how it must sound)",
+    "frustration": "Frustration ledger (what NOT to do)",
+    "voice_corpus": "Voice corpus (podcast / academy — how James sounds)",
+    "reference": "Reference / strategy (context, not voice)",
+}
+
+
 def _build_events(
-    filename: str, data: bytes, text: str, event_type: str
+    filename: str, data: bytes, text: str, event_type: str, category: str
 ) -> list[EventCreate]:
     chunks = chunk_text(text)
     file_hash = hashlib.sha256(data).hexdigest()[:16]
@@ -84,15 +96,16 @@ def _build_events(
             EventCreate(
                 event_type=event_type,
                 payload={"text": chunk, "filename": filename, "chunk": idx,
-                         "total_chunks": len(chunks)},
+                         "total_chunks": len(chunks), "category": category},
                 raw_content=chunk,
                 source=EventSource(
                     adapter="document_upload",
                     uri=f"file://{filename}",
                     dedupe_key=f"{file_hash}-{idx}",
-                    raw_metadata={"filename": filename, "chunk_index": idx},
+                    raw_metadata={"filename": filename, "chunk_index": idx,
+                                  "category": category},
                 ),
-                entities=[filename],
+                entities=[filename, f"category:{category}"],
                 effective_at=now,
             )
         )
@@ -100,7 +113,8 @@ def _build_events(
 
 
 def document_to_events(
-    filename: str, data: bytes, event_type: str = "document"
+    filename: str, data: bytes, event_type: str = "document",
+    category: str = "reference",
 ) -> list[EventCreate]:
     """Synchronous path — text documents only. Audio raises (use the async
     path); this keeps the sync test suite free of network dependencies."""
@@ -110,11 +124,12 @@ def document_to_events(
         raise ValueError(
             f"{filename} is audio — use document_to_events_async (Whisper path)"
         )
-    return _build_events(filename, data, extract_text(filename, data), event_type)
+    return _build_events(filename, data, extract_text(filename, data), event_type, category)
 
 
 async def document_to_events_async(
-    filename: str, data: bytes, event_type: str = "document"
+    filename: str, data: bytes, event_type: str = "document",
+    category: str = "reference",
 ) -> list[EventCreate]:
     """Async path. Audio → Whisper transcript → events (event_type
     'voice_memo'); everything else → normal text extraction."""
@@ -122,5 +137,5 @@ async def document_to_events_async(
 
     if is_audio(filename):
         text = await transcribe(filename, data)
-        return _build_events(filename, data, text, "voice_memo")
-    return _build_events(filename, data, extract_text(filename, data), event_type)
+        return _build_events(filename, data, text, "voice_memo", category or "voice_corpus")
+    return _build_events(filename, data, extract_text(filename, data), event_type, category)

@@ -15,6 +15,159 @@ import {
   PageHeader,
 } from "@/components/ui";
 
+const ACCEPT = ".txt,.md,.markdown,.csv,.json,.pdf,.docx,.mp3,.m4a,.wav,.mp4,.webm,.flac,.ogg";
+
+const CATEGORIES: { key: string; title: string; blurb: string; examples: string }[] = [
+  {
+    key: "thesis",
+    title: "Founder thesis & vision",
+    blurb: "The point of view. Without this, content is generic.",
+    examples: "→ JAMES_THE_FULL_VISION",
+  },
+  {
+    key: "guideline",
+    title: "Brand guidelines & voice rules",
+    blurb: "How content must sound — pillars, voice spine, identity.",
+    examples: "→ JP_BRAND_MANAGER_MASTER_SPEC",
+  },
+  {
+    key: "frustration",
+    title: "Frustration ledger (what NOT to do)",
+    blurb: "Negative guardrails that stop the voice from drifting.",
+    examples: "→ JAMES_FRUSTRATION_DRIFT_LEDGER",
+  },
+  {
+    key: "voice_corpus",
+    title: "Voice corpus (how James actually sounds)",
+    blurb: "Podcast / academy transcripts, audio. The strongest voice signal.",
+    examples: "→ podcast_full_context, academy transcripts (the ~10MB)",
+  },
+  {
+    key: "reference",
+    title: "Reference & strategy (context, not voice)",
+    blurb: "Plans, inventories, specs. Useful context; not voice training.",
+    examples: "→ LLM_INGESTION_PLAN, HANDOFF_INVENTORY, etc.",
+  },
+];
+
+type Staged = {
+  file: File;
+  status: "staged" | "uploading" | "done" | "error";
+  detail: string;
+};
+
+function CategoryUpload({
+  category,
+  title,
+  blurb,
+  examples,
+}: {
+  category: string;
+  title: string;
+  blurb: string;
+  examples: string;
+}) {
+  const [staged, setStaged] = useState<Staged[]>([]);
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLInputElement>(null);
+
+  function add(list: FileList | null) {
+    if (!list) return;
+    setStaged((s) => [
+      ...s,
+      ...Array.from(list).map((file) => ({ file, status: "staged" as const, detail: "" })),
+    ]);
+  }
+
+  async function uploadAll() {
+    setBusy(true);
+    for (let i = 0; i < staged.length; i++) {
+      if (staged[i].status === "done") continue;
+      setStaged((s) => s.map((x, j) => (j === i ? { ...x, status: "uploading" } : x)));
+      try {
+        const d = await api.uploadDocument(staged[i].file, category);
+        setStaged((s) =>
+          s.map((x, j) =>
+            j === i ? { ...x, status: "done", detail: `${d.chunks_created} chunks` } : x
+          )
+        );
+      } catch (e) {
+        setStaged((s) =>
+          s.map((x, j) =>
+            j === i
+              ? { ...x, status: "error", detail: e instanceof Error ? e.message : "failed" }
+              : x
+          )
+        );
+      }
+    }
+    setBusy(false);
+  }
+
+  const pending = staged.filter((s) => s.status === "staged" || s.status === "error").length;
+
+  return (
+    <Card>
+      <div className="flex items-baseline justify-between gap-3">
+        <CardTitle>{title}</CardTitle>
+        <span className="text-[11px] text-muted-foreground font-mono">{examples}</span>
+      </div>
+      <p className="text-muted-foreground text-sm -mt-1 mb-3">{blurb}</p>
+
+      <div
+        onClick={() => ref.current?.click()}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          e.preventDefault();
+          add(e.dataTransfer.files);
+        }}
+        className="border-2 border-dashed border-border rounded-lg p-6 text-center text-muted-foreground cursor-pointer hover:border-primary hover:bg-secondary transition-colors text-sm"
+      >
+        <b className="text-foreground">Choose files</b> or drag here — they stage below,
+        nothing uploads until you press the button.
+        <input
+          ref={ref}
+          type="file"
+          hidden
+          multiple
+          accept={ACCEPT}
+          onChange={(e) => add(e.target.files)}
+        />
+      </div>
+
+      {staged.length > 0 && (
+        <div className="mt-3 flex flex-col gap-1.5">
+          {staged.map((s, i) => (
+            <div
+              key={i}
+              className="flex items-center gap-3 text-sm bg-background border border-border rounded-md px-3 py-2"
+            >
+              <span className="flex-1 truncate">{s.file.name}</span>
+              {s.status === "staged" && (
+                <span className="text-muted-foreground text-xs">staged</span>
+              )}
+              {s.status === "uploading" && <Spinner />}
+              {s.status === "done" && <Badge tone="ok">✓ {s.detail}</Badge>}
+              {s.status === "error" && (
+                <span className="text-destructive text-xs">✗ {s.detail}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-3 flex items-center gap-3">
+        <Button onClick={uploadAll} disabled={busy || pending === 0}>
+          {busy ? <Spinner /> : `Upload ${pending || ""} → ${category}`}
+        </Button>
+        <span className="text-xs text-muted-foreground">
+          → stored as <b className="text-foreground">{category}</b> memory in Supabase
+        </span>
+      </div>
+    </Card>
+  );
+}
+
 const SLOTS = [
   { v: "identity", d: "identity — who/what the brand is, the voice" },
   { v: "guideline", d: "guideline — a rule to follow" },
@@ -23,30 +176,16 @@ const SLOTS = [
   { v: "frustration", d: "frustration — what NOT to do / past mistakes" },
 ];
 
-type FileState = {
-  name: string;
-  status: "queued" | "ingesting" | "done" | "error";
-  detail: string;
-};
-
 export default function SettingsPage() {
-  // profile
   const [profile, setProfile] = useState({ brand: "", name: "", email: "" });
   const [savingProfile, setSavingProfile] = useState(false);
 
-  // brand documents
-  const [files, setFiles] = useState<FileState[]>([]);
-  const [uploading, setUploading] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
-
-  // structured rules
   const [slot, setSlot] = useState("guideline");
   const [ruleName, setRuleName] = useState("");
   const [ruleBody, setRuleBody] = useState("");
   const [savingRule, setSavingRule] = useState(false);
   const [plugins, setPlugins] = useState<PlugIn[]>([]);
 
-  // connections
   const [conns, setConns] = useState<
     { platform: string; handle: string; enabled: boolean; status: string }[]
   >([]);
@@ -75,35 +214,6 @@ export default function SettingsPage() {
       setSavingProfile(false);
     }
   }
-
-  async function ingestFiles(list: FileList) {
-    const picked = Array.from(list);
-    setFiles(picked.map((f) => ({ name: f.name, status: "queued", detail: "" })));
-    setUploading(true);
-    for (let i = 0; i < picked.length; i++) {
-      setFiles((s) => s.map((x, j) => (j === i ? { ...x, status: "ingesting" } : x)));
-      try {
-        const d = await api.uploadDocument(picked[i]);
-        setFiles((s) =>
-          s.map((x, j) =>
-            j === i
-              ? { ...x, status: "done", detail: `${d.chunks_created} memory chunk(s)` }
-              : x
-          )
-        );
-      } catch (e) {
-        setFiles((s) =>
-          s.map((x, j) =>
-            j === i
-              ? { ...x, status: "error", detail: e instanceof Error ? e.message : "failed" }
-              : x
-          )
-        );
-      }
-    }
-    setUploading(false);
-  }
-
   async function addRule() {
     if (!ruleName.trim() || !ruleBody.trim()) return;
     setSavingRule(true);
@@ -116,13 +226,10 @@ export default function SettingsPage() {
       setSavingRule(false);
     }
   }
-
   async function saveConns() {
     setSavingConns(true);
     try {
-      for (const c of conns) {
-        await api.upsertConnection(c.platform, c.handle, c.enabled);
-      }
+      for (const c of conns) await api.upsertConnection(c.platform, c.handle, c.enabled);
       setConns(await api.connections());
     } finally {
       setSavingConns(false);
@@ -133,77 +240,25 @@ export default function SettingsPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Settings"
-        sub="Profile, brand guidance, voice rules, and connections. Everything here governs how the brand manager writes — per brand."
+        sub="Each upload area below is a category. Files stage first, then you press Upload — they go to Supabase as tagged brand memory the content engine weights differently."
       />
 
-      {/* ── Brand guidance documents (the headline feature) ── */}
-      <Card>
-        <CardTitle>Brand guidance documents</CardTitle>
-        <p className="text-muted-foreground text-sm mb-3">
-          Drop the founder thesis, frustration ledger, protocols, voice corpus, master
-          spec — anything that should guide this brand. Each file is chunked, embedded,
-          and becomes citable brand memory. Multiple files at once. Audio (.mp3/.m4a/.wav)
-          is transcribed via Whisper.
-        </p>
-        <div
-          onClick={() => fileRef.current?.click()}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            if (e.dataTransfer.files.length) ingestFiles(e.dataTransfer.files);
-          }}
-          className="border-2 border-dashed border-border rounded-lg p-8 text-center text-muted-foreground cursor-pointer hover:border-primary hover:bg-secondary transition-colors"
-        >
-          {uploading ? (
-            <Spinner />
-          ) : (
-            <>
-              <b className="text-foreground">Drag files here</b> or click to choose
-            </>
-          )}
-          <div className="text-xs mt-1">.txt .md .pdf .docx .mp3 .m4a .wav — multiple OK</div>
-          <input
-            ref={fileRef}
-            type="file"
-            hidden
-            multiple
-            accept=".txt,.md,.markdown,.csv,.json,.pdf,.docx,.mp3,.m4a,.wav,.mp4,.webm,.flac,.ogg"
-            onChange={(e) => e.target.files?.length && ingestFiles(e.target.files)}
-          />
+      <div>
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground mb-3">
+          Brand guidance — by category
+        </h2>
+        <div className="flex flex-col gap-4">
+          {CATEGORIES.map((c) => (
+            <CategoryUpload key={c.key} category={c.key} title={c.title} blurb={c.blurb} examples={c.examples} />
+          ))}
         </div>
-        {files.length > 0 && (
-          <div className="mt-4 flex flex-col gap-1.5">
-            {files.map((f, i) => (
-              <div
-                key={i}
-                className="flex items-center gap-3 text-sm bg-background border border-border rounded-md px-3 py-2"
-              >
-                <span className="flex-1 truncate">{f.name}</span>
-                {f.status === "queued" && (
-                  <span className="text-muted-foreground text-xs">queued</span>
-                )}
-                {f.status === "ingesting" && <Spinner />}
-                {f.status === "done" && <Badge tone="ok">✓ {f.detail}</Badge>}
-                {f.status === "error" && (
-                  <span className="text-destructive text-xs">✗ {f.detail}</span>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-        <p className="text-muted-foreground text-xs mt-3">
-          Large files (e.g. a 400 KB protocol doc) create many chunks and may pace against
-          the embedding rate limit — that&apos;s surfaced per-file above, not hidden.
-        </p>
-      </Card>
+      </div>
 
-      {/* ── Structured voice rules ── */}
       <Card>
         <CardTitle>Strict voice rules</CardTitle>
         <p className="text-muted-foreground text-sm mb-2">
           Hard rules loaded into the model on <b>every</b> answer — can&apos;t be
-          overridden by a prompt. Use this for non-negotiables (banned phrases, the voice
-          spine, compliance lines).
+          overridden by a prompt. Use for non-negotiables (voice spine, banned phrases).
         </p>
         <Label>Type</Label>
         <Select value={slot} onChange={(e) => setSlot(e.target.value)}>
@@ -215,7 +270,7 @@ export default function SettingsPage() {
         </Select>
         <Label>Name</Label>
         <Input
-          placeholder="e.g. Voice spine, Banned phrases"
+          placeholder="e.g. Voice spine"
           value={ruleName}
           onChange={(e) => setRuleName(e.target.value)}
         />
@@ -251,29 +306,22 @@ export default function SettingsPage() {
         )}
       </Card>
 
-      {/* ── Profile ── */}
       <Card>
         <CardTitle>Profile</CardTitle>
-        <p className="text-muted-foreground text-sm mb-1">
-          Stored per tenant. Not authentication — no login system yet.
-        </p>
         <Label>Brand</Label>
         <Input
           value={profile.brand}
           onChange={(e) => setProfile({ ...profile, brand: e.target.value })}
-          placeholder="JP Brand Manager"
         />
         <Label>Operator name</Label>
         <Input
           value={profile.name}
           onChange={(e) => setProfile({ ...profile, name: e.target.value })}
-          placeholder="e.g. James Prendamano"
         />
         <Label>Email</Label>
         <Input
           value={profile.email}
           onChange={(e) => setProfile({ ...profile, email: e.target.value })}
-          placeholder="you@example.com"
         />
         <div className="mt-3">
           <Button onClick={saveProfile} disabled={savingProfile}>
@@ -282,12 +330,11 @@ export default function SettingsPage() {
         </div>
       </Card>
 
-      {/* ── Social connections ── */}
       <Card>
         <CardTitle>Social connections</CardTitle>
         <p className="text-muted-foreground text-sm mb-3">
-          Records handle + enabled state per platform. Honest scope: this stores config —
-          real per-platform OAuth posting is a separate build, not faked here.
+          Stores handle + enabled per platform. Real per-platform OAuth posting is a
+          separate build — not faked here.
         </p>
         <div className="flex flex-col">
           {conns.map((c, i) => (
@@ -317,9 +364,7 @@ export default function SettingsPage() {
                 />
                 on
               </label>
-              <Badge tone={c.status === "configured" ? "primary" : "muted"}>
-                {c.status}
-              </Badge>
+              <Badge tone={c.status === "configured" ? "primary" : "muted"}>{c.status}</Badge>
             </div>
           ))}
         </div>

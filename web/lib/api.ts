@@ -93,9 +93,10 @@ export const api = {
   listPlugIns: () => jget<PlugIn[]>("/plug-ins"),
   addPlugIn: (slot: string, name: string, rule: string) =>
     jpost<PlugIn>("/plug-ins", { slot, name, content: { rule }, applies_to: [] }),
-  async uploadDocument(file: File) {
+  async uploadDocument(file: File, category = "reference") {
     const fd = new FormData();
     fd.append("file", file);
+    fd.append("category", category);
     const r = await fetch("/ingest/document", { method: "POST", body: fd });
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
