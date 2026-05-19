@@ -14,6 +14,9 @@ const nextConfig = {
       { source: "/plug-ins", destination: `${BACKEND}/plug-ins` },
       { source: "/plug-ins/:path*", destination: `${BACKEND}/plug-ins/:path*` },
       { source: "/ingest/:path*", destination: `${BACKEND}/ingest/:path*` },
+      { source: "/generate", destination: `${BACKEND}/generate` },
+      { source: "/research", destination: `${BACKEND}/research` },
+      { source: "/video/:path*", destination: `${BACKEND}/video/:path*` },
       { source: "/api/:path*", destination: `${BACKEND}/api/:path*` },
     ];
   },
