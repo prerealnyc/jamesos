@@ -86,8 +86,42 @@ export type IntegrationCheck = {
   results: Record<string, { status: string; detail: string }>;
 };
 
+export type ContentBrief = {
+  platform: string;
+  format: string;
+  pillar: string;
+  topic: string;
+  research_subject: string;
+  extra_instructions: string;
+};
+
+export type QAVerdict = {
+  voice_score: number;
+  passed: boolean;
+  drift: string[];
+};
+
+export type ContentDraft = {
+  status: "generated" | "flagged" | "not_generated";
+  draft: string;
+  platform: string;
+  format: string;
+  pillar: string;
+  angle: string;
+  voice_score: number;
+  qa: QAVerdict | null;
+  grounded_event_ids: string[];
+  memory_used: Record<string, number>;
+  action_id: string | null;
+  model: string;
+  latency_ms: number;
+  note: string | null;
+};
+
 export const api = {
   health: () => jget<{ status: string }>("/health"),
+  generate: (brief: Partial<ContentBrief> & { topic: string }) =>
+    jpost<ContentDraft>("/generate", brief),
   getCredentials: () => jget<CredentialStatus>("/api/credentials"),
   setCredentials: (updates: Record<string, string>) =>
     jpost<{ ok: boolean } & CredentialStatus>("/api/credentials", { updates }),

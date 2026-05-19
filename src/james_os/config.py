@@ -72,5 +72,12 @@ class Settings(BaseSettings):
     retrieval_top_k_after_rerank: int = 12
     retrieval_min_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
+    # Content engine: independent voice-QA must score the draft at or
+    # above this to pass un-flagged. Below it, the draft is still queued
+    # for a human but flagged "needs revision" — never silently shipped.
+    content_voice_floor: float = Field(default=0.7, ge=0.0, le=1.0)
+    content_voice_k: int = 6   # voice/thesis exemplars pulled per draft
+    content_facts_k: int = 6   # research/reference events pulled per draft
+
 
 settings = Settings()

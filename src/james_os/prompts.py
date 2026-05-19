@@ -67,6 +67,136 @@ Return JSON:
 """
 
 
+# ─────────────────────────────────── content generation ──
+# A different job from ask(): ask refuses unless memory answers the
+# question. The content engine WRITES — but it writes in the brand's
+# voice, learned from voice exemplars + thesis, fenced by the plug-in
+# rules and the frustration ledger, and grounds any factual claim about
+# the topic in research/reference memory (cited). It never invents facts.
+
+CONTENT_SYSTEM_PROMPT = """\
+You are the content engine for {tenant_name}. You write content AS this
+brand — not about it, not generically. A human approves everything you
+produce before it goes anywhere, so your job is a strong, on-voice draft,
+not a hedge.
+
+VOICE — non-negotiable:
+- Match the cadence, vocabulary, sentence rhythm and point of view shown
+  in <voice_exemplars>. That is how this person actually sounds. Imitate
+  the voice, never copy sentences verbatim.
+- <thesis> is what they believe. Content must come from that worldview.
+- Obey every rule in <rules> EXACTLY. These are hard constraints, not
+  suggestions. They override anything else, including this instruction.
+- <avoid> is the frustration ledger — things this brand has explicitly
+  rejected. Never do any of them. Treat each as a tripwire.
+
+FACTS — grounded only:
+- Any specific factual claim (numbers, names, events, claims about a
+  person or company) MUST be supported by <research_and_reference>.
+  Cite the event id in grounded_event_ids. If you cannot ground a fact,
+  do not state it — write around it or stay at the level the voice
+  material supports. Opinion/POV in the brand's voice does NOT need a
+  citation; asserted facts do.
+
+If there are no voice exemplars and no thesis in memory, you cannot
+credibly write in this brand's voice. In that case set
+refused=true and explain — do NOT produce generic content and pretend
+it is on-voice.
+
+OUTPUT — a single JSON object, exactly this schema:
+{{
+  "draft": "<the {fmt} for {platform}, ready for a human to approve>",
+  "angle": "<one sentence: the POV/hook you took and why it is on-thesis>",
+  "grounded_event_ids": ["<event id for each asserted fact, may be empty>"],
+  "self_voice_score": <float 0-1: your honest read of voice fidelity>,
+  "refused": <true|false>,
+  "refusal_reason": "<why, if refused, else null>"
+}}
+"""
+
+VOICE_QA_PROMPT = """\
+You are an independent voice-QA reviewer. You did NOT write the draft.
+Your only job: judge whether it sounds like the brand defined by the
+voice spine and obeys the frustration ledger. Be skeptical. Generic
+LLM cadence, hedging, listicle filler, and corporate tone are FAILURES
+for a brand with a distinct voice.
+
+Score voice_score 0-1:
+  1.0  indistinguishable from the brand's real voice
+  0.7  on-voice, minor tells
+  0.4  recognisably generic / drifting
+  0.0  not this brand at all, or violates the frustration ledger
+
+Return JSON, exactly:
+{{
+  "voice_score": <float 0-1>,
+  "passed": <true if voice_score >= {floor} AND no frustration violation>,
+  "drift": ["<specific phrase or trait that is off-voice>", ...]
+}}
+"""
+
+
+def format_content_memory(buckets: dict[str, list[RetrievedEvent]]) -> str:
+    """Render retrieved memory grouped by category so the model treats
+    voice, rules, guardrails and facts differently — the whole point of
+    category-tagged ingestion."""
+
+    def block(tag: str, label: str, items: list[RetrievedEvent], cap: int) -> str:
+        if not items:
+            return f"<{tag}>(none in memory)</{tag}>"
+        out = [f"<{tag}>  <!-- {label} -->"]
+        for ev in items:
+            text = (ev.raw_content or json.dumps(ev.payload))[:cap]
+            out.append(f'<m id="{ev.event_id}">{text}</m>')
+        out.append(f"</{tag}>")
+        return "\n".join(out)
+
+    return "\n\n".join([
+        block("voice_exemplars", "how the brand actually sounds",
+              buckets.get("voice", []), 1600),
+        block("thesis", "what the brand believes",
+              buckets.get("thesis", []), 1600),
+        block("research_and_reference", "facts you may cite",
+              buckets.get("facts", []), 2000),
+        block("avoid", "frustration ledger — never do these",
+              buckets.get("frustration", []), 1200),
+    ])
+
+
+def build_qa_messages(
+    draft_text: str, voice_buckets: dict[str, list[RetrievedEvent]]
+) -> list[dict[str, str]]:
+    spine = "\n\n".join(
+        (ev.raw_content or "")[:1500]
+        for ev in (voice_buckets.get("voice", []) + voice_buckets.get("thesis", []))
+    ) or "(no voice spine in memory)"
+    avoid = "\n".join(
+        f"- {(ev.raw_content or '')[:400]}"
+        for ev in voice_buckets.get("frustration", [])
+    ) or "(no frustration ledger in memory)"
+    return [
+        {
+            "role": "user",
+            "content": (
+                f"<voice_spine>\n{spine}\n</voice_spine>\n\n"
+                f"<frustration_ledger>\n{avoid}\n</frustration_ledger>\n\n"
+                f"<draft>\n{draft_text}\n</draft>\n\n"
+                "Score the draft."
+            ),
+        }
+    ]
+
+
+async def build_content_system_prompt(
+    platform: str, fmt: str, tenant_id: UUID | None = None
+) -> str:
+    rules = await _load_active_guidelines(tenant_id)
+    base = CONTENT_SYSTEM_PROMPT.format(
+        tenant_name="this brand", platform=platform, fmt=fmt
+    )
+    return f"{base}\n\n<rules>\n{rules or '(none configured yet)'}\n</rules>"
+
+
 async def build_system_prompt(tenant_id: UUID | None = None) -> str:
     guidelines = await _load_active_guidelines(tenant_id)
     return SYSTEM_PROMPT_BASE.format(

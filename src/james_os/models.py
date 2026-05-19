@@ -140,3 +140,37 @@ class ResearchResponse(BaseModel):
     stored_event_ids: list[UUID]
     ingested_into_memory: bool
     note: str | None = None
+
+
+# ─────────────────────────────────── Content generation ──
+
+class ContentBrief(BaseModel):
+    platform: str = "instagram"   # instagram | linkedin | x | youtube | ...
+    format: str = "post"          # post | reel_script | caption | thread | ...
+    pillar: str = ""              # which brand pillar this serves
+    topic: str                    # what the piece is about
+    research_subject: str = ""    # optional: ground facts in research on this
+    extra_instructions: str = ""  # optional one-off steer
+
+
+class QAVerdict(BaseModel):
+    voice_score: float            # 0-1 independent reviewer score
+    passed: bool                  # met the hard voice floor
+    drift: list[str]              # specific ways it drifts off-voice (if any)
+
+
+class ContentDraft(BaseModel):
+    status: str                   # generated | flagged | not_generated
+    draft: str                    # the content itself ("" if not generated)
+    platform: str
+    format: str
+    pillar: str
+    angle: str                    # the POV the engine took
+    voice_score: float            # final score surfaced to the human
+    qa: QAVerdict | None
+    grounded_event_ids: list[UUID]  # memory the draft leaned on
+    memory_used: dict[str, int]   # category -> # of events available
+    action_id: UUID | None        # the pending queue row (None if not queued)
+    model: str
+    latency_ms: int
+    note: str | None = None       # honest caveat (e.g. stub LLM, thin corpus)

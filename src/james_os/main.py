@@ -21,12 +21,15 @@ from .models import (
     AskResponse,
     Event,
     EventCreate,
+    ContentBrief,
+    ContentDraft,
     PlugIn,
     PlugInCreate,
     ResearchRequest,
     ResearchResponse,
     ResearchSourceOut,
 )
+from .content import generate_content
 from .research import get_research_provider, research_to_events
 
 
@@ -214,6 +217,21 @@ async def ask_endpoint(req: AskRequest) -> AskResponse:
 
 
 # ─────────────────────────────────────────────────────────────── research ──
+
+@app.post("/generate", response_model=ContentDraft)
+async def generate_endpoint(brief: ContentBrief) -> ContentDraft:
+    """Generate an on-voice draft from the memory substrate.
+
+    Assembles category-weighted memory (voice + thesis + research +
+    frustration + plug-in rules), writes a draft in the brand's voice,
+    runs an independent voice-QA pass, and queues it as a *pending*
+    action — a human approves before anything ships. Refuses (queues
+    nothing) if there's no voice/thesis grounding.
+    """
+    if not brief.topic.strip():
+        raise HTTPException(status_code=400, detail="topic is required")
+    return await generate_content(brief)
+
 
 @app.post("/research", response_model=ResearchResponse)
 async def research_endpoint(req: ResearchRequest) -> ResearchResponse:

@@ -24,7 +24,7 @@ const NAV: Group[] = [
   {
     title: "Production",
     items: [
-      { href: "/design-studio", label: "Design Studio", sub: "Content creation", icon: "design" },
+      { href: "/design-studio", label: "Content Studio", sub: "On-voice draft generation", icon: "design", live: true },
       { href: "/pipeline", label: "Pipeline", sub: "Podcast → shorts", icon: "pipeline" },
       { href: "/jp-clips", label: "JP Clips", sub: "Talking head library", icon: "clips" },
       { href: "/images", label: "Images", sub: "Image library", icon: "images" },
