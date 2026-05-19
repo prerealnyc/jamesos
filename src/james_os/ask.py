@@ -10,7 +10,7 @@ from uuid import UUID
 
 from .config import settings
 from .db import acquire
-from .llm import get_llm
+from .llm import LLMParseError, get_llm
 from .models import AskRequest, AskResponse, Citation, RetrievedEvent
 from .prompts import (
     VERIFICATION_PROMPT,
@@ -51,10 +51,23 @@ async def ask(req: AskRequest, tenant_id: UUID | None = None) -> AskResponse:
             tenant_id,
         )
 
-    answer = await _generate(req.question, retrieved, tenant_id)
+    try:
+        answer = await _generate(req.question, retrieved, tenant_id)
+    except LLMParseError as e:
+        # The model produced unparseable output (most often: hit max_tokens
+        # mid-JSON). Refuse cleanly instead of 500'ing the request.
+        answer = {
+            "answer": "I couldn't return a structured answer for that question.",
+            "claims": [],
+            "refused": True,
+            "refusal_reason": f"llm_output_unparseable: {e}",
+        }
 
     if not answer.get("refused"):
-        verified = await _verify(answer, retrieved)
+        try:
+            verified = await _verify(answer, retrieved)
+        except LLMParseError:
+            verified = False
         if not verified:
             answer = {
                 "answer": "I cannot reliably ground that answer in memory.",
@@ -79,7 +92,12 @@ async def _generate(
             "content": f"{memory}\n\n<question>\n{question}\n</question>",
         }
     ]
-    return await get_llm().complete_json(system=system, messages=messages)
+    # 4096 gives headroom for a longer answer + claims list without
+    # truncating the JSON (the historical 1024 default would chop a
+    # rich answer mid-object and surface as a 500).
+    return await get_llm().complete_json(
+        system=system, messages=messages, max_tokens=4096
+    )
 
 
 async def _verify(answer: dict, retrieved: list[RetrievedEvent]) -> bool:
@@ -91,7 +109,7 @@ async def _verify(answer: dict, retrieved: list[RetrievedEvent]) -> bool:
 
     messages = build_verification_messages(answer, retrieved)
     result = await get_llm().complete_json(
-        system=VERIFICATION_PROMPT, messages=messages
+        system=VERIFICATION_PROMPT, messages=messages, max_tokens=2048
     )
     return bool(result.get("verified"))
 

@@ -12,9 +12,23 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from anthropic import AsyncAnthropic
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_not_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from .config import settings
+
+
+class LLMParseError(ValueError):
+    """LLM produced output we couldn't parse as JSON (e.g. truncated).
+
+    Distinct so callers can refuse gracefully instead of 500'ing, and so
+    tenacity doesn't waste retries on a parse failure that won't fix
+    itself by trying the exact same prompt again.
+    """
 
 
 class LLM(ABC):
@@ -59,7 +73,15 @@ class AnthropicLLM(LLM):
         self.client = AsyncAnthropic(api_key=api_key)
         self.model_name = model
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=1, max=10),
+        # Retry transient network/provider errors, NEVER a parse failure:
+        # retrying the same prompt that produced unparseable output just
+        # burns tokens and still 500s. The caller handles LLMParseError.
+        retry=retry_if_not_exception_type(LLMParseError),
+        reraise=True,
+    )
     async def complete_json(
         self,
         system: str,
@@ -75,25 +97,35 @@ class AnthropicLLM(LLM):
             temperature=temperature,
         )
         text = "".join(block.text for block in result.content if hasattr(block, "text"))
-        return _extract_json(text)
+        truncated = getattr(result, "stop_reason", None) == "max_tokens"
+        return _extract_json(text, truncated=truncated)
 
 
-def _extract_json(text: str) -> dict[str, Any]:
-    """Best-effort JSON extraction. Handles ```json fences and stray prose."""
+def _extract_json(text: str, truncated: bool = False) -> dict[str, Any]:
+    """Best-effort JSON extraction. Handles ```json fences and stray prose.
+
+    Raises LLMParseError (a ValueError) on failure — distinct from generic
+    transport errors so retries don't waste tokens on broken parses.
+    """
     text = text.strip()
     if "```" in text:
-        # pull the first fenced block
-        parts = text.split("```")
-        for part in parts:
-            stripped = part.lstrip("json").strip()
+        # pull the first fenced block — `removeprefix` is exact-substring,
+        # unlike `lstrip("json")` which strips ANY combination of j/s/o/n.
+        for part in text.split("```"):
+            stripped = part.strip().removeprefix("json").strip()
             if stripped.startswith("{"):
                 text = stripped
                 break
     start = text.find("{")
     end = text.rfind("}")
     if start == -1 or end == -1:
-        raise ValueError(f"No JSON object found in LLM output: {text[:200]}")
-    return json.loads(text[start : end + 1])
+        why = "truncated by max_tokens" if truncated else "no JSON object found"
+        raise LLMParseError(f"{why}: {text[:200]}")
+    try:
+        return json.loads(text[start : end + 1])
+    except json.JSONDecodeError as e:
+        why = "truncated by max_tokens" if truncated else "malformed JSON"
+        raise LLMParseError(f"{why} ({e}): {text[:200]}") from e
 
 
 def make_llm() -> LLM:
