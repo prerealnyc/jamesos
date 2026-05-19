@@ -10,11 +10,13 @@ Honest scope: shapes for the queue endpoints are best-effort against a
 minified bundle. The clean fix is the dashboard SOURCE repo.
 """
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Body
 
 from .config import settings
@@ -131,6 +133,162 @@ async def integrations() -> dict:
         # audio transcription in the ingestion pipeline.
         "active": ["anthropic", "voyage", "cohere", "openai"],
     }
+
+
+# ───────────────────── live connectivity verification ──
+# Real authenticated calls. Status vocabulary, deliberately constrained
+# so the result is honest, not green-washed:
+#   ok            credential authenticated against the live service
+#   bad_key       service rejected the credential (401/403)
+#   rate_limited  authenticated but quota/billing-blocked (e.g. Voyage free tier)
+#   unverified    no safe free probe endpoint — verified at first real use
+#                 (NOT failure; we refuse to fabricate a green check)
+#   not_configured no key present
+# Key VALUES are never returned — only status + a short detail string.
+
+async def _probe(client: httpx.AsyncClient, name: str) -> dict:
+    try:
+        if name == "openai":
+            if not settings.openai_api_key:
+                return {"status": "not_configured", "detail": ""}
+            r = await client.get(
+                "https://api.openai.com/v1/models",
+                headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+            )
+            if r.status_code == 200:
+                n = len(r.json().get("data", []))
+                return {"status": "ok", "detail": f"{n} models reachable"}
+            if r.status_code in (401, 403):
+                return {"status": "bad_key", "detail": f"HTTP {r.status_code}"}
+            return {"status": "unverified", "detail": f"HTTP {r.status_code}"}
+
+        if name == "anthropic":
+            if not settings.anthropic_api_key:
+                return {"status": "not_configured", "detail": ""}
+            r = await client.get(
+                "https://api.anthropic.com/v1/models",
+                headers={
+                    "x-api-key": settings.anthropic_api_key,
+                    "anthropic-version": "2023-06-01",
+                },
+            )
+            if r.status_code == 200:
+                return {"status": "ok", "detail": "models reachable"}
+            if r.status_code in (401, 403):
+                return {"status": "bad_key", "detail": f"HTTP {r.status_code}"}
+            return {"status": "unverified", "detail": f"HTTP {r.status_code}"}
+
+        if name == "voyage":
+            if not settings.voyage_api_key:
+                return {"status": "not_configured", "detail": ""}
+            r = await client.post(
+                "https://api.voyageai.com/v1/embeddings",
+                headers={"Authorization": f"Bearer {settings.voyage_api_key}"},
+                json={"model": settings.embedding_model, "input": ["ping"]},
+            )
+            if r.status_code == 200:
+                return {"status": "ok", "detail": "embedding returned"}
+            if r.status_code == 429:
+                msg = ""
+                try:
+                    msg = (r.json().get("detail") or "")[:120]
+                except Exception:
+                    msg = "rate limited"
+                return {"status": "rate_limited", "detail": msg}
+            if r.status_code in (401, 403):
+                return {"status": "bad_key", "detail": f"HTTP {r.status_code}"}
+            return {"status": "unverified", "detail": f"HTTP {r.status_code}"}
+
+        if name == "cohere":
+            if not settings.cohere_api_key:
+                return {"status": "not_configured", "detail": ""}
+            r = await client.post(
+                "https://api.cohere.com/v2/rerank",
+                headers={"Authorization": f"Bearer {settings.cohere_api_key}"},
+                json={
+                    "model": "rerank-v3.5",
+                    "query": "ping",
+                    "documents": ["pong"],
+                    "top_n": 1,
+                },
+            )
+            if r.status_code == 200:
+                return {"status": "ok", "detail": "rerank returned"}
+            if r.status_code in (401, 403):
+                return {"status": "bad_key", "detail": f"HTTP {r.status_code}"}
+            return {"status": "unverified", "detail": f"HTTP {r.status_code}"}
+
+        if name == "heygen":
+            if not settings.heygen_api_key:
+                return {"status": "not_configured", "detail": ""}
+            r = await client.get(
+                "https://api.heygen.com/v2/avatars",
+                headers={"X-Api-Key": settings.heygen_api_key},
+            )
+            if r.status_code == 200:
+                body = r.json()
+                avatars = (body.get("data") or {}).get("avatars") or body.get("data") or []
+                cnt = len(avatars) if isinstance(avatars, list) else "?"
+                return {"status": "ok", "detail": f"{cnt} avatars reachable"}
+            if r.status_code in (401, 403):
+                return {"status": "bad_key", "detail": f"HTTP {r.status_code}"}
+            return {"status": "unverified", "detail": f"HTTP {r.status_code}"}
+
+        if name == "runway":
+            if not settings.runway_api_key:
+                return {"status": "not_configured", "detail": ""}
+            r = await client.get(
+                "https://api.dev.runwayml.com/v1/organization",
+                headers={
+                    "Authorization": f"Bearer {settings.runway_api_key}",
+                    "X-Runway-Version": "2024-11-06",
+                },
+            )
+            if r.status_code in (401, 403):
+                return {"status": "bad_key", "detail": f"HTTP {r.status_code}"}
+            if r.status_code == 200:
+                return {"status": "ok", "detail": "organization reachable"}
+            return {
+                "status": "unverified",
+                "detail": f"HTTP {r.status_code} — probe endpoint not confirmed; "
+                "verified on first real generation call",
+            }
+
+        if name == "descript":
+            if not settings.descript_api_key:
+                return {"status": "not_configured", "detail": ""}
+            # Descript's public API has no confirmed free read endpoint and
+            # the key is a bearer:secret pair. We do NOT fabricate a green
+            # check — honestly deferred to first real use.
+            return {
+                "status": "unverified",
+                "detail": "credential present (dx_bearer:dx_secret format); "
+                "no confirmed free probe endpoint — verified at first real use",
+            }
+
+        return {"status": "not_configured", "detail": "no probe defined"}
+    except httpx.TimeoutException:
+        return {"status": "unverified", "detail": "probe timed out"}
+    except Exception as e:  # noqa: BLE001
+        return {"status": "unverified", "detail": f"{type(e).__name__}"}
+
+
+@router.get("/integrations/check")
+async def integrations_check() -> dict:
+    """Live authenticated probe of each configured credential. Real calls,
+    honest status, key values never returned. Slow (network) — call on
+    demand, not on every page load.
+    """
+    services = [
+        "anthropic", "openai", "voyage", "cohere",
+        "heygen", "runway", "descript",
+    ]
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        results = await asyncio.gather(
+            *[_probe(client, s) for s in services]
+        )
+    return {"checked_at": datetime.now(UTC).isoformat(),
+            "results": dict(zip(services, results, strict=True))}
 
 
 # ─────────────────────────────────────── approval queue (REAL) ──
