@@ -21,6 +21,49 @@ async def ingest(event: EventCreate, tenant_id: UUID | None = None) -> Event:
     return (await ingest_many([event], tenant_id=tenant_id))[0]
 
 
+async def supersede_prior_document_versions(
+    filename: str,
+    category: str,
+    keep_ids: list[UUID],
+    tenant_id: UUID | None = None,
+) -> int:
+    """Re-uploading a file replaces the previous version of it.
+
+    Memory is append-only (audit / time-travel), so we don't delete the
+    old chunks — we mark them ``superseded_by`` the new upload. Retrieval
+    and listing already filter ``superseded_by IS NULL``, so the brand
+    manager instantly stops seeing the stale guidelines and uses only the
+    latest. Scoped to (this tenant, this filename, this category); the
+    just-ingested ids are excluded so an *identical* re-upload (which
+    dedupes back to the same rows) supersedes nothing.
+
+    Returns the number of old chunks retired.
+    """
+    if not keep_ids:
+        return 0
+    representative = keep_ids[0]
+    async with acquire(tenant_id) as conn:
+        result = await conn.execute(
+            """
+            UPDATE events
+            SET superseded_by = $1
+            WHERE source ->> 'uri' = $2
+              AND payload ->> 'category' = $3
+              AND superseded_by IS NULL
+              AND id <> ALL($4::uuid[])
+            """,
+            representative,
+            f"file://{filename}",
+            category,
+            keep_ids,
+        )
+    # asyncpg returns e.g. "UPDATE 12"
+    try:
+        return int(result.split()[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
 async def ingest_many(
     events: list[EventCreate], tenant_id: UUID | None = None
 ) -> list[Event]:

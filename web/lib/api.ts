@@ -160,6 +160,11 @@ export const api = {
     const r = await fetch("/ingest/document", { method: "POST", body: fd });
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
-    return d as { filename: string; chunks_created: number };
+    return d as {
+      filename: string;
+      category: string;
+      chunks_created: number;
+      superseded_chunks: number;
+    };
   },
 };

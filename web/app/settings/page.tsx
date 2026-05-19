@@ -91,10 +91,12 @@ function CategoryUpload({
       setStaged((s) => s.map((x, j) => (j === i ? { ...x, status: "uploading" } : x)));
       try {
         const d = await api.uploadDocument(staged[i].file, category);
+        const detail =
+          d.superseded_chunks > 0
+            ? `${d.chunks_created} chunks · replaced ${d.superseded_chunks} from old version`
+            : `${d.chunks_created} chunks`;
         setStaged((s) =>
-          s.map((x, j) =>
-            j === i ? { ...x, status: "done", detail: `${d.chunks_created} chunks` } : x
-          )
+          s.map((x, j) => (j === i ? { ...x, status: "done", detail } : x))
         );
       } catch (e) {
         setStaged((s) =>
@@ -428,9 +430,15 @@ export default function SettingsPage() {
       <ApiKeys />
 
       <div>
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground mb-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground mb-1">
           Brand guidance — by category
         </h2>
+        <p className="text-[12px] text-muted-foreground mb-3">
+          Re-uploading a file with the same name into the same category
+          replaces the previous version — the old chunks are retired and the
+          brand manager uses only the latest. (History is kept for audit, not
+          retrieved.)
+        </p>
         <div className="flex flex-col gap-4">
           {CATEGORIES.map((c) => (
             <CategoryUpload key={c.key} category={c.key} title={c.title} blurb={c.blurb} examples={c.examples} />

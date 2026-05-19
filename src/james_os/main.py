@@ -15,7 +15,7 @@ from .ask import ask
 from .dashboard_api import router as dashboard_api_router
 from .db import acquire, close_pool, init_pool
 from .documents import document_to_events_async
-from .ingestion import ingest, ingest_many
+from .ingestion import ingest, ingest_many, supersede_prior_document_versions
 from .models import (
     AskRequest,
     AskResponse,
@@ -202,9 +202,16 @@ async def ingest_document(
     if not events:
         raise HTTPException(status_code=422, detail="no extractable text")
     stored = await ingest_many(events)
+    # Replace any previous version of this same file in this category so
+    # the brand manager uses only the latest guidelines, not stale ones.
+    superseded = await supersede_prior_document_versions(
+        file.filename or "upload", category, [e.id for e in stored]
+    )
     return {
         "filename": file.filename,
+        "category": category,
         "chunks_created": len(stored),
+        "superseded_chunks": superseded,
         "event_ids": [str(e.id) for e in stored],
     }
 
