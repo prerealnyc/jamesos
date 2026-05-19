@@ -23,7 +23,11 @@ from .models import (
     EventCreate,
     PlugIn,
     PlugInCreate,
+    ResearchRequest,
+    ResearchResponse,
+    ResearchSourceOut,
 )
+from .research import get_research_provider, research_to_events
 
 
 @asynccontextmanager
@@ -202,6 +206,52 @@ async def ingest_document(
 @app.post("/ask", response_model=AskResponse)
 async def ask_endpoint(req: AskRequest) -> AskResponse:
     return await ask(req)
+
+
+# ─────────────────────────────────────────────────────────────── research ──
+
+@app.post("/research", response_model=ResearchResponse)
+async def research_endpoint(req: ResearchRequest) -> ResearchResponse:
+    """Research a company or person on the open internet, then ingest the
+    findings into the SAME memory substrate tagged `category:research`.
+
+    The intelligence becomes retrievable/citable by Ask and the content
+    engine immediately — provenance (source URLs, provider, subject) is
+    preserved on every stored event. With RESEARCH_PROVIDER=stub this
+    proves the loop without inventing facts; set it to `perplexity` (and
+    add the key) for real internet intelligence.
+    """
+    subject = req.subject.strip()
+    if not subject:
+        raise HTTPException(status_code=400, detail="subject is required")
+
+    provider = get_research_provider()
+    try:
+        result = await provider.research(subject, req.focus.strip())
+    except Exception as e:  # noqa: BLE001 — surface provider errors cleanly
+        raise HTTPException(status_code=502, detail=f"research failed: {e}") from e
+
+    events = research_to_events(result)
+    stored = await ingest_many(events) if events else []
+
+    note = None
+    if result.provider == "stub":
+        note = (
+            "Stub provider: this is NOT real research. Set "
+            "RESEARCH_PROVIDER=perplexity and add PERPLEXITY_API_KEY for "
+            "live internet intelligence."
+        )
+
+    return ResearchResponse(
+        subject=result.subject,
+        provider=result.provider,
+        summary=result.summary,
+        findings=result.findings,
+        sources=[ResearchSourceOut(url=s.url, title=s.title) for s in result.sources],
+        stored_event_ids=[e.id for e in stored],
+        ingested_into_memory=bool(stored),
+        note=note,
+    )
 
 
 # ─────────────────────────────────────────────────────────────── helpers ──

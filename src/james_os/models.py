@@ -117,3 +117,26 @@ class AskResponse(BaseModel):
     retrieved_event_ids: list[UUID]
     model: str
     latency_ms: int
+
+
+# ──────────────────────────────────────── Research ──
+
+class ResearchRequest(BaseModel):
+    subject: str  # a company or a person to research
+    focus: str = ""  # optional angle, e.g. "their content style"
+
+
+class ResearchSourceOut(BaseModel):
+    url: str
+    title: str = ""
+
+
+class ResearchResponse(BaseModel):
+    subject: str
+    provider: str
+    summary: str
+    findings: list[str]
+    sources: list[ResearchSourceOut]
+    stored_event_ids: list[UUID]
+    ingested_into_memory: bool
+    note: str | None = None

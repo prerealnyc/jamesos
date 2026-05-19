@@ -14,6 +14,7 @@ import pytest_asyncio
 from james_os import db as db_module
 from james_os import embedder as embedder_module
 from james_os import llm as llm_module
+from james_os import research as research_module
 from james_os.config import settings
 from james_os.db import acquire, close_pool, init_pool
 
@@ -21,8 +22,10 @@ from james_os.db import acquire, close_pool, init_pool
 # so tests never burn API quota or hit provider rate limits.
 settings.embedding_provider = "stub"
 settings.llm_provider = "stub"
+settings.research_provider = "stub"
 embedder_module._embedder = None
 llm_module._llm = None
+research_module._provider = None
 
 # CRITICAL SAFETY: tests TRUNCATE tables. load_dotenv(override=True) in
 # config.py means .env (which may point at Supabase / production) would
@@ -50,6 +53,7 @@ async def fresh_pool():
     db_module._pool = None
     embedder_module._embedder = None
     llm_module._llm = None
+    research_module._provider = None
     await init_pool()
     async with acquire() as conn:
         await conn.execute(

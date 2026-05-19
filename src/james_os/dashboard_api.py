@@ -128,10 +128,14 @@ async def integrations() -> dict:
             "meta": cfg(settings.meta_access_token),
             "twitter": cfg(settings.twitter_bearer_token),
             "xpoz": cfg(settings.xpoz_api_key),
+            "perplexity": cfg(settings.perplexity_api_key),
+            "google_search": cfg(settings.google_search_api_key)
+            and cfg(settings.google_search_cx),
         },
         # Only these are wired to real code paths today. openai = Whisper
-        # audio transcription in the ingestion pipeline.
-        "active": ["anthropic", "voyage", "cohere", "openai"],
+        # audio transcription in the ingestion pipeline; perplexity = the
+        # /research endpoint (internet intelligence → memory).
+        "active": ["anthropic", "voyage", "cohere", "openai", "perplexity"],
     }
 
 
@@ -266,6 +270,51 @@ async def _probe(client: httpx.AsyncClient, name: str) -> dict:
                 "no confirmed free probe endpoint — verified at first real use",
             }
 
+        if name == "perplexity":
+            if not settings.perplexity_api_key:
+                return {"status": "not_configured", "detail": ""}
+            # Smallest possible authenticated call (max_tokens=1).
+            r = await client.post(
+                "https://api.perplexity.ai/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {settings.perplexity_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": settings.perplexity_model,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 1,
+                },
+            )
+            if r.status_code == 200:
+                return {"status": "ok", "detail": "completion returned"}
+            if r.status_code == 429:
+                return {"status": "rate_limited", "detail": "HTTP 429"}
+            if r.status_code in (401, 403):
+                return {"status": "bad_key", "detail": f"HTTP {r.status_code}"}
+            return {"status": "unverified", "detail": f"HTTP {r.status_code}"}
+
+        if name == "google_search":
+            if not (settings.google_search_api_key and settings.google_search_cx):
+                return {"status": "not_configured", "detail": ""}
+            r = await client.get(
+                "https://www.googleapis.com/customsearch/v1",
+                params={
+                    "key": settings.google_search_api_key,
+                    "cx": settings.google_search_cx,
+                    "q": "ping",
+                    "num": 1,
+                },
+            )
+            if r.status_code == 200:
+                return {"status": "ok", "detail": "search returned"}
+            if r.status_code == 429:
+                return {"status": "rate_limited", "detail": "daily quota (HTTP 429)"}
+            if r.status_code in (400, 401, 403):
+                # 400 usually = bad cx; 403 = bad key or quota.
+                return {"status": "bad_key", "detail": f"HTTP {r.status_code}"}
+            return {"status": "unverified", "detail": f"HTTP {r.status_code}"}
+
         return {"status": "not_configured", "detail": "no probe defined"}
     except httpx.TimeoutException:
         return {"status": "unverified", "detail": "probe timed out"}
@@ -282,6 +331,7 @@ async def integrations_check() -> dict:
     services = [
         "anthropic", "openai", "voyage", "cohere",
         "heygen", "runway", "descript",
+        "perplexity", "google_search",
     ]
     async with httpx.AsyncClient(timeout=20.0) as client:
         results = await asyncio.gather(

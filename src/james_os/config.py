@@ -36,6 +36,18 @@ class Settings(BaseSettings):
 
     cohere_api_key: str = ""
 
+    # ─── Market research / internet intelligence ───
+    # Researches a subject on the open internet and ingests the findings
+    # into the SAME memory substrate (category:research), citation-grounded.
+    # Provider-abstracted so the loop is provable with a stub before a key
+    # is configured. Perplexity is primary (live-web LLM with citations);
+    # Google Custom Search is supplemental (raw result links).
+    research_provider: str = "stub"  # perplexity | stub
+    perplexity_api_key: str = ""
+    perplexity_model: str = "sonar-pro"
+    google_search_api_key: str = ""  # Google Custom Search JSON API
+    google_search_cx: str = ""       # Custom Search engine id (cx)
+
     # ─── Integration credentials (loaded, not yet all wired) ───
     # These make the keys AVAILABLE to JAMES OS. They become ACTIVE only
     # when the subsystem that uses each one is built (see /api/integrations
