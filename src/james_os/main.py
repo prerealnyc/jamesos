@@ -28,9 +28,11 @@ from .models import (
     ResearchRequest,
     ResearchResponse,
     ResearchSourceOut,
+    VideoGenerateRequest,
 )
 from .content import generate_content
 from .research import get_research_provider, research_to_events
+from .video import list_video_jobs, refresh_video_job, submit_video_job
 
 
 @asynccontextmanager
@@ -238,6 +240,40 @@ async def generate_endpoint(brief: ContentBrief) -> ContentDraft:
     if not brief.topic.strip():
         raise HTTPException(status_code=400, detail="topic is required")
     return await generate_content(brief)
+
+
+# ─────────────────────────────────────────────────────────────── video ──
+
+@app.post("/video/generate", status_code=201)
+async def video_generate(req: VideoGenerateRequest) -> dict:
+    """Submit a generative video render. The job is persisted FIRST
+    (durable — survives a restart), then sent to the provider. Poll
+    GET /video/jobs/{id} for status; on success the clip lands in the
+    approval queue as a pending video (a human approves before anything
+    ships). With VIDEO_PROVIDER=stub the whole pipeline runs without
+    spending render credits and never emits a fake mp4.
+    """
+    if not req.prompt.strip():
+        raise HTTPException(status_code=400, detail="prompt is required")
+    return await submit_video_job(
+        req.prompt.strip(),
+        req.prompt_image.strip() or None,
+        req.source_action_id,
+    )
+
+
+@app.get("/video/jobs")
+async def video_jobs() -> list[dict]:
+    return await list_video_jobs()
+
+
+@app.get("/video/jobs/{job_id}")
+async def video_job(job_id: UUID) -> dict:
+    """Returns the job, polling the provider if it's still in flight."""
+    try:
+        return await refresh_video_job(job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="video job not found") from None
 
 
 @app.post("/research", response_model=ResearchResponse)

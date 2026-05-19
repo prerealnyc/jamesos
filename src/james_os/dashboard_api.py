@@ -159,8 +159,10 @@ async def integrations() -> dict:
         },
         # Only these are wired to real code paths today. openai = Whisper
         # audio transcription in the ingestion pipeline; perplexity = the
-        # /research endpoint (internet intelligence → memory).
-        "active": ["anthropic", "voyage", "cohere", "openai", "perplexity"],
+        # /research endpoint; runway = the /video durable render pipeline.
+        "active": [
+            "anthropic", "voyage", "cohere", "openai", "perplexity", "runway",
+        ],
     }
 
 

@@ -142,6 +142,14 @@ class ResearchResponse(BaseModel):
     note: str | None = None
 
 
+# ─────────────────────────────────── Video generation ──
+
+class VideoGenerateRequest(BaseModel):
+    prompt: str
+    prompt_image: str = ""        # still URL — required by Runway's dev API
+    source_action_id: UUID | None = None  # if rendered from an approved draft
+
+
 # ─────────────────────────────────── Content generation ──
 
 class ContentBrief(BaseModel):

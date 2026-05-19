@@ -65,6 +65,19 @@ class Settings(BaseSettings):
     twitter_bearer_token: str = "" # X/Twitter
     xpoz_api_key: str = ""         # social engagement read
 
+    # ─── Video generation ───
+    # Generative clips (Runway Gen-3/4). Provider-abstracted with a stub
+    # so the durable job pipeline (submit → poll → land in approval queue)
+    # is provable end-to-end WITHOUT burning render credits. Flip to
+    # `runway` once the key is verified. Higgsfield/Descript/MiniMax are
+    # intentionally NOT wired — no usable public REST API / no key — and
+    # are not faked.
+    video_provider: str = "stub"  # runway | stub
+    runway_model: str = "gen4_turbo"          # gen4_turbo | gen3a_turbo
+    runway_api_version: str = "2024-11-06"    # X-Runway-Version header
+    runway_video_ratio: str = "1280:720"
+    runway_video_duration: int = 5            # seconds (Runway: 5 or 10)
+
     log_level: str = "INFO"
 
     # Retrieval tuning

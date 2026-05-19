@@ -118,10 +118,31 @@ export type ContentDraft = {
   note: string | null;
 };
 
+export type VideoJob = {
+  id: string;
+  provider: string;
+  prompt: string;
+  prompt_image: string | null;
+  status: "queued" | "submitted" | "processing" | "succeeded" | "failed";
+  provider_job_id: string | null;
+  result_url: string | null;
+  error: string | null;
+  source_action_id: string | null;
+  queued_action_id: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+};
+
 export const api = {
   health: () => jget<{ status: string }>("/health"),
   generate: (brief: Partial<ContentBrief> & { topic: string }) =>
     jpost<ContentDraft>("/generate", brief),
+  generateVideo: (prompt: string, prompt_image = "") =>
+    jpost<VideoJob>("/video/generate", { prompt, prompt_image }),
+  listVideoJobs: () => jget<VideoJob[]>("/video/jobs"),
+  getVideoJob: (id: string) => jget<VideoJob>(`/video/jobs/${id}`),
   getCredentials: () => jget<CredentialStatus>("/api/credentials"),
   setCredentials: (updates: Record<string, string>) =>
     jpost<{ ok: boolean } & CredentialStatus>("/api/credentials", { updates }),
