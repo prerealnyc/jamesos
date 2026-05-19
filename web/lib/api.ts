@@ -79,6 +79,16 @@ export const api = {
     jget<{ platform: string; handle: string; enabled: boolean; status: string }[]>(
       "/api/connections"
     ),
+  upsertConnection: (platform: string, handle: string, enabled: boolean) =>
+    jpost<{ ok: boolean; platform: string; status: string }>("/api/connections", {
+      platform,
+      handle,
+      enabled,
+    }),
+  getProfile: () =>
+    jget<{ name: string; email: string; brand: string }>("/api/profile"),
+  setProfile: (p: { name: string; email: string; brand: string }) =>
+    jpost<{ ok: boolean }>("/api/profile", p),
   ask: (question: string) => jpost<AskResponse>("/ask", { question }),
   listPlugIns: () => jget<PlugIn[]>("/plug-ins"),
   addPlugIn: (slot: string, name: string, rule: string) =>
