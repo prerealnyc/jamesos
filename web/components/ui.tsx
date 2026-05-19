@@ -95,3 +95,38 @@ export function Badge({
 export function Spinner() {
   return <span className="spinner" />;
 }
+
+export function PageHeader({ title, sub }: { title: string; sub: string }) {
+  return (
+    <header>
+      <h1 className="text-2xl font-semibold">{title}</h1>
+      <p className="text-muted-foreground text-sm mt-1">{sub}</p>
+    </header>
+  );
+}
+
+/** Honest empty/engine-status panel. Not fake-complete — states plainly
+ *  what works today and what is not built yet. */
+export function NotBuilt({
+  title,
+  what,
+  backendStatus,
+}: {
+  title: string;
+  what: string;
+  backendStatus: string;
+}) {
+  return (
+    <Card className="text-center py-12">
+      <div className="mx-auto w-12 h-12 rounded-full bg-secondary flex items-center justify-center text-muted-foreground text-xl">
+        ⚙
+      </div>
+      <h2 className="text-lg font-semibold mt-4">{title}</h2>
+      <p className="text-muted-foreground text-sm mt-2 max-w-md mx-auto">{what}</p>
+      <div className="mt-5 inline-block text-left text-[13px] bg-background border border-border rounded-md px-4 py-3 max-w-md">
+        <span className="text-muted-foreground">Honest status: </span>
+        {backendStatus}
+      </div>
+    </Card>
+  );
+}

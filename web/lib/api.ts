@@ -42,8 +42,43 @@ async function jpost<T>(path: string, body: unknown): Promise<T> {
   return r.json();
 }
 
+export type QueueItem = {
+  id: string;
+  status: string;
+  platform: string;
+  pillar: string;
+  format: string;
+  content: string;
+  caption: string;
+  voiceScore: number | null;
+  proposedBy: string;
+  createdAt: string | null;
+  reason: string | null;
+};
+
+export type QueueStats = {
+  pending: number;
+  approved: number;
+  rejected: number;
+  executed: number;
+  total: number;
+};
+
 export const api = {
   health: () => jget<{ status: string }>("/health"),
+  queue: () => jget<QueueItem[]>("/api/queue"),
+  queueStats: () => jget<QueueStats>("/api/queue/stats"),
+  approve: (id: string, reason = "approved via dashboard") =>
+    jpost(`/api/queue/${id}/approve`, { reason }),
+  reject: (id: string, reason = "rejected via dashboard") =>
+    jpost(`/api/queue/${id}/reject`, { reason }),
+  integrations: () =>
+    jget<{ configured: Record<string, boolean>; active: string[] }>("/api/integrations"),
+  lastScan: () => jget<{ lastScanAt: string | null }>("/api/system/last-scan"),
+  connections: () =>
+    jget<{ platform: string; handle: string; enabled: boolean; status: string }[]>(
+      "/api/connections"
+    ),
   ask: (question: string) => jpost<AskResponse>("/ask", { question }),
   listPlugIns: () => jget<PlugIn[]>("/plug-ins"),
   addPlugIn: (slot: string, name: string, rule: string) =>

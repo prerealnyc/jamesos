@@ -2,12 +2,52 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { Icon } from "@/components/icons";
 
-const NAV = [
-  { href: "/", label: "Ask the memory", icon: "◆" },
-  { href: "/brand", label: "Brand voice & rules", icon: "✦" },
-  { href: "/queue", label: "Approval queue", icon: "▣", soon: true },
-  { href: "/settings", label: "Settings", icon: "⚙", soon: true },
+type Item = { href: string; label: string; sub: string; icon: string; live?: boolean };
+type Group = { title: string; items: Item[] };
+
+const NAV: Group[] = [
+  {
+    title: "Memory",
+    items: [
+      { href: "/", label: "Ask the memory", sub: "Grounded, cited Q&A", icon: "ask", live: true },
+    ],
+  },
+  {
+    title: "Voice & Content",
+    items: [
+      { href: "/jp-live", label: "JP Live", sub: "Live brand health", icon: "live", live: true },
+      { href: "/brand", label: "Voice Rules", sub: "Brand voice & guidelines", icon: "voice", live: true },
+    ],
+  },
+  {
+    title: "Production",
+    items: [
+      { href: "/design-studio", label: "Design Studio", sub: "Content creation", icon: "design" },
+      { href: "/pipeline", label: "Pipeline", sub: "Podcast → shorts", icon: "pipeline" },
+      { href: "/jp-clips", label: "JP Clips", sub: "Talking head library", icon: "clips" },
+      { href: "/images", label: "Images", sub: "Image library", icon: "images" },
+    ],
+  },
+  {
+    title: "Distribution",
+    items: [
+      { href: "/queue", label: "Approval Queue", sub: "Review & publish", icon: "queue", live: true },
+    ],
+  },
+  {
+    title: "Engagement",
+    items: [
+      { href: "/social-companion", label: "Social Companion", sub: "Peer analysis", icon: "social" },
+    ],
+  },
+  {
+    title: "Intelligence",
+    items: [
+      { href: "/market-research", label: "Market Research", sub: "Industry intel", icon: "market" },
+    ],
+  },
 ];
 
 export function Shell({ children }: { children: React.ReactNode }) {
@@ -16,43 +56,59 @@ export function Shell({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-screen">
       <aside className="w-64 shrink-0 bg-sidebar text-sidebar-foreground border-r border-sidebar-border flex flex-col">
         <div className="px-5 py-5 border-b border-sidebar-border">
-          <div className="text-[15px] font-bold tracking-[.5px] text-sidebar-primary">
-            JAMES OS
-          </div>
+          <div className="text-[15px] font-bold tracking-[.5px] text-sidebar-primary">JAMES OS</div>
           <div className="text-xs opacity-70 mt-0.5">Brand Manager</div>
         </div>
-        <nav className="p-3 flex flex-col gap-1">
-          {NAV.map((n) => {
-            const active = path === n.href;
-            return (
-              <Link
-                key={n.href}
-                href={n.href}
-                className={`flex items-center gap-3 rounded-md px-3 py-2.5 text-sm transition-colors ${
-                  active
-                    ? "bg-sidebar-accent text-sidebar-primary font-medium"
-                    : "opacity-75 hover:opacity-100 hover:bg-sidebar-accent/60"
-                }`}
-              >
-                <span className={`w-4 text-center ${active ? "text-sidebar-primary" : ""}`}>
-                  {n.icon}
-                </span>
-                <span className="flex-1">{n.label}</span>
-                {n.soon && (
-                  <span className="text-[10px] uppercase tracking-wide opacity-60 border border-sidebar-border rounded px-1.5 py-0.5">
-                    soon
-                  </span>
-                )}
-              </Link>
-            );
-          })}
+
+        <nav className="flex-1 overflow-y-auto py-3">
+          {NAV.map((g) => (
+            <div key={g.title} className="mb-4">
+              <div className="px-5 mb-1.5 text-[10px] font-semibold uppercase tracking-[1.3px] opacity-50">
+                {g.title}
+              </div>
+              {g.items.map((n) => {
+                const active = path === n.href;
+                return (
+                  <Link
+                    key={n.href}
+                    href={n.href}
+                    className={`flex items-center gap-3 px-5 py-2.5 text-sm transition-colors border-l-2 ${
+                      active
+                        ? "bg-sidebar-accent border-sidebar-primary text-sidebar-primary"
+                        : "border-transparent opacity-75 hover:opacity-100 hover:bg-sidebar-accent/50"
+                    }`}
+                  >
+                    <Icon name={n.icon} className={active ? "text-sidebar-primary" : "opacity-80"} />
+                    <span className="flex-1 leading-tight">
+                      <span className="block font-medium">{n.label}</span>
+                      <span className="block text-[11px] opacity-60">{n.sub}</span>
+                    </span>
+                    {!n.live && (
+                      <span className="text-[9px] uppercase tracking-wide opacity-50 border border-sidebar-border rounded px-1 py-0.5">
+                        soon
+                      </span>
+                    )}
+                  </Link>
+                );
+              })}
+            </div>
+          ))}
         </nav>
-        <div className="mt-auto p-4 text-[11px] opacity-60 border-t border-sidebar-border leading-relaxed">
-          Memory · Voice · Rules · QA
-          <br />
-          tenant zero — James
+
+        <Link
+          href="/settings"
+          className={`flex items-center gap-3 px-5 py-3 text-sm border-t border-sidebar-border transition-colors ${
+            path === "/settings" ? "text-sidebar-primary" : "opacity-70 hover:opacity-100"
+          }`}
+        >
+          <Icon name="settings" />
+          <span>Settings</span>
+        </Link>
+        <div className="px-5 py-3 text-[11px] opacity-50 border-t border-sidebar-border">
+          Last scan: — · 8 platforms tracked
         </div>
       </aside>
+
       <main className="flex-1 min-w-0 bg-background">
         <div className="max-w-4xl mx-auto px-8 py-10">{children}</div>
       </main>
