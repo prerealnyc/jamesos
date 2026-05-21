@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
 from tenacity import (
     retry,
     retry_if_not_exception_type,
@@ -101,6 +102,39 @@ class AnthropicLLM(LLM):
         return _extract_json(text, truncated=truncated)
 
 
+class OpenAILLM(LLM):
+    def __init__(self, api_key: str, model: str):
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY is required for OpenAILLM")
+        self.client = AsyncOpenAI(api_key=api_key)
+        self.model_name = model
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=1, max=10),
+        retry=retry_if_not_exception_type(LLMParseError),
+        reraise=True,
+    )
+    async def complete_json(
+        self,
+        system: str,
+        messages: list[dict[str, str]],
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+    ) -> dict[str, Any]:
+        result = await self.client.chat.completions.create(
+            model=self.model_name,
+            messages=[{"role": "system", "content": system}, *messages],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format={"type": "json_object"},
+        )
+        choice = result.choices[0]
+        text = choice.message.content or ""
+        truncated = choice.finish_reason == "length"
+        return _extract_json(text, truncated=truncated)
+
+
 def _extract_json(text: str, truncated: bool = False) -> dict[str, Any]:
     """Best-effort JSON extraction. Handles ```json fences and stray prose.
 
@@ -134,6 +168,8 @@ def make_llm() -> LLM:
         return StubLLM()
     if provider == "anthropic":
         return AnthropicLLM(api_key=settings.anthropic_api_key, model=settings.llm_model)
+    if provider == "openai":
+        return OpenAILLM(api_key=settings.openai_api_key, model=settings.llm_model)
     raise ValueError(f"Unknown LLM provider: {provider}")
 
 
