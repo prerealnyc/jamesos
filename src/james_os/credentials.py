@@ -70,6 +70,10 @@ MANAGED_FIELDS: list[ManagedField] = [
         "google_search_cx", "Google Custom Search engine id (cx)", "Market research",
         secret=False,
     ),
+    ManagedField("apify_api_key", "Apify API token (trend scraping)", "Market research"),
+    ManagedField(
+        "youtube_api_key", "YouTube Data API key (trend discovery)", "Market research"
+    ),
     # Video & media
     ManagedField("heygen_api_key", "HeyGen API key", "Video & media"),
     ManagedField(

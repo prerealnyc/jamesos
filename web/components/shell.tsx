@@ -45,7 +45,7 @@ const NAV: Group[] = [
   {
     title: "Intelligence",
     items: [
-      { href: "/market-research", label: "Market Research", sub: "Industry intel", icon: "market" },
+      { href: "/market-research", label: "Market Research", sub: "Industry intel", icon: "market", live: true },
     ],
   },
 ];

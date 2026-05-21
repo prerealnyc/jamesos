@@ -23,14 +23,17 @@ export type PlugIn = {
   active: boolean;
 };
 
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
+const u = (path: string) => `${API_BASE}${path}`;
+
 async function jget<T>(path: string): Promise<T> {
-  const r = await fetch(path, { cache: "no-store" });
+  const r = await fetch(u(path), { cache: "no-store" });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
 
 async function jpost<T>(path: string, body: unknown): Promise<T> {
-  const r = await fetch(path, {
+  const r = await fetch(u(path), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -118,6 +121,19 @@ export type ContentDraft = {
   note: string | null;
 };
 
+export type ResearchSource = { url: string; title: string };
+
+export type ResearchResponse = {
+  subject: string;
+  provider: string;
+  summary: string;
+  findings: string[];
+  sources: ResearchSource[];
+  stored_event_ids: string[];
+  ingested_into_memory: boolean;
+  note: string | null;
+};
+
 export type VideoJob = {
   id: string;
   provider: string;
@@ -171,6 +187,8 @@ export const api = {
   setProfile: (p: { name: string; email: string; brand: string }) =>
     jpost<{ ok: boolean }>("/api/profile", p),
   ask: (question: string) => jpost<AskResponse>("/ask", { question }),
+  research: (subject: string, focus = "") =>
+    jpost<ResearchResponse>("/research", { subject, focus }),
   listPlugIns: () => jget<PlugIn[]>("/plug-ins"),
   addPlugIn: (slot: string, name: string, rule: string) =>
     jpost<PlugIn>("/plug-ins", { slot, name, content: { rule }, applies_to: [] }),

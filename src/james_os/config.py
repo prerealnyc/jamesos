@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     perplexity_model: str = "sonar-pro"
     google_search_api_key: str = ""  # Google Custom Search JSON API
     google_search_cx: str = ""       # Custom Search engine id (cx)
+    apify_api_key: str = ""          # Apify token — IG/TikTok/YouTube trend scraping
+    youtube_api_key: str = ""        # YouTube Data API — trend discovery
 
     # ─── Integration credentials (loaded, not yet all wired) ───
     # These make the keys AVAILABLE to JAMES OS. They become ACTIVE only
