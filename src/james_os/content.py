@@ -96,6 +96,14 @@ async def assemble_memory(
     buckets: dict[str, list[RetrievedEvent]] = {
         "voice": [], "thesis": [], "frustration": [], "facts": []
     }
+    # Recent human rejections are authoritative guardrails — always include
+    # them, even if semantic retrieval didn't surface them, so the engine
+    # cannot repeat a freshly-flagged mistake.
+    for ev in await _recent_frustrations(tenant_id):
+        if ev.event_id in seen:
+            continue
+        seen.add(ev.event_id)
+        buckets["frustration"].append(ev)
     for ev in [*voice_hits, *topic_hits]:
         if ev.event_id in seen:
             continue
@@ -110,6 +118,41 @@ async def assemble_memory(
 
     used = {k: len(v) for k, v in buckets.items()}
     return buckets, used
+
+
+async def _recent_frustrations(
+    tenant_id: UUID | None, limit: int = 8
+) -> list[RetrievedEvent]:
+    """The newest human-rejection guardrails, fetched by recency (not
+    semantic match) so a just-recorded rejection always reaches the prompt."""
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, event_type, raw_content, payload, effective_at
+            FROM events
+            WHERE payload ->> 'category' = 'frustration'
+              AND superseded_by IS NULL
+            ORDER BY created_at DESC LIMIT $1
+            """,
+            limit,
+        )
+    out: list[RetrievedEvent] = []
+    for r in rows:
+        payload = r["payload"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        out.append(
+            RetrievedEvent(
+                event_id=r["id"],
+                event_type=r["event_type"],
+                raw_content=r["raw_content"],
+                payload=payload,
+                effective_at=r["effective_at"],
+                score=1.0,
+                source_signal=["recency"],
+            )
+        )
+    return out
 
 
 def _coerce_ids(raw: object) -> list[UUID]:

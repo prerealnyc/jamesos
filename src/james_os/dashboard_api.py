@@ -432,14 +432,34 @@ async def approve_item(item_id: UUID, body: dict = Body(default={})) -> dict:
 
 @router.post("/queue/{item_id}/reject")
 async def reject_item(item_id: UUID, body: dict = Body(default={})) -> dict:
+    reason = body.get("reason", "rejected")
     async with acquire() as conn:
         await conn.execute(
             "UPDATE actions SET status='rejected', "
             "rejection_reason_code=$2, decided_at=now() WHERE id=$1",
             item_id,
-            body.get("reason", "rejected"),
+            reason,
         )
-    return {"ok": True, "id": str(item_id), "status": "rejected"}
+    # Close the learning loop: turn the manager's reason into a hard
+    # guardrail in memory so the engine doesn't repeat the mistake.
+    from .learning import record_rejection
+
+    learned_id = await record_rejection(item_id, reason)
+    return {
+        "ok": True,
+        "id": str(item_id),
+        "status": "rejected",
+        "learned": bool(learned_id),
+        "guardrail_id": learned_id,
+    }
+
+
+@router.get("/guardrails")
+async def guardrails() -> dict:
+    """The learned 'never do this' ledger from past rejections."""
+    from .learning import recent_guardrails
+
+    return {"guardrails": await recent_guardrails()}
 
 
 # ─────────────────────────────────────── system / pipeline (REAL) ──

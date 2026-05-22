@@ -204,6 +204,14 @@ export type TrendResult = {
 
 export type Creator = { platform: string; handle: string };
 
+export type Guardrail = {
+  id: string;
+  reason: string;
+  platform: string;
+  topic: string;
+  created_at: string | null;
+};
+
 export type MediaRole = "style_reference" | "james_clip" | "broll";
 
 export type StyleFingerprint = {
@@ -298,7 +306,12 @@ export const api = {
   approve: (id: string, reason = "approved via dashboard") =>
     jpost(`/api/queue/${id}/approve`, { reason }),
   reject: (id: string, reason = "rejected via dashboard") =>
-    jpost(`/api/queue/${id}/reject`, { reason }),
+    jpost<{ ok: boolean; learned: boolean; guardrail_id: string | null }>(
+      `/api/queue/${id}/reject`,
+      { reason }
+    ),
+  guardrails: () =>
+    jget<{ guardrails: Guardrail[] }>("/api/guardrails"),
   integrations: () =>
     jget<{ configured: Record<string, boolean>; active: string[] }>("/api/integrations"),
   lastScan: () => jget<{ lastScanAt: string | null }>("/api/system/last-scan"),
