@@ -81,6 +81,8 @@ def _row(r) -> dict:
     d["id"] = str(d["id"])
     d.pop("tenant_id", None)
     d.pop("file_path", None)  # internal; never exposed
+    if isinstance(d.get("analysis"), str):
+        d["analysis"] = json.loads(d["analysis"])
     for k in ("created_at", "updated_at"):
         if d.get(k) is not None:
             d[k] = d[k].isoformat()
@@ -155,6 +157,60 @@ async def update_media(
     return _row(r) if r else None
 
 
+async def get_media_for_analysis(
+    media_id: UUID, tenant_id: UUID | None = None
+) -> dict | None:
+    """Returns {source_type, file_path, uri} for the analyzer, or None."""
+    async with acquire(tenant_id) as conn:
+        r = await conn.fetchrow(
+            "SELECT source_type, file_path, uri FROM media_assets WHERE id = $1",
+            media_id,
+        )
+    return dict(r) if r else None
+
+
+async def set_analysis_status(
+    media_id: UUID, status: str, tenant_id: UUID | None = None
+) -> None:
+    async with acquire(tenant_id) as conn:
+        await conn.execute(
+            "UPDATE media_assets SET analysis_status = $2, updated_at = now() WHERE id = $1",
+            media_id, status,
+        )
+
+
+async def save_analysis(
+    media_id: UUID,
+    *,
+    status: str,
+    transcript: str = "",
+    analysis: dict | None = None,
+    notes: str = "",
+    duration: int = 0,
+    tenant_id: UUID | None = None,
+) -> dict | None:
+    """Persist a perception result. Only overwrites notes when the user
+    hasn't written their own (don't clobber human style notes)."""
+    async with acquire(tenant_id) as conn:
+        r = await conn.fetchrow(
+            """
+            UPDATE media_assets SET
+              analysis = $2::jsonb,
+              analyzed = $3,
+              analysis_status = $4,
+              transcript = CASE WHEN $5 <> '' THEN $5 ELSE transcript END,
+              notes = CASE WHEN notes = '' AND $6 <> '' THEN $6 ELSE notes END,
+              duration = CASE WHEN duration = 0 AND $7 > 0 THEN $7 ELSE duration END,
+              updated_at = now()
+            WHERE id = $1
+            RETURNING *
+            """,
+            media_id, json.dumps(analysis or {}), status == "done", status,
+            transcript, notes, duration,
+        )
+    return _row(r) if r else None
+
+
 async def delete_media(media_id: UUID, tenant_id: UUID | None = None) -> bool:
     async with acquire(tenant_id) as conn:
         r = await conn.fetchrow(
@@ -168,5 +224,6 @@ async def delete_media(media_id: UUID, tenant_id: UUID | None = None) -> bool:
 
 __all__ = [
     "ROLES", "storage", "media_root", "create_media", "list_media",
-    "update_media", "delete_media",
+    "update_media", "delete_media", "get_media_for_analysis",
+    "save_analysis", "set_analysis_status",
 ]

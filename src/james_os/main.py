@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,11 +22,15 @@ from .media import (
     ROLES as MEDIA_ROLES,
     create_media,
     delete_media,
+    get_media_for_analysis,
     list_media,
     media_root,
+    save_analysis,
+    set_analysis_status,
     storage as media_storage,
     update_media,
 )
+from .perception import analyze_file, fingerprint_to_notes
 from .models import (
     AskRequest,
     AskResponse,
@@ -471,6 +475,29 @@ async def generate_script(req: ScriptRequest) -> ContentDraft:
 
 # ────────────────────────────────────────────────── reference library ──
 
+async def _run_media_analysis(media_id: UUID) -> dict | None:
+    """Watch an uploaded reference and persist its style fingerprint. URL
+    references can't be analyzed without the file → marked unsupported."""
+    tenant = settings.default_tenant_id
+    asset = await get_media_for_analysis(media_id, tenant)
+    if asset is None:
+        return None
+    if asset["source_type"] != "upload" or not asset["file_path"]:
+        await set_analysis_status(media_id, "unsupported", tenant)
+        return None
+    await set_analysis_status(media_id, "pending", tenant)
+    result = await analyze_file(asset["file_path"])
+    return await save_analysis(
+        media_id,
+        status=result.get("status", "failed"),
+        transcript=result.get("transcript", ""),
+        analysis=result,
+        notes=fingerprint_to_notes(result),
+        duration=result.get("duration", 0),
+        tenant_id=tenant,
+    )
+
+
 @app.get("/media")
 async def media_list(role: str = "") -> dict:
     """Reference library: style references, James's clips, and B-roll."""
@@ -479,8 +506,21 @@ async def media_list(role: str = "") -> dict:
     return {"media": await list_media(role), "roles": list(MEDIA_ROLES)}
 
 
+@app.post("/media/{media_id}/analyze")
+async def media_analyze(media_id: UUID) -> dict:
+    """Run (or re-run) the perception layer on a reference now."""
+    updated = await _run_media_analysis(media_id)
+    if updated is None:
+        raise HTTPException(
+            status_code=400,
+            detail="not analyzable (not found, or a URL reference without a file)",
+        )
+    return updated
+
+
 @app.post("/media/upload", status_code=201)
 async def media_upload(
+    background: BackgroundTasks,
     file: UploadFile = File(...),
     role: str = Form("style_reference"),
     title: str = Form(""),
@@ -488,7 +528,9 @@ async def media_upload(
     notes: str = Form(""),
     tags: str = Form(""),  # comma-separated
 ) -> dict:
-    """Upload a reference/clip/B-roll video file into the library."""
+    """Upload a reference/clip/B-roll video file into the library. Perception
+    (transcript + visual style fingerprint) runs in the background; poll
+    GET /media to see analysis_status flip pending → done."""
     if role not in MEDIA_ROLES:
         raise HTTPException(status_code=400, detail=f"role must be one of {MEDIA_ROLES}")
     data = await file.read()
@@ -496,7 +538,7 @@ async def media_upload(
         raise HTTPException(status_code=400, detail="empty file")
     tenant = str(settings.default_tenant_id)
     served_uri, file_path = media_storage().save(tenant, data, file.filename or "upload.mp4")
-    return await create_media(
+    created = await create_media(
         role=role,
         source_type="upload",
         uri=served_uri,
@@ -507,6 +549,9 @@ async def media_upload(
         tags=[t.strip() for t in tags.split(",") if t.strip()],
         notes=notes,
     )
+    background.add_task(_run_media_analysis, UUID(created["id"]))
+    created["analysis_status"] = "pending"
+    return created
 
 
 @app.post("/media/link", status_code=201)

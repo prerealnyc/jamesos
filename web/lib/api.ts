@@ -206,6 +206,16 @@ export type Creator = { platform: string; handle: string };
 
 export type MediaRole = "style_reference" | "james_clip" | "broll";
 
+export type StyleFingerprint = {
+  hook?: string;
+  structure?: string | string[];
+  pacing?: string;
+  captions?: string;
+  visual_style?: string;
+  replication_tips?: string | string[];
+  error?: string;
+};
+
 export type MediaAsset = {
   id: string;
   role: MediaRole;
@@ -218,6 +228,9 @@ export type MediaAsset = {
   tags: string[];
   notes: string;
   transcript: string;
+  analyzed: boolean;
+  analysis_status: "none" | "pending" | "done" | "failed" | "unsupported";
+  analysis: { fingerprint?: StyleFingerprint; note?: string };
   created_at: string;
   updated_at: string;
 };
@@ -258,6 +271,7 @@ export const api = {
     fields: { title?: string; notes?: string; platform?: string; tags?: string[] }
   ) => jpatch<MediaAsset>(`/media/${id}`, fields),
   deleteMedia: (id: string) => jdel<{ ok: boolean }>(`/media/${id}`),
+  analyzeMedia: (id: string) => jpost<MediaAsset>(`/media/${id}/analyze`, {}),
   discoverTrends: (topic: string, platforms: string[], limit = 20) =>
     jpost<TrendResult>("/trends/discover", { topic, platforms, limit }),
   listTrends: (platform = "") =>

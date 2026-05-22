@@ -44,6 +44,14 @@ export default function ReferenceLibraryPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [role]);
 
+  // Poll while any asset is still being analyzed.
+  useEffect(() => {
+    if (!items.some((m) => m.analysis_status === "pending")) return;
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
+
   async function onUpload(files: FileList | null) {
     if (!files || files.length === 0) return;
     setBusy(true);
@@ -153,20 +161,60 @@ export default function ReferenceLibraryPage() {
   );
 }
 
+const STATUS_TONE: Record<string, "ok" | "primary" | "destructive" | "muted"> = {
+  done: "ok",
+  pending: "primary",
+  failed: "destructive",
+  unsupported: "muted",
+  none: "muted",
+};
+const STATUS_LABEL: Record<string, string> = {
+  done: "analyzed",
+  pending: "analyzing…",
+  failed: "analysis failed",
+  unsupported: "not analyzable",
+  none: "not analyzed",
+};
+
+function asText(v?: string | string[]): string {
+  if (Array.isArray(v)) return v.join(" · ");
+  return v || "";
+}
+
 function MediaTile({ item, onChange }: { item: MediaAsset; onChange: () => void }) {
   const [notes, setNotes] = useState(item.notes);
   const [savedAt, setSavedAt] = useState<number>(0);
+  const [analyzing, setAnalyzing] = useState(false);
   const isUpload = item.source_type === "upload";
+  const fp = item.analysis?.fingerprint;
+
+  // Keep notes in sync when perception fills them in.
+  useEffect(() => {
+    setNotes(item.notes);
+  }, [item.notes]);
 
   async function saveNotes() {
     await api.updateMedia(item.id, { notes });
     setSavedAt(Date.now());
+  }
+  async function analyze() {
+    setAnalyzing(true);
+    try {
+      await api.analyzeMedia(item.id);
+      onChange();
+    } catch {
+      /* surfaced via status on reload */
+    } finally {
+      setAnalyzing(false);
+    }
   }
   async function del() {
     if (!confirm("Delete this asset?")) return;
     await api.deleteMedia(item.id);
     onChange();
   }
+
+  const pending = item.analysis_status === "pending" || analyzing;
 
   return (
     <div className="border border-border rounded-lg overflow-hidden bg-card flex flex-col">
@@ -187,20 +235,44 @@ function MediaTile({ item, onChange }: { item: MediaAsset; onChange: () => void 
       <div className="p-3 flex flex-col gap-2">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[13px] font-semibold truncate">{item.title || "untitled"}</span>
-          <Badge tone="muted">{item.source_type}</Badge>
+          <Badge tone={STATUS_TONE[item.analysis_status] || "muted"}>
+            {pending ? "analyzing…" : STATUS_LABEL[item.analysis_status]}
+          </Badge>
         </div>
+
+        {fp && (
+          <div className="rounded-md bg-background border border-border p-2 text-[11px] leading-relaxed flex flex-col gap-1">
+            <div className="uppercase tracking-[.4px] text-muted-foreground">What it sees</div>
+            {fp.hook && <div><b>Hook:</b> {asText(fp.hook)}</div>}
+            {fp.structure && <div><b>Structure:</b> {asText(fp.structure)}</div>}
+            {fp.pacing && <div><b>Pacing:</b> {asText(fp.pacing)}</div>}
+            {fp.captions && <div><b>Captions:</b> {asText(fp.captions)}</div>}
+            {fp.visual_style && <div><b>Look:</b> {asText(fp.visual_style)}</div>}
+            {fp.replication_tips && (
+              <div className="text-primary"><b>Replicate:</b> {asText(fp.replication_tips)}</div>
+            )}
+          </div>
+        )}
+
         <textarea
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           onBlur={saveNotes}
-          placeholder="Style notes — what to replicate (hook, pacing, captions)…"
+          placeholder="Style notes — what to replicate (auto-filled by analysis; edit freely)…"
           className="w-full bg-background border border-input rounded-md px-2 py-1.5 text-[12px] resize-y min-h-[52px] outline-none focus-visible:ring-1 focus-visible:ring-ring"
         />
         <div className="flex items-center justify-between text-[11px] text-muted-foreground">
           <span>{savedAt ? "notes saved" : item.tags.join(" · ")}</span>
-          <button onClick={del} className="hover:text-destructive">
-            delete
-          </button>
+          <div className="flex items-center gap-3">
+            {isUpload && (
+              <button onClick={analyze} disabled={pending} className="hover:text-primary disabled:opacity-50">
+                {item.analyzed ? "re-analyze" : "analyze"}
+              </button>
+            )}
+            <button onClick={del} className="hover:text-destructive">
+              delete
+            </button>
+          </div>
         </div>
       </div>
     </div>
