@@ -18,6 +18,15 @@ from .dashboard_api import router as dashboard_api_router
 from .db import acquire, close_pool, init_pool
 from .documents import document_to_events_async
 from .ingestion import ingest, ingest_many, supersede_prior_document_versions
+from .media import (
+    ROLES as MEDIA_ROLES,
+    create_media,
+    delete_media,
+    list_media,
+    media_root,
+    storage as media_storage,
+    update_media,
+)
 from .models import (
     AskRequest,
     AskResponse,
@@ -25,6 +34,8 @@ from .models import (
     EventCreate,
     ContentBrief,
     ContentDraft,
+    MediaLinkRequest,
+    MediaUpdate,
     PlugIn,
     PlugInCreate,
     ResearchRequest,
@@ -106,6 +117,12 @@ async def settings_ui() -> FileResponse:
 
 # Serve the dashboard's hashed assets. index.html references ./assets/...
 app.mount("/assets", StaticFiles(directory=_DASH / "assets"), name="dash-assets")
+# Uploaded reference/media files, served read-only.
+app.mount(
+    "/media-files",
+    StaticFiles(directory=media_root()),
+    name="media-files",
+)
 
 
 # ─────────────────────────────────────────────────────────────────────── ops ──
@@ -450,6 +467,86 @@ async def generate_script(req: ScriptRequest) -> ContentDraft:
         extra_instructions=steer,
     )
     return await generate_content(brief)
+
+
+# ────────────────────────────────────────────────── reference library ──
+
+@app.get("/media")
+async def media_list(role: str = "") -> dict:
+    """Reference library: style references, James's clips, and B-roll."""
+    if role and role not in MEDIA_ROLES:
+        raise HTTPException(status_code=400, detail=f"role must be one of {MEDIA_ROLES}")
+    return {"media": await list_media(role), "roles": list(MEDIA_ROLES)}
+
+
+@app.post("/media/upload", status_code=201)
+async def media_upload(
+    file: UploadFile = File(...),
+    role: str = Form("style_reference"),
+    title: str = Form(""),
+    platform: str = Form(""),
+    notes: str = Form(""),
+    tags: str = Form(""),  # comma-separated
+) -> dict:
+    """Upload a reference/clip/B-roll video file into the library."""
+    if role not in MEDIA_ROLES:
+        raise HTTPException(status_code=400, detail=f"role must be one of {MEDIA_ROLES}")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty file")
+    tenant = str(settings.default_tenant_id)
+    served_uri, file_path = media_storage().save(tenant, data, file.filename or "upload.mp4")
+    return await create_media(
+        role=role,
+        source_type="upload",
+        uri=served_uri,
+        file_path=file_path,
+        title=title or (file.filename or ""),
+        platform=platform,
+        mime=file.content_type or "",
+        tags=[t.strip() for t in tags.split(",") if t.strip()],
+        notes=notes,
+    )
+
+
+@app.post("/media/link", status_code=201)
+async def media_link(req: MediaLinkRequest) -> dict:
+    """Add a reference by URL (YouTube/Drive/CDN link) without uploading."""
+    if req.role not in MEDIA_ROLES:
+        raise HTTPException(status_code=400, detail=f"role must be one of {MEDIA_ROLES}")
+    if not req.url.strip():
+        raise HTTPException(status_code=400, detail="url is required")
+    return await create_media(
+        role=req.role,
+        source_type="url",
+        uri=req.url.strip(),
+        title=req.title,
+        platform=req.platform,
+        tags=req.tags,
+        notes=req.notes,
+    )
+
+
+@app.patch("/media/{media_id}")
+async def media_update(media_id: UUID, req: MediaUpdate) -> dict:
+    updated = await update_media(
+        media_id,
+        title=req.title,
+        notes=req.notes,
+        platform=req.platform,
+        tags=req.tags,
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="media not found or nothing to update")
+    return updated
+
+
+@app.delete("/media/{media_id}")
+async def media_delete(media_id: UUID) -> dict:
+    ok = await delete_media(media_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="media not found")
+    return {"ok": True, "deleted": str(media_id)}
 
 
 # ─────────────────────────────────────────────────────────────── helpers ──

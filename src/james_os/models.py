@@ -188,6 +188,24 @@ class ScriptRequest(BaseModel):
     extra_instructions: str = ""
 
 
+# ─────────────────────────────────── Reference / media library ──
+
+class MediaLinkRequest(BaseModel):
+    url: str
+    role: str = "style_reference"         # style_reference | james_clip | broll
+    title: str = ""
+    platform: str = ""
+    notes: str = ""
+    tags: list[str] = Field(default_factory=list)
+
+
+class MediaUpdate(BaseModel):
+    title: str | None = None
+    notes: str | None = None
+    platform: str | None = None
+    tags: list[str] | None = None
+
+
 class QAVerdict(BaseModel):
     voice_score: float            # 0-1 independent reviewer score
     passed: bool                  # met the hard voice floor

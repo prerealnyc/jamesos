@@ -26,6 +26,31 @@ export type PlugIn = {
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
 const u = (path: string) => `${API_BASE}${path}`;
 
+/** Resolve a served media path (e.g. /media-files/...) to a full URL the
+ *  browser can load, honoring the configured API origin. External URLs
+ *  (http...) are returned unchanged. */
+export const mediaUrl = (uri: string) =>
+  uri.startsWith("http") ? uri : `${API_BASE}${uri}`;
+
+async function jdel<T>(path: string): Promise<T> {
+  const r = await fetch(u(path), { method: "DELETE" });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+async function jpatch<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(u(path), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
 async function jget<T>(path: string): Promise<T> {
   const r = await fetch(u(path), { cache: "no-store" });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -179,8 +204,60 @@ export type TrendResult = {
 
 export type Creator = { platform: string; handle: string };
 
+export type MediaRole = "style_reference" | "james_clip" | "broll";
+
+export type MediaAsset = {
+  id: string;
+  role: MediaRole;
+  title: string;
+  platform: string;
+  source_type: "upload" | "url";
+  uri: string;
+  mime: string;
+  duration: number;
+  tags: string[];
+  notes: string;
+  transcript: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export const api = {
   health: () => jget<{ status: string }>("/health"),
+  listMedia: (role = "") =>
+    jget<{ media: MediaAsset[]; roles: MediaRole[] }>(
+      `/media${role ? `?role=${role}` : ""}`
+    ),
+  async uploadMedia(
+    file: File,
+    role: MediaRole,
+    opts: { title?: string; platform?: string; notes?: string; tags?: string } = {}
+  ) {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("role", role);
+    fd.append("title", opts.title || "");
+    fd.append("platform", opts.platform || "");
+    fd.append("notes", opts.notes || "");
+    fd.append("tags", opts.tags || "");
+    const r = await fetch(u("/media/upload"), { method: "POST", body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    return d as MediaAsset;
+  },
+  linkMedia: (body: {
+    url: string;
+    role: MediaRole;
+    title?: string;
+    platform?: string;
+    notes?: string;
+    tags?: string[];
+  }) => jpost<MediaAsset>("/media/link", body),
+  updateMedia: (
+    id: string,
+    fields: { title?: string; notes?: string; platform?: string; tags?: string[] }
+  ) => jpatch<MediaAsset>(`/media/${id}`, fields),
+  deleteMedia: (id: string) => jdel<{ ok: boolean }>(`/media/${id}`),
   discoverTrends: (topic: string, platforms: string[], limit = 20) =>
     jpost<TrendResult>("/trends/discover", { topic, platforms, limit }),
   listTrends: (platform = "") =>
