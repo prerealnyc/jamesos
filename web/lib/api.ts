@@ -293,6 +293,18 @@ export const api = {
     jpost<ContentDraft>("/generate-script", { event_id, platform, extra_instructions }),
   generate: (brief: Partial<ContentBrief> & { topic: string }) =>
     jpost<ContentDraft>("/generate", brief),
+  generateMulti: (body: {
+    topic: string;
+    pillar?: string;
+    platforms: string[];
+    carousel: boolean;
+    carousel_slides?: number;
+    research_subject?: string;
+    extra_instructions?: string;
+  }) => jpost<{ topic: string; drafts: ContentDraft[]; queued: number }>(
+    "/generate-multi",
+    body
+  ),
   generateVideo: (prompt: string, prompt_image = "") =>
     jpost<VideoJob>("/video/generate", { prompt, prompt_image }),
   listVideoJobs: () => jget<VideoJob[]>("/video/jobs"),

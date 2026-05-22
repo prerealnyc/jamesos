@@ -40,6 +40,7 @@ from .models import (
     ContentDraft,
     MediaLinkRequest,
     MediaUpdate,
+    MultiGenerateRequest,
     PlugIn,
     PlugInCreate,
     ResearchRequest,
@@ -282,6 +283,60 @@ async def generate_endpoint(brief: ContentBrief) -> ContentDraft:
     if not brief.topic.strip():
         raise HTTPException(status_code=400, detail="topic is required")
     return await generate_content(brief)
+
+
+@app.post("/generate-multi")
+async def generate_multi(req: MultiGenerateRequest) -> dict:
+    """One idea → tailored drafts for several platforms (plus an optional
+    multi-slide carousel), generated in parallel. Each runs the full
+    voice-QA + learned-guardrails pipeline and is queued for approval."""
+    import asyncio
+
+    topic = req.topic.strip()
+    if not topic:
+        raise HTTPException(status_code=400, detail="topic is required")
+    platforms = [p.strip().lower() for p in req.platforms if p.strip()]
+    if not platforms and not req.carousel:
+        raise HTTPException(status_code=400, detail="no platforms or carousel requested")
+
+    briefs: list[ContentBrief] = [
+        ContentBrief(
+            platform=p,
+            format="post",
+            pillar=req.pillar,
+            topic=topic,
+            research_subject=req.research_subject,
+            extra_instructions=req.extra_instructions,
+        )
+        for p in platforms
+    ]
+    if req.carousel:
+        n = max(3, min(req.carousel_slides, 10))
+        carousel_steer = (
+            f"Produce a {n}-slide Instagram carousel. In the draft, output the "
+            f"slides as 'Slide 1:' through 'Slide {n}:', one per line. Slide 1 is "
+            f"a scroll-stopping hook; the middle slides build one clear idea, one "
+            f"beat each; the last slide is a clear call to action."
+        )
+        if req.extra_instructions.strip():
+            carousel_steer += f" Also: {req.extra_instructions.strip()}"
+        briefs.append(
+            ContentBrief(
+                platform="instagram",
+                format="carousel",
+                pillar=req.pillar,
+                topic=topic,
+                research_subject=req.research_subject,
+                extra_instructions=carousel_steer,
+            )
+        )
+
+    drafts = await asyncio.gather(*(generate_content(b) for b in briefs))
+    return {
+        "topic": topic,
+        "drafts": [d.model_dump(mode="json") for d in drafts],
+        "queued": sum(1 for d in drafts if d.action_id is not None),
+    }
 
 
 # ─────────────────────────────────────────────────────────────── video ──

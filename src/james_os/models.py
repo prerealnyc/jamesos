@@ -206,6 +206,16 @@ class MediaUpdate(BaseModel):
     tags: list[str] | None = None
 
 
+class MultiGenerateRequest(BaseModel):
+    topic: str
+    pillar: str = ""
+    platforms: list[str] = Field(default_factory=lambda: ["linkedin", "facebook", "instagram"])
+    carousel: bool = True                 # also produce a multi-slide carousel
+    carousel_slides: int = 6
+    research_subject: str = ""
+    extra_instructions: str = ""
+
+
 class QAVerdict(BaseModel):
     voice_score: float            # 0-1 independent reviewer score
     passed: bool                  # met the hard voice floor
