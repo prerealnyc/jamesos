@@ -39,13 +39,13 @@ const NAV: Group[] = [
   {
     title: "Engagement",
     items: [
-      { href: "/social-companion", label: "Social Companion", sub: "Peer analysis", icon: "social" },
+      { href: "/social-companion", label: "Social Companion", sub: "Creator watchlist & trends", icon: "social", live: true },
     ],
   },
   {
     title: "Intelligence",
     items: [
-      { href: "/market-research", label: "Market Research", sub: "Industry intel", icon: "market", live: true },
+      { href: "/market-research", label: "Market Research", sub: "Trend radar & intel", icon: "market", live: true },
     ],
   },
 ];

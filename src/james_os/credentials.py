@@ -30,6 +30,7 @@ Honest limitations (not hidden):
 import json
 from dataclasses import dataclass
 
+from . import apify as _apify_mod
 from . import embedder as _embedder_mod
 from . import llm as _llm_mod
 from . import research as _research_mod
@@ -127,6 +128,7 @@ def _bust_provider_caches() -> None:
     _embedder_mod._embedder = None
     _llm_mod._llm = None
     _research_mod._provider = None
+    _apify_mod._provider = None
 
 
 def _apply(overlay: dict[str, str]) -> None:

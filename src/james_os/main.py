@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .ask import ask
+from .config import settings
 from .dashboard_api import router as dashboard_api_router
 from .db import acquire, close_pool, init_pool
 from .documents import document_to_events_async
@@ -29,10 +30,22 @@ from .models import (
     ResearchRequest,
     ResearchResponse,
     ResearchSourceOut,
+    ScriptRequest,
+    TrendDiscoverRequest,
     VideoGenerateRequest,
+    WatchlistRefreshRequest,
+    WatchlistUpdate,
 )
 from .content import generate_content
 from .research import get_research_provider, research_to_events
+from .trends import (
+    discover_and_ingest,
+    get_watchlist,
+    list_trends,
+    refresh_watchlist,
+    set_watchlist,
+    watchlist_by_platform,
+)
 from .video import list_video_jobs, refresh_video_job, submit_video_job
 
 
@@ -326,6 +339,117 @@ async def research_endpoint(req: ResearchRequest) -> ResearchResponse:
         ingested_into_memory=bool(stored),
         note=note,
     )
+
+
+# ─────────────────────────────────────────────────────────── trend radar ──
+
+def _apify_note() -> str | None:
+    if not (settings.apify_api_key or "").strip():
+        return (
+            "No Apify key connected — add APIFY_API_KEY in Settings to scrape "
+            "live Instagram / TikTok / YouTube trends. Nothing was fabricated."
+        )
+    return None
+
+
+@app.post("/trends/discover")
+async def trends_discover(req: TrendDiscoverRequest) -> dict:
+    """Discover top-performing posts on a topic across IG/TikTok/YouTube,
+    score virality (outlier vs creator median + views/hour), and ingest
+    each into the SAME memory substrate (category:trend) so it's citable
+    and can seed a brand-voice script. Returns the ranked feed."""
+    topic = req.topic.strip()
+    if not topic:
+        raise HTTPException(status_code=400, detail="topic is required")
+    platforms = [p for p in req.platforms if p in ("instagram", "tiktok", "youtube")]
+    if not platforms:
+        raise HTTPException(status_code=400, detail="no valid platforms")
+    try:
+        result = await discover_and_ingest(topic, platforms, max(1, min(req.limit, 50)))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"discovery failed: {e}") from e
+    result["note"] = _apify_note()
+    return result
+
+
+@app.get("/trends")
+async def trends_list(platform: str = "", limit: int = Query(default=60, le=200)) -> dict:
+    """Ranked viral feed from stored trend events (cheap read — scores were
+    computed at ingest)."""
+    return {"trends": await list_trends(platform=platform, limit=limit), "note": _apify_note()}
+
+
+@app.get("/trends/watchlist")
+async def trends_watchlist_get() -> dict:
+    return {"creators": await get_watchlist()}
+
+
+@app.post("/trends/watchlist")
+async def trends_watchlist_set(req: WatchlistUpdate) -> dict:
+    creators = [{"platform": c.platform, "handle": c.handle} for c in req.creators]
+    return {"creators": await set_watchlist(creators)}
+
+
+@app.post("/trends/refresh")
+async def trends_refresh(req: WatchlistRefreshRequest) -> dict:
+    """Scrape recent posts for every creator on the watchlist, score and
+    ingest them. Returns the ranked feed for the refreshed set."""
+    creators = await get_watchlist()
+    if not creators:
+        return {"found": 0, "trends": [], "stored_event_ids": [],
+                "note": "Watchlist is empty — add creators first."}
+    handles = watchlist_by_platform(creators)
+    try:
+        result = await refresh_watchlist(handles, max(1, min(req.limit, 50)))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"refresh failed: {e}") from e
+    result["note"] = _apify_note()
+    return result
+
+
+@app.post("/generate-script", response_model=ContentDraft)
+async def generate_script(req: ScriptRequest) -> ContentDraft:
+    """Turn a trend event into a brand-voice shooting script. Pulls the
+    trend's hook + transcript and feeds it to the content engine as a brief,
+    which grounds the script in the brand's own voice/thesis memory and runs
+    the independent voice-QA gate. Lands in the approval queue like any draft
+    — a verbatim copy would FAIL voice-QA, so 'replicate' means match the
+    structure/format in our voice, never copy the creator's words."""
+    async with acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT payload FROM events WHERE id = $1", req.event_id
+        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="trend event not found")
+    payload = row["payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if payload.get("category") != "trend":
+        raise HTTPException(status_code=400, detail="event is not a trend")
+
+    handle = payload.get("handle", "a creator")
+    platform = req.platform.strip() or payload.get("platform", "instagram")
+    caption = payload.get("caption", "")
+    transcript = (payload.get("text") or "")[:2500]
+    outlier = payload.get("outlier_score", 0)
+
+    steer = (
+        f"Model this script on a high-performing {payload.get('platform')} post "
+        f"by @{handle} (outlier score {outlier}x its creator's median). Match its "
+        f"HOOK pattern, structure and pacing — but write it 100% in our brand "
+        f"voice about our world. Do NOT copy the creator's words, claims, or "
+        f"specifics. Reference post:\n\"\"\"\n{caption}\n{transcript}\n\"\"\""
+    )
+    if req.extra_instructions.strip():
+        steer += f"\n\nAlso: {req.extra_instructions.strip()}"
+
+    brief = ContentBrief(
+        platform=platform,
+        format="reel_script",
+        topic=f"a short-form video inspired by what's trending from @{handle}",
+        extra_instructions=steer,
+    )
+    return await generate_content(brief)
 
 
 # ─────────────────────────────────────────────────────────────── helpers ──

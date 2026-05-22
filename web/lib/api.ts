@@ -151,8 +151,47 @@ export type VideoJob = {
   completed_at: string | null;
 };
 
+export type Trend = {
+  event_id?: string;
+  platform: string;
+  handle: string;
+  url: string;
+  caption: string;
+  has_transcript: boolean;
+  views: number;
+  likes: number;
+  comments: number;
+  shares: number;
+  posted_at: string;
+  thumbnail: string;
+  outlier_score: number;
+  velocity: number;
+};
+
+export type TrendResult = {
+  provider?: string;
+  topic?: string;
+  found?: number;
+  stored_event_ids?: string[];
+  trends: Trend[];
+  note: string | null;
+};
+
+export type Creator = { platform: string; handle: string };
+
 export const api = {
   health: () => jget<{ status: string }>("/health"),
+  discoverTrends: (topic: string, platforms: string[], limit = 20) =>
+    jpost<TrendResult>("/trends/discover", { topic, platforms, limit }),
+  listTrends: (platform = "") =>
+    jget<TrendResult>(`/trends${platform ? `?platform=${platform}` : ""}`),
+  getWatchlist: () => jget<{ creators: Creator[] }>("/trends/watchlist"),
+  setWatchlist: (creators: Creator[]) =>
+    jpost<{ creators: Creator[] }>("/trends/watchlist", { creators }),
+  refreshWatchlist: (limit = 15) =>
+    jpost<TrendResult>("/trends/refresh", { limit }),
+  generateScript: (event_id: string, platform = "", extra_instructions = "") =>
+    jpost<ContentDraft>("/generate-script", { event_id, platform, extra_instructions }),
   generate: (brief: Partial<ContentBrief> & { topic: string }) =>
     jpost<ContentDraft>("/generate", brief),
   generateVideo: (prompt: string, prompt_image = "") =>

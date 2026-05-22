@@ -161,6 +161,33 @@ class ContentBrief(BaseModel):
     extra_instructions: str = ""  # optional one-off steer
 
 
+# ─────────────────────────────────── Trend radar ──
+
+class TrendDiscoverRequest(BaseModel):
+    topic: str                            # keyword / hashtag to discover around
+    platforms: list[str] = Field(default_factory=lambda: ["instagram", "tiktok", "youtube"])
+    limit: int = 20                       # results per platform
+
+
+class TrendCreator(BaseModel):
+    platform: str
+    handle: str
+
+
+class WatchlistUpdate(BaseModel):
+    creators: list[TrendCreator] = Field(default_factory=list)
+
+
+class WatchlistRefreshRequest(BaseModel):
+    limit: int = 15                       # recent posts per creator
+
+
+class ScriptRequest(BaseModel):
+    event_id: UUID                        # a trend event to model a script on
+    platform: str = ""                    # override target platform (else the trend's)
+    extra_instructions: str = ""
+
+
 class QAVerdict(BaseModel):
     voice_score: float            # 0-1 independent reviewer score
     passed: bool                  # met the hard voice floor
