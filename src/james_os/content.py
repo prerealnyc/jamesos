@@ -104,7 +104,11 @@ async def assemble_memory(
             continue
         seen.add(ev.event_id)
         buckets["frustration"].append(ev)
-    for ev in [*voice_hits, *topic_hits]:
+    # Diverse, real voice exemplars (random voice-corpus samples) so the
+    # model sees James's actual cadence — not just near-duplicates of a
+    # generic "brand voice" query.
+    exemplars = await _voice_exemplars(tenant_id, settings.content_voice_exemplars)
+    for ev in [*exemplars, *voice_hits, *topic_hits]:
         if ev.event_id in seen:
             continue
         seen.add(ev.event_id)
@@ -118,6 +122,41 @@ async def assemble_memory(
 
     used = {k: len(v) for k, v in buckets.items()}
     return buckets, used
+
+
+async def _voice_exemplars(
+    tenant_id: UUID | None, limit: int = 4
+) -> list[RetrievedEvent]:
+    """Random voice-corpus samples — James actually speaking — so the prompt
+    carries real, varied cadence, not just generic-query matches."""
+    if limit <= 0:
+        return []
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, event_type, raw_content, payload, effective_at
+            FROM events
+            WHERE payload ->> 'category' = 'voice_corpus'
+              AND superseded_by IS NULL
+              AND length(raw_content) > 200
+            ORDER BY random() LIMIT $1
+            """,
+            limit,
+        )
+    out: list[RetrievedEvent] = []
+    for r in rows:
+        payload = r["payload"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        out.append(
+            RetrievedEvent(
+                event_id=r["id"], event_type=r["event_type"],
+                raw_content=r["raw_content"], payload=payload,
+                effective_at=r["effective_at"], score=1.0,
+                source_signal=["voice_exemplar"],
+            )
+        )
+    return out
 
 
 async def _recent_frustrations(
