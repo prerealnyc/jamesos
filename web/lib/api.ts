@@ -243,8 +243,54 @@ export type MediaAsset = {
   updated_at: string;
 };
 
+export type Scene = {
+  index: number;
+  kind: "talking_head" | "broll";
+  source: "avatar" | "james_clip" | null;
+  voiceover: string;
+  on_screen_text: string;
+  visual_prompt: string;
+  duration: number;
+  url?: string;
+  clip_status?: "ok" | "stub";
+  note?: string;
+};
+
+export type ScenePlan = {
+  title: string;
+  scenes: Scene[];
+  james_clips_available?: number;
+  error?: string;
+};
+
+export type Production = {
+  id: string;
+  status: "queued" | "planning" | "rendering_clips" | "assembling" | "succeeded" | "failed";
+  title: string;
+  platform: string;
+  aspect: string;
+  script: string;
+  plan: ScenePlan | Record<string, never>;
+  scenes: Scene[];
+  final_url: string | null;
+  error: string | null;
+  avatar_provider: string;
+  broll_provider: string;
+  assembly_provider: string;
+  queued_action_id: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+};
+
 export const api = {
   health: () => jget<{ status: string }>("/health"),
+  planVideo: (script: string, platform = "instagram", aspect = "9:16") =>
+    jpost<ScenePlan>("/video/plan", { script, platform, aspect }),
+  produceVideo: (script: string, platform = "instagram", aspect = "9:16", title = "") =>
+    jpost<Production>("/video/produce", { script, platform, aspect, title }),
+  listProductions: () => jget<Production[]>("/video/productions"),
+  getProduction: (id: string) => jget<Production>(`/video/productions/${id}`),
   listMedia: (role = "") =>
     jget<{ media: MediaAsset[]; roles: MediaRole[] }>(
       `/media${role ? `?role=${role}` : ""}`

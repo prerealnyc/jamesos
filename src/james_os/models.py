@@ -206,6 +206,19 @@ class MediaUpdate(BaseModel):
     tags: list[str] | None = None
 
 
+class VideoPlanRequest(BaseModel):
+    script: str
+    platform: str = "instagram"
+    aspect: str = "9:16"
+
+
+class VideoProduceRequest(BaseModel):
+    script: str
+    platform: str = "instagram"
+    aspect: str = "9:16"
+    title: str = ""
+
+
 class MultiGenerateRequest(BaseModel):
     topic: str
     pillar: str = ""

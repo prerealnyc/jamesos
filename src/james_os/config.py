@@ -80,6 +80,18 @@ class Settings(BaseSettings):
     runway_video_ratio: str = "1280:720"
     runway_video_duration: int = 5            # seconds (Runway: 5 or 10)
 
+    # ─── Video productions (script → scene plan → clips → assembled mp4) ───
+    # Each stage is provider-abstracted with a stub so the whole pipeline is
+    # provable end-to-end without spending credits. Providers auto-activate
+    # from the presence of their key (see credentials._auto_select_providers).
+    avatar_provider: str = "stub"     # heygen | stub  (talking-head)
+    heygen_api_version: str = "v2"
+    heygen_voice_id: str = ""         # HeyGen voice id (required to speak text)
+    assembly_provider: str = "stub"   # creatomate | shotstack | stub
+    creatomate_api_key: str = ""
+    shotstack_api_key: str = ""
+    shotstack_env: str = "stage"      # stage | v1 (production)
+
     log_level: str = "INFO"
 
     # Retrieval tuning

@@ -80,8 +80,13 @@ MANAGED_FIELDS: list[ManagedField] = [
     ManagedField(
         "heygen_avatar_id", "HeyGen default avatar id", "Video & media", secret=False
     ),
+    ManagedField(
+        "heygen_voice_id", "HeyGen voice id (to speak text)", "Video & media", secret=False
+    ),
     ManagedField("descript_api_key", "Descript API key", "Video & media"),
     ManagedField("runway_api_key", "Runway API key", "Video & media"),
+    ManagedField("creatomate_api_key", "Creatomate API key (video assembly)", "Video & media"),
+    ManagedField("shotstack_api_key", "Shotstack API key (video assembly)", "Video & media"),
     ManagedField("elevenlabs_api_key", "ElevenLabs API key", "Video & media"),
     ManagedField("minimax_api_key", "MiniMax API key", "Video & media"),
     # Publishing & social
@@ -122,6 +127,17 @@ def _auto_select_providers() -> None:
     settings.research_provider = (
         "perplexity" if (settings.perplexity_api_key or "").strip() else "stub"
     )
+    # Talking-head avatar: a HeyGen key flips it live.
+    settings.avatar_provider = (
+        "heygen" if (settings.heygen_api_key or "").strip() else "stub"
+    )
+    # Video assembly: Creatomate preferred, then Shotstack, else stub.
+    if (settings.creatomate_api_key or "").strip():
+        settings.assembly_provider = "creatomate"
+    elif (settings.shotstack_api_key or "").strip():
+        settings.assembly_provider = "shotstack"
+    else:
+        settings.assembly_provider = "stub"
 
 
 def _bust_provider_caches() -> None:
@@ -129,6 +145,10 @@ def _bust_provider_caches() -> None:
     _llm_mod._llm = None
     _research_mod._provider = None
     _apify_mod._provider = None
+    from . import assembly as _assembly_mod
+    from . import heygen as _heygen_mod
+    _heygen_mod._provider = None
+    _assembly_mod._provider = None
 
 
 def _apply(overlay: dict[str, str]) -> None:

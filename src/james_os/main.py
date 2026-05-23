@@ -49,6 +49,8 @@ from .models import (
     ScriptRequest,
     TrendDiscoverRequest,
     VideoGenerateRequest,
+    VideoPlanRequest,
+    VideoProduceRequest,
     WatchlistRefreshRequest,
     WatchlistUpdate,
 )
@@ -63,6 +65,13 @@ from .trends import (
     watchlist_by_platform,
 )
 from .video import list_video_jobs, refresh_video_job, submit_video_job
+from .video_plan import generate_scene_plan
+from .video_pipeline import (
+    get_production,
+    list_productions,
+    run_production,
+    start_production,
+)
 
 
 @asynccontextmanager
@@ -371,6 +380,42 @@ async def video_job(job_id: UUID) -> dict:
         return await refresh_video_job(job_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="video job not found") from None
+
+
+# ── full video productions: script → scene plan → clips → assembled mp4 ──
+
+@app.post("/video/plan")
+async def video_plan(req: VideoPlanRequest) -> dict:
+    """Preview the scene plan for a script (no rendering). Grounded in voice
+    + the reference library's style fingerprints."""
+    if not req.script.strip():
+        raise HTTPException(status_code=400, detail="script is required")
+    return await generate_scene_plan(req.script.strip(), req.platform, req.aspect)
+
+
+@app.post("/video/produce", status_code=201)
+async def video_produce(req: VideoProduceRequest, background: BackgroundTasks) -> dict:
+    """Kick off a durable production. Returns immediately; the pipeline runs
+    in the background (plan → clips → assemble → approval queue). Poll
+    GET /video/productions/{id}. Stub-first: runs end-to-end without keys."""
+    if not req.script.strip():
+        raise HTTPException(status_code=400, detail="script is required")
+    prod = await start_production(req.script.strip(), req.platform, req.aspect, req.title)
+    background.add_task(run_production, UUID(prod["id"]))
+    return prod
+
+
+@app.get("/video/productions")
+async def video_productions() -> list[dict]:
+    return await list_productions()
+
+
+@app.get("/video/productions/{production_id}")
+async def video_production(production_id: UUID) -> dict:
+    p = await get_production(production_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="production not found")
+    return p
 
 
 @app.post("/research", response_model=ResearchResponse)
