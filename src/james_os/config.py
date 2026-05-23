@@ -87,6 +87,7 @@ class Settings(BaseSettings):
     avatar_provider: str = "stub"     # heygen | stub  (talking-head)
     heygen_api_version: str = "v2"
     heygen_voice_id: str = ""         # HeyGen voice id (required to speak text)
+    image_model: str = "gpt-image-1"  # OpenAI image model for B-roll seed stills
     assembly_provider: str = "stub"   # creatomate | shotstack | stub
     creatomate_api_key: str = ""
     shotstack_api_key: str = ""

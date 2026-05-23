@@ -245,6 +245,7 @@ export type MediaAsset = {
 
 export type Scene = {
   index: number;
+  label?: string;
   kind: "talking_head" | "broll";
   source: "avatar" | "james_clip" | null;
   voiceover: string;
@@ -259,6 +260,7 @@ export type Scene = {
 export type ScenePlan = {
   title: string;
   scenes: Scene[];
+  structure?: string[];
   james_clips_available?: number;
   error?: string;
 };

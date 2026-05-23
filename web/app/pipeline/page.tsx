@@ -172,6 +172,7 @@ function PlanView({ plan }: { plan: ScenePlan }) {
         {plan.scenes.map((s) => (
           <div key={s.index} className="border border-border rounded-md p-3 text-[13px]">
             <div className="flex items-center gap-2 mb-1">
+              {s.label && <Badge tone="accent">{s.label}</Badge>}
               <Badge tone={s.kind === "broll" ? "muted" : "primary"}>
                 {s.kind === "broll" ? "B-roll" : `talking head · ${s.source}`}
               </Badge>
@@ -227,6 +228,7 @@ function ProductionView({ prod }: { prod: Production }) {
           {prod.scenes.map((s) => (
             <div key={s.index} className="border border-border rounded-md p-2 text-[12px]">
               <div className="flex items-center gap-2">
+                {s.label && <Badge tone="accent">{s.label}</Badge>}
                 <Badge tone={s.clip_status === "ok" ? "ok" : "muted"}>
                   {s.kind === "broll" ? "B-roll" : `${s.source}`}
                 </Badge>

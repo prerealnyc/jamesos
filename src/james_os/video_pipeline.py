@@ -27,10 +27,15 @@ from .assembly import get_assembly_provider
 from .config import settings
 from .db import acquire
 from .heygen import get_avatar_provider
+from .imagegen import generate_seed_image
+from .video import get_video_provider
 from .video_plan import generate_scene_plan
 
 _POLL_EVERY = 5.0
 _MAX_POLLS = 60  # ~5 min ceiling per async stage
+
+# Runway gen4_turbo accepts a fixed set of ratios; map our aspect to one.
+_RUNWAY_RATIO = {"9:16": "720:1280", "16:9": "1280:720", "1:1": "960:960"}
 
 
 def _row(r) -> dict:
@@ -113,6 +118,37 @@ async def _render_avatar(text: str, aspect: str) -> tuple[str | None, str]:
     return None, "avatar render timed out"
 
 
+async def _render_broll(visual_prompt: str, aspect: str) -> tuple[str | None, str]:
+    """B-roll = text → AI still (OpenAI) → animate (Runway). Both keys needed
+    for a real clip; otherwise an honest stub with the reason."""
+    if not visual_prompt:
+        return None, "no visual prompt for B-roll"
+    vid = get_video_provider()
+    if vid.name == "stub":
+        return None, "Runway not configured (VIDEO_PROVIDER=stub)"
+    # 1) seed image from the idea
+    image_uri, img_err = await generate_seed_image(visual_prompt, aspect)
+    if not image_uri:
+        return None, f"seed image: {img_err}"
+    # 2) animate it (Runway needs >=5s; the assembler trims to the scene length)
+    sub = await vid.submit(
+        visual_prompt, image_uri,
+        model=settings.runway_model,
+        ratio=_RUNWAY_RATIO.get(aspect, settings.runway_video_ratio),
+        duration=5,
+    )
+    if sub.status == "failed":
+        return None, sub.error or "Runway submit failed"
+    for _ in range(_MAX_POLLS):
+        p = await vid.poll(sub.provider_job_id)
+        if p.status == "succeeded":
+            return p.result_url, ""
+        if p.status == "failed":
+            return None, p.error or "Runway render failed"
+        await asyncio.sleep(_POLL_EVERY)
+    return None, "Runway render timed out"
+
+
 async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> None:
     """The worker. Advances the production through every stage."""
     pid = production_id
@@ -153,10 +189,12 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
                         s["url"] = f"stub://james_clip/{s['index']}"
                         s["clip_status"] = "stub"
                         s["note"] = "no James clips in the library"
-                else:  # broll
-                    s["url"] = f"stub://broll/{s['index']}"
-                    s["clip_status"] = "stub"
-                    s["note"] = "B-roll stubbed (Runway dev API needs a seed image)"
+                else:  # broll → seed image → Runway
+                    url, err = await _render_broll(s.get("visual_prompt", ""), row["aspect"])
+                    s["url"] = url or f"stub://broll/{s['index']}"
+                    s["clip_status"] = "ok" if url else "stub"
+                    if err:
+                        s["note"] = err
             await _set(conn, pid, status="assembling", scenes=json.dumps(scenes))
 
         # ── assemble ──
