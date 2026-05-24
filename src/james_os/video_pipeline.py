@@ -53,15 +53,18 @@ def _row(r) -> dict:
 
 
 async def start_production(
-    script: str, platform: str, aspect: str, title: str = "", tenant_id: UUID | None = None
+    script: str, platform: str, aspect: str, title: str = "",
+    scenes: list[dict] | None = None, tenant_id: UUID | None = None,
 ) -> dict:
+    """Create a production. If `scenes` is supplied (an edited plan from the
+    visual editor), it's stored and the planning stage is skipped."""
     async with acquire(tenant_id) as conn:
         row = await conn.fetchrow(
             """INSERT INTO video_productions
-                 (status, title, platform, aspect, script,
+                 (status, title, platform, aspect, script, scenes,
                   avatar_provider, broll_provider, assembly_provider)
-               VALUES ('queued',$1,$2,$3,$4,$5,$6,$7) RETURNING *""",
-            title, platform, aspect, script,
+               VALUES ('queued',$1,$2,$3,$4,$5::jsonb,$6,$7,$8) RETURNING *""",
+            title, platform, aspect, script, json.dumps(scenes or []),
             get_avatar_provider().name, settings.video_provider,
             get_assembly_provider().name,
         )
@@ -151,20 +154,33 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
     """The worker. Advances the production through every stage."""
     pid = production_id
     try:
-        # ── plan ──
+        # ── plan (skip if the editor supplied an edited plan) ──
         async with acquire(tenant_id) as conn:
             row = await conn.fetchrow("SELECT * FROM video_productions WHERE id=$1", pid)
             if row is None:
                 return
-            await _set(conn, pid, status="planning")
-        plan = await generate_scene_plan(row["script"], row["platform"], row["aspect"], tenant_id)
-        scenes = plan.get("scenes") or []
-        if not scenes:
-            return await _fail(pid, plan.get("error") or "no scenes planned", tenant_id)
-        async with acquire(tenant_id) as conn:
-            await _set(conn, pid, status="rendering_clips",
-                       plan=json.dumps(plan), scenes=json.dumps(scenes),
-                       title=plan.get("title") or row["title"])
+        existing = row["scenes"]
+        if isinstance(existing, str):
+            existing = json.loads(existing)
+        if existing:  # pre-edited plan from the visual editor — use as-is
+            scenes = existing
+            final_title = row["title"]
+            async with acquire(tenant_id) as conn:
+                await _set(conn, pid, status="rendering_clips")
+        else:
+            async with acquire(tenant_id) as conn:
+                await _set(conn, pid, status="planning")
+            plan = await generate_scene_plan(
+                row["script"], row["platform"], row["aspect"], tenant_id=tenant_id
+            )
+            scenes = plan.get("scenes") or []
+            if not scenes:
+                return await _fail(pid, plan.get("error") or "no scenes planned", tenant_id)
+            final_title = plan.get("title") or row["title"]
+            async with acquire(tenant_id) as conn:
+                await _set(conn, pid, status="rendering_clips",
+                           plan=json.dumps(plan), scenes=json.dumps(scenes),
+                           title=final_title)
 
         # ── render each scene's clip ──
         # IMPORTANT: do NOT hold a DB connection across the renders below —
@@ -224,8 +240,8 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
                    VALUES ('video_producer','video',$1::jsonb,'pending') RETURNING id""",
                 json.dumps({
                     "platform": row["platform"], "format": "video",
-                    "content": plan.get("title") or row["script"][:120],
-                    "caption": plan.get("title") or "",
+                    "content": final_title or row["script"][:120],
+                    "caption": final_title or "",
                     "media_url": res.url,
                     "stub": res.url.startswith("stub://"),
                     "scenes": len(scenes),

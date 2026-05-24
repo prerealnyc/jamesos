@@ -57,6 +57,7 @@ from .models import (
     ResearchSourceOut,
     ScriptRequest,
     TrendDiscoverRequest,
+    VideoComposeRequest,
     VideoGenerateRequest,
     VideoPlanRequest,
     VideoProduceRequest,
@@ -423,14 +424,26 @@ async def video_plan(req: VideoPlanRequest) -> dict:
     return await generate_scene_plan(req.script.strip(), req.platform, req.aspect)
 
 
+@app.post("/video/compose")
+async def video_compose(req: VideoComposeRequest) -> dict:
+    """Auto-compose an editable video: research a trending angle → on-voice
+    script (guideline + voice-QA) → scene plan (reference-style matched).
+    Returns the editable plan; nothing renders."""
+    from .video_compose import compose_video
+    return await compose_video(req.topic_hint.strip(), req.platform, req.aspect)
+
+
 @app.post("/video/produce", status_code=201)
 async def video_produce(req: VideoProduceRequest, background: BackgroundTasks) -> dict:
-    """Kick off a durable production. Returns immediately; the pipeline runs
+    """Kick off a durable production. Accepts either a `script` (auto-planned)
+    or an edited `scenes` plan from the visual editor (rendered as-is). Runs
     in the background (plan → clips → assemble → approval queue). Poll
-    GET /video/productions/{id}. Stub-first: runs end-to-end without keys."""
-    if not req.script.strip():
-        raise HTTPException(status_code=400, detail="script is required")
-    prod = await start_production(req.script.strip(), req.platform, req.aspect, req.title)
+    GET /video/productions/{id}."""
+    if not req.script.strip() and not req.scenes:
+        raise HTTPException(status_code=400, detail="script or scenes required")
+    prod = await start_production(
+        req.script.strip(), req.platform, req.aspect, req.title, req.scenes
+    )
     background.add_task(run_production, UUID(prod["id"]))
     return prod
 

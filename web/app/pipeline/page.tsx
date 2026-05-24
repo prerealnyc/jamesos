@@ -21,24 +21,28 @@ import {
   Spinner,
   PageHeader,
 } from "@/components/ui";
+import VideoEditor from "@/components/video-editor";
 
 export default function VideoStudio() {
-  const [mode, setMode] = useState<"producer" | "clip">("producer");
+  const [mode, setMode] = useState<"composer" | "producer" | "clip">("composer");
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Video Studio"
-        sub="Turn a script into a finished video — scene plan → talking-head (avatar or your clips) + B-roll → assembled cut → approval queue. Durable and stub-first, so it runs end-to-end before you add render keys."
+        sub="Compose from trends → edit scenes (avatar / B-roll / your clips + captions) → preview → assembled cut into the approval queue. Durable and stub-first, so it runs end-to-end before you add render keys."
       />
       <div className="flex gap-2">
+        <Tab active={mode === "composer"} onClick={() => setMode("composer")}>
+          Composer
+        </Tab>
         <Tab active={mode === "producer"} onClick={() => setMode("producer")}>
-          Producer
+          From script
         </Tab>
         <Tab active={mode === "clip"} onClick={() => setMode("clip")}>
           Single clip
         </Tab>
       </div>
-      {mode === "producer" ? <Producer /> : <SingleClip />}
+      {mode === "composer" ? <VideoEditor /> : mode === "producer" ? <Producer /> : <SingleClip />}
     </div>
   );
 }
@@ -89,7 +93,7 @@ function Producer() {
     if (!script.trim()) return;
     setErr("");
     try {
-      const p = await api.produceVideo(script.trim(), platform, aspect);
+      const p = await api.produceVideo({ script: script.trim(), platform, aspect });
       setProd(p);
       if (pollRef.current) clearInterval(pollRef.current);
       pollRef.current = setInterval(async () => {

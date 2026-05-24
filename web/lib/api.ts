@@ -265,6 +265,19 @@ export type ScenePlan = {
   error?: string;
 };
 
+export type ComposeResult = {
+  idea?: { title: string; topic: string; trend_basis?: string };
+  script: string;
+  voice_score?: number;
+  voice_status?: string;
+  title: string;
+  scenes: Scene[];
+  intel?: { provider?: string; summary?: string; sources?: string[] } | null;
+  platform?: string;
+  aspect?: string;
+  error?: string;
+};
+
 export type Production = {
   id: string;
   status: "queued" | "planning" | "rendering_clips" | "assembling" | "succeeded" | "failed";
@@ -319,8 +332,13 @@ export const api = {
   listAutopilotRuns: () => jget<AutopilotRun[]>("/autopilot/runs"),
   planVideo: (script: string, platform = "instagram", aspect = "9:16") =>
     jpost<ScenePlan>("/video/plan", { script, platform, aspect }),
-  produceVideo: (script: string, platform = "instagram", aspect = "9:16", title = "") =>
-    jpost<Production>("/video/produce", { script, platform, aspect, title }),
+  composeVideo: (topic_hint: string, platform = "instagram", aspect = "9:16") =>
+    jpost<ComposeResult>("/video/compose", { topic_hint, platform, aspect }),
+  produceVideo: (opts: {
+    script?: string; platform?: string; aspect?: string; title?: string; scenes?: Scene[];
+  }) => jpost<Production>("/video/produce", {
+    platform: "instagram", aspect: "9:16", ...opts,
+  }),
   listProductions: () => jget<Production[]>("/video/productions"),
   getProduction: (id: string) => jget<Production>(`/video/productions/${id}`),
   listMedia: (role = "") =>

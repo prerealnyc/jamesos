@@ -212,11 +212,18 @@ class VideoPlanRequest(BaseModel):
     aspect: str = "9:16"
 
 
+class VideoComposeRequest(BaseModel):
+    topic_hint: str = ""
+    platform: str = "instagram"
+    aspect: str = "9:16"
+
+
 class VideoProduceRequest(BaseModel):
-    script: str
+    script: str = ""
     platform: str = "instagram"
     aspect: str = "9:16"
     title: str = ""
+    scenes: list[dict] = Field(default_factory=list)  # edited plan from the editor
 
 
 class MultiGenerateRequest(BaseModel):
