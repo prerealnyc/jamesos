@@ -148,9 +148,23 @@ export default function AutopilotPage() {
                 </span>
               </div>
               {r.error && <p className="text-destructive text-[12px] mt-1">✗ {r.error}</p>}
+              {r.research?.summary && (
+                <div className="mt-2 rounded-md bg-background border border-border p-2 text-[11px]">
+                  <span className="uppercase tracking-[.4px] text-muted-foreground">
+                    Researched first ({r.research.provider}) ·{" "}
+                    {r.research.sources?.length || 0} sources
+                  </span>
+                  <p className="mt-1 text-muted-foreground line-clamp-3">{r.research.summary}</p>
+                </div>
+              )}
               {r.ideas?.length > 0 && (
-                <ul className="mt-2 text-[12px] text-muted-foreground list-disc pl-5">
-                  {r.ideas.map((i, n) => <li key={n}><span className="text-foreground">{i.title}</span> — {i.topic}</li>)}
+                <ul className="mt-2 text-[12px] text-muted-foreground flex flex-col gap-1">
+                  {r.ideas.map((i, n) => (
+                    <li key={n}>
+                      <span className="text-foreground">{i.title}</span>
+                      {i.trend_basis && <span className="text-primary"> · rides: {i.trend_basis}</span>}
+                    </li>
+                  ))}
                 </ul>
               )}
               {r.results?.length > 0 && (

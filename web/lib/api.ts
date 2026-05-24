@@ -302,8 +302,9 @@ export type AutopilotRun = {
   requested: number;
   generated: number;
   queued: number;
-  ideas: { title: string; topic: string; pillar?: string }[];
+  ideas: { title: string; topic: string; pillar?: string; trend_basis?: string }[];
   results: { title: string; platform: string; voice_score: number; status: string; action_id: string | null }[];
+  research: { provider?: string; subject?: string; summary?: string; findings?: string[]; sources?: string[]; trends?: string[] };
   error: string | null;
   created_at: string;
   completed_at: string | null;

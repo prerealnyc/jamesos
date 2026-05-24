@@ -34,9 +34,18 @@ DEFAULT_CONFIG = {
     "platforms": ["instagram"],
     "format": "reel_script",
     "hour": 9,             # local hour (server time) to run the daily batch
-    "topic_hint": "",      # optional steer, e.g. "Staten Island commercial RE"
+    "topic_hint": "",      # the space to research, e.g. "Staten Island commercial RE"
+    "research_focus": "",  # optional override of the virality research angle
     "last_run_date": "",   # YYYY-MM-DD of the last completed run
 }
+
+# Autopilot is virality-first: it researches what's working RIGHT NOW before
+# inventing anything. This is the default angle of that research.
+_VIRALITY_FOCUS = (
+    "what is going viral and trending RIGHT NOW in short-form video — the "
+    "specific hooks, formats, angles, and topics that are working on Instagram "
+    "Reels, TikTok, and YouTube Shorts. List concrete, currently-working patterns."
+)
 
 
 # ─────────────────────────────────────────────────────────── config ──
@@ -70,46 +79,94 @@ async def set_config(updates: dict, tenant_id: UUID | None = None) -> dict:
 # ─────────────────────────────────────────────────────────── ideation ──
 
 _IDEA_SYSTEM = """You are the content strategist for a personal brand.
-Invent {n} fresh content ideas. Each MUST be a SINGLE-ARC STORY angle (a
-first-person moment, decision, or lesson) — never a listicle, never "N tips".
-Ground them in the brand voice and pillars shown. Be specific and concrete;
-no generic platitudes.
+You are given LIVE market research and trends describing what is working /
+going viral RIGHT NOW, plus the brand voice.
+
+Invent {n} content ideas that RIDE these specific trends — each idea must be
+traceable to something in the research/trends (a hook pattern, format, or
+topic that's currently working). Each MUST be a SINGLE-ARC STORY angle (a
+first-person moment, decision, or lesson) in the brand's voice — never a
+listicle, never "N tips". Be specific; no generic platitudes.
 
 Return STRICT JSON:
 {{"ideas": [{{"title": str, "topic": str (a one-line story prompt the writer
-will expand, phrased as a personal story), "pillar": str}}]}}"""
+will expand, phrased as a personal story), "pillar": str,
+"trend_basis": str (the specific trend/insight this idea rides)}}]}}"""
 
 
-async def _ideation_context(hint: str, tenant_id: UUID | None) -> str:
+async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
+    """Virality-first: run LIVE market research + pull trends BEFORE ideating.
+    Returns None when no real intel is available — the caller then refuses to
+    generate, so Autopilot never produces off-trend content."""
+    from .ingestion import ingest_many
+    from .research import get_research_provider, research_to_events
+
+    provider = get_research_provider()
+    if provider.name == "stub":
+        return None  # no live research → no viral signal → don't ideate
+
+    subject = (cfg.get("topic_hint") or "").strip() or "this brand's industry and niche"
+    focus = (cfg.get("research_focus") or "").strip() or _VIRALITY_FOCUS
+    try:
+        result = await provider.research(subject, focus)
+    except Exception:  # noqa: BLE001
+        return None
+    if result.is_empty():
+        return None
+
+    # Persist the research into memory (citable + reusable), best-effort.
+    try:
+        await ingest_many(research_to_events(result), tenant_id)
+    except Exception:  # noqa: BLE001
+        pass
+
+    async with acquire(tenant_id) as conn:
+        trend_rows = await conn.fetch(
+            "SELECT raw_content FROM events "
+            "WHERE payload->>'category'='trend' AND superseded_by IS NULL "
+            "ORDER BY created_at DESC LIMIT 5"
+        )
+    trends = [(r["raw_content"] or "")[:200] for r in trend_rows]
+    return {
+        "provider": result.provider,
+        "subject": subject,
+        "summary": result.summary,
+        "findings": result.findings,
+        "sources": [s.url for s in result.sources],
+        "trends": trends,
+    }
+
+
+async def _voice_for_ideation(tenant_id: UUID | None) -> str:
     async with acquire(tenant_id) as conn:
         voice = await conn.fetch(
             "SELECT raw_content FROM events "
             "WHERE payload->>'category'='voice_corpus' AND superseded_by IS NULL "
             "AND length(raw_content) > 200 ORDER BY random() LIMIT 3"
         )
-        trends = await conn.fetch(
-            "SELECT raw_content FROM events "
-            "WHERE payload->>'category'='trend' AND superseded_by IS NULL "
-            "ORDER BY created_at DESC LIMIT 3"
-        )
-    v = "\n---\n".join((r["raw_content"] or "")[:500] for r in voice) or "(no voice corpus)"
-    t = "\n".join((r["raw_content"] or "")[:200] for r in trends)
-    ctx = f"BRAND VOICE:\n{v}"
-    if t:
-        ctx += f"\n\nWHAT'S TRENDING (for inspiration):\n{t}"
-    if hint:
-        ctx += f"\n\nFOCUS HINT: {hint}"
-    return ctx
+    return "\n---\n".join((r["raw_content"] or "")[:500] for r in voice) or "(no voice corpus)"
 
 
-async def generate_ideas(n: int, hint: str, tenant_id: UUID | None = None) -> list[dict]:
+async def generate_ideas(
+    n: int, intel: dict, tenant_id: UUID | None = None
+) -> list[dict]:
+    """Ideas grounded in live research/trends (what's working) + voice (tone)."""
     n = max(1, min(n, 10))
-    ctx = await _ideation_context(hint, tenant_id)
+    voice = await _voice_for_ideation(tenant_id)
+    findings = "\n".join(f"- {f}" for f in (intel.get("findings") or [])[:12])
+    trends = "\n".join(f"- {t}" for t in (intel.get("trends") or []))
+    ctx = (
+        f"LIVE MARKET RESEARCH (subject: {intel.get('subject')}, via "
+        f"{intel.get('provider')}):\n{intel.get('summary','')}\n\n"
+        f"KEY FINDINGS (what's working now):\n{findings or '(none)'}\n\n"
+        f"SCRAPED TRENDS:\n{trends or '(none — research only)'}\n\n"
+        f"BRAND VOICE (write in this voice):\n{voice}"
+    )
     try:
         out = await get_llm().complete_json(
             system=_IDEA_SYSTEM.format(n=n),
             messages=[{"role": "user", "content": ctx}],
-            max_tokens=900, temperature=0.8,
+            max_tokens=1000, temperature=0.8,
         )
     except Exception:  # noqa: BLE001
         return []
@@ -121,6 +178,7 @@ async def generate_ideas(n: int, hint: str, tenant_id: UUID | None = None) -> li
                 "title": str(it.get("title") or "").strip(),
                 "topic": topic,
                 "pillar": str(it.get("pillar") or "").strip(),
+                "trend_basis": str(it.get("trend_basis") or "").strip(),
             })
     return ideas
 
@@ -131,7 +189,7 @@ def _run_row(r) -> dict:
     d = dict(r)
     d["id"] = str(d["id"])
     d.pop("tenant_id", None)
-    for k in ("ideas", "results"):
+    for k in ("ideas", "results", "research"):
         if isinstance(d.get(k), str):
             d[k] = json.loads(d[k])
     for k in ("created_at", "completed_at"):
@@ -157,12 +215,34 @@ async def run_batch(
         )
 
     try:
-        ideas = await generate_ideas(count, cfg.get("topic_hint", ""), tenant_id)
+        # ── 1) Virality-first: research what's working BEFORE ideating ──
+        intel = await _gather_intel(cfg, tenant_id)
+        if intel is None:
+            async with acquire(tenant_id) as conn:
+                await conn.execute(
+                    "UPDATE autopilot_runs SET status='failed', error=$2, "
+                    "completed_at=now() WHERE id=$1",
+                    run_id,
+                    "No live market research/trends available — Autopilot only "
+                    "ideates after research to stay viral-aligned. Add a "
+                    "Perplexity key (and Apify for scraped trends).",
+                )
+            return await get_run(run_id, tenant_id)
+
+        async with acquire(tenant_id) as conn:
+            await conn.execute(
+                "UPDATE autopilot_runs SET research=$2::jsonb WHERE id=$1",
+                run_id, json.dumps(intel),
+            )
+
+        # ── 2) Ideate strictly from that intel ──
+        ideas = await generate_ideas(count, intel, tenant_id)
         if not ideas:
             async with acquire(tenant_id) as conn:
                 await conn.execute(
                     "UPDATE autopilot_runs SET status='failed', "
-                    "error='ideation produced no ideas', completed_at=now() WHERE id=$1",
+                    "error='ideation produced no ideas from the research', "
+                    "completed_at=now() WHERE id=$1",
                     run_id,
                 )
             return await get_run(run_id, tenant_id)
