@@ -85,15 +85,13 @@ async def _fail(pid, msg, tenant_id):
         )
 
 
-async def _next_james_clip(conn, used: list[str]) -> str | None:
-    rows = await conn.fetch(
-        "SELECT uri FROM media_assets WHERE role='james_clip' ORDER BY created_at LIMIT 20"
-    )
-    uris = [r["uri"] for r in rows if r["uri"]]
-    for u in uris:
-        if u not in used:
-            return u
-    return uris[0] if uris else None
+async def _james_clip_uris(tenant_id: UUID | None) -> list[str]:
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            "SELECT uri FROM media_assets WHERE role='james_clip' "
+            "ORDER BY created_at LIMIT 20"
+        )
+    return [r["uri"] for r in rows if r["uri"]]
 
 
 def _public(uri: str) -> str:
@@ -169,32 +167,42 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
                        title=plan.get("title") or row["title"])
 
         # ── render each scene's clip ──
+        # IMPORTANT: do NOT hold a DB connection across the renders below —
+        # each can poll a provider for minutes. We render with no connection
+        # held, then persist progress in short-lived connections so the pool
+        # is never starved and no transaction stays open during a render.
+        james_uris = await _james_clip_uris(tenant_id)
         used_clips: list[str] = []
+        for s in scenes:
+            kind, source = s["kind"], s.get("source")
+            if kind == "talking_head" and source == "avatar":
+                url, err = await _render_avatar(s["voiceover"], row["aspect"])
+                s["url"] = url or f"stub://avatar/{s['index']}"
+                s["clip_status"] = "ok" if url else "stub"
+                if err:
+                    s["note"] = err
+            elif kind == "talking_head" and source == "james_clip":
+                clip = next((u for u in james_uris if u not in used_clips),
+                            james_uris[0] if james_uris else None)
+                if clip:
+                    used_clips.append(clip)
+                    s["url"] = _public(clip)
+                    s["clip_status"] = "ok"
+                else:
+                    s["url"] = f"stub://james_clip/{s['index']}"
+                    s["clip_status"] = "stub"
+                    s["note"] = "no James clips in the library"
+            else:  # broll → seed image → Runway
+                url, err = await _render_broll(s.get("visual_prompt", ""), row["aspect"])
+                s["url"] = url or f"stub://broll/{s['index']}"
+                s["clip_status"] = "ok" if url else "stub"
+                if err:
+                    s["note"] = err
+            # persist progress per scene in a short-lived connection
+            async with acquire(tenant_id) as conn:
+                await _set(conn, pid, scenes=json.dumps(scenes))
+
         async with acquire(tenant_id) as conn:
-            for s in scenes:
-                kind, source = s["kind"], s.get("source")
-                if kind == "talking_head" and source == "avatar":
-                    url, err = await _render_avatar(s["voiceover"], row["aspect"])
-                    s["url"] = url or f"stub://avatar/{s['index']}"
-                    s["clip_status"] = "ok" if url else "stub"
-                    if err:
-                        s["note"] = err
-                elif kind == "talking_head" and source == "james_clip":
-                    clip = await _next_james_clip(conn, used_clips)
-                    if clip:
-                        used_clips.append(clip)
-                        s["url"] = _public(clip)
-                        s["clip_status"] = "ok"
-                    else:
-                        s["url"] = f"stub://james_clip/{s['index']}"
-                        s["clip_status"] = "stub"
-                        s["note"] = "no James clips in the library"
-                else:  # broll → seed image → Runway
-                    url, err = await _render_broll(s.get("visual_prompt", ""), row["aspect"])
-                    s["url"] = url or f"stub://broll/{s['index']}"
-                    s["clip_status"] = "ok" if url else "stub"
-                    if err:
-                        s["note"] = err
             await _set(conn, pid, status="assembling", scenes=json.dumps(scenes))
 
         # ── assemble ──
