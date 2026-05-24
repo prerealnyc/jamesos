@@ -150,6 +150,49 @@ async def _render_broll(visual_prompt: str, aspect: str) -> tuple[str | None, st
     return None, "Runway render timed out"
 
 
+async def _render_scene_inplace(
+    s: dict, aspect: str, james_uris: list[str], used_clips: list[str]
+) -> dict:
+    """Render one scene's clip, mutating s with url/clip_status/note."""
+    kind, source = s.get("kind"), s.get("source")
+    s.pop("note", None)
+    if kind == "talking_head" and source == "avatar":
+        url, err = await _render_avatar(s.get("voiceover", ""), aspect)
+        s["url"] = url or f"stub://avatar/{s.get('index', 0)}"
+        s["clip_status"] = "ok" if url else "stub"
+        if err:
+            s["note"] = err
+    elif kind == "talking_head" and source == "james_clip":
+        clip = next((u for u in james_uris if u not in used_clips),
+                    james_uris[0] if james_uris else None)
+        if clip:
+            used_clips.append(clip)
+            s["url"] = _public(clip)
+            s["clip_status"] = "ok"
+        else:
+            s["url"] = f"stub://james_clip/{s.get('index', 0)}"
+            s["clip_status"] = "stub"
+            s["note"] = "no James clips in the library — upload some in the Reference Library"
+    else:  # broll → seed image → Runway
+        url, err = await _render_broll(s.get("visual_prompt", ""), aspect)
+        s["url"] = url or f"stub://broll/{s.get('index', 0)}"
+        s["clip_status"] = "ok" if url else "stub"
+        if err:
+            s["note"] = err
+    return s
+
+
+async def render_one_scene(
+    scene: dict, aspect: str = "9:16", tenant_id: UUID | None = None
+) -> dict:
+    """Render a single scene for the editor's per-scene preview. Returns the
+    scene with url/clip_status/note filled. Reuses the same providers as the
+    full pipeline, so a stub stays a stub and a real key produces a real clip."""
+    james_uris = await _james_clip_uris(tenant_id)
+    s = dict(scene)
+    return await _render_scene_inplace(s, aspect, james_uris, [])
+
+
 async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> None:
     """The worker. Advances the production through every stage."""
     pid = production_id
@@ -190,30 +233,13 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
         james_uris = await _james_clip_uris(tenant_id)
         used_clips: list[str] = []
         for s in scenes:
-            kind, source = s["kind"], s.get("source")
-            if kind == "talking_head" and source == "avatar":
-                url, err = await _render_avatar(s["voiceover"], row["aspect"])
-                s["url"] = url or f"stub://avatar/{s['index']}"
-                s["clip_status"] = "ok" if url else "stub"
-                if err:
-                    s["note"] = err
-            elif kind == "talking_head" and source == "james_clip":
-                clip = next((u for u in james_uris if u not in used_clips),
-                            james_uris[0] if james_uris else None)
-                if clip:
-                    used_clips.append(clip)
-                    s["url"] = _public(clip)
-                    s["clip_status"] = "ok"
-                else:
-                    s["url"] = f"stub://james_clip/{s['index']}"
-                    s["clip_status"] = "stub"
-                    s["note"] = "no James clips in the library"
-            else:  # broll → seed image → Runway
-                url, err = await _render_broll(s.get("visual_prompt", ""), row["aspect"])
-                s["url"] = url or f"stub://broll/{s['index']}"
-                s["clip_status"] = "ok" if url else "stub"
-                if err:
-                    s["note"] = err
+            # Reuse a clip already rendered in the editor's per-scene preview.
+            if (s.get("url") or "").startswith("http"):
+                s["clip_status"] = "ok"
+                if s.get("source") == "james_clip":
+                    used_clips.append(s["url"])
+            else:
+                await _render_scene_inplace(s, row["aspect"], james_uris, used_clips)
             # persist progress per scene in a short-lived connection
             async with acquire(tenant_id) as conn:
                 await _set(conn, pid, scenes=json.dumps(scenes))

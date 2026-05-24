@@ -334,6 +334,8 @@ export const api = {
     jpost<ScenePlan>("/video/plan", { script, platform, aspect }),
   composeVideo: (topic_hint: string, platform = "instagram", aspect = "9:16") =>
     jpost<ComposeResult>("/video/compose", { topic_hint, platform, aspect }),
+  renderScene: (scene: Scene, aspect = "9:16") =>
+    jpost<Scene>("/video/render-scene", { scene, aspect }),
   produceVideo: (opts: {
     script?: string; platform?: string; aspect?: string; title?: string; scenes?: Scene[];
   }) => jpost<Production>("/video/produce", {

@@ -218,6 +218,11 @@ class VideoComposeRequest(BaseModel):
     aspect: str = "9:16"
 
 
+class SceneRenderRequest(BaseModel):
+    scene: dict
+    aspect: str = "9:16"
+
+
 class VideoProduceRequest(BaseModel):
     script: str = ""
     platform: str = "instagram"

@@ -55,6 +55,7 @@ from .models import (
     ResearchRequest,
     ResearchResponse,
     ResearchSourceOut,
+    SceneRenderRequest,
     ScriptRequest,
     TrendDiscoverRequest,
     VideoComposeRequest,
@@ -79,6 +80,7 @@ from .video_plan import generate_scene_plan
 from .video_pipeline import (
     get_production,
     list_productions,
+    render_one_scene,
     run_production,
     start_production,
 )
@@ -446,6 +448,16 @@ async def video_produce(req: VideoProduceRequest, background: BackgroundTasks) -
     )
     background.add_task(run_production, UUID(prod["id"]))
     return prod
+
+
+@app.post("/video/render-scene")
+async def video_render_scene(req: SceneRenderRequest) -> dict:
+    """Render ONE scene for the editor's per-scene preview (avatar / B-roll /
+    James clip). Returns the scene with url + clip_status. Reused at assembly,
+    so previewing a scene means it isn't re-rendered."""
+    if not req.scene:
+        raise HTTPException(status_code=400, detail="scene is required")
+    return await render_one_scene(req.scene, req.aspect)
 
 
 @app.get("/video/productions")

@@ -33,6 +33,7 @@ export default function VideoEditor() {
   const [sel, setSel] = useState(0);
   const [err, setErr] = useState("");
   const [prod, setProd] = useState<Production | null>(null);
+  const [rendering, setRendering] = useState<number | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
@@ -67,6 +68,15 @@ export default function VideoEditor() {
   function del(i: number) {
     setScenes((cur) => cur.filter((_, n) => n !== i).map((s, n) => ({ ...s, index: n })));
     setSel(0);
+  }
+  async function renderScene(i: number) {
+    setRendering(i); setErr("");
+    try {
+      const r = await api.renderScene({ ...scenes[i], index: i }, aspect);
+      patchScene(i, { url: r.url, clip_status: r.clip_status, note: r.note });
+      setSel(i);
+    } catch (e) { setErr(e instanceof Error ? e.message : "render failed"); }
+    finally { setRendering(null); }
   }
   function addScene() {
     setScenes((cur) => [...cur, {
@@ -180,6 +190,16 @@ export default function VideoEditor() {
                     )}
                     <Input placeholder="on-screen caption" value={s.on_screen_text}
                       onChange={(e) => patchScene(i, { on_screen_text: e.target.value })} className="text-[12px] mt-2" />
+                    <div className="flex items-center gap-2 mt-2">
+                      <button onClick={(e) => { e.stopPropagation(); renderScene(i); }}
+                        disabled={rendering === i}
+                        className="text-[12px] text-primary hover:underline disabled:opacity-50">
+                        {rendering === i ? "rendering…" : s.url ? "re-render clip" : "render clip"}
+                      </button>
+                      {s.clip_status === "ok" && <Badge tone="ok">clip ready</Badge>}
+                      {s.clip_status === "stub" && <Badge tone="muted">stub</Badge>}
+                      {s.note && <span className="text-[11px] text-muted-foreground truncate">{s.note}</span>}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -204,6 +224,17 @@ export default function VideoEditor() {
                 style={{ aspectRatio: aspect.replace(":", "/"), width: "100%", maxWidth: 280 }}>
                 {prod?.final_url && !prod.final_url.startsWith("stub://") ? (
                   <video src={mediaUrl(prod.final_url)} controls className="w-full h-full object-contain" />
+                ) : cur?.url && cur.url.startsWith("http") ? (
+                  <>
+                    <video src={mediaUrl(cur.url)} controls className="w-full h-full object-contain" />
+                    {cur.on_screen_text && (
+                      <div className="absolute bottom-6 left-2 right-2 text-center pointer-events-none">
+                        <span className="bg-black/60 text-white text-[13px] font-bold px-2 py-1 rounded">
+                          {cur.on_screen_text}
+                        </span>
+                      </div>
+                    )}
+                  </>
                 ) : cur ? (
                   <div className="absolute inset-0 flex flex-col items-center justify-center p-3 text-center">
                     <Badge tone={cur.kind === "broll" ? "muted" : "primary"}>
