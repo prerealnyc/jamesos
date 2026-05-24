@@ -33,6 +33,7 @@ const NAV: Group[] = [
   {
     title: "Distribution",
     items: [
+      { href: "/autopilot", label: "Autopilot", sub: "Autonomous daily content", icon: "queue", live: true },
       { href: "/queue", label: "Approval Queue", sub: "Review & publish", icon: "queue", live: true },
     ],
   },

@@ -285,8 +285,37 @@ export type Production = {
   completed_at: string | null;
 };
 
+export type AutopilotConfig = {
+  enabled: boolean;
+  daily_count: number;
+  platforms: string[];
+  format: string;
+  hour: number;
+  topic_hint: string;
+  last_run_date: string;
+};
+
+export type AutopilotRun = {
+  id: string;
+  status: "running" | "succeeded" | "failed";
+  trigger: "manual" | "scheduled";
+  requested: number;
+  generated: number;
+  queued: number;
+  ideas: { title: string; topic: string; pillar?: string }[];
+  results: { title: string; platform: string; voice_score: number; status: string; action_id: string | null }[];
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
+};
+
 export const api = {
   health: () => jget<{ status: string }>("/health"),
+  getAutopilotConfig: () => jget<AutopilotConfig>("/autopilot/config"),
+  setAutopilotConfig: (cfg: Partial<AutopilotConfig>) =>
+    jpost<AutopilotConfig>("/autopilot/config", cfg),
+  runAutopilot: () => jpost<{ started: boolean; note: string }>("/autopilot/run", {}),
+  listAutopilotRuns: () => jget<AutopilotRun[]>("/autopilot/runs"),
   planVideo: (script: string, platform = "instagram", aspect = "9:16") =>
     jpost<ScenePlan>("/video/plan", { script, platform, aspect }),
   produceVideo: (script: string, platform = "instagram", aspect = "9:16", title = "") =>

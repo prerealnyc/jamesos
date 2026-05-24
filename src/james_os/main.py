@@ -7,7 +7,16 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    Body,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -74,15 +83,36 @@ from .video_pipeline import (
 )
 
 
+async def _autopilot_scheduler() -> None:
+    """In-process daily tick. Restart-safe: it runs the batch only if today's
+    hasn't run yet (checks last_run_date), so a restart can't double-fire.
+    Honest limit: scheduled runs only happen while the server is up."""
+    import asyncio
+
+    from .autopilot import get_config, run_batch, should_run_today
+
+    while True:
+        try:
+            if should_run_today(await get_config()):
+                await run_batch("scheduled")
+        except Exception:  # noqa: BLE001 — a tick failure must not kill the loop
+            pass
+        await asyncio.sleep(1800)  # check every 30 minutes
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
+
     await init_pool()
     # Overlay any tenant-saved API keys from the DB onto the .env baseline
     # so UI-entered credentials are live from the first request.
     from .credentials import load_into_settings
 
     await load_into_settings()
+    scheduler = asyncio.create_task(_autopilot_scheduler())
     yield
+    scheduler.cancel()
     await close_pool()
 
 
@@ -571,6 +601,34 @@ async def generate_script(req: ScriptRequest) -> ContentDraft:
         extra_instructions=steer,
     )
     return await generate_content(brief)
+
+
+# ─────────────────────────────────────────────────────────── autopilot ──
+
+@app.get("/autopilot/config")
+async def autopilot_get_config() -> dict:
+    from .autopilot import get_config
+    return await get_config()
+
+
+@app.post("/autopilot/config")
+async def autopilot_set_config(body: dict = Body(default={})) -> dict:
+    from .autopilot import set_config
+    return await set_config(body)
+
+
+@app.post("/autopilot/run", status_code=202)
+async def autopilot_run(background: BackgroundTasks) -> dict:
+    """Run a content batch now (in the background). Poll /autopilot/runs."""
+    from .autopilot import run_batch
+    background.add_task(run_batch, "manual")
+    return {"started": True, "note": "Batch running — watch /autopilot/runs."}
+
+
+@app.get("/autopilot/runs")
+async def autopilot_runs() -> list[dict]:
+    from .autopilot import list_runs
+    return await list_runs()
 
 
 # ────────────────────────────────────────────────── reference library ──
