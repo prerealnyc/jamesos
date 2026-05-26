@@ -310,7 +310,7 @@ async def _probe(client: httpx.AsyncClient, name: str) -> dict:
                 json={
                     "model": settings.perplexity_model,
                     "messages": [{"role": "user", "content": "ping"}],
-                    "max_tokens": 1,
+                    "max_tokens": 16,
                 },
             )
             if r.status_code == 200:
@@ -342,6 +342,52 @@ async def _probe(client: httpx.AsyncClient, name: str) -> dict:
                 return {"status": "bad_key", "detail": f"HTTP {r.status_code}"}
             return {"status": "unverified", "detail": f"HTTP {r.status_code}"}
 
+        if name == "apify":
+            if not settings.apify_api_key:
+                return {"status": "not_configured", "detail": ""}
+            r = await client.get(
+                "https://api.apify.com/v2/users/me",
+                params={"token": settings.apify_api_key},
+            )
+            if r.status_code == 200:
+                u = r.json().get("data", {}) or {}
+                plan = (u.get("plan") or {}).get("id") or "?"
+                return {"status": "ok",
+                        "detail": f"user={u.get('username','?')} plan={plan}"}
+            if r.status_code in (401, 403):
+                return {"status": "bad_key", "detail": f"HTTP {r.status_code}"}
+            if r.status_code == 429:
+                return {"status": "rate_limited", "detail": "HTTP 429"}
+            return {"status": "unverified", "detail": f"HTTP {r.status_code}"}
+
+        if name == "creatomate":
+            if not settings.creatomate_api_key:
+                return {"status": "not_configured", "detail": ""}
+            r = await client.get(
+                "https://api.creatomate.com/v1/templates",
+                headers={"Authorization": f"Bearer {settings.creatomate_api_key}"},
+            )
+            if r.status_code == 200:
+                n = len(r.json()) if isinstance(r.json(), list) else "?"
+                return {"status": "ok", "detail": f"auth OK, {n} templates"}
+            if r.status_code in (401, 403):
+                return {"status": "bad_key", "detail": f"HTTP {r.status_code}"}
+            return {"status": "unverified", "detail": f"HTTP {r.status_code}"}
+
+        if name == "shotstack":
+            if not settings.shotstack_api_key:
+                return {"status": "not_configured", "detail": ""}
+            env = settings.shotstack_env or "stage"
+            r = await client.get(
+                f"https://api.shotstack.io/{env}/assets",
+                headers={"x-api-key": settings.shotstack_api_key},
+            )
+            if r.status_code == 200:
+                return {"status": "ok", "detail": f"auth OK ({env})"}
+            if r.status_code in (401, 403):
+                return {"status": "bad_key", "detail": f"HTTP {r.status_code}"}
+            return {"status": "unverified", "detail": f"HTTP {r.status_code}"}
+
         return {"status": "not_configured", "detail": "no probe defined"}
     except httpx.TimeoutException:
         return {"status": "unverified", "detail": "probe timed out"}
@@ -359,6 +405,7 @@ async def integrations_check() -> dict:
         "anthropic", "openai", "voyage", "cohere",
         "heygen", "runway", "descript",
         "perplexity", "google_search",
+        "apify", "creatomate", "shotstack",
     ]
     async with httpx.AsyncClient(timeout=20.0) as client:
         results = await asyncio.gather(
