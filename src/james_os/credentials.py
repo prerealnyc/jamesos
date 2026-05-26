@@ -87,6 +87,14 @@ MANAGED_FIELDS: list[ManagedField] = [
     ManagedField("runway_api_key", "Runway API key", "Video & media"),
     ManagedField("creatomate_api_key", "Creatomate API key (video assembly)", "Video & media"),
     ManagedField("shotstack_api_key", "Shotstack API key (video assembly)", "Video & media"),
+    ManagedField(
+        "brand_logo_url", "Brand logo URL (public PNG, alpha)", "Video & media",
+        secret=False, placeholder="https://…/logo.png",
+    ),
+    ManagedField("music_url_upbeat", "Music URL: upbeat", "Video & media", secret=False),
+    ManagedField("music_url_calm", "Music URL: calm", "Video & media", secret=False),
+    ManagedField("music_url_dramatic", "Music URL: dramatic", "Video & media", secret=False),
+    ManagedField("music_url_tension", "Music URL: tension", "Video & media", secret=False),
     ManagedField("elevenlabs_api_key", "ElevenLabs API key", "Video & media"),
     ManagedField("minimax_api_key", "MiniMax API key", "Video & media"),
     # Publishing & social

@@ -92,6 +92,13 @@ class Settings(BaseSettings):
     creatomate_api_key: str = ""
     shotstack_api_key: str = ""
     shotstack_env: str = "stage"      # stage | v1 (production)
+    # Brand layer applied at assembly. All optional — left empty just skips
+    # that element honestly rather than faking it.
+    brand_logo_url: str = ""          # public URL to the brand logo (PNG with alpha)
+    music_url_upbeat: str = ""
+    music_url_calm: str = ""
+    music_url_dramatic: str = ""
+    music_url_tension: str = ""
 
     log_level: str = "INFO"
 

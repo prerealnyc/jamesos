@@ -50,6 +50,46 @@ def _dims(aspect: str) -> tuple[int, int]:
     return (1080, 1920) if aspect == "9:16" else (1920, 1080)
 
 
+def _entry_animation(kind: str | None) -> list[dict]:
+    """Plan's transition_in → Creatomate entry animation. 'cut' = no
+    animation (the default in Creatomate is an instant cut)."""
+    k = (kind or "cut").lower()
+    if k == "fade":
+        return [{"time": 0, "duration": 0.4, "easing": "linear", "type": "fade"}]
+    if k == "slide":
+        return [{"time": 0, "duration": 0.4, "easing": "quadratic-out",
+                 "type": "slide", "direction": "+100% 0%"}]
+    return []  # 'cut' or unknown
+
+
+def _logo_position(pos: str | None) -> dict:
+    """Plan's branding_position → x/y/anchor for a Creatomate image element."""
+    p = (pos or "").lower()
+    margin = "6%"
+    if p == "bottom-right":
+        return {"x": f"calc(100% - {margin})", "y": f"calc(100% - {margin})",
+                "x_anchor": "100%", "y_anchor": "100%"}
+    if p == "bottom-center":
+        return {"x": "50%", "y": f"calc(100% - {margin})",
+                "x_anchor": "50%", "y_anchor": "100%"}
+    if p == "top-right":
+        return {"x": f"calc(100% - {margin})", "y": margin,
+                "x_anchor": "100%", "y_anchor": "0%"}
+    return {}  # 'none' or unknown — caller will skip
+
+
+def _music_url_for(mood: str) -> str:
+    """Returns the configured music URL for the mood, or '' if none set."""
+    if not mood or mood == "none":
+        return ""
+    return {
+        "upbeat": settings.music_url_upbeat,
+        "calm": settings.music_url_calm,
+        "dramatic": settings.music_url_dramatic,
+        "tension": settings.music_url_tension,
+    }.get(mood, "")
+
+
 class CreatomateAssemblyProvider(AssemblyProvider):
     name = "creatomate"
 
@@ -59,17 +99,31 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         self.api_key = api_key
 
     def _build_source(self, scenes: list[dict], aspect: str) -> dict:
+        """Build a Creatomate source applying the full production layer:
+        clip + caption + transition_in + per-scene logo overlay + a single
+        background music track. Anything not configured (no logo URL, no
+        music URL for the chosen mood) is honestly skipped, not faked."""
         w, h = _dims(aspect)
         elements: list[dict] = []
+        total_duration = 0.0
         t = 0.0
+        first_mood = ""
+
         for s in scenes:
             dur = float(s.get("duration") or 5)
+            total_duration += dur
             url = s.get("url") or ""
+            anim = _entry_animation(s.get("transition_in"))
+
             if url and not url.startswith("stub://"):
-                elements.append({
+                elem = {
                     "type": "video", "source": url,
                     "track": 1, "time": t, "duration": dur, "fit": "cover",
-                })
+                }
+                if anim:
+                    elem["animations"] = anim
+                elements.append(elem)
+
             cap = (s.get("on_screen_text") or "").strip()
             if cap:
                 elements.append({
@@ -79,7 +133,30 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                     "font_size": "6.5 vh", "fill_color": "#ffffff",
                     "background_color": "rgba(0,0,0,0.55)", "x_alignment": "50%",
                 })
+
+            # Logo overlay — per-scene (so it can come/go per segment).
+            if s.get("branding_logo") and settings.brand_logo_url:
+                pos = _logo_position(s.get("branding_position"))
+                if pos:
+                    elements.append({
+                        "type": "image", "source": settings.brand_logo_url,
+                        "track": 3, "time": t, "duration": dur,
+                        "width": "14%", **pos,
+                    })
+
+            if not first_mood:
+                first_mood = (s.get("audio_music") or "").lower()
             t += dur
+
+        # Background music: one track, full duration, mood from the first scene.
+        music_url = _music_url_for(first_mood)
+        if music_url and total_duration > 0:
+            elements.append({
+                "type": "audio", "source": music_url,
+                "track": 4, "time": 0, "duration": total_duration,
+                "volume": 22,  # ducked under voiceover
+            })
+
         return {"output_format": "mp4", "width": w, "height": h, "elements": elements}
 
     async def render(self, scenes: list[dict], aspect: str) -> RenderResult:
