@@ -38,6 +38,27 @@ export default function VideoEditor() {
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
+  // Handoff from the Approval Queue: if a script was stashed in sessionStorage,
+  // pre-fill it and immediately plan it into scenes.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stashed = sessionStorage.getItem("pipeline.from_script");
+    if (!stashed) return;
+    sessionStorage.removeItem("pipeline.from_script");
+    (async () => {
+      setComposing(true); setErr("");
+      try {
+        const r = await api.planVideo(stashed, platform, aspect);
+        setScript(stashed);
+        setScenes((r.scenes || []).map((s, i) => ({ ...s, index: i })));
+        setTitle(r.title || "From approved script");
+        setSel(0);
+      } catch (e) { setErr(e instanceof Error ? e.message : "auto-plan failed"); }
+      finally { setComposing(false); }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function compose() {
     setComposing(true); setErr(""); setProd(null);
     try {
@@ -190,6 +211,44 @@ export default function VideoEditor() {
                     )}
                     <Input placeholder="on-screen caption" value={s.on_screen_text}
                       onChange={(e) => patchScene(i, { on_screen_text: e.target.value })} className="text-[12px] mt-2" />
+                    {/* production row: music · sfx · logo · transition */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-2 text-[11px]">
+                      <label className="flex flex-col">
+                        <span className="text-muted-foreground uppercase tracking-[.4px]">Music</span>
+                        <Select value={s.audio_music || "none"}
+                          onChange={(e) => patchScene(i, { audio_music: e.target.value })}
+                          className="h-7 text-[12px]">
+                          {["upbeat","calm","dramatic","tension","none"].map(m => <option key={m}>{m}</option>)}
+                        </Select>
+                      </label>
+                      <label className="flex flex-col">
+                        <span className="text-muted-foreground uppercase tracking-[.4px]">SFX</span>
+                        <Input value={s.audio_sfx || ""} placeholder="whoosh, ding…"
+                          onChange={(e) => patchScene(i, { audio_sfx: e.target.value })}
+                          className="h-7 text-[12px]" />
+                      </label>
+                      <label className="flex flex-col">
+                        <span className="text-muted-foreground uppercase tracking-[.4px]">Logo</span>
+                        <Select value={s.branding_logo ? (s.branding_position || "bottom-right") : "none"}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            patchScene(i, v === "none"
+                              ? { branding_logo: false, branding_position: "none" }
+                              : { branding_logo: true, branding_position: v });
+                          }}
+                          className="h-7 text-[12px]">
+                          {["none","bottom-right","bottom-center","top-right"].map(p => <option key={p}>{p}</option>)}
+                        </Select>
+                      </label>
+                      <label className="flex flex-col">
+                        <span className="text-muted-foreground uppercase tracking-[.4px]">Enter</span>
+                        <Select value={s.transition_in || "cut"}
+                          onChange={(e) => patchScene(i, { transition_in: e.target.value })}
+                          className="h-7 text-[12px]">
+                          {["cut","fade","slide"].map(t => <option key={t}>{t}</option>)}
+                        </Select>
+                      </label>
+                    </div>
                     <div className="flex items-center gap-2 mt-2">
                       <button onClick={(e) => { e.stopPropagation(); renderScene(i); }}
                         disabled={rendering === i}

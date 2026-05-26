@@ -1,10 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { api, type QueueItem, type QueueStats, type Guardrail } from "@/lib/api";
 import { Button, Card, PageHeader, Badge, Spinner } from "@/components/ui";
 
+const VIDEO_FORMATS = new Set(["reel_script", "video_script", "video"]);
+
 export default function QueuePage() {
+  const router = useRouter();
   const [items, setItems] = useState<QueueItem[]>([]);
   const [stats, setStats] = useState<QueueStats | null>(null);
   const [guardrails, setGuardrails] = useState<Guardrail[]>([]);
@@ -164,6 +168,18 @@ export default function QueuePage() {
                 )}
                 {it.status === "approved" && (
                   <span className="ml-auto flex gap-3 items-center">
+                    {VIDEO_FORMATS.has(it.format) && (
+                      <button
+                        className="text-primary font-semibold hover:underline"
+                        onClick={() => {
+                          sessionStorage.setItem("pipeline.from_script", it.content || "");
+                          router.push("/pipeline");
+                        }}
+                        title="Plan + edit this script as a video in the Composer"
+                      >
+                        Make video →
+                      </button>
+                    )}
                     <button
                       className="text-primary hover:underline"
                       onClick={async () => {

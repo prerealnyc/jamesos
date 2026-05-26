@@ -34,20 +34,38 @@ order, count, kinds, or durations — only write the content of each segment.
 STRUCTURE (in order):
 {structure_desc}
 
-For each segment return content:
-- talking_head: "voiceover" = exactly what James says (in his voice, tight to
-  the segment's seconds — ~2.5 words/second), and "on_screen_text" = a short
-  caption. Leave "visual_prompt" "".
-- broll (the hook): "visual_prompt" = a vivid, THUMB-STOPPING still-image
-  description to animate (concrete subject, setting, lighting, motion, mood;
-  NO text rendered in the image), and "on_screen_text" = a punchy 3-6 word
-  hook caption. "voiceover" may be "" or a 1-line hook line.
+For each segment return:
+  CORE (always)
+    - voiceover: talking_head segments = exactly what James says (~2.5 words/sec);
+      broll = usually "" (or a single hook line).
+    - on_screen_text: short caption shown over the scene.
+    - visual_prompt: broll only — a vivid THUMB-STOPPING still-image description
+      (concrete subject, setting, lighting, motion, mood; NO text in the image).
+  PRODUCTION (per scene, choose contextually)
+    - audio_music: mood for background music — one of:
+        "upbeat" | "calm" | "dramatic" | "tension" | "none"
+    - audio_sfx: optional sound effect cue (e.g., "whoosh", "ding", "") — empty if none.
+    - branding_logo: true/false — show the brand logo overlay this scene.
+    - branding_position: "bottom-right" | "bottom-center" | "top-right" | "none".
+    - transition_in: how the scene enters — "cut" | "fade" | "slide".
+
+Conventions to honor:
+  * Hooks (broll, scene 1) are sharp: transition "cut", branding usually off
+    (clean visual), upbeat or tension music.
+  * Talking-head intros/meat use logo bottom-right, transition "fade" on entry
+    of intro and outro, "cut" in the middle.
+  * Outro should call-to-action: branding visible, transition "fade".
 
 Sound like the BRAND VOICE shown. Never invent facts.
 
 Return STRICT JSON:
 {{"title": str,
-  "segments": [{{"voiceover": str, "on_screen_text": str, "visual_prompt": str}}]}}
+  "segments": [
+    {{"voiceover": str, "on_screen_text": str, "visual_prompt": str,
+      "audio_music": str, "audio_sfx": str,
+      "branding_logo": bool, "branding_position": str,
+      "transition_in": str}}
+  ]}}
 (segments MUST be the same count and order as the structure)"""
 
 
@@ -116,15 +134,37 @@ async def generate_scene_plan(
         # Honor the structure; only swap avatar→james_clip if real clips exist
         if kind == "talking_head" and source == "james_clip" and james_clips == 0:
             source = "avatar"
+        # ── production defaults: sensible per-segment fallbacks if the LLM
+        # omits anything. The LLM's choices override these when present.
+        label = seg_struct["label"]
+        is_hook = label == "hook"
+        is_intro = label == "intro"
+        is_outro = label == "outro"
+        default_music = "upbeat" if is_hook else "calm" if is_intro else "none"
+        default_logo = not is_hook  # hook keeps a clean visual
+        default_pos = "bottom-center" if is_outro else "bottom-right"
+        default_trans = "cut" if is_hook else ("fade" if (is_intro or is_outro) else "cut")
+
+        def _bool(v, fallback):
+            if isinstance(v, bool): return v
+            if isinstance(v, str): return v.lower() in ("true","1","yes","on")
+            return fallback
+
         scenes.append({
             "index": i,
-            "label": seg_struct["label"],
+            "label": label,
             "kind": kind,
             "source": source,
             "duration": seg_struct["duration"],
             "voiceover": str(filled.get("voiceover") or "").strip(),
             "on_screen_text": str(filled.get("on_screen_text") or "").strip(),
             "visual_prompt": str(filled.get("visual_prompt") or "").strip(),
+            # production layer
+            "audio_music": str(filled.get("audio_music") or default_music).strip().lower(),
+            "audio_sfx": str(filled.get("audio_sfx") or "").strip(),
+            "branding_logo": _bool(filled.get("branding_logo"), default_logo),
+            "branding_position": str(filled.get("branding_position") or default_pos).strip(),
+            "transition_in": str(filled.get("transition_in") or default_trans).strip().lower(),
         })
     return {"title": str(out.get("title") or "").strip(), "scenes": scenes,
             "structure": [s["label"] for s in structure],

@@ -255,6 +255,12 @@ export type Scene = {
   url?: string;
   clip_status?: "ok" | "stub";
   note?: string;
+  // production layer (optional; older plans may lack these)
+  audio_music?: "upbeat" | "calm" | "dramatic" | "tension" | "none" | string;
+  audio_sfx?: string;
+  branding_logo?: boolean;
+  branding_position?: "bottom-right" | "bottom-center" | "top-right" | "none" | string;
+  transition_in?: "cut" | "fade" | "slide" | string;
 };
 
 export type ScenePlan = {
