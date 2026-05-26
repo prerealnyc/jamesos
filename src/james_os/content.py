@@ -55,7 +55,7 @@ from .retrieval import search
 _VOICE_CATS = {"voice_corpus", "guideline"}
 _THESIS_CATS = {"thesis"}
 _FRUSTRATION_CATS = {"frustration"}
-_FACT_CATS = {"research", "reference"}
+_FACT_CATS = {"research", "reference", "trend"}
 
 
 def _bucket_of(ev: RetrievedEvent) -> str:

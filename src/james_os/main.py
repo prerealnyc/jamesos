@@ -113,6 +113,12 @@ async def lifespan(app: FastAPI):
     from .credentials import load_into_settings
 
     await load_into_settings()
+    # Reap any autopilot runs that were 'running' when the process died.
+    from .autopilot import reap_orphaned_runs
+    try:
+        await reap_orphaned_runs()
+    except Exception:  # noqa: BLE001 — never block startup on a reap failure
+        pass
     scheduler = asyncio.create_task(_autopilot_scheduler())
     yield
     scheduler.cancel()

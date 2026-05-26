@@ -198,10 +198,33 @@ def _run_row(r) -> dict:
     return d
 
 
+async def reap_orphaned_runs(tenant_id: UUID | None = None) -> int:
+    """Mark interrupted runs as failed. Called at startup so a process
+    restart doesn't leave 'running' rows orphaned forever."""
+    async with acquire(tenant_id) as conn:
+        n = await conn.fetchval(
+            """UPDATE autopilot_runs
+               SET status='failed', stage='reaped',
+                   error='interrupted — server restarted before this run finished',
+                   completed_at=now()
+               WHERE status='running'
+               RETURNING (SELECT count(*)::int FROM autopilot_runs WHERE stage='reaped')"""
+        )
+    return int(n or 0)
+
+
+async def _stage(run_id, stage: str, tenant_id: UUID | None = None) -> None:
+    async with acquire(tenant_id) as conn:
+        await conn.execute(
+            "UPDATE autopilot_runs SET stage=$2 WHERE id=$1", run_id, stage
+        )
+
+
 async def run_batch(
     trigger: str = "manual", tenant_id: UUID | None = None
 ) -> dict:
-    """Generate today's batch: ideas → drafts → approval queue. Durable."""
+    """Generate today's batch: ideas → drafts → approval queue. Durable.
+    Writes its current `stage` to autopilot_runs so the UI sees progress."""
     cfg = await get_config(tenant_id)
     count = int(cfg.get("daily_count", 3))
     platforms = cfg.get("platforms") or ["instagram"]
@@ -209,13 +232,14 @@ async def run_batch(
 
     async with acquire(tenant_id) as conn:
         run_id = await conn.fetchval(
-            "INSERT INTO autopilot_runs (status, trigger, requested) "
-            "VALUES ('running',$1,$2) RETURNING id",
+            "INSERT INTO autopilot_runs (status, trigger, requested, stage) "
+            "VALUES ('running',$1,$2,'starting') RETURNING id",
             trigger, count,
         )
 
     try:
         # ── 1) Virality-first: research what's working BEFORE ideating ──
+        await _stage(run_id, "researching trends", tenant_id)
         intel = await _gather_intel(cfg, tenant_id)
         if intel is None:
             async with acquire(tenant_id) as conn:
@@ -236,6 +260,7 @@ async def run_batch(
             )
 
         # ── 2) Ideate strictly from that intel ──
+        await _stage(run_id, "ideating from trends", tenant_id)
         ideas = await generate_ideas(count, intel, tenant_id)
         if not ideas:
             async with acquire(tenant_id) as conn:
@@ -249,7 +274,9 @@ async def run_batch(
 
         results = []
         generated = queued = 0
-        for idea in ideas:
+        total = len(ideas)
+        for i, idea in enumerate(ideas, 1):
+            await _stage(run_id, f"drafting {i}/{total}: {idea.get('title','')[:50]}", tenant_id)
             platform = platforms[0]
             draft = await generate_content(ContentBrief(
                 platform=platform, format=fmt,
@@ -268,11 +295,12 @@ async def run_batch(
                 "action_id": str(draft.action_id) if draft.action_id else None,
             })
 
+        await _stage(run_id, "saving", tenant_id)
         async with acquire(tenant_id) as conn:
             await conn.execute(
-                """UPDATE autopilot_runs SET status='succeeded', generated=$2,
-                   queued=$3, ideas=$4::jsonb, results=$5::jsonb, completed_at=now()
-                   WHERE id=$1""",
+                """UPDATE autopilot_runs SET status='succeeded', stage='done',
+                   generated=$2, queued=$3, ideas=$4::jsonb, results=$5::jsonb,
+                   completed_at=now() WHERE id=$1""",
                 run_id, generated, queued, json.dumps(ideas), json.dumps(results),
             )
         # mark today's date so the scheduler won't double-run

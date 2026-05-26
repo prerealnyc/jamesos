@@ -312,6 +312,7 @@ export type AutopilotRun = {
   id: string;
   status: "running" | "succeeded" | "failed";
   trigger: "manual" | "scheduled";
+  stage: string;
   requested: number;
   generated: number;
   queued: number;

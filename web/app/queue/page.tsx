@@ -13,6 +13,8 @@ export default function QueuePage() {
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [learned, setLearned] = useState<string | null>(null);
+  const [filter, setFilter] = useState<"pending" | "approved" | "rejected" | "total">("pending");
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -73,12 +75,25 @@ export default function QueuePage() {
 
       {stats && (
         <div className="grid grid-cols-4 gap-3">
-          {(["pending", "approved", "rejected", "total"] as const).map((k) => (
-            <Card key={k} className="py-4">
-              <div className="text-2xl font-semibold">{stats[k]}</div>
-              <div className="text-xs text-muted-foreground uppercase tracking-wide mt-1">{k}</div>
-            </Card>
-          ))}
+          {(["pending", "approved", "rejected", "total"] as const).map((k) => {
+            const active = filter === k;
+            return (
+              <button
+                key={k}
+                onClick={() => setFilter(k)}
+                className={`text-left rounded-lg border bg-card py-4 px-4 transition-colors ${
+                  active
+                    ? "border-primary ring-1 ring-primary"
+                    : "border-border hover:border-muted-foreground"
+                }`}
+              >
+                <div className={`text-2xl font-semibold ${active ? "text-primary" : ""}`}>
+                  {stats[k]}
+                </div>
+                <div className="text-xs text-muted-foreground uppercase tracking-wide mt-1">{k}</div>
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -86,15 +101,23 @@ export default function QueuePage() {
         <Card>
           <Spinner /> <span className="text-muted-foreground text-sm ml-2">Loading queue…</span>
         </Card>
-      ) : items.length === 0 ? (
-        <Card>
-          <p className="text-muted-foreground text-sm">
-            Queue is empty. When an agent proposes a post, it lands here for review.
-          </p>
-        </Card>
-      ) : (
+      ) : (() => {
+        const visible = filter === "total" ? items : items.filter((it) => it.status === filter);
+        if (visible.length === 0) {
+          return (
+            <Card>
+              <p className="text-muted-foreground text-sm">
+                {filter === "pending" && "No pending items. When an agent proposes a post, it lands here for review."}
+                {filter === "approved" && "Nothing approved yet. Approved items will appear here with copy/export actions."}
+                {filter === "rejected" && "Nothing rejected. Rejections become guardrails (see below)."}
+                {filter === "total" && "Queue is empty."}
+              </p>
+            </Card>
+          );
+        }
+        return (
         <div className="flex flex-col gap-3">
-          {items.map((it) => (
+          {visible.map((it) => (
             <Card key={it.id}>
               <div className="flex items-center gap-2 mb-2">
                 <Badge tone="primary">{it.platform}</Badge>
@@ -139,6 +162,38 @@ export default function QueuePage() {
                     </Button>
                   </span>
                 )}
+                {it.status === "approved" && (
+                  <span className="ml-auto flex gap-3 items-center">
+                    <button
+                      className="text-primary hover:underline"
+                      onClick={async () => {
+                        await navigator.clipboard.writeText(it.content || "");
+                        setCopiedId(it.id);
+                        setTimeout(() => setCopiedId((c) => (c === it.id ? null : c)), 1500);
+                      }}
+                    >
+                      {copiedId === it.id ? "copied!" : "copy"}
+                    </button>
+                    <button
+                      className="text-muted-foreground hover:text-foreground"
+                      onClick={() => {
+                        const blob = new Blob([it.content || ""], { type: "text/plain" });
+                        const a = document.createElement("a");
+                        a.href = URL.createObjectURL(blob);
+                        a.download = `${it.platform || "post"}-${it.id.slice(0, 8)}.txt`;
+                        a.click();
+                        URL.revokeObjectURL(a.href);
+                      }}
+                    >
+                      download .txt
+                    </button>
+                  </span>
+                )}
+                {it.status === "rejected" && it.reason && (
+                  <span className="ml-auto text-muted-foreground text-[11px] italic max-w-[60%] truncate" title={it.reason}>
+                    rejection: {it.reason}
+                  </span>
+                )}
               </div>
 
               {rejecting === it.id && (
@@ -176,7 +231,8 @@ export default function QueuePage() {
             </Card>
           ))}
         </div>
-      )}
+        );
+      })()}
 
       {guardrails.length > 0 && (
         <Card>
