@@ -134,6 +134,16 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                     "background_color": "rgba(0,0,0,0.55)", "x_alignment": "50%",
                 })
 
+            # SFX: if the planner produced a URL, drop it in at scene start
+            # (free-form keywords without a URL stay as planning notes only).
+            sfx = (s.get("audio_sfx") or "").strip()
+            if sfx.startswith("http"):
+                elements.append({
+                    "type": "audio", "source": sfx,
+                    "track": 5, "time": t, "duration": min(2.0, dur),
+                    "volume": 60,
+                })
+
             # Logo overlay — per-scene (so it can come/go per segment).
             if s.get("branding_logo") and settings.brand_logo_url:
                 pos = _logo_position(s.get("branding_position"))

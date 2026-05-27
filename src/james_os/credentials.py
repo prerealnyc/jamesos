@@ -95,6 +95,25 @@ MANAGED_FIELDS: list[ManagedField] = [
     ManagedField("music_url_calm", "Music URL: calm", "Video & media", secret=False),
     ManagedField("music_url_dramatic", "Music URL: dramatic", "Video & media", secret=False),
     ManagedField("music_url_tension", "Music URL: tension", "Video & media", secret=False),
+    # Media storage (Supabase Storage gives Creatomate publicly fetchable URLs)
+    ManagedField("supabase_service_key", "Supabase service_role key (media storage)", "Storage"),
+    ManagedField(
+        "supabase_url", "Supabase project URL (auto-derived if blank)",
+        "Storage", secret=False, placeholder="https://<ref>.supabase.co",
+    ),
+    ManagedField(
+        "supabase_media_bucket", "Media storage bucket", "Storage",
+        secret=False, placeholder="media",
+    ),
+    # Google Drive auto-importer for James's real clips
+    ManagedField(
+        "google_service_account_json", "Google service account JSON path", "Storage",
+        secret=False, placeholder="/Users/.../service-account.json",
+    ),
+    ManagedField(
+        "google_drive_folder_id", "Google Drive folder id (clips)", "Storage",
+        secret=False, placeholder="1AbCdEf…",
+    ),
     ManagedField("elevenlabs_api_key", "ElevenLabs API key", "Video & media"),
     ManagedField("minimax_api_key", "MiniMax API key", "Video & media"),
     # Publishing & social
@@ -146,6 +165,12 @@ def _auto_select_providers() -> None:
         settings.assembly_provider = "shotstack"
     else:
         settings.assembly_provider = "stub"
+    # Media storage: Supabase Storage when its service_role is present,
+    # otherwise local-disk. This makes uploads publicly reachable by
+    # Creatomate without a manual provider switch.
+    settings.media_storage = (
+        "supabase" if (settings.supabase_service_key or "").strip() else "local"
+    )
 
 
 def _bust_provider_caches() -> None:
@@ -155,8 +180,10 @@ def _bust_provider_caches() -> None:
     _apify_mod._provider = None
     from . import assembly as _assembly_mod
     from . import heygen as _heygen_mod
+    from . import media as _media_mod
     _heygen_mod._provider = None
     _assembly_mod._provider = None
+    _media_mod._storage = None  # picks fresh local/supabase backend next call
 
 
 def _apply(overlay: dict[str, str]) -> None:

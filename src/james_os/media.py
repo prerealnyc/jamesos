@@ -21,6 +21,7 @@ import re
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from .config import settings
 from .db import acquire
 
 ROLES = ("style_reference", "james_clip", "broll")
@@ -64,10 +65,36 @@ class MediaStorage:
             pass
 
 
-_storage = MediaStorage()
+_storage: object | None = None
 
 
-def storage() -> MediaStorage:
+def _make_storage():
+    """Pick the storage backend at runtime. Supabase Storage wins when its
+    key is set (returns public URLs Creatomate can fetch); local-disk is
+    the honest fallback for dev / no-key environments."""
+    backend = (settings.media_storage or "local").lower()
+    has_key = bool((settings.supabase_service_key or "").strip())
+    if backend == "supabase" or (backend == "local" and has_key):
+        from .storage_supabase import (
+            SupabaseMediaStorage,
+            SupabaseStorageError,
+            derive_supabase_url_from_db,
+        )
+        url = (settings.supabase_url or "").strip() or \
+              derive_supabase_url_from_db(settings.database_url)
+        if url and has_key:
+            try:
+                return SupabaseMediaStorage(url=url, key=settings.supabase_service_key,
+                                            bucket=settings.supabase_media_bucket)
+            except SupabaseStorageError:
+                pass  # fall through to local — honest, never fake
+    return MediaStorage()
+
+
+def storage():
+    global _storage
+    if _storage is None:
+        _storage = _make_storage()
     return _storage
 
 

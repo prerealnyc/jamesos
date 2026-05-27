@@ -783,6 +783,36 @@ async def media_delete(media_id: UUID) -> dict:
     return {"ok": True, "deleted": str(media_id)}
 
 
+@app.get("/media/drive/preview")
+async def media_drive_preview(folder_id: str = "") -> dict:
+    """List the videos in the configured Drive folder without importing."""
+    from .drive import DriveNotConfigured, list_drive_videos
+    try:
+        files = await list_drive_videos(folder_id or None)
+    except DriveNotConfigured as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Drive list failed: {e}") from None
+    return {"count": len(files), "files": files}
+
+
+@app.post("/media/drive-import")
+async def media_drive_import(body: dict = Body(default={})) -> dict:
+    """Pull new videos from the Drive folder into the Reference Library
+    (default role = james_clip). Idempotent via Drive file_id."""
+    from .drive import DriveNotConfigured, import_drive_folder
+    try:
+        return await import_drive_folder(
+            folder_id=(body.get("folder_id") or "").strip() or None,
+            role=body.get("role") or "james_clip",
+            limit=max(1, min(int(body.get("limit") or 25), 200)),
+        )
+    except DriveNotConfigured as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Drive import failed: {e}") from None
+
+
 # ─────────────────────────────────────────────────────────────── helpers ──
 
 def _row_to_event(row) -> Event:

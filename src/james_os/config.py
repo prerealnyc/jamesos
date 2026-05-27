@@ -100,6 +100,17 @@ class Settings(BaseSettings):
     music_url_dramatic: str = ""
     music_url_tension: str = ""
 
+    # ─── Media storage backend ───
+    # Auto-flips to 'supabase' when SUPABASE_SERVICE_KEY is set; else 'local'.
+    media_storage: str = "local"
+    supabase_url: str = ""            # https://<ref>.supabase.co (REST/Storage)
+    supabase_service_key: str = ""    # service_role secret — server-side ONLY
+    supabase_media_bucket: str = "media"
+
+    # ─── Google Drive auto-importer for James's real clips ───
+    google_service_account_json: str = ""   # absolute path to JSON key file
+    google_drive_folder_id: str = ""        # the Drive folder that holds clips
+
     log_level: str = "INFO"
 
     # Retrieval tuning
