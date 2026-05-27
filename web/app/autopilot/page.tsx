@@ -140,9 +140,12 @@ export default function AutopilotPage() {
         <div className="flex flex-col gap-3 mt-3">
           {runs.map((r) => (
             <div key={r.id} className="border border-border rounded-md p-3">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <Badge tone={runTone(r.status)}>{r.status === "running" ? "running…" : r.status}</Badge>
                 <span className="text-[11px] text-muted-foreground">{r.trigger}</span>
+                {r.status === "running" && r.stage && (
+                  <span className="text-[11px] text-primary">· {r.stage}</span>
+                )}
                 <span className="text-[12px] ml-auto">
                   {r.generated}/{r.requested} drafted · <b className="text-foreground">{r.queued} queued</b>
                 </span>

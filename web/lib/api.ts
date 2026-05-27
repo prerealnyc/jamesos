@@ -291,6 +291,7 @@ export type ComposeResult = {
 export type Production = {
   id: string;
   status: "queued" | "planning" | "rendering_clips" | "assembling" | "succeeded" | "failed";
+  mode?: "mixed" | "avatar_only";
   title: string;
   platform: string;
   aspect: string;

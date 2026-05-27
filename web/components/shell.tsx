@@ -25,7 +25,8 @@ const NAV: Group[] = [
     title: "Production",
     items: [
       { href: "/design-studio", label: "Content Studio", sub: "On-voice draft generation", icon: "design", live: true },
-      { href: "/pipeline", label: "Video Studio", sub: "Generative clips · durable async", icon: "pipeline", live: true },
+      { href: "/heygen-video", label: "HeyGen Video", sub: "Avatar-only · one HeyGen render", icon: "pipeline", live: true },
+      { href: "/pipeline", label: "Video Studio", sub: "Mixed: B-roll + avatar + clips", icon: "pipeline", live: true },
       { href: "/jp-clips", label: "Reference Library", sub: "Clips, style refs & B-roll", icon: "clips", live: true },
       { href: "/images", label: "Images", sub: "Image library", icon: "images" },
     ],
