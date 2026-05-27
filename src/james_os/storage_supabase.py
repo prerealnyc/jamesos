@@ -12,6 +12,7 @@ swap. Auto-bootstraps the bucket on first save — never silently fails.
 
 from __future__ import annotations
 
+import base64
 import mimetypes
 import re
 from uuid import uuid4
@@ -19,6 +20,11 @@ from uuid import uuid4
 import httpx
 
 from .config import settings
+
+# Supabase Storage's single-POST upload caps at ~50 MB. Anything larger
+# needs the TUS resumable protocol — and TUS is also recommended above ~6 MB.
+_RESUMABLE_THRESHOLD = 6 * 1024 * 1024
+_TUS_CHUNK = 6 * 1024 * 1024
 
 _EXT_RE = re.compile(r"[^a-zA-Z0-9.]+")
 _TIMEOUT = httpx.Timeout(60.0, connect=10.0)
@@ -55,51 +61,113 @@ class SupabaseMediaStorage:
         return h
 
     def _ensure_bucket(self) -> None:
+        """Create the bucket if it doesn't exist. Idempotent: 409 (already
+        exists) is the success case on a repeat call. We don't bother
+        GETting first — Supabase's bucket GET returns HTTP 400 (not 404)
+        when the bucket is missing, which is confusing to branch on."""
         if self._bucket_ready:
             return
         with httpx.Client(timeout=_TIMEOUT) as c:
-            # Try to read the bucket; create it if missing.
-            r = c.get(f"{self.base}/storage/v1/bucket/{self.bucket}", headers=self._h())
-            if r.status_code == 200:
-                self._bucket_ready = True
-                return
-            if r.status_code == 404:
-                cr = c.post(
-                    f"{self.base}/storage/v1/bucket", headers=self._h(),
-                    json={"id": self.bucket, "name": self.bucket, "public": True},
-                )
-                if cr.status_code in (200, 201, 409):
-                    self._bucket_ready = True
-                    return
-                raise SupabaseStorageError(
-                    f"Could not create bucket '{self.bucket}': "
-                    f"HTTP {cr.status_code} {cr.text[:200]}"
-                )
-            raise SupabaseStorageError(
-                f"Bucket check failed: HTTP {r.status_code} {r.text[:200]}"
+            r = c.post(
+                f"{self.base}/storage/v1/bucket", headers=self._h(),
+                json={"id": self.bucket, "name": self.bucket, "public": True},
             )
+        # Success path: created (200/201), already exists (409), OR
+        # Supabase's quirky 400 envelope around a 409/already-exists body.
+        already_exists = (
+            r.status_code == 409
+            or '"statusCode":"409"' in r.text
+            or "already exists" in r.text.lower()
+        )
+        if r.status_code in (200, 201) or already_exists:
+            self._bucket_ready = True
+            return
+        raise SupabaseStorageError(
+            f"Could not create bucket '{self.bucket}': "
+            f"HTTP {r.status_code} {r.text[:200]}"
+        )
+
+    # ── TUS resumable upload (required for files > 50 MB; recommended > 6 MB) ──
+    def _b64(self, s: str) -> str:
+        return base64.b64encode(s.encode("utf-8")).decode("ascii")
+
+    def _upload_resumable(self, path: str, data: bytes, mime: str) -> None:
+        size = len(data)
+        meta = (
+            f"bucketName {self._b64(self.bucket)},"
+            f"objectName {self._b64(path)},"
+            f"contentType {self._b64(mime)},"
+            f"cacheControl {self._b64('3600')}"
+        )
+        with httpx.Client(timeout=httpx.Timeout(300.0, connect=10.0)) as c:
+            r = c.post(
+                f"{self.base}/storage/v1/upload/resumable",
+                headers=self._h({
+                    "Tus-Resumable": "1.0.0",
+                    "Upload-Length": str(size),
+                    "Upload-Metadata": meta,
+                    "Content-Type": "application/octet-stream",
+                    "x-upsert": "true",
+                }),
+            )
+            if r.status_code not in (201, 200):
+                raise SupabaseStorageError(
+                    f"TUS create failed: HTTP {r.status_code} {r.text[:200]}"
+                )
+            location = r.headers.get("Location") or r.headers.get("location")
+            if not location:
+                raise SupabaseStorageError("TUS create returned no Location header")
+            # PATCH chunks
+            offset = 0
+            while offset < size:
+                chunk = data[offset:offset + _TUS_CHUNK]
+                pr = c.patch(
+                    location,
+                    headers=self._h({
+                        "Tus-Resumable": "1.0.0",
+                        "Upload-Offset": str(offset),
+                        "Content-Type": "application/offset+octet-stream",
+                    }),
+                    content=chunk,
+                )
+                if pr.status_code != 204:
+                    raise SupabaseStorageError(
+                        f"TUS PATCH failed at {offset}: "
+                        f"HTTP {pr.status_code} {pr.text[:200]}"
+                    )
+                new_offset = int(pr.headers.get("Upload-Offset") or
+                                 pr.headers.get("upload-offset") or
+                                 (offset + len(chunk)))
+                if new_offset <= offset:
+                    raise SupabaseStorageError("TUS server reported no progress")
+                offset = new_offset
 
     def save(self, tenant: str, data: bytes, filename: str) -> tuple[str, str]:
         """Upload bytes; return (public_url, internal_path).
 
-        The internal_path is what we store in media_assets.file_path so we
-        can delete the object later. The public URL is what we render and
-        what Creatomate fetches.
+        Small files take the standard POST path. Large files (> ~6 MB) use
+        the TUS resumable protocol, which bypasses the single-POST 50 MB
+        cap and survives flaky connections via chunked PATCHes.
         """
         self._ensure_bucket()
         ext = _safe_ext(filename)
         path = f"{tenant}/{uuid4().hex}{ext}"
         mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-        with httpx.Client(timeout=_TIMEOUT) as c:
-            r = c.post(
-                f"{self.base}/storage/v1/object/{self.bucket}/{path}",
-                headers=self._h({"Content-Type": mime, "x-upsert": "false"}),
-                content=data,
-            )
-        if r.status_code not in (200, 201):
-            raise SupabaseStorageError(
-                f"Upload failed: HTTP {r.status_code} {r.text[:200]}"
-            )
+
+        if len(data) > _RESUMABLE_THRESHOLD:
+            self._upload_resumable(path, data, mime)
+        else:
+            with httpx.Client(timeout=_TIMEOUT) as c:
+                r = c.post(
+                    f"{self.base}/storage/v1/object/{self.bucket}/{path}",
+                    headers=self._h({"Content-Type": mime, "x-upsert": "false"}),
+                    content=data,
+                )
+            if r.status_code not in (200, 201):
+                raise SupabaseStorageError(
+                    f"Upload failed: HTTP {r.status_code} {r.text[:200]}"
+                )
+
         public_url = f"{self.base}/storage/v1/object/public/{self.bucket}/{path}"
         return public_url, f"supabase://{self.bucket}/{path}"
 
