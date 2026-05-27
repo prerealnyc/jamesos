@@ -120,9 +120,11 @@ def _public(uri: str) -> str:
     return uri
 
 
-async def _render_avatar(text: str, aspect: str) -> tuple[str | None, str]:
+async def _render_avatar(
+    text: str, aspect: str, *, captions: bool = False
+) -> tuple[str | None, str]:
     prov = get_avatar_provider()
-    sub = await prov.submit(text, aspect)
+    sub = await prov.submit(text, aspect, captions=captions)
     if sub.status == "failed":
         return None, sub.error or "avatar submit failed"
     for _ in range(_MAX_POLLS):
@@ -307,7 +309,9 @@ async def _run_avatar_only(row, tenant_id: UUID | None) -> None:
         return await _fail(pid, "avatar-only mode needs a script", tenant_id)
     async with acquire(tenant_id) as conn:
         await _set(conn, pid, status="rendering_clips")
-    url, err = await _render_avatar(script, row["aspect"])
+    # In avatar-only mode we want HeyGen to burn in spoken-word subtitles
+    # (no scene titles, no B-roll — only the avatar + captions of what it says).
+    url, err = await _render_avatar(script, row["aspect"], captions=True)
     if not url:
         return await _fail(pid, err or "HeyGen render failed", tenant_id)
     durable, _actual = await _persist_clip_to_storage(url, f"avatar-only-{pid}")

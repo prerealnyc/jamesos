@@ -40,7 +40,7 @@ class AvatarProvider(ABC):
     name: str
 
     @abstractmethod
-    async def submit(self, text: str, aspect: str) -> AvatarSubmit: ...
+    async def submit(self, text: str, aspect: str, *, captions: bool = False) -> AvatarSubmit: ...
     @abstractmethod
     async def poll(self, job_id: str) -> AvatarPoll: ...
 
@@ -48,7 +48,7 @@ class AvatarProvider(ABC):
 class StubAvatarProvider(AvatarProvider):
     name = "stub"
 
-    async def submit(self, text: str, aspect: str) -> AvatarSubmit:
+    async def submit(self, text: str, aspect: str, *, captions: bool = False) -> AvatarSubmit:
         return AvatarSubmit(job_id=f"stub-avatar-{uuid4()}", status="processing")
 
     async def poll(self, job_id: str) -> AvatarPoll:
@@ -72,7 +72,7 @@ class HeyGenAvatarProvider(AvatarProvider):
     def _h(self) -> dict:
         return {"X-Api-Key": self.api_key, "Content-Type": "application/json"}
 
-    async def submit(self, text: str, aspect: str) -> AvatarSubmit:
+    async def submit(self, text: str, aspect: str, *, captions: bool = False) -> AvatarSubmit:
         if not self.avatar_id:
             return AvatarSubmit("", "failed", error="HEYGEN_AVATAR_ID not set")
         if not self.voice_id:
@@ -89,6 +89,12 @@ class HeyGenAvatarProvider(AvatarProvider):
             }],
             "dimension": _dims(aspect),
         }
+        # HeyGen burns in subtitles of exactly what's spoken when this flag
+        # is on — used in avatar-only mode where the user wants the spoken
+        # words as the only on-screen text. Mixed mode leaves this off so
+        # Creatomate's per-scene captions stay the only overlay.
+        if captions:
+            body["caption"] = True
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
             r = await c.post(f"{_BASE}/v2/video/generate", headers=self._h(), json=body)
         if r.status_code in (401, 403):
