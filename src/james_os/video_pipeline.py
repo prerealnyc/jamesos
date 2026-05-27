@@ -60,12 +60,25 @@ async def start_production(
     scenes: list[dict] | None = None, mode: str = "mixed",
     tenant_id: UUID | None = None,
 ) -> dict:
-    """Create a production. mode='avatar_only' renders the whole script as
-    one HeyGen avatar — no per-scene assembly. mode='mixed' (default) uses
-    the full plan/render/assemble pipeline. If `scenes` is supplied, the
-    planner is skipped in mixed mode."""
-    if mode not in ("mixed", "avatar_only"):
+    """Create a production.
+
+    Modes:
+      * 'avatar_only' — render the whole script as one HeyGen avatar.
+        No per-scene plan, no Creatomate.
+      * 'mixed' (default) — full plan → per-scene clips → Creatomate assembly.
+        If `scenes` is supplied, the planner is skipped.
+      * 'timeline' — freeform clip stitching from the /editor page. Every
+        block already carries a real URL, so the planner and per-scene
+        renderer are no-ops; we go straight to Creatomate.
+    """
+    if mode not in ("mixed", "avatar_only", "timeline"):
         mode = "mixed"
+    if mode == "timeline":
+        # Cheap structural guard: a timeline render is meaningless without
+        # real clip URLs. Catch this here so the error is honest, not a
+        # mid-pipeline assembler failure 30 seconds later.
+        if not scenes or not any((s.get("url") or "").startswith("http") for s in scenes):
+            raise ValueError("timeline mode needs at least one block with a real clip URL")
     async with acquire(tenant_id) as conn:
         row = await conn.fetchrow(
             """INSERT INTO video_productions
@@ -415,11 +428,12 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
                    VALUES ('video_producer','video',$1::jsonb,'pending') RETURNING id""",
                 json.dumps({
                     "platform": row["platform"], "format": "video",
-                    "content": final_title or row["script"][:120],
+                    "content": final_title or (row["script"] or "")[:120],
                     "caption": final_title or "",
                     "media_url": res.url,
                     "stub": res.url.startswith("stub://"),
                     "scenes": len(scenes),
+                    "mode": row["mode"],
                 }),
             )
             await conn.execute(

@@ -291,7 +291,7 @@ export type ComposeResult = {
 export type Production = {
   id: string;
   status: "queued" | "planning" | "rendering_clips" | "assembling" | "succeeded" | "failed";
-  mode?: "mixed" | "avatar_only";
+  mode?: "mixed" | "avatar_only" | "timeline";
   title: string;
   platform: string;
   aspect: string;
@@ -307,6 +307,20 @@ export type Production = {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+};
+
+/** One assemblable clip surfaced by /video/clips/library — used as a source
+ *  drop in the timeline editor. `assemblable` is false for clips Creatomate
+ *  can't fetch (e.g. local /media-files/* paths from pre-Storage uploads). */
+export type ClipLibraryItem = {
+  kind: "production_final" | "production_scene" | "reference";
+  label: string;
+  url: string;
+  duration: number | null;
+  aspect: string | null;
+  source_id: string;
+  source_meta: Record<string, unknown>;
+  assemblable: boolean;
 };
 
 export type AutopilotConfig = {
@@ -350,12 +364,13 @@ export const api = {
     jpost<Scene>("/video/render-scene", { scene, aspect }),
   produceVideo: (opts: {
     script?: string; platform?: string; aspect?: string; title?: string;
-    scenes?: Scene[]; mode?: "mixed" | "avatar_only";
+    scenes?: Scene[]; mode?: "mixed" | "avatar_only" | "timeline";
   }) => jpost<Production>("/video/produce", {
     platform: "instagram", aspect: "9:16", mode: "mixed", ...opts,
   }),
   listProductions: () => jget<Production[]>("/video/productions"),
   getProduction: (id: string) => jget<Production>(`/video/productions/${id}`),
+  listClipLibrary: () => jget<{ items: ClipLibraryItem[] }>("/video/clips/library"),
   listMedia: (role = "") =>
     jget<{ media: MediaAsset[]; roles: MediaRole[] }>(
       `/media${role ? `?role=${role}` : ""}`

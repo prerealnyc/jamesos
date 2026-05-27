@@ -451,10 +451,15 @@ async def video_produce(req: VideoProduceRequest, background: BackgroundTasks) -
         raise HTTPException(status_code=400, detail="script or scenes required")
     if req.mode == "avatar_only" and not req.script.strip():
         raise HTTPException(status_code=400, detail="avatar_only mode requires a script")
-    prod = await start_production(
-        req.script.strip(), req.platform, req.aspect, req.title,
-        req.scenes, req.mode,
-    )
+    try:
+        prod = await start_production(
+            req.script.strip(), req.platform, req.aspect, req.title,
+            req.scenes, req.mode,
+        )
+    except ValueError as e:
+        # start_production rejects malformed timeline payloads — surface as 400
+        # so the editor can show the real reason, not a generic 500.
+        raise HTTPException(status_code=400, detail=str(e)) from e
     background.add_task(run_production, UUID(prod["id"]))
     return prod
 
@@ -480,6 +485,87 @@ async def video_production(production_id: UUID) -> dict:
     if p is None:
         raise HTTPException(status_code=404, detail="production not found")
     return p
+
+
+@app.get("/video/clips/library")
+async def video_clips_library() -> dict:
+    """Every assemblable clip in the system, in one shot, for the timeline
+    editor's library panel. Three buckets:
+
+      * production_final — a past production's final stitched mp4
+      * production_scene — a single rendered scene clip from a past production
+      * reference       — a media library upload (james_clip or broll)
+
+    Each item carries `assemblable: bool` — Creatomate needs a publicly
+    reachable https URL, so local /media-files/* paths are flagged not
+    assemblable. The editor shows them but warns when picked.
+    """
+    prods = await list_productions()
+    media = await list_media()
+
+    items: list[dict] = []
+
+    for p in prods:
+        if p.get("status") != "succeeded":
+            continue
+        final = (p.get("final_url") or "").strip()
+        if final and not final.startswith("stub://"):
+            items.append({
+                "kind": "production_final",
+                "label": p.get("title") or "Untitled production",
+                "url": final,
+                "duration": None,
+                "aspect": p.get("aspect") or "9:16",
+                "source_id": p.get("id"),
+                "source_meta": {"mode": p.get("mode") or "mixed"},
+                "assemblable": final.startswith("http"),
+            })
+        for s in (p.get("scenes") or []):
+            su = (s.get("url") or "").strip()
+            if not su or su.startswith("stub://"):
+                continue
+            items.append({
+                "kind": "production_scene",
+                "label": (
+                    f"{p.get('title') or 'Production'} · "
+                    f"scene {s.get('index', 0) + 1}"
+                    + (f" — {s['label']}" if s.get("label") else "")
+                ),
+                "url": su,
+                "duration": s.get("duration"),
+                "aspect": p.get("aspect") or "9:16",
+                "source_id": p.get("id"),
+                "source_meta": {
+                    "scene_index": s.get("index"),
+                    "scene_source": s.get("source"),
+                    "scene_kind": s.get("kind"),
+                },
+                "assemblable": su.startswith("http"),
+            })
+
+    for m in media:
+        if m.get("role") not in ("james_clip", "broll"):
+            continue
+        uri = (m.get("uri") or "").strip()
+        if not uri:
+            continue
+        items.append({
+            "kind": "reference",
+            "label": m.get("title") or m.get("role"),
+            "url": uri,
+            "duration": m.get("duration"),
+            "aspect": None,
+            "source_id": m.get("id"),
+            "source_meta": {
+                "role": m.get("role"),
+                "platform": m.get("platform"),
+                "mute_audio": m.get("mute_audio"),
+            },
+            # Local /media-files/* paths aren't reachable from Creatomate.
+            "assemblable": uri.startswith("http"),
+        })
+
+    return {"items": items}
 
 
 @app.post("/research", response_model=ResearchResponse)
