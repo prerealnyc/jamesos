@@ -192,6 +192,12 @@ export default function VideoEditor() {
         <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
           {/* Left: scene list + script */}
           <div className="flex flex-col gap-3">
+            {mode === "avatar_only" && (
+              <div className="rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-[12px] text-foreground">
+                <b>Avatar only mode:</b> one HeyGen render of the script below — same cloned voice end-to-end, no scene cuts. The scene plan is ignored.
+              </div>
+            )}
+            {mode === "mixed" && (
             <Card>
               <div className="flex items-center justify-between">
                 <CardTitle>Scenes</CardTitle>
@@ -293,13 +299,20 @@ export default function VideoEditor() {
               </div>
               <Button variant="secondary" onClick={addScene} className="mt-3">+ Add scene</Button>
             </Card>
+            )}
 
             <Card>
               <CardTitle>Script</CardTitle>
-              <Textarea rows={4} value={script} onChange={(e) => setScript(e.target.value)}
-                className="text-[12px] mt-2" />
+              <Textarea
+                rows={mode === "avatar_only" ? 10 : 4}
+                value={script}
+                onChange={(e) => setScript(e.target.value)}
+                className="text-[12px] mt-2"
+              />
               <p className="text-[11px] text-muted-foreground mt-1">
-                The narrative the scenes came from. Editing scenes above is what drives the video.
+                {mode === "avatar_only"
+                  ? "This is exactly what the HeyGen avatar will speak. Edit freely — every word here lands in the final video, in James's cloned voice."
+                  : "The narrative the scenes came from. Editing scenes above is what drives the video."}
               </p>
             </Card>
           </div>
@@ -312,6 +325,16 @@ export default function VideoEditor() {
                 style={{ aspectRatio: aspect.replace(":", "/"), width: "100%", maxWidth: 280 }}>
                 {prod?.final_url && !prod.final_url.startsWith("stub://") ? (
                   <video src={mediaUrl(prod.final_url)} controls className="w-full h-full object-contain" />
+                ) : mode === "avatar_only" ? (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center p-4 text-center">
+                    <Badge tone="primary">HeyGen avatar</Badge>
+                    <p className="text-white/70 text-[12px] mt-3 leading-snug">
+                      One continuous render. James&apos;s cloned voice reads the script end-to-end.
+                    </p>
+                    <p className="text-white/40 text-[10px] mt-3">
+                      ~{Math.max(1, Math.round((script.length || 0) / 14))}s estimated
+                    </p>
+                  </div>
                 ) : cur?.url && cur.url.startsWith("http") ? (
                   <>
                     <video src={mediaUrl(cur.url)} controls className="w-full h-full object-contain" />
@@ -344,7 +367,9 @@ export default function VideoEditor() {
               <p className="text-[11px] text-muted-foreground text-center mt-2">
                 {prod?.final_url?.startsWith("stub://")
                   ? "Stub render (add render keys for a real cut)"
-                  : `Scene ${sel + 1}/${scenes.length} · storyboard preview`}
+                  : mode === "avatar_only"
+                    ? "Avatar-only · single HeyGen render"
+                    : `Scene ${sel + 1}/${scenes.length} · storyboard preview`}
               </p>
             </Card>
 
