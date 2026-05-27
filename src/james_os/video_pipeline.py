@@ -166,28 +166,51 @@ async def _render_broll(visual_prompt: str, aspect: str) -> tuple[str | None, st
     return None, "Runway render timed out"
 
 
-async def _persist_clip_to_storage(provider_url: str, label: str) -> str | None:
-    """Download a freshly-rendered clip from the provider's CDN and re-upload
-    it to our own storage (Supabase). Returns the durable public URL or None
-    on failure (caller keeps the provider URL as a transient fallback).
-    Skips clips that are already on our storage (e.g. james_clip).
+async def _persist_clip_to_storage(
+    provider_url: str, label: str
+) -> tuple[str | None, float]:
+    """Download a freshly-rendered clip, optionally trim trailing silence,
+    and re-upload to our storage. Returns (durable_public_url, actual_seconds).
+
+    actual_seconds is the post-trim duration (or 0.0 if we couldn't measure),
+    so the caller can snap the scene's duration to the real spoken length and
+    eliminate dead air at scene boundaries.
     """
     if not provider_url or not provider_url.startswith("http"):
-        return None
+        return None, 0.0
     if "supabase.co/storage/v1/object/public" in provider_url:
-        return None  # already durable
+        return None, 0.0  # already durable; caller keeps existing duration
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as c:
             r = await c.get(provider_url, follow_redirects=True)
             r.raise_for_status()
             data = r.content
+
+        actual_duration = 0.0
+        if settings.auto_trim_silence:
+            import tempfile
+            from pathlib import Path
+            from .audio_trim import detect_speech_end, trim_to
+            with tempfile.TemporaryDirectory() as td:
+                in_path = f"{td}/in.mp4"
+                out_path = f"{td}/out.mp4"
+                Path(in_path).write_bytes(data)
+                speech_end, total = await detect_speech_end(in_path)
+                if speech_end and total and speech_end < total - 0.3:
+                    # Trailing silence detected — cut it off.
+                    if await trim_to(in_path, out_path, speech_end):
+                        data = Path(out_path).read_bytes()
+                        actual_duration = round(speech_end, 2)
+                if not actual_duration and total > 0:
+                    actual_duration = round(total, 2)
+
         url, _ = await asyncio.to_thread(
             media_storage().save,
             str(settings.default_tenant_id), data, f"{label}.mp4",
         )
-        return url
+        return url, actual_duration
     except Exception:  # noqa: BLE001 — keep the provider URL on any failure
-        return None
+        return None, 0.0
 
 
 async def _render_scene_inplace(
@@ -203,11 +226,14 @@ async def _render_scene_inplace(
     if kind == "talking_head" and source == "avatar":
         url, err = await _render_avatar(s.get("voiceover", ""), aspect)
         if url:
-            durable = await _persist_clip_to_storage(url, f"scene-{idx}-{label}")
+            durable, actual = await _persist_clip_to_storage(url, f"scene-{idx}-{label}")
             if durable:
                 s["provider_url"] = url  # transient — what HeyGen gave us
                 s["url"] = durable        # durable — our Supabase URL
                 s["persisted"] = True
+                if actual >= 0.5:
+                    s["planned_duration"] = s.get("duration")
+                    s["duration"] = actual  # snap to real spoken length
             else:
                 s["url"] = url
                 s["persisted"] = False
@@ -240,11 +266,14 @@ async def _render_scene_inplace(
     else:  # broll → seed image → Runway
         url, err = await _render_broll(s.get("visual_prompt", ""), aspect)
         if url:
-            durable = await _persist_clip_to_storage(url, f"scene-{idx}-{label}")
+            durable, actual = await _persist_clip_to_storage(url, f"scene-{idx}-{label}")
             if durable:
                 s["provider_url"] = url
                 s["url"] = durable
                 s["persisted"] = True
+                if actual >= 0.5:
+                    s["planned_duration"] = s.get("duration")
+                    s["duration"] = actual
             else:
                 s["url"] = url
                 s["persisted"] = False
@@ -281,7 +310,7 @@ async def _run_avatar_only(row, tenant_id: UUID | None) -> None:
     url, err = await _render_avatar(script, row["aspect"])
     if not url:
         return await _fail(pid, err or "HeyGen render failed", tenant_id)
-    durable = await _persist_clip_to_storage(url, f"avatar-only-{pid}")
+    durable, _actual = await _persist_clip_to_storage(url, f"avatar-only-{pid}")
     final_url = durable or url
     async with acquire(tenant_id) as conn:
         action_id = await conn.fetchval(

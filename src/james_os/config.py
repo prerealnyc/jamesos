@@ -88,6 +88,10 @@ class Settings(BaseSettings):
     heygen_api_version: str = "v2"
     heygen_voice_id: str = ""         # HeyGen voice id (required to speak text)
     image_model: str = "gpt-image-1"  # OpenAI image model for B-roll seed stills
+    # Auto-trim trailing silence on every avatar/broll clip and snap the
+    # scene's duration to the trimmed length. Eliminates dead air between
+    # scenes in Creatomate's stitched output. Disable for raw clips.
+    auto_trim_silence: bool = True
     # Style prefix applied to every B-roll seed image prompt — pushes the
     # output away from cartoon/illustration toward real-looking footage.
     image_style: str = (
