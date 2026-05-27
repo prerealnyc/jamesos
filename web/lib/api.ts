@@ -253,6 +253,8 @@ export type Scene = {
   visual_prompt: string;
   duration: number;
   url?: string;
+  provider_url?: string;          // transient URL from HeyGen/Runway before we re-host
+  persisted?: boolean;            // true once the clip lives on our own storage
   clip_status?: "ok" | "stub";
   note?: string;
   // production layer (optional; older plans may lack these)

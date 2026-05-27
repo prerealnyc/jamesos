@@ -158,6 +158,11 @@ def _auto_select_providers() -> None:
     settings.avatar_provider = (
         "heygen" if (settings.heygen_api_key or "").strip() else "stub"
     )
+    # B-roll generator: a Runway key flips it live (used as the second half
+    # of the OpenAI image → Runway video chain for broll scenes).
+    settings.video_provider = (
+        "runway" if (settings.runway_api_key or "").strip() else "stub"
+    )
     # Video assembly: Creatomate preferred, then Shotstack, else stub.
     if (settings.creatomate_api_key or "").strip():
         settings.assembly_provider = "creatomate"
@@ -181,8 +186,10 @@ def _bust_provider_caches() -> None:
     from . import assembly as _assembly_mod
     from . import heygen as _heygen_mod
     from . import media as _media_mod
+    from . import video as _video_mod
     _heygen_mod._provider = None
     _assembly_mod._provider = None
+    _video_mod._provider = None
     _media_mod._storage = None  # picks fresh local/supabase backend next call
 
 

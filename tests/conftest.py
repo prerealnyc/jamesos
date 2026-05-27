@@ -58,6 +58,15 @@ async def fresh_pool():
     llm_module._llm = None
     research_module._provider = None
     video_module._provider = None
+    # Re-pin providers to stub before each test — a credentials test that
+    # runs earlier may have triggered _auto_select_providers, flipping a
+    # real key on, which then breaks unrelated tests downstream.
+    settings.embedding_provider = "stub"
+    settings.llm_provider = "stub"
+    settings.research_provider = "stub"
+    settings.video_provider = "stub"
+    settings.avatar_provider = "stub"
+    settings.assembly_provider = "stub"
     await init_pool()
     async with acquire() as conn:
         await conn.execute(

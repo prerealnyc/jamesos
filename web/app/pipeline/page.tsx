@@ -229,20 +229,40 @@ function ProductionView({ prod }: { prod: Production }) {
 
       {prod.scenes?.length > 0 && (
         <div className="flex flex-col gap-2">
-          {prod.scenes.map((s) => (
-            <div key={s.index} className="border border-border rounded-md p-2 text-[12px]">
-              <div className="flex items-center gap-2">
-                {s.label && <Badge tone="accent">{s.label}</Badge>}
-                <Badge tone={s.clip_status === "ok" ? "ok" : "muted"}>
-                  {s.kind === "broll" ? "B-roll" : `${s.source}`}
-                </Badge>
-                <span className="text-muted-foreground">{s.duration}s</span>
-                {s.clip_status === "stub" && <span className="text-muted-foreground">stub</span>}
+          {prod.scenes.map((s) => {
+            const playable = (s.url || "").startsWith("http");
+            return (
+              <div key={s.index} className="border border-border rounded-md p-2 text-[12px]">
+                <div className="flex items-center gap-2 flex-wrap">
+                  {s.label && <Badge tone="accent">{s.label}</Badge>}
+                  <Badge tone={s.clip_status === "ok" ? "ok" : "muted"}>
+                    {s.kind === "broll" ? "B-roll" : `${s.source}`}
+                  </Badge>
+                  <span className="text-muted-foreground">{s.duration}s</span>
+                  {s.clip_status === "stub" && <span className="text-muted-foreground">stub</span>}
+                  {s.persisted && (
+                    <span title="Re-hosted on our storage — survives provider expiry"
+                          className="text-[10px] text-primary">saved ✓</span>
+                  )}
+                </div>
+                {playable && (
+                  <video
+                    src={mediaUrl(s.url!)}
+                    controls
+                    className="w-full mt-2 rounded bg-background max-h-[260px] object-contain"
+                  />
+                )}
+                {s.on_screen_text && <div className="mt-1">{s.on_screen_text}</div>}
+                {s.note && <div className="text-muted-foreground text-[11px] mt-1">{s.note}</div>}
+                {playable && (
+                  <a href={mediaUrl(s.url!)} download
+                     className="text-[11px] text-primary hover:underline mt-1 inline-block">
+                    download clip
+                  </a>
+                )}
               </div>
-              {s.on_screen_text && <div className="mt-1">{s.on_screen_text}</div>}
-              {s.note && <div className="text-muted-foreground text-[11px] mt-1">{s.note}</div>}
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

@@ -23,11 +23,14 @@ import asyncio
 import json
 from uuid import UUID
 
+import httpx
+
 from .assembly import get_assembly_provider
 from .config import settings
 from .db import acquire
 from .heygen import get_avatar_provider
 from .imagegen import generate_seed_image
+from .media import storage as media_storage
 from .video import get_video_provider
 from .video_plan import generate_scene_plan
 
@@ -150,18 +153,58 @@ async def _render_broll(visual_prompt: str, aspect: str) -> tuple[str | None, st
     return None, "Runway render timed out"
 
 
+async def _persist_clip_to_storage(provider_url: str, label: str) -> str | None:
+    """Download a freshly-rendered clip from the provider's CDN and re-upload
+    it to our own storage (Supabase). Returns the durable public URL or None
+    on failure (caller keeps the provider URL as a transient fallback).
+    Skips clips that are already on our storage (e.g. james_clip).
+    """
+    if not provider_url or not provider_url.startswith("http"):
+        return None
+    if "supabase.co/storage/v1/object/public" in provider_url:
+        return None  # already durable
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as c:
+            r = await c.get(provider_url, follow_redirects=True)
+            r.raise_for_status()
+            data = r.content
+        url, _ = await asyncio.to_thread(
+            media_storage().save,
+            str(settings.default_tenant_id), data, f"{label}.mp4",
+        )
+        return url
+    except Exception:  # noqa: BLE001 — keep the provider URL on any failure
+        return None
+
+
 async def _render_scene_inplace(
     s: dict, aspect: str, james_uris: list[str], used_clips: list[str]
 ) -> dict:
     """Render one scene's clip, mutating s with url/clip_status/note."""
     kind, source = s.get("kind"), s.get("source")
     s.pop("note", None)
+    s.pop("provider_url", None)
+    idx = s.get("index", 0)
+    label = s.get("label") or kind or "scene"
+
     if kind == "talking_head" and source == "avatar":
         url, err = await _render_avatar(s.get("voiceover", ""), aspect)
-        s["url"] = url or f"stub://avatar/{s.get('index', 0)}"
-        s["clip_status"] = "ok" if url else "stub"
-        if err:
-            s["note"] = err
+        if url:
+            durable = await _persist_clip_to_storage(url, f"scene-{idx}-{label}")
+            if durable:
+                s["provider_url"] = url  # transient — what HeyGen gave us
+                s["url"] = durable        # durable — our Supabase URL
+                s["persisted"] = True
+            else:
+                s["url"] = url
+                s["persisted"] = False
+                s["note"] = "kept provider URL (re-host to our storage failed)"
+            s["clip_status"] = "ok"
+        else:
+            s["url"] = f"stub://avatar/{idx}"
+            s["clip_status"] = "stub"
+            if err:
+                s["note"] = err
     elif kind == "talking_head" and source == "james_clip":
         clip = next((u for u in james_uris if u not in used_clips),
                     james_uris[0] if james_uris else None)
@@ -169,16 +212,29 @@ async def _render_scene_inplace(
             used_clips.append(clip)
             s["url"] = _public(clip)
             s["clip_status"] = "ok"
+            s["persisted"] = True  # already on our storage
         else:
-            s["url"] = f"stub://james_clip/{s.get('index', 0)}"
+            s["url"] = f"stub://james_clip/{idx}"
             s["clip_status"] = "stub"
             s["note"] = "no James clips in the library — upload some in the Reference Library"
     else:  # broll → seed image → Runway
         url, err = await _render_broll(s.get("visual_prompt", ""), aspect)
-        s["url"] = url or f"stub://broll/{s.get('index', 0)}"
-        s["clip_status"] = "ok" if url else "stub"
-        if err:
-            s["note"] = err
+        if url:
+            durable = await _persist_clip_to_storage(url, f"scene-{idx}-{label}")
+            if durable:
+                s["provider_url"] = url
+                s["url"] = durable
+                s["persisted"] = True
+            else:
+                s["url"] = url
+                s["persisted"] = False
+                s["note"] = "kept provider URL (re-host to our storage failed)"
+            s["clip_status"] = "ok"
+        else:
+            s["url"] = f"stub://broll/{idx}"
+            s["clip_status"] = "stub"
+            if err:
+                s["note"] = err
     return s
 
 
