@@ -57,17 +57,22 @@ def _row(r) -> dict:
 
 async def start_production(
     script: str, platform: str, aspect: str, title: str = "",
-    scenes: list[dict] | None = None, tenant_id: UUID | None = None,
+    scenes: list[dict] | None = None, mode: str = "mixed",
+    tenant_id: UUID | None = None,
 ) -> dict:
-    """Create a production. If `scenes` is supplied (an edited plan from the
-    visual editor), it's stored and the planning stage is skipped."""
+    """Create a production. mode='avatar_only' renders the whole script as
+    one HeyGen avatar — no per-scene assembly. mode='mixed' (default) uses
+    the full plan/render/assemble pipeline. If `scenes` is supplied, the
+    planner is skipped in mixed mode."""
+    if mode not in ("mixed", "avatar_only"):
+        mode = "mixed"
     async with acquire(tenant_id) as conn:
         row = await conn.fetchrow(
             """INSERT INTO video_productions
-                 (status, title, platform, aspect, script, scenes,
+                 (status, title, platform, aspect, script, scenes, mode,
                   avatar_provider, broll_provider, assembly_provider)
-               VALUES ('queued',$1,$2,$3,$4,$5::jsonb,$6,$7,$8) RETURNING *""",
-            title, platform, aspect, script, json.dumps(scenes or []),
+               VALUES ('queued',$1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9) RETURNING *""",
+            title, platform, aspect, script, json.dumps(scenes or []), mode,
             get_avatar_provider().name, settings.video_provider,
             get_assembly_provider().name,
         )
@@ -89,6 +94,14 @@ async def _fail(pid, msg, tenant_id):
             "updated_at=now(), completed_at=now() WHERE id=$1",
             pid, msg[:500],
         )
+
+
+async def _james_clip_entries(tenant_id: UUID | None) -> list[dict]:
+    """Returns the james_clip pool with mute_audio metadata, so the renderer
+    can mark a scene's native audio as muted when the user has flagged the
+    clip that way."""
+    from .media import james_clips_with_mute
+    return await james_clips_with_mute(tenant_id)
 
 
 async def _james_clip_uris(tenant_id: UUID | None) -> list[str]:
@@ -206,13 +219,20 @@ async def _render_scene_inplace(
             if err:
                 s["note"] = err
     elif kind == "talking_head" and source == "james_clip":
-        clip = next((u for u in james_uris if u not in used_clips),
-                    james_uris[0] if james_uris else None)
-        if clip:
-            used_clips.append(clip)
-            s["url"] = _public(clip)
+        # james_uris is a list of dicts {uri, mute_audio} when supplied by
+        # _james_clip_entries; fall back to plain str list for backwards-compat.
+        entries = james_uris
+        if entries and isinstance(entries[0], str):
+            entries = [{"uri": u, "mute_audio": False} for u in entries]
+        chosen = next((e for e in entries if e["uri"] not in used_clips),
+                      entries[0] if entries else None)
+        if chosen:
+            used_clips.append(chosen["uri"])
+            s["url"] = _public(chosen["uri"])
             s["clip_status"] = "ok"
             s["persisted"] = True  # already on our storage
+            if chosen.get("mute_audio"):
+                s["mute_native_audio"] = True
         else:
             s["url"] = f"stub://james_clip/{idx}"
             s["clip_status"] = "stub"
@@ -249,6 +269,41 @@ async def render_one_scene(
     return await _render_scene_inplace(s, aspect, james_uris, [])
 
 
+async def _run_avatar_only(row, tenant_id: UUID | None) -> None:
+    """Avatar-only mode: one HeyGen render of the full script — same voice
+    end-to-end, no per-scene assembly, no Creatomate. Lands in queue."""
+    pid = row["id"]
+    script = (row["script"] or "").strip()
+    if not script:
+        return await _fail(pid, "avatar-only mode needs a script", tenant_id)
+    async with acquire(tenant_id) as conn:
+        await _set(conn, pid, status="rendering_clips")
+    url, err = await _render_avatar(script, row["aspect"])
+    if not url:
+        return await _fail(pid, err or "HeyGen render failed", tenant_id)
+    durable = await _persist_clip_to_storage(url, f"avatar-only-{pid}")
+    final_url = durable or url
+    async with acquire(tenant_id) as conn:
+        action_id = await conn.fetchval(
+            """INSERT INTO actions (proposed_by, action_type, payload, status)
+               VALUES ('video_producer','video',$1::jsonb,'pending') RETURNING id""",
+            json.dumps({
+                "platform": row["platform"], "format": "video",
+                "content": row["title"] or script[:120],
+                "caption": row["title"] or "",
+                "media_url": final_url,
+                "stub": final_url.startswith("stub://"),
+                "mode": "avatar_only",
+            }),
+        )
+        await conn.execute(
+            """UPDATE video_productions SET status='succeeded', final_url=$2,
+               queued_action_id=$3, updated_at=now(), completed_at=now()
+               WHERE id=$1""",
+            pid, final_url, action_id,
+        )
+
+
 async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> None:
     """The worker. Advances the production through every stage."""
     pid = production_id
@@ -258,6 +313,11 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
             row = await conn.fetchrow("SELECT * FROM video_productions WHERE id=$1", pid)
             if row is None:
                 return
+
+        # Avatar-only mode forks here — one HeyGen render of the entire
+        # script, no per-scene plan, no Creatomate assembly.
+        if row["mode"] == "avatar_only":
+            return await _run_avatar_only(row, tenant_id)
         existing = row["scenes"]
         if isinstance(existing, str):
             existing = json.loads(existing)
@@ -286,7 +346,7 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
         # each can poll a provider for minutes. We render with no connection
         # held, then persist progress in short-lived connections so the pool
         # is never starved and no transaction stays open during a render.
-        james_uris = await _james_clip_uris(tenant_id)
+        james_uris = await _james_clip_entries(tenant_id)
         used_clips: list[str] = []
         for s in scenes:
             # Reuse a clip already rendered in the editor's per-scene preview.

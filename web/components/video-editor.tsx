@@ -25,6 +25,7 @@ export default function VideoEditor() {
   const [topic, setTopic] = useState("");
   const [platform, setPlatform] = useState("instagram");
   const [aspect, setAspect] = useState("9:16");
+  const [mode, setMode] = useState<"mixed" | "avatar_only">("mixed");
   const [composing, setComposing] = useState(false);
   const [script, setScript] = useState("");
   const [scenes, setScenes] = useState<Scene[]>([]);
@@ -109,7 +110,13 @@ export default function VideoEditor() {
   async function produce() {
     setErr("");
     try {
-      const p = await api.produceVideo({ title, platform, aspect, scenes });
+      // In avatar_only mode the backend uses the script directly and ignores
+      // scenes; otherwise we send the edited scene plan.
+      const p = await api.produceVideo(
+        mode === "avatar_only"
+          ? { title, platform, aspect, mode, script }
+          : { title, platform, aspect, mode, scenes }
+      );
       setProd(p);
       if (pollRef.current) clearInterval(pollRef.current);
       pollRef.current = setInterval(async () => {
@@ -150,6 +157,28 @@ export default function VideoEditor() {
           <Button onClick={compose} disabled={composing}>
             {composing ? <Spinner /> : "Auto-generate"}
           </Button>
+        </div>
+        {/* Mode toggle — avatar_only renders one HeyGen video of the full
+            script (continuous voice, no gaps); mixed uses the full plan. */}
+        <div className="mt-3 flex gap-2">
+          <button
+            onClick={() => setMode("mixed")}
+            className={`text-[12px] rounded-md px-3 py-1.5 border transition-colors ${
+              mode === "mixed" ? "border-primary text-foreground bg-primary/10" : "border-border text-muted-foreground"
+            }`}
+            title="Per-scene mix: B-roll + avatar + James clips, assembled by Creatomate"
+          >
+            Mixed (B-roll + avatar + clips)
+          </button>
+          <button
+            onClick={() => setMode("avatar_only")}
+            className={`text-[12px] rounded-md px-3 py-1.5 border transition-colors ${
+              mode === "avatar_only" ? "border-primary text-foreground bg-primary/10" : "border-border text-muted-foreground"
+            }`}
+            title="One HeyGen render of the full script — continuous voice, no gaps"
+          >
+            Avatar only (one HeyGen render)
+          </button>
         </div>
         {err && <p className="text-destructive text-sm mt-2">✗ {err}</p>}
         {intel?.summary && (

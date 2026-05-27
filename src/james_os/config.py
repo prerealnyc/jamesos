@@ -88,6 +88,13 @@ class Settings(BaseSettings):
     heygen_api_version: str = "v2"
     heygen_voice_id: str = ""         # HeyGen voice id (required to speak text)
     image_model: str = "gpt-image-1"  # OpenAI image model for B-roll seed stills
+    # Style prefix applied to every B-roll seed image prompt — pushes the
+    # output away from cartoon/illustration toward real-looking footage.
+    image_style: str = (
+        "Photorealistic cinematic photograph, real-world setting, "
+        "natural lighting, sharp focus, high-quality DSLR look, "
+        "NOT cartoon, NOT illustration, NOT 3D render."
+    )
     assembly_provider: str = "stub"   # creatomate | shotstack | stub
     creatomate_api_key: str = ""
     shotstack_api_key: str = ""

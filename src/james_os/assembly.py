@@ -120,6 +120,11 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                     "type": "video", "source": url,
                     "track": 1, "time": t, "duration": dur, "fit": "cover",
                 }
+                # Per-scene mute: a james_clip flagged mute_audio in the
+                # Reference Library plays visually-only (the user has a
+                # narrator/voiceover track carrying the audio elsewhere).
+                if s.get("mute_native_audio"):
+                    elem["volume"] = 0
                 if anim:
                     elem["animations"] = anim
                 elements.append(elem)

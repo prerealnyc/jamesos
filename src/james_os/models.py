@@ -204,6 +204,7 @@ class MediaUpdate(BaseModel):
     notes: str | None = None
     platform: str | None = None
     tags: list[str] | None = None
+    mute_audio: bool | None = None
 
 
 class VideoPlanRequest(BaseModel):
@@ -229,6 +230,7 @@ class VideoProduceRequest(BaseModel):
     aspect: str = "9:16"
     title: str = ""
     scenes: list[dict] = Field(default_factory=list)  # edited plan from the editor
+    mode: str = "mixed"  # mixed | avatar_only — single HeyGen render of the whole script
 
 
 class MultiGenerateRequest(BaseModel):

@@ -197,6 +197,10 @@ function MediaTile({ item, onChange }: { item: MediaAsset; onChange: () => void 
     await api.updateMedia(item.id, { notes });
     setSavedAt(Date.now());
   }
+  async function toggleMute() {
+    await api.updateMedia(item.id, { mute_audio: !item.mute_audio });
+    onChange();
+  }
   async function analyze() {
     setAnalyzing(true);
     try {
@@ -264,6 +268,15 @@ function MediaTile({ item, onChange }: { item: MediaAsset; onChange: () => void 
         <div className="flex items-center justify-between text-[11px] text-muted-foreground">
           <span>{savedAt ? "notes saved" : item.tags.join(" · ")}</span>
           <div className="flex items-center gap-3">
+            {item.role === "james_clip" && (
+              <button
+                onClick={toggleMute}
+                className={item.mute_audio ? "text-primary font-semibold" : "hover:text-foreground"}
+                title="When muted, the clip plays visually but its native voice doesn't sound — use a narrator track for the audio"
+              >
+                {item.mute_audio ? "audio muted ✓" : "mute audio"}
+              </button>
+            )}
             {isUpload && (
               <button onClick={analyze} disabled={pending} className="hover:text-primary disabled:opacity-50">
                 {item.analyzed ? "re-analyze" : "analyze"}

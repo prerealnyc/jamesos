@@ -239,6 +239,8 @@ export type MediaAsset = {
   analyzed: boolean;
   analysis_status: "none" | "pending" | "done" | "failed" | "unsupported";
   analysis: { fingerprint?: StyleFingerprint; note?: string };
+  mute_audio?: boolean;
+
   created_at: string;
   updated_at: string;
 };
@@ -346,9 +348,10 @@ export const api = {
   renderScene: (scene: Scene, aspect = "9:16") =>
     jpost<Scene>("/video/render-scene", { scene, aspect }),
   produceVideo: (opts: {
-    script?: string; platform?: string; aspect?: string; title?: string; scenes?: Scene[];
+    script?: string; platform?: string; aspect?: string; title?: string;
+    scenes?: Scene[]; mode?: "mixed" | "avatar_only";
   }) => jpost<Production>("/video/produce", {
-    platform: "instagram", aspect: "9:16", ...opts,
+    platform: "instagram", aspect: "9:16", mode: "mixed", ...opts,
   }),
   listProductions: () => jget<Production[]>("/video/productions"),
   getProduction: (id: string) => jget<Production>(`/video/productions/${id}`),
@@ -383,7 +386,7 @@ export const api = {
   }) => jpost<MediaAsset>("/media/link", body),
   updateMedia: (
     id: string,
-    fields: { title?: string; notes?: string; platform?: string; tags?: string[] }
+    fields: { title?: string; notes?: string; platform?: string; tags?: string[]; mute_audio?: boolean }
   ) => jpatch<MediaAsset>(`/media/${id}`, fields),
   deleteMedia: (id: string) => jdel<{ ok: boolean }>(`/media/${id}`),
   analyzeMedia: (id: string) => jpost<MediaAsset>(`/media/${id}/analyze`, {}),

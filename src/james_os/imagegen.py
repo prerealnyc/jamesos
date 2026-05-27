@@ -35,10 +35,12 @@ async def generate_seed_image(prompt: str, aspect: str = "9:16") -> tuple[str | 
     if client is None:
         return None, "No OpenAI key — add it in Settings to generate B-roll seed images."
     size = _SIZE_FOR_ASPECT.get(aspect, "1024x1536")
+    style = (settings.image_style or "").strip()
+    full_prompt = f"{style} {prompt}".strip() if style else prompt
     try:
         res = await client.images.generate(
             model=settings.image_model,
-            prompt=prompt[:900],
+            prompt=full_prompt[:1000],
             size=size,
             n=1,
         )

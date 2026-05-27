@@ -164,6 +164,7 @@ async def update_media(
     notes: str | None = None,
     tags: list[str] | None = None,
     platform: str | None = None,
+    mute_audio: bool | None = None,
     tenant_id: UUID | None = None,
 ) -> dict | None:
     sets, args = [], []
@@ -174,6 +175,9 @@ async def update_media(
     if tags is not None:
         args.append(tags)
         sets.append(f"tags = ${len(args)}::text[]")
+    if mute_audio is not None:
+        args.append(mute_audio)
+        sets.append(f"mute_audio = ${len(args)}")
     if not sets:
         return None
     sets.append("updated_at = now()")
@@ -194,6 +198,17 @@ async def get_media_for_analysis(
             media_id,
         )
     return dict(r) if r else None
+
+
+async def james_clips_with_mute(tenant_id: UUID | None = None) -> list[dict]:
+    """Returns [{uri, mute_audio}] for every james_clip — used at assembly
+    time so we know which clips' native voice to mute."""
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            "SELECT uri, mute_audio FROM media_assets "
+            "WHERE role = 'james_clip' ORDER BY created_at"
+        )
+    return [{"uri": r["uri"], "mute_audio": bool(r["mute_audio"])} for r in rows]
 
 
 async def set_analysis_status(

@@ -449,8 +449,11 @@ async def video_produce(req: VideoProduceRequest, background: BackgroundTasks) -
     GET /video/productions/{id}."""
     if not req.script.strip() and not req.scenes:
         raise HTTPException(status_code=400, detail="script or scenes required")
+    if req.mode == "avatar_only" and not req.script.strip():
+        raise HTTPException(status_code=400, detail="avatar_only mode requires a script")
     prod = await start_production(
-        req.script.strip(), req.platform, req.aspect, req.title, req.scenes
+        req.script.strip(), req.platform, req.aspect, req.title,
+        req.scenes, req.mode,
     )
     background.add_task(run_production, UUID(prod["id"]))
     return prod
@@ -769,6 +772,7 @@ async def media_update(media_id: UUID, req: MediaUpdate) -> dict:
         notes=req.notes,
         platform=req.platform,
         tags=req.tags,
+        mute_audio=req.mute_audio,
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="media not found or nothing to update")
