@@ -48,6 +48,14 @@ def _service():
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
+# Shared Drive support: every call needs supportsAllDrives=True; list also
+# needs includeItemsFromAllDrives=True. Without these, items inside a Team
+# Drive simply aren't returned (no error, silent zero) — which cost us an
+# afternoon of diagnosis. Setting them is safe for My-Drive folders too.
+_SHARED_DRIVE = {"supportsAllDrives": True}
+_SHARED_DRIVE_LIST = {"supportsAllDrives": True, "includeItemsFromAllDrives": True}
+
+
 def _list_videos_sync(folder_id: str, limit: int = 100) -> list[dict]:
     svc = _service()
     q = (
@@ -59,6 +67,7 @@ def _list_videos_sync(folder_id: str, limit: int = 100) -> list[dict]:
         fields="files(id, name, mimeType, size, modifiedTime)",
         pageSize=min(limit, 1000),
         orderBy="modifiedTime desc",
+        **_SHARED_DRIVE_LIST,
     ).execute()
     return res.get("files", [])
 
@@ -66,7 +75,7 @@ def _list_videos_sync(folder_id: str, limit: int = 100) -> list[dict]:
 def _download_sync(file_id: str) -> bytes:
     from googleapiclient.http import MediaIoBaseDownload
     svc = _service()
-    request = svc.files().get_media(fileId=file_id)
+    request = svc.files().get_media(fileId=file_id, **_SHARED_DRIVE)
     buf = io.BytesIO()
     downloader = MediaIoBaseDownload(buf, request)
     done = False
