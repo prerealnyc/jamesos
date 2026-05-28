@@ -221,6 +221,11 @@ export type Guardrail = {
 
 export type MediaRole = "style_reference" | "james_clip" | "broll" | "post_image";
 
+/** Aesthetic preset for /images/generate. Each maps to a distinct
+ *  prompt prefix on the backend (see imagegen.POST_STYLES). Same topic
+ *  + different style = different render. */
+export type PostImageStyle = "editorial" | "photoreal" | "minimal" | "bw_photo";
+
 export type StyleFingerprint = {
   hook?: string;
   structure?: string | string[];
@@ -395,11 +400,12 @@ export const api = {
     platform?: string;
     brief?: string;
     aspect?: string;
+    style?: PostImageStyle;
     title?: string;
     tags?: string[];
   }) => jpost<MediaAsset & { generation?: Record<string, unknown> }>(
     "/images/generate",
-    { platform: "linkedin", ...body },
+    { platform: "linkedin", style: "editorial", ...body },
   ),
   listMedia: (role = "") =>
     jget<{ media: MediaAsset[]; roles: MediaRole[] }>(

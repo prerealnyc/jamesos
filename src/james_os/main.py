@@ -594,6 +594,7 @@ async def images_generate(req: PostImageRequest) -> dict:
         platform=req.platform.strip() or "linkedin",
         brief=req.brief,
         aspect=req.aspect,
+        style=req.style,
     )
     if not png:
         raise HTTPException(status_code=400, detail=err or "image generation failed")
@@ -602,9 +603,14 @@ async def images_generate(req: PostImageRequest) -> dict:
     # library uses, so the returned URL works for both browser preview
     # and downstream consumers (Creatomate, social schedulers).
     tenant = "00000000-0000-0000-0000-000000000001"  # single-tenant for now
-    filename = f"post-{meta['platform']}-{meta['aspect'].replace(':','x')}.png"
+    filename = (
+        f"post-{meta['platform']}-{meta['style']}-"
+        f"{meta['aspect'].replace(':','x')}.png"
+    )
     served_uri, file_path = media_storage().save(tenant, png, filename)
 
+    # Prepend a style tag so the library can render it as a chip without
+    # parsing the prompt. User-supplied tags are preserved after.
     asset = await create_media(
         role="post_image",
         source_type="upload",
@@ -613,7 +619,7 @@ async def images_generate(req: PostImageRequest) -> dict:
         title=(req.title or topic)[:120],
         platform=req.platform.strip() or "linkedin",
         mime="image/png",
-        tags=list(req.tags or []),
+        tags=[f"style:{meta['style']}", *(req.tags or [])],
         notes=meta["prompt"][:500],
     )
     asset["generation"] = meta

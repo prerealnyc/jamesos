@@ -37,21 +37,53 @@ _POST_ASPECT = {
     "ig":       "1:1",
 }
 
-# Style prefix for post hero images. Tuned for clarity over flash:
-#   * editorial illustration, not photoreal — avoids uncanny-faces issues
-#     and produces a cleaner feed scroll-stopper.
-#   * uncluttered composition, single focal point, plenty of negative
-#     space — direct counter to "image not too crowded".
-#   * no text overlays, no logos, no faces unless integral — the post
-#     copy carries the message; the image is the hook.
-_POST_STYLE = (
-    "Clean editorial illustration, modern flat-vector aesthetic. "
+# Style library for post hero images. Each entry is a system-style
+# prefix appended to the user's topic. All share the same uncluttered/
+# no-text-overlays rules so a post image is never a busy collage. The
+# style picker on /images selects between them per-render.
+#
+#   * editorial — clean flat-vector illustration. Best for metaphors and
+#     concept hooks ("market shifting", "underpriced asset"). Cheapest
+#     to reuse; can't go uncanny on faces.
+#   * photoreal — modern documentary-photography aesthetic. Best for
+#     real-world subjects (buildings, neighborhoods, offices, objects).
+#     Faces still risk uncanny; the prompt asks for environments not
+#     portraits unless the topic requires them.
+#   * minimal — high-contrast geometric / abstract. Best for newsletters
+#     and Twitter, where a strong shape reads at thumbnail scale.
+#   * bw_photo — black-and-white documentary photograph. Quiet, serious;
+#     good for institutional or legacy-brand posts.
+_BASE_RULES = (
     "Single clear focal point, simple uncluttered composition with plenty "
-    "of negative space. Restrained color palette (2–4 tones). "
-    "No text overlays, no logos, no busy background detail, no faces "
-    "unless integral to the topic. Professional but inviting; suitable "
-    "as a LinkedIn/Twitter/Instagram post hero image."
+    "of negative space. No text overlays, no logos, no busy background "
+    "detail, no faces unless integral to the topic. Professional but "
+    "inviting; suitable as a LinkedIn/Twitter/Instagram post hero image."
 )
+
+POST_STYLES: dict[str, str] = {
+    "editorial": (
+        "Clean editorial illustration, modern flat-vector aesthetic. "
+        "Restrained color palette (2–4 tones). " + _BASE_RULES
+    ),
+    "photoreal": (
+        "Photorealistic editorial photograph in the style of a modern "
+        "documentary or high-quality stock image. Natural lighting, "
+        "shallow depth of field, real-world setting. Prefer environments, "
+        "buildings, objects and wide scenes over close-up faces. "
+        + _BASE_RULES
+    ),
+    "minimal": (
+        "Bold, high-contrast minimal composition. Strong geometric "
+        "shapes, large fields of color, abstracted or symbolic. Reads "
+        "clearly at thumbnail scale. " + _BASE_RULES
+    ),
+    "bw_photo": (
+        "Black-and-white documentary photograph. Quiet, serious, "
+        "classic editorial framing. Natural lighting, real-world setting. "
+        + _BASE_RULES
+    ),
+}
+_DEFAULT_STYLE = "editorial"
 
 
 def _client() -> AsyncOpenAI | None:
@@ -87,11 +119,13 @@ async def generate_seed_image(prompt: str, aspect: str = "9:16") -> tuple[str | 
     return f"data:image/png;base64,{b64}", ""
 
 
-def _build_post_prompt(topic: str, brief: str = "") -> str:
-    """Compose the final text prompt for a post hero image. Topic is the
-    subject line; brief is optional extra context (e.g. the draft body or
-    a specific angle). Style prefix forces the editorial look."""
-    parts = [_POST_STYLE, f"Subject: {topic.strip()}."]
+def _build_post_prompt(topic: str, brief: str, style: str) -> str:
+    """Compose the final text prompt for a post hero image. The style
+    prefix is the lever — same topic, different prefix = different
+    aesthetic. Unknown style falls back to editorial silently rather
+    than crashing the render."""
+    prefix = POST_STYLES.get(style.lower(), POST_STYLES[_DEFAULT_STYLE])
+    parts = [prefix, f"Subject: {topic.strip()}."]
     if brief.strip():
         parts.append(f"Context: {brief.strip()[:240]}")
     return " ".join(parts)[:1000]
@@ -102,6 +136,7 @@ async def generate_post_image(
     platform: str = "linkedin",
     brief: str = "",
     aspect: str = "",
+    style: str = _DEFAULT_STYLE,
 ) -> tuple[bytes | None, dict, str]:
     """Topic → PNG bytes for a shareable post hero image.
 
@@ -125,7 +160,10 @@ async def generate_post_image(
         platform.lower(), "16:9"
     )
     size = _SIZE_FOR_ASPECT.get(chosen_aspect, "1536x1024")
-    full_prompt = _build_post_prompt(topic, brief)
+    chosen_style = (style or _DEFAULT_STYLE).lower()
+    if chosen_style not in POST_STYLES:
+        chosen_style = _DEFAULT_STYLE
+    full_prompt = _build_post_prompt(topic, brief, chosen_style)
     try:
         res = await client.images.generate(
             model=settings.image_model,
@@ -153,8 +191,9 @@ async def generate_post_image(
         "platform": platform,
         "model": settings.image_model,
         "topic": topic,
+        "style": chosen_style,
     }
     return png, meta, ""
 
 
-__all__ = ["generate_seed_image", "generate_post_image"]
+__all__ = ["generate_seed_image", "generate_post_image", "POST_STYLES"]

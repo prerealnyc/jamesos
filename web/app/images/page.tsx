@@ -13,7 +13,7 @@
 
 import { useEffect, useState } from "react";
 import {
-  api, mediaUrl, type MediaAsset,
+  api, mediaUrl, type MediaAsset, type PostImageStyle,
 } from "@/lib/api";
 import {
   Button, Card, CardTitle, Input, Textarea, Select, Label, Badge, Spinner, PageHeader,
@@ -26,11 +26,27 @@ const PLATFORM_HELP: Record<string, string> = {
   facebook: "16:9 — Facebook post hero",
 };
 
+const STYLE_HELP: Record<PostImageStyle, string> = {
+  editorial: "Flat-vector illustration · best for metaphors and concepts",
+  photoreal: "Documentary-photo aesthetic · best for buildings, scenes, real objects",
+  minimal:   "High-contrast geometric · reads strong at thumbnail scale",
+  bw_photo:  "Black-and-white documentary · quiet, serious, institutional",
+};
+
+const STYLES: PostImageStyle[] = ["editorial", "photoreal", "minimal", "bw_photo"];
+const STYLE_LABEL: Record<PostImageStyle, string> = {
+  editorial: "editorial",
+  photoreal: "photoreal",
+  minimal:   "minimal",
+  bw_photo:  "b&w photo",
+};
+
 export default function PostImagesPage() {
   const [topic, setTopic] = useState("");
   const [brief, setBrief] = useState("");
   const [platform, setPlatform] = useState<"linkedin"|"twitter"|"instagram"|"facebook">("linkedin");
   const [aspect, setAspect] = useState<""|"1:1"|"16:9"|"9:16">("");
+  const [style, setStyle] = useState<PostImageStyle>("photoreal");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [latest, setLatest] = useState<MediaAsset | null>(null);
@@ -56,6 +72,7 @@ export default function PostImagesPage() {
         platform,
         brief: brief.trim(),
         aspect,
+        style,
       });
       setLatest(asset);
       // Optimistic prepend; reload to sync with server ordering
@@ -133,12 +150,32 @@ export default function PostImagesPage() {
             </Select>
           </div>
         </div>
+        <Label>Style</Label>
+        <div className="flex flex-wrap gap-2">
+          {STYLES.map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => setStyle(s)}
+              className={`text-[12px] px-3 py-1.5 rounded-full border transition-colors ${
+                style === s
+                  ? "border-primary text-primary bg-primary/10"
+                  : "border-border text-muted-foreground hover:border-primary/60 hover:text-foreground"
+              }`}
+            >
+              {STYLE_LABEL[s]}
+            </button>
+          ))}
+        </div>
+        <p className="text-[11px] text-muted-foreground mt-1">
+          {STYLE_HELP[style]}
+        </p>
         <div className="mt-4 flex items-center gap-3">
           <Button onClick={generate} disabled={busy || !topic.trim()}>
             {busy ? <Spinner /> : "Generate image"}
           </Button>
           <span className="text-[12px] text-muted-foreground">
-            gpt-image-1 · editorial style · ~10–25s
+            gpt-image-1 · {STYLE_LABEL[style]} · ~10–25s
           </span>
         </div>
         {err && <p className="text-destructive text-sm mt-2">✗ {err}</p>}
@@ -222,6 +259,13 @@ function ImageRow({
   );
 }
 
+function styleTag(asset: MediaAsset): string | null {
+  // Tags arrive prefixed `style:<name>` when generated post-2026-05;
+  // older library entries simply won't render a style chip.
+  const t = (asset.tags || []).find((x) => x.startsWith("style:"));
+  return t ? t.slice("style:".length) : null;
+}
+
 function ImageTile({
   asset, onCopy, onRemove,
 }: {
@@ -229,6 +273,7 @@ function ImageTile({
   onCopy: () => void;
   onRemove: () => void;
 }) {
+  const st = styleTag(asset);
   return (
     <div className="border border-border rounded-md overflow-hidden bg-background flex flex-col">
       <a href={mediaUrl(asset.uri)} target="_blank" rel="noopener noreferrer" className="block">
@@ -241,6 +286,7 @@ function ImageTile({
       <div className="p-2 flex flex-col gap-1.5">
         <div className="flex items-center gap-1.5 flex-wrap">
           <Badge tone="muted">{asset.platform || "post"}</Badge>
+          {st && <Badge tone="primary">{st === "bw_photo" ? "b&w photo" : st}</Badge>}
           <span className="text-[11px] font-medium truncate flex-1">{asset.title}</span>
         </div>
         <div className="flex gap-1.5">

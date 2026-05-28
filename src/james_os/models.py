@@ -279,11 +279,14 @@ class PostImageRequest(BaseModel):
 
     `topic` is the subject line. `brief` is optional extra context — the
     draft body, a specific angle, or a reference to a fact the image
-    should evoke. Aspect override beats the per-platform default.
+    should evoke. `style` picks the aesthetic prefix (editorial /
+    photoreal / minimal / bw_photo); same topic + different style =
+    different render. Aspect override beats the per-platform default.
     """
     topic: str
     platform: str = "linkedin"
     brief: str = ""
     aspect: str = ""                 # blank → per-platform default
+    style: str = "editorial"          # editorial | photoreal | minimal | bw_photo
     title: str = ""                  # human label for the library
     tags: list[str] = Field(default_factory=list)
