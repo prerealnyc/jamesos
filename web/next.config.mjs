@@ -30,6 +30,9 @@ const nextConfig = {
       { source: "/media/:path*", destination: `${BACKEND}/media/:path*` },
       // Local-disk media served directly by FastAPI (pre-Supabase uploads).
       { source: "/media-files/:path*", destination: `${BACKEND}/media-files/:path*` },
+      // Post-image generation lives at /images/* — separate from the
+      // /images page route, since the Next page resolves first.
+      { source: "/images/:path*", destination: `${BACKEND}/images/:path*` },
       { source: "/api/:path*", destination: `${BACKEND}/api/:path*` },
     ];
   },

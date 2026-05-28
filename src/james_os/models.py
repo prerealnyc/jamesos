@@ -272,3 +272,18 @@ class ContentDraft(BaseModel):
     model: str
     latency_ms: int
     note: str | None = None       # honest caveat (e.g. stub LLM, thin corpus)
+
+
+class PostImageRequest(BaseModel):
+    """Generate a shareable hero image for a post (LinkedIn/Twitter/IG).
+
+    `topic` is the subject line. `brief` is optional extra context — the
+    draft body, a specific angle, or a reference to a fact the image
+    should evoke. Aspect override beats the per-platform default.
+    """
+    topic: str
+    platform: str = "linkedin"
+    brief: str = ""
+    aspect: str = ""                 # blank → per-platform default
+    title: str = ""                  # human label for the library
+    tags: list[str] = Field(default_factory=list)

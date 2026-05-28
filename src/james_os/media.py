@@ -24,7 +24,7 @@ from uuid import UUID, uuid4
 from .config import settings
 from .db import acquire
 
-ROLES = ("style_reference", "james_clip", "broll")
+ROLES = ("style_reference", "james_clip", "broll", "post_image")
 
 # Local store lives beside the repo; served read-only at /media-files.
 _MEDIA_ROOT = Path(__file__).resolve().parent.parent.parent / "media_store"

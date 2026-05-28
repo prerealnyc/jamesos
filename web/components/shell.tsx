@@ -29,7 +29,7 @@ const NAV: Group[] = [
       { href: "/pipeline", label: "Video Studio", sub: "Mixed: B-roll + avatar + clips", icon: "pipeline", live: true },
       { href: "/editor", label: "Timeline Editor", sub: "Stitch clips, add text & music", icon: "pipeline", live: true },
       { href: "/jp-clips", label: "Reference Library", sub: "Clips, style refs & B-roll", icon: "clips", live: true },
-      { href: "/images", label: "Images", sub: "Image library", icon: "images" },
+      { href: "/images", label: "Post Images", sub: "AI hero images for posts", icon: "images", live: true },
     ],
   },
   {

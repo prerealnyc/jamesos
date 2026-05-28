@@ -219,7 +219,7 @@ export type Guardrail = {
   created_at: string | null;
 };
 
-export type MediaRole = "style_reference" | "james_clip" | "broll";
+export type MediaRole = "style_reference" | "james_clip" | "broll" | "post_image";
 
 export type StyleFingerprint = {
   hook?: string;
@@ -390,6 +390,17 @@ export const api = {
   listProductions: () => jget<Production[]>("/video/productions"),
   getProduction: (id: string) => jget<Production>(`/video/productions/${id}`),
   listClipLibrary: () => jget<{ items: ClipLibraryItem[] }>("/video/clips/library"),
+  generatePostImage: (body: {
+    topic: string;
+    platform?: string;
+    brief?: string;
+    aspect?: string;
+    title?: string;
+    tags?: string[];
+  }) => jpost<MediaAsset & { generation?: Record<string, unknown> }>(
+    "/images/generate",
+    { platform: "linkedin", ...body },
+  ),
   listMedia: (role = "") =>
     jget<{ media: MediaAsset[]; roles: MediaRole[] }>(
       `/media${role ? `?role=${role}` : ""}`

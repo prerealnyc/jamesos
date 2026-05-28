@@ -51,6 +51,7 @@ from .models import (
     MediaUpdate,
     MultiGenerateRequest,
     PlugIn,
+    PostImageRequest,
     PlugInCreate,
     ResearchRequest,
     ResearchResponse,
@@ -566,6 +567,57 @@ async def video_clips_library() -> dict:
         })
 
     return {"items": items}
+
+
+@app.post("/images/generate", status_code=201)
+async def images_generate(req: PostImageRequest) -> dict:
+    """Generate a shareable post hero image (LinkedIn / Twitter / IG).
+
+    Calls OpenAI gpt-image-1 with an editorial style prefix tuned for
+    'uncluttered, single-focal-point, no text overlays' — the kind of
+    image you'd actually attach to a post, not a busy collage. Persists
+    the PNG to media storage (Supabase if configured, local-disk fallback)
+    and creates a media_assets row with role='post_image', so the image
+    is reusable from /images and the timeline editor library.
+
+    Stub-honest: with no OPENAI_API_KEY this returns 400 with a clear
+    reason — never a fake image.
+    """
+    from .imagegen import generate_post_image
+    from .media import storage as media_storage
+
+    topic = (req.topic or "").strip()
+    if not topic:
+        raise HTTPException(status_code=400, detail="topic is required")
+    png, meta, err = await generate_post_image(
+        topic=topic,
+        platform=req.platform.strip() or "linkedin",
+        brief=req.brief,
+        aspect=req.aspect,
+    )
+    if not png:
+        raise HTTPException(status_code=400, detail=err or "image generation failed")
+
+    # Persist the bytes through the same storage backend the media
+    # library uses, so the returned URL works for both browser preview
+    # and downstream consumers (Creatomate, social schedulers).
+    tenant = "00000000-0000-0000-0000-000000000001"  # single-tenant for now
+    filename = f"post-{meta['platform']}-{meta['aspect'].replace(':','x')}.png"
+    served_uri, file_path = media_storage().save(tenant, png, filename)
+
+    asset = await create_media(
+        role="post_image",
+        source_type="upload",
+        uri=served_uri,
+        file_path=file_path,
+        title=(req.title or topic)[:120],
+        platform=req.platform.strip() or "linkedin",
+        mime="image/png",
+        tags=list(req.tags or []),
+        notes=meta["prompt"][:500],
+    )
+    asset["generation"] = meta
+    return asset
 
 
 @app.post("/research", response_model=ResearchResponse)
