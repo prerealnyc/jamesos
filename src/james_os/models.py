@@ -172,6 +172,11 @@ class TrendDiscoverRequest(BaseModel):
 class TrendCreator(BaseModel):
     platform: str
     handle: str
+    # Optional context, preserved on the watchlist so the UI can render a
+    # human label and the content engine can prefer creators whose interests
+    # overlap with the brief.
+    name: str = ""
+    interests: list[str] = Field(default_factory=list)
 
 
 class WatchlistUpdate(BaseModel):

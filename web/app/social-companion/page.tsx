@@ -95,23 +95,84 @@ export default function SocialCompanionPage() {
         </div>
 
         {creators.length > 0 ? (
-          <div className="flex flex-wrap gap-2 mt-4">
-            {creators.map((c) => (
-              <span
-                key={`${c.platform}:${c.handle}`}
-                className="inline-flex items-center gap-2 text-[12px] border border-border rounded-full pl-3 pr-2 py-1"
-              >
-                <Badge tone="muted">{c.platform}</Badge>
-                @{c.handle}
-                <button
-                  onClick={() => remove(c)}
-                  className="text-muted-foreground hover:text-destructive"
-                  aria-label="remove"
-                >
-                  ✕
-                </button>
-              </span>
-            ))}
+          <div className="mt-4">
+            {(() => {
+              // Group by creator name (when present) so a single person with
+              // 3 platforms shows as one card with 3 platform chips — not
+              // 3 anonymous rows.
+              type Group = {
+                key: string;
+                name: string;
+                interests: string[];
+                handles: Creator[];
+              };
+              const groups = new Map<string, Group>();
+              for (const c of creators) {
+                const key = (c.name && c.name.trim()) || `@${c.handle}`;
+                const g = groups.get(key) || {
+                  key,
+                  name: c.name || "",
+                  interests: c.interests || [],
+                  handles: [],
+                };
+                if (!g.interests.length && c.interests?.length) {
+                  g.interests = c.interests;
+                }
+                g.handles.push(c);
+                groups.set(key, g);
+              }
+              const list = Array.from(groups.values());
+              return (
+                <>
+                  <div className="text-[11px] text-muted-foreground mb-2">
+                    {creators.length} handles across {list.length} creators
+                  </div>
+                  <div className="flex flex-col gap-2 max-h-[420px] overflow-y-auto -mr-2 pr-2">
+                    {list.map((g) => (
+                      <div
+                        key={g.key}
+                        className="border border-border rounded-md px-3 py-2"
+                      >
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-[13px] font-medium">
+                            {g.name || g.handles[0].handle}
+                          </span>
+                          {g.handles.map((c) => (
+                            <span
+                              key={`${c.platform}:${c.handle}`}
+                              className="inline-flex items-center gap-1.5 text-[11px] border border-border rounded-full pl-2 pr-1 py-0.5"
+                            >
+                              <Badge tone="muted">{c.platform}</Badge>
+                              <span className="text-muted-foreground">@{c.handle}</span>
+                              <button
+                                onClick={() => remove(c)}
+                                className="text-muted-foreground hover:text-destructive"
+                                aria-label="remove"
+                                title="Remove this handle"
+                              >
+                                ✕
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                        {g.interests.length > 0 && (
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            {g.interests.map((i) => (
+                              <span
+                                key={i}
+                                className="text-[10px] bg-secondary text-muted-foreground rounded px-1.5 py-0.5"
+                              >
+                                {i}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              );
+            })()}
           </div>
         ) : (
           <p className="text-[13px] text-muted-foreground mt-4">

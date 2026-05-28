@@ -657,7 +657,15 @@ async def trends_watchlist_get() -> dict:
 
 @app.post("/trends/watchlist")
 async def trends_watchlist_set(req: WatchlistUpdate) -> dict:
-    creators = [{"platform": c.platform, "handle": c.handle} for c in req.creators]
+    creators = [
+        {
+            "platform": c.platform,
+            "handle": c.handle,
+            "name": c.name,
+            "interests": c.interests,
+        }
+        for c in req.creators
+    ]
     return {"creators": await set_watchlist(creators)}
 
 

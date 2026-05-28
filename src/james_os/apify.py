@@ -206,12 +206,17 @@ class ApifyTrendProvider(TrendProvider):
                 "shouldDownloadVideos": False,
                 "shouldDownloadCovers": False,
             }
-        # youtube — accept @handles or channel urls
-        urls = [
-            h if h.startswith("http")
-            else f"https://www.youtube.com/@{h}"
-            for h in clean
-        ]
+        # youtube — accept @handles, raw channel IDs (UC…22 chars), or
+        # full URLs. Channel IDs need /channel/<id>; everything else uses @.
+        def _yt_url(h: str) -> str:
+            if h.startswith("http"):
+                return h
+            # YouTube channel IDs are exactly 24 chars starting with "UC".
+            if len(h) == 24 and h.startswith("UC"):
+                return f"https://www.youtube.com/channel/{h}"
+            return f"https://www.youtube.com/@{h}"
+
+        urls = [_yt_url(h) for h in clean]
         return {
             "startUrls": [{"url": u} for u in urls],
             "maxResults": limit,

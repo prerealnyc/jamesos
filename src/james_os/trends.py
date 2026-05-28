@@ -277,12 +277,28 @@ async def get_watchlist(tenant_id: UUID | None = None) -> list[dict]:
 async def set_watchlist(
     creators: list[dict], tenant_id: UUID | None = None
 ) -> list[dict]:
-    """creators = [{platform, handle}]. Replaces the list wholesale."""
-    clean = [
-        {"platform": c["platform"], "handle": c["handle"].lstrip("@").strip()}
-        for c in creators
-        if c.get("platform") and c.get("handle", "").strip()
-    ]
+    """creators = [{platform, handle, name?, interests?}]. Wholesale replace.
+
+    Extra fields (name, interests) are preserved on the watchlist so the UI
+    can show human labels and the content engine can match a brief's topic
+    to creators whose interests overlap.
+    """
+    clean: list[dict] = []
+    for c in creators:
+        platform = (c.get("platform") or "").strip()
+        handle = (c.get("handle") or "").strip().lstrip("@")
+        if not platform or not handle:
+            continue
+        entry = {"platform": platform, "handle": handle}
+        name = (c.get("name") or "").strip()
+        if name:
+            entry["name"] = name
+        interests = c.get("interests") or []
+        if isinstance(interests, str):
+            interests = [s.strip() for s in interests.split(",") if s.strip()]
+        if interests:
+            entry["interests"] = list(interests)
+        clean.append(entry)
     async with acquire(tenant_id) as conn:
         await conn.execute(
             "UPDATE tenants SET config = jsonb_set("

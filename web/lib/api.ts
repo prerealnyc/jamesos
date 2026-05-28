@@ -202,7 +202,14 @@ export type TrendResult = {
   note: string | null;
 };
 
-export type Creator = { platform: string; handle: string };
+export type Creator = {
+  platform: string;
+  handle: string;
+  // Optional context — populated when the watchlist was seeded from a
+  // curated source (e.g. Speaking Targets). Older entries lack these.
+  name?: string;
+  interests?: string[];
+};
 
 export type Guardrail = {
   id: string;
