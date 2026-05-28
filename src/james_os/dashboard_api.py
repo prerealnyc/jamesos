@@ -17,7 +17,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, HTTPException
 
 from .config import settings
 from .db import acquire
@@ -468,12 +468,17 @@ async def queue_stats() -> dict:
 @router.post("/queue/{item_id}/approve")
 async def approve_item(item_id: UUID, body: dict = Body(default={})) -> dict:
     async with acquire() as conn:
-        await conn.execute(
+        # asyncpg's execute() returns the command tag, e.g. 'UPDATE 1' /
+        # 'UPDATE 0' — the count is the second token. We can't lie to the
+        # caller about a write that affected nothing.
+        tag = await conn.execute(
             "UPDATE actions SET status='approved', approval_reason=$2, "
             "decided_at=now() WHERE id=$1",
             item_id,
             body.get("reason", "approved via dashboard"),
         )
+    if not tag.endswith(" 1"):
+        raise HTTPException(status_code=404, detail=f"action {item_id} not found")
     return {"ok": True, "id": str(item_id), "status": "approved"}
 
 
@@ -481,12 +486,14 @@ async def approve_item(item_id: UUID, body: dict = Body(default={})) -> dict:
 async def reject_item(item_id: UUID, body: dict = Body(default={})) -> dict:
     reason = body.get("reason", "rejected")
     async with acquire() as conn:
-        await conn.execute(
+        tag = await conn.execute(
             "UPDATE actions SET status='rejected', "
             "rejection_reason_code=$2, decided_at=now() WHERE id=$1",
             item_id,
             reason,
         )
+    if not tag.endswith(" 1"):
+        raise HTTPException(status_code=404, detail=f"action {item_id} not found")
     # Close the learning loop: turn the manager's reason into a hard
     # guardrail in memory so the engine doesn't repeat the mistake.
     from .learning import record_rejection
@@ -696,8 +703,6 @@ async def _gen_image(body: dict = Body(default={})) -> dict:
     return {"url": None, "note": "image generation not wired in JAMES OS yet"}
 
 
-# Catch-all so any unforeseen /api GET returns empty rather than 404-crashing
-# a dashboard page. Defined last so explicit routes win.
-@router.get("/{rest:path}")
-async def _api_fallback(rest: str) -> list:
-    return []
+# Catch-all REMOVED 2026-05 — it was masking every frontend typo and
+# every removed route as `200 OK []`, making regressions invisible. Real
+# 404s surface bugs.

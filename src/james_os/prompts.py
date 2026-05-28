@@ -187,12 +187,41 @@ def build_qa_messages(
     ]
 
 
+async def _tenant_label(tenant_id: UUID | None) -> str:
+    """The brand's display name, sourced in order of preference:
+      1. tenants.config -> profile.brand  (editable from the Settings UI)
+      2. tenants.name                     (DDL-set tenant label)
+      3. 'this brand'                     (neutral last resort)
+
+    Without this, every system prompt baked the literal string
+    'this tenant' / 'this brand', which leaked into LLM output.
+    """
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            "SELECT name, config FROM tenants WHERE id = "
+            "current_setting('app.current_tenant', true)::uuid"
+        )
+    if not row:
+        return "this brand"
+    cfg = row["config"]
+    if isinstance(cfg, str):
+        cfg = json.loads(cfg)
+    brand = ((cfg or {}).get("profile") or {}).get("brand") or ""
+    if brand.strip() and brand.strip() != "JP Brand Manager":
+        return brand.strip()
+    name = (row["name"] or "").strip()
+    if name and name.lower() != "tenant zero":
+        return name
+    return "this brand"
+
+
 async def build_content_system_prompt(
     platform: str, fmt: str, tenant_id: UUID | None = None
 ) -> str:
     rules = await _load_active_guidelines(tenant_id)
     base = CONTENT_SYSTEM_PROMPT.format(
-        tenant_name="this brand", platform=platform, fmt=fmt
+        tenant_name=await _tenant_label(tenant_id),
+        platform=platform, fmt=fmt,
     )
     return f"{base}\n\n<rules>\n{rules or '(none configured yet)'}\n</rules>"
 
@@ -200,7 +229,7 @@ async def build_content_system_prompt(
 async def build_system_prompt(tenant_id: UUID | None = None) -> str:
     guidelines = await _load_active_guidelines(tenant_id)
     return SYSTEM_PROMPT_BASE.format(
-        tenant_name="this tenant",  # TODO: read from tenants.name
+        tenant_name=await _tenant_label(tenant_id),
         guidelines=guidelines or "(none configured yet)",
     )
 

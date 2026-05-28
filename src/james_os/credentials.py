@@ -132,6 +132,15 @@ _ENV_BASELINE: dict[str, str] = {
     f.name: str(getattr(settings, f.name, "") or "") for f in MANAGED_FIELDS
 }
 
+# Provider-toggle baseline. NOT in MANAGED_FIELDS (UI can't change them),
+# but captured here so an explicit env choice (e.g. LLM_PROVIDER=openai
+# because Anthropic credits ran out) survives credential-driven
+# re-evaluation in _auto_select_providers.
+_PROVIDER_BASELINE: dict[str, str] = {
+    "llm_provider": str(getattr(settings, "llm_provider", "") or "").lower(),
+    "embedding_provider": str(getattr(settings, "embedding_provider", "") or "").lower(),
+}
+
 
 def mask(value: str, secret: bool = True) -> str:
     """Never returns enough to reconstruct a secret."""
@@ -147,10 +156,37 @@ def mask(value: str, secret: bool = True) -> str:
 def _auto_select_providers() -> None:
     """'Connect automatically': a key's mere presence wires its capability.
 
-    Currently scoped to the research engine — adding a Perplexity key in
-    Settings flips research from the stub to live, and removing it reverts.
-    LLM/embedding stay .env-driven to avoid breaking a working core.
+    Covers every provider that has a clean stub fallback. A user pasting
+    an Anthropic or Voyage key into Settings expects the AI core to start
+    working — pre-2026-05 it didn't, because LLM/embedding stayed
+    .env-driven. Now they auto-flip too.
+
+    Explicit env choices win: if .env set `LLM_PROVIDER=openai` (e.g.
+    because Anthropic credits ran out), the baseline survives even if an
+    Anthropic key is also present. Auto-flip only activates when the
+    baseline is 'stub' (the user didn't choose).
+
+    Embedding has only one supported live vendor (Voyage), so it's a
+    straight key-present-or-stub flip.
     """
+    llm_baseline = _PROVIDER_BASELINE.get("llm_provider") or "stub"
+    if llm_baseline != "stub":
+        settings.llm_provider = llm_baseline  # honor explicit env choice
+    elif (settings.anthropic_api_key or "").strip():
+        settings.llm_provider = "anthropic"
+    elif (settings.openai_api_key or "").strip():
+        settings.llm_provider = "openai"
+    else:
+        settings.llm_provider = "stub"
+
+    emb_baseline = _PROVIDER_BASELINE.get("embedding_provider") or "stub"
+    if emb_baseline != "stub":
+        settings.embedding_provider = emb_baseline
+    else:
+        settings.embedding_provider = (
+            "voyage" if (settings.voyage_api_key or "").strip() else "stub"
+        )
+
     settings.research_provider = (
         "perplexity" if (settings.perplexity_api_key or "").strip() else "stub"
     )

@@ -657,6 +657,18 @@ async def trends_watchlist_get() -> dict:
 
 @app.post("/trends/watchlist")
 async def trends_watchlist_set(req: WatchlistUpdate) -> dict:
+    # Destructive-default guard: an empty list is wholesale-replace, which
+    # would wipe a curated watchlist. Require an explicit confirm_clear=true
+    # so a buggy client or stale form post can't destroy the cohort.
+    if not req.creators and not req.confirm_clear:
+        existing = await get_watchlist()
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Refusing to wipe the watchlist ({len(existing)} creators) "
+                "with an empty list. Pass confirm_clear=true to acknowledge."
+            ),
+        )
     creators = [
         {
             "platform": c.platform,

@@ -37,19 +37,35 @@ from .models import EventCreate, EventSource
 # ── viral scoring ──
 
 def _parse_dt(s: str) -> datetime | None:
+    """Parse an Apify-supplied timestamp into a UTC-AWARE datetime.
+
+    Apify actors emit ISO strings in three shapes: epoch seconds,
+    `2026-05-28T12:00:00Z`, and bare `2026-05-28T12:00:00` (no tz).
+    The third shape used to come back naive, and `datetime.now(UTC) - dt`
+    blew up with 'can't subtract offset-naive and offset-aware'.
+    Now any successful parse is forced to UTC.
+    """
     if not s:
         return None
     txt = str(s).strip()
-    # epoch seconds
+    # epoch seconds (or ms)
     if txt.isdigit():
         try:
-            return datetime.fromtimestamp(int(txt), tz=UTC)
+            v = int(txt)
+            if v > 10_000_000_000:  # heuristic: 10^10 → looks like ms
+                v //= 1000
+            return datetime.fromtimestamp(v, tz=UTC)
         except (ValueError, OSError):
             return None
     try:
-        return datetime.fromisoformat(txt.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(txt.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if dt.tzinfo is None:
+        # Naive timestamp from the actor — treat as UTC (Apify's docs say
+        # it is, but they emit it bare anyway).
+        dt = dt.replace(tzinfo=UTC)
+    return dt
 
 
 def _velocity(views: int, posted_at: str) -> float:

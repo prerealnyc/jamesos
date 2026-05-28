@@ -181,6 +181,9 @@ class TrendCreator(BaseModel):
 
 class WatchlistUpdate(BaseModel):
     creators: list[TrendCreator] = Field(default_factory=list)
+    # Wholesale-replace semantics make {"creators": []} destructive — one
+    # bad client call wipes the curated list. Require an explicit flag.
+    confirm_clear: bool = False
 
 
 class WatchlistRefreshRequest(BaseModel):
