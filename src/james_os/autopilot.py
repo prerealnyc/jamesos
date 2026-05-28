@@ -80,26 +80,41 @@ async def set_config(updates: dict, tenant_id: UUID | None = None) -> dict:
 
 _IDEA_SYSTEM = """You are the content strategist for a personal brand.
 You are given LIVE market research and trends describing what is working /
-going viral RIGHT NOW, plus the brand voice.
+going viral RIGHT NOW, plus the brand voice. You may also be given a
+CURATED COHORT — creators on the brand's speaking-targets watchlist whose
+interests overlap the topic. When that cohort and its trend events are
+present, bias ideas toward angles those creators are currently working;
+they are the people the brand is trying to ride alongside, so an idea
+they could plausibly amplify is more valuable than a generic global trend.
 
 Invent {n} content ideas that RIDE these specific trends — each idea must be
-traceable to something in the research/trends (a hook pattern, format, or
-topic that's currently working). Each MUST be a SINGLE-ARC STORY angle (a
+traceable to something in the research/trends/cohort (a hook pattern, format,
+or topic that's currently working). Each MUST be a SINGLE-ARC STORY angle (a
 first-person moment, decision, or lesson) in the brand's voice — never a
 listicle, never "N tips". Be specific; no generic platitudes.
 
 Return STRICT JSON:
 {{"ideas": [{{"title": str, "topic": str (a one-line story prompt the writer
 will expand, phrased as a personal story), "pillar": str,
-"trend_basis": str (the specific trend/insight this idea rides)}}]}}"""
+"trend_basis": str (the specific trend/insight this idea rides — name the
+creator when riding a COHORT TREND)}}]}}"""
 
 
 async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
     """Virality-first: run LIVE market research + pull trends BEFORE ideating.
     Returns None when no real intel is available — the caller then refuses to
-    generate, so Autopilot never produces off-trend content."""
+    generate, so Autopilot never produces off-trend content.
+
+    Cohort bias: when topic_hint matches the interests of any watchlist
+    creator (e.g. 'Real Estate' on Shawn Ryan when topic_hint is 'Staten
+    Island commercial RE'), pulls that creator's recent trend events as a
+    second feed for ideation. The cohort is the speaking-targets list — so
+    autopilot will preferentially ride angles those creators are working,
+    not just whatever happens to be the most-recent global trend.
+    """
     from .ingestion import ingest_many
     from .research import get_research_provider, research_to_events
+    from .trends import list_cohort_trends
 
     provider = get_research_provider()
     if provider.name == "stub":
@@ -127,6 +142,12 @@ async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
             "ORDER BY created_at DESC LIMIT 5"
         )
     trends = [(r["raw_content"] or "")[:200] for r in trend_rows]
+
+    # Curated-cohort trends — only present when the topic_hint matches the
+    # interests of a watchlist creator AND that creator has been scraped at
+    # least once. Empty list is honest, not a failure.
+    cohort = await list_cohort_trends(subject, limit=8, tenant_id=tenant_id)
+
     return {
         "provider": result.provider,
         "subject": subject,
@@ -134,6 +155,8 @@ async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
         "findings": result.findings,
         "sources": [s.url for s in result.sources],
         "trends": trends,
+        "cohort_creators": cohort["creators"],
+        "cohort_trends": cohort["trends"],
     }
 
 
@@ -150,16 +173,59 @@ async def _voice_for_ideation(tenant_id: UUID | None) -> str:
 async def generate_ideas(
     n: int, intel: dict, tenant_id: UUID | None = None
 ) -> list[dict]:
-    """Ideas grounded in live research/trends (what's working) + voice (tone)."""
+    """Ideas grounded in live research/trends (what's working) + voice (tone).
+
+    Two trend feeds when both are available:
+      * SCRAPED TRENDS: most-recent global trend events
+      * COHORT TRENDS: events from watchlist creators whose interests
+        overlap with the autopilot topic_hint — the speaking-targets list
+        the brand is trying to ride alongside. Prompt asks the LLM to bias
+        ideas toward this feed when it's populated.
+    """
     n = max(1, min(n, 10))
     voice = await _voice_for_ideation(tenant_id)
     findings = "\n".join(f"- {f}" for f in (intel.get("findings") or [])[:12])
     trends = "\n".join(f"- {t}" for t in (intel.get("trends") or []))
+
+    cohort_creators = intel.get("cohort_creators") or []
+    cohort_trends = intel.get("cohort_trends") or []
+    if cohort_creators:
+        cohort_label = ", ".join(
+            f"{c['name']} (@{c['handle']} · {c['platform']})"
+            + (f" interested in {'/'.join(c['interests'][:3])}" if c.get('interests') else "")
+            for c in cohort_creators[:6]
+        )
+    else:
+        cohort_label = ""
+    if cohort_trends:
+        cohort_block = "\n".join(
+            f"- [{t['platform']} @{t['handle']} score={t['outlier_score']:.2f}] "
+            f"{t['caption']}"
+            for t in cohort_trends
+        )
+    else:
+        cohort_block = ""
+
+    cohort_section = ""
+    if cohort_creators or cohort_trends:
+        # Even if scrape hasn't run yet we show the matched creators so
+        # ideation knows whose lane we're in. The "no trend events yet"
+        # note is honest, not a fake signal.
+        cohort_section = (
+            f"\nCURATED COHORT (creators on the brand's speaking-targets "
+            f"watchlist whose interests overlap '{intel.get('subject','')}'):"
+            f"\n{cohort_label or '(no name labels yet)'}\n"
+            f"\nCOHORT TRENDS (events from those creators — bias ideas "
+            f"toward these angles when present):\n"
+            f"{cohort_block or '(no scraped trend events yet — refresh the watchlist on Social Companion to populate)'}\n"
+        )
+
     ctx = (
         f"LIVE MARKET RESEARCH (subject: {intel.get('subject')}, via "
         f"{intel.get('provider')}):\n{intel.get('summary','')}\n\n"
         f"KEY FINDINGS (what's working now):\n{findings or '(none)'}\n\n"
-        f"SCRAPED TRENDS:\n{trends or '(none — research only)'}\n\n"
+        f"SCRAPED TRENDS:\n{trends or '(none — research only)'}\n"
+        f"{cohort_section}\n"
         f"BRAND VOICE (write in this voice):\n{voice}"
     )
     try:

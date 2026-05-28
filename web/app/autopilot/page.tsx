@@ -160,6 +160,31 @@ export default function AutopilotPage() {
                   <p className="mt-1 text-muted-foreground line-clamp-3">{r.research.summary}</p>
                 </div>
               )}
+              {(r.research?.cohort_creators?.length || 0) > 0 && (
+                <div className="mt-2 rounded-md bg-background border border-border p-2 text-[11px]">
+                  <span className="uppercase tracking-[.4px] text-muted-foreground">
+                    Cohort match · {r.research?.cohort_creators?.length} creator(s) ·{" "}
+                    {r.research?.cohort_trends?.length || 0} trend events
+                  </span>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {r.research?.cohort_creators?.slice(0, 6).map((c, n) => (
+                      <span
+                        key={n}
+                        className="text-[10px] bg-secondary text-foreground rounded px-1.5 py-0.5"
+                        title={(c.interests || []).join(", ")}
+                      >
+                        {c.name}
+                      </span>
+                    ))}
+                  </div>
+                  {(r.research?.cohort_trends?.length || 0) === 0 && (
+                    <p className="text-[10px] text-muted-foreground mt-1">
+                      No scraped events from this cohort yet — refresh the
+                      watchlist on Social Companion to populate.
+                    </p>
+                  )}
+                </div>
+              )}
               {r.ideas?.length > 0 && (
                 <ul className="mt-2 text-[12px] text-muted-foreground flex flex-col gap-1">
                   {r.ideas.map((i, n) => (

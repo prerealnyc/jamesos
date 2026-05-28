@@ -309,6 +309,131 @@ async def set_watchlist(
     return clean
 
 
+def _interest_tokens(s: str) -> set[str]:
+    """Lower-case tokenize a string into individual words AND keep the
+    original lower-cased multi-word string. Matching uses either, so
+    'Real Estate' on a creator matches a topic_hint of 'real estate' or
+    just 'real'.
+
+    Plus a tiny domain-scoped abbreviation expansion so the user can
+    write 'Staten Island commercial RE' as a topic_hint and still match
+    a creator tagged with 'Real Estate'. Conservative on purpose — only
+    bidirectional, unambiguous expansions live here.
+    """
+    base = (s or "").strip().lower()
+    tokens = {t for t in base.replace("-", " ").split() if len(t) >= 3}
+    if base and " " in base:
+        tokens.add(base)
+    # Bidirectional expansions: tagging one form unlocks matches on the
+    # other (so a creator interest of 'real estate' matches a topic of
+    # 'RE', and vice versa).
+    raw = set(base.replace("-", " ").split())
+    for abbr, full in _ABBREVS.items():
+        if abbr in raw or abbr in tokens:
+            tokens.update(full.split())
+            tokens.add(full)
+        if any(t in raw for t in full.split()):
+            tokens.add(abbr)
+    return tokens
+
+
+_ABBREVS = {
+    "re": "real estate",
+    "cre": "commercial real estate",
+    "vc": "venture capital",
+    "ai": "artificial intelligence",
+}
+
+
+def _interests_overlap(creator_interests: list[str], topic: str) -> bool:
+    """True when the topic_hint shares any meaningful token with a creator's
+    interests. Both sides are tokenised + lower-cased. A 3-char minimum
+    drops 'is', 'to', etc. without needing a full stopword list."""
+    topic_tokens = _interest_tokens(topic)
+    if not topic_tokens:
+        return False
+    for i in creator_interests or []:
+        ci = _interest_tokens(i)
+        # Either side's multi-word phrase contains the other's token, OR
+        # they share a single-word token. The phrase-contains test catches
+        # 'real estate' (creator) vs 'staten island commercial re' (topic).
+        if ci & topic_tokens:
+            return True
+        for tt in topic_tokens:
+            if " " in tt and any(t in tt for t in ci if " " not in t):
+                return True
+            if " " in (i or "").lower() and tt in (i or "").lower():
+                return True
+    return False
+
+
+async def matched_creators(
+    topic: str, tenant_id: UUID | None = None
+) -> list[dict]:
+    """Watchlist subset whose interests overlap with `topic`. Empty list is
+    a clean fallback signal (no curated cohort for this topic — caller
+    decides what to do, e.g. fall back to a generic trend pull)."""
+    if not topic.strip():
+        return []
+    creators = await get_watchlist(tenant_id)
+    return [c for c in creators if _interests_overlap(c.get("interests") or [], topic)]
+
+
+async def list_cohort_trends(
+    topic: str, limit: int = 8, tenant_id: UUID | None = None
+) -> dict:
+    """Trend events from watchlist creators whose interests overlap `topic`.
+    Returns {creators, trends}. Trends are ordered by stored outlier_score.
+
+    Honest scope: depends on `refresh_watchlist` having scraped at least
+    once — without that there are no trend events to filter. Caller falls
+    back to the existing top-N recent feed in that case.
+    """
+    matched = await matched_creators(topic, tenant_id)
+    if not matched:
+        return {"creators": [], "trends": []}
+    # Match by (platform, handle) pair — the watchlist stores handles
+    # without the leading @, same as how trend events persist them.
+    pairs = [(c["platform"], c["handle"].lower()) for c in matched]
+    placeholders = ", ".join(f"(${i*2+1}, ${i*2+2})" for i in range(len(pairs)))
+    args: list = []
+    for p, h in pairs:
+        args.extend([p, h])
+    args.append(limit)
+    sql = (
+        "SELECT payload, raw_content, created_at FROM events "
+        f"WHERE payload->>'category'='trend' AND superseded_by IS NULL "
+        f"AND (payload->>'platform', lower(payload->>'handle')) IN ({placeholders}) "
+        "ORDER BY (payload->>'outlier_score')::float DESC NULLS LAST, "
+        "created_at DESC "
+        f"LIMIT ${len(args)}"
+    )
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(sql, *args)
+    trends = []
+    for r in rows:
+        p = r["payload"]
+        if isinstance(p, str):
+            p = json.loads(p)
+        trends.append({
+            "platform": p.get("platform", ""),
+            "handle": p.get("handle", ""),
+            "caption": (p.get("caption") or "")[:240],
+            "url": p.get("url", ""),
+            "views": p.get("views", 0),
+            "outlier_score": p.get("outlier_score", 0),
+        })
+    return {
+        "creators": [
+            {"name": c.get("name") or c["handle"],
+             "platform": c["platform"], "handle": c["handle"],
+             "interests": c.get("interests") or []}
+            for c in matched
+        ],
+        "trends": trends,
+    }
+
+
 def watchlist_by_platform(creators: list[dict]) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for c in creators:
@@ -319,5 +444,6 @@ def watchlist_by_platform(creators: list[dict]) -> dict[str, list[str]]:
 __all__ = [
     "discover_and_ingest", "refresh_watchlist", "list_trends",
     "get_watchlist", "set_watchlist", "watchlist_by_platform",
+    "matched_creators", "list_cohort_trends",
     "score_items", "trend_items_to_events",
 ]

@@ -350,7 +350,19 @@ export type AutopilotRun = {
   queued: number;
   ideas: { title: string; topic: string; pillar?: string; trend_basis?: string }[];
   results: { title: string; platform: string; voice_score: number; status: string; action_id: string | null }[];
-  research: { provider?: string; subject?: string; summary?: string; findings?: string[]; sources?: string[]; trends?: string[] };
+  research: {
+    provider?: string;
+    subject?: string;
+    summary?: string;
+    findings?: string[];
+    sources?: string[];
+    trends?: string[];
+    // Speaking-targets cohort matched on interests for this run's topic.
+    // Empty when no creator's interests overlap, or when the watchlist
+    // hasn't been scraped yet (creators present, trends empty).
+    cohort_creators?: { name: string; platform: string; handle: string; interests?: string[] }[];
+    cohort_trends?: { platform: string; handle: string; caption: string; outlier_score: number; views: number; url: string }[];
+  };
   error: string | null;
   created_at: string;
   completed_at: string | null;
