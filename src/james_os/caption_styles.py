@@ -144,6 +144,75 @@ DEFAULT_CAPTION_STYLE = "clean_white"
 AUTO_PICK_KEY = "auto"      # frontend sentinel meaning "let the LLM pick"
 
 
+# ── safe-zone layout ──────────────────────────────────────────────────
+#
+# Every visible element (caption, logo, badge) declares the vertical band
+# it wants to occupy, and the layout helper guarantees they don't collide
+# with the BEAT's primary visual zone.
+#
+# A beat is one of:
+#   "avatar" — James talking on camera. His face is roughly 25-50% from
+#              top, hands/torso 50-78%. Captions must NOT land there.
+#   "broll"  — AI photoreal still. The focal subject varies per image,
+#              but composition tends to centre-of-mass around 40-60%.
+#              Lower-third or upper-headroom both work.
+#   "default"— pre-mix modes that don't carry per-beat role data.
+#
+# Each beat type gets a list of "safe bands" — (y_pos, max_height_vh)
+# tuples — ranked from preferred to fallback. Overlays pick the first
+# band that fits them.
+
+SAFE_ZONES: dict[str, list[tuple[str, float]]] = {
+    "avatar": [
+        # Bottom band — below body, above the platform UI safe area
+        # (TikTok / Reels usually overlay UI bottom 8%).
+        ("88%", 11.0),
+        # Top band — above James's head, useful for HOOK-style large
+        # captions when the avatar is framed lower.
+        ("8%",  9.0),
+    ],
+    "broll": [
+        # Lower-third — classic editorial position, works against most
+        # photoreal compositions where the subject is mid-screen.
+        ("72%", 18.0),
+        # Mid-screen — fallback when the still has empty middle (rare).
+        ("55%", 12.0),
+    ],
+    "default": [
+        ("75%", 18.0),
+        ("60%", 12.0),
+    ],
+}
+
+
+def caption_y_for_role(preset: dict, role: str) -> str:
+    """Pick the caption y for this beat's role.
+
+    Logic: each preset defines its preferred y in its own dict. If the
+    beat is an avatar beat AND the preset's preferred y would land in
+    the avatar's visual zone (25-78%), we override to the role's safe
+    band. B-roll beats trust the preset's preferred y because photoreal
+    stills are composed differently.
+    """
+    preferred = preset.get("y_position", "75%")
+    # Parse "NN%" → int. Robust to whitespace.
+    try:
+        pref_pct = int(str(preferred).strip().rstrip("%"))
+    except (TypeError, ValueError):
+        pref_pct = 75
+    if role == "avatar":
+        # James's visual band — refuse to overlap.
+        AVATAR_NO_GO = (25, 78)
+        # Caption height ~7vh for our presets, so we check the centre.
+        centre = pref_pct + 3
+        if AVATAR_NO_GO[0] <= centre <= AVATAR_NO_GO[1]:
+            # Take the first safe band the preset can fit in (it always
+            # fits in 11vh; preset font sizes are 4.5-9 vh).
+            return SAFE_ZONES["avatar"][0][0]
+    # Default / broll: trust the preset.
+    return preferred
+
+
 def get_preset(name: str | None) -> dict:
     """Resolve a preset name to its config. Unknown names fall back to
     the default — the caller always gets a usable dict, never a KeyError
@@ -164,8 +233,14 @@ def list_presets() -> list[dict]:
 
 def caption_element(
     *, text: str, start: float, end: float, preset: dict, track: int = 3,
+    role: str = "default",
 ) -> dict:
     """Build a single Creatomate text element from a preset.
+
+    `role` is the beat's role at this timestamp ("avatar" | "broll" |
+    "default"). When a caption falls on an avatar beat, the y is
+    overridden to the avatar safe-zone (bottom band) so it can't
+    overlap James's face — this is the layout fix the user flagged.
 
     Only emits the fields the preset actually configures so we don't
     override Creatomate defaults with empty strings (which it interprets
@@ -179,7 +254,7 @@ def caption_element(
         "time": start,
         "duration": max(0.2, end - start),
         "width": "86%",
-        "y": preset["y_position"],
+        "y": caption_y_for_role(preset, role),
         "x_alignment": preset["x_alignment"],
         "font_family": preset["font_family"],
         "font_weight": preset["font_weight"],
@@ -205,5 +280,6 @@ def caption_element(
 
 __all__ = [
     "CAPTION_PRESETS", "DEFAULT_CAPTION_STYLE", "AUTO_PICK_KEY",
-    "get_preset", "list_presets", "caption_element",
+    "SAFE_ZONES",
+    "get_preset", "list_presets", "caption_element", "caption_y_for_role",
 ]

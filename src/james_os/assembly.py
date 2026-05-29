@@ -179,7 +179,9 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 "animations": _ken_burns(dur, "out" if i % 2 else "in"),
             })
 
-        # 3) captions — preset-driven (see caption_styles.CAPTION_PRESETS)
+        # 3) captions — preset-driven + beat-aware safe zone. story_audio
+        # is faceless, so every beat is broll; the role lookup below
+        # still runs so the two source builders stay symmetric.
         preset = get_preset(caption_style)
         for c in captions:
             text = (c.get("text") or "").strip()
@@ -187,8 +189,17 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 continue
             start = float(c.get("start") or 0.0)
             end = float(c.get("end") or start)
+            midpoint = (start + end) / 2
+            role = "broll"
+            for b in beats:
+                bs = float(b.get("start") or 0.0)
+                be = float(b.get("end") or bs)
+                if bs <= midpoint < be:
+                    role = (b.get("role") or "broll").lower()
+                    break
             elements.append(caption_element(
                 text=text, start=start, end=end, preset=preset, track=3,
+                role=role,
             ))
 
         # 4) optional music
@@ -264,7 +275,12 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                     "animations": _ken_burns(dur, "out" if i % 2 else "in"),
                 })
 
-        # track 3 — captions (preset-driven, see caption_styles)
+        # track 3 — captions (preset-driven + beat-aware safe zone)
+        #
+        # For each caption flash, find the beat it falls in by midpoint
+        # match, then pass that beat's role to caption_element so the y
+        # avoids the speaker's face on avatar beats. See the SAFE_ZONES
+        # table in caption_styles.py for the actual offsets.
         preset = get_preset(caption_style)
         for c in captions:
             text = (c.get("text") or "").strip()
@@ -272,8 +288,17 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 continue
             start = float(c.get("start") or 0.0)
             end = float(c.get("end") or start)
+            midpoint = (start + end) / 2
+            role = "default"
+            for b in beats:
+                bs = float(b.get("start") or 0.0)
+                be = float(b.get("end") or bs)
+                if bs <= midpoint < be:
+                    role = (b.get("role") or "default").lower()
+                    break
             elements.append(caption_element(
                 text=text, start=start, end=end, preset=preset, track=3,
+                role=role,
             ))
 
         # track 4 — optional background music (ducked further than story
