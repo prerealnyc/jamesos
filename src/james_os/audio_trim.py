@@ -87,4 +87,24 @@ async def trim_to(in_path: str, out_path: str, duration_s: float) -> bool:
     return rc == 0
 
 
-__all__ = ["detect_speech_end", "trim_to"]
+async def extract_audio_mp3(
+    video_path: str, out_path: str, bitrate: str = "96k"
+) -> bool:
+    """Strip a video file to a mono-128k MP3. Used by the story_audio mode
+    to pull James's voice out of a HeyGen render so Whisper can transcribe
+    it with word timestamps. 96 kbps keeps a 60s render comfortably under
+    Whisper's 25 MB cap and is fine for STT — no listener ever hears it."""
+    cmd = [
+        "ffmpeg", "-y", "-i", video_path,
+        "-vn",                          # drop video
+        "-ac", "1",                     # mono
+        "-ar", "16000",                 # 16 kHz — STT-quality
+        "-b:a", bitrate,
+        "-acodec", "libmp3lame",
+        out_path,
+    ]
+    rc, _ = await _run(cmd)
+    return rc == 0
+
+
+__all__ = ["detect_speech_end", "trim_to", "extract_audio_mp3"]

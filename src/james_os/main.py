@@ -452,6 +452,8 @@ async def video_produce(req: VideoProduceRequest, background: BackgroundTasks) -
         raise HTTPException(status_code=400, detail="script or scenes required")
     if req.mode == "avatar_only" and not req.script.strip():
         raise HTTPException(status_code=400, detail="avatar_only mode requires a script")
+    if req.mode == "story_audio" and not req.script.strip():
+        raise HTTPException(status_code=400, detail="story_audio mode requires a script")
     try:
         prod = await start_production(
             req.script.strip(), req.platform, req.aspect, req.title,

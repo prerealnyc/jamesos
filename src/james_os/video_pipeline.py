@@ -70,8 +70,13 @@ async def start_production(
       * 'timeline' — freeform clip stitching from the /editor page. Every
         block already carries a real URL, so the planner and per-scene
         renderer are no-ops; we go straight to Creatomate.
+      * 'story_audio' — render HeyGen once for the voice, transcribe with
+        Whisper word-timestamps, segment into 8-18 visual beats, generate
+        one photoreal still per beat with gpt-image-1, Creatomate stitches
+        audio + stills + burned word-pinned captions. The "Agent Opus"
+        story-style format.
     """
-    if mode not in ("mixed", "avatar_only", "timeline"):
+    if mode not in ("mixed", "avatar_only", "timeline", "story_audio"):
         mode = "mixed"
     if mode == "timeline":
         # Cheap structural guard: a timeline render is meaningless without
@@ -79,6 +84,8 @@ async def start_production(
         # mid-pipeline assembler failure 30 seconds later.
         if not scenes or not any((s.get("url") or "").startswith("http") for s in scenes):
             raise ValueError("timeline mode needs at least one block with a real clip URL")
+    if mode == "story_audio" and not script.strip():
+        raise ValueError("story_audio mode requires a script (the voiceover text)")
     async with acquire(tenant_id) as conn:
         row = await conn.fetchrow(
             """INSERT INTO video_productions
@@ -350,6 +357,107 @@ async def _run_avatar_only(row, tenant_id: UUID | None) -> None:
         )
 
 
+async def _run_story_audio(row, tenant_id: UUID | None) -> None:
+    """Story-audio mode: HeyGen voice → Whisper word-stamps → 8-18 visual
+    beats → gpt-image-1 still per beat → Creatomate stitches audio +
+    stills + word-pinned captions.
+
+    State machine (the externally-visible status field):
+      queued → planning  (we render HeyGen to get the voice)
+             → rendering_clips  (Whisper + image generation per beat)
+             → assembling  (Creatomate)
+             → succeeded / failed
+    """
+    from .story_video import build_story_audio_assets, beats_to_dict
+
+    pid = row["id"]
+    script = (row["script"] or "").strip()
+    if not script:
+        return await _fail(pid, "story_audio mode needs a script", tenant_id)
+
+    # 1) HeyGen → voice (the avatar video is a means to an end here).
+    async with acquire(tenant_id) as conn:
+        await _set(conn, pid, status="planning")
+    avatar_url, err = await _render_avatar(script, row["aspect"], captions=False)
+    if not avatar_url:
+        return await _fail(pid, err or "HeyGen render failed", tenant_id)
+
+    # 2) Strip + Whisper + segment + image-gen (the heavy lift).
+    async with acquire(tenant_id) as conn:
+        await _set(conn, pid, status="rendering_clips")
+    brand_context = (
+        f"Brand: {row['title'] or 'James Prendamano'}. "
+        "Real-estate broker and brand voice, Staten Island / NYC focus. "
+        f"Platform: {row['platform']}. Aspect: {row['aspect']}."
+    )
+    # Default to photoreal — for a real-estate brand the documentary
+    # photo aesthetic lands harder than illustration, per /images audit.
+    style = "photoreal"
+    assets = await build_story_audio_assets(
+        avatar_video_url=avatar_url,
+        aspect=row["aspect"],
+        style=style,
+        brand_context=brand_context,
+        platform=row["platform"],
+        tenant_id=str(tenant_id) if tenant_id else None,
+    )
+    if assets.error or not assets.audio_url or not assets.beats:
+        return await _fail(pid, assets.error or "story assets failed", tenant_id)
+
+    # Persist intermediate state — every beat with its prompt + image
+    # URL goes into video_productions.scenes so the UI can inspect it.
+    async with acquire(tenant_id) as conn:
+        await _set(
+            conn, pid, status="assembling",
+            scenes=json.dumps(beats_to_dict(assets.beats)),
+        )
+
+    # 3) Creatomate — story-shaped source builder.
+    asm = get_assembly_provider()
+    if not hasattr(asm, "render_story"):
+        return await _fail(
+            pid, "assembly provider does not support story_audio mode", tenant_id,
+        )
+    res = await asm.render_story(
+        audio_url=assets.audio_url,
+        audio_duration=assets.audio_duration,
+        beats=beats_to_dict(assets.beats),
+        captions=assets.captions,
+        aspect=row["aspect"],
+        music_mood="calm",
+    )
+    if res.status == "processing":
+        for _ in range(_MAX_POLLS):
+            await asyncio.sleep(_POLL_EVERY)
+            res = await asm.poll(res.render_id)
+            if res.status in ("succeeded", "failed"):
+                break
+    if res.status != "succeeded" or not res.url:
+        return await _fail(pid, res.error or "story assembly failed", tenant_id)
+
+    # 4) Queue + close out.
+    async with acquire(tenant_id) as conn:
+        action_id = await conn.fetchval(
+            """INSERT INTO actions (proposed_by, action_type, payload, status)
+               VALUES ('video_producer','video',$1::jsonb,'pending') RETURNING id""",
+            json.dumps({
+                "platform": row["platform"], "format": "video",
+                "content": row["title"] or script[:120],
+                "caption": row["title"] or "",
+                "media_url": res.url,
+                "stub": res.url.startswith("stub://"),
+                "mode": "story_audio",
+                "beats": len(assets.beats),
+            }),
+        )
+        await conn.execute(
+            """UPDATE video_productions SET status='succeeded', final_url=$2,
+               queued_action_id=$3, updated_at=now(), completed_at=now()
+               WHERE id=$1""",
+            pid, res.url, action_id,
+        )
+
+
 async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> None:
     """The worker. Advances the production through every stage."""
     pid = production_id
@@ -362,6 +470,8 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
 
         # Avatar-only mode forks here — one HeyGen render of the entire
         # script, no per-scene plan, no Creatomate assembly.
+        if row["mode"] == "story_audio":
+            return await _run_story_audio(row, tenant_id)
         if row["mode"] == "avatar_only":
             return await _run_avatar_only(row, tenant_id)
         existing = row["scenes"]

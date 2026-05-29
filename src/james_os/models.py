@@ -238,7 +238,7 @@ class VideoProduceRequest(BaseModel):
     aspect: str = "9:16"
     title: str = ""
     scenes: list[dict] = Field(default_factory=list)  # edited plan from the editor
-    mode: str = "mixed"  # mixed | avatar_only | timeline (freeform clip stitch)
+    mode: str = "mixed"  # mixed | avatar_only | timeline | story_audio
 
 
 class MultiGenerateRequest(BaseModel):

@@ -42,6 +42,13 @@ class StubAssemblyProvider(AssemblyProvider):
         return RenderResult(status="succeeded", render_id="stub",
                             url=f"stub://assembled/{len(scenes)}-scenes")
 
+    async def render_story(self, **kwargs) -> RenderResult:
+        beats = kwargs.get("beats") or []
+        return RenderResult(
+            status="succeeded", render_id="stub-story",
+            url=f"stub://assembled/story-{len(beats)}-beats",
+        )
+
     async def poll(self, render_id: str) -> RenderResult:
         return RenderResult(status="succeeded", url=f"stub://assembled/{render_id}")
 
@@ -90,6 +97,22 @@ def _music_url_for(mood: str) -> str:
     }.get(mood, "")
 
 
+def _ken_burns(duration: float, kind: str = "in") -> list[dict]:
+    """Subtle scale animation so a still image doesn't read as a freeze
+    frame. Direction alternates between beats to keep the slideshow
+    visually alive. Conservative — 100%→106% in 'in' / 106%→100% in
+    'out' — anything stronger feels like a 90s real-estate ad."""
+    if duration <= 0:
+        return []
+    if kind == "out":
+        return [{"time": 0, "duration": duration, "type": "scale",
+                 "scope": "element", "easing": "linear",
+                 "start_scale": "106%", "end_scale": "100%"}]
+    return [{"time": 0, "duration": duration, "type": "scale",
+             "scope": "element", "easing": "linear",
+             "start_scale": "100%", "end_scale": "106%"}]
+
+
 class CreatomateAssemblyProvider(AssemblyProvider):
     name = "creatomate"
 
@@ -97,6 +120,120 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         if not api_key:
             raise ValueError("CREATOMATE_API_KEY is required")
         self.api_key = api_key
+
+    def build_story_source(
+        self, *,
+        audio_url: str,
+        audio_duration: float,
+        beats: list[dict],            # [{start, end, image_url, text}, …]
+        captions: list[dict],          # [{start, end, text}, …]
+        aspect: str,
+        music_mood: str = "none",
+    ) -> dict:
+        """Build a Creatomate source for the story_audio mode.
+
+        Track layout:
+          * track 1 — the voice MP3 (whole duration, full volume)
+          * track 2 — one image per beat, pinned to its [start, end]
+            window, with alternating Ken-Burns zoom so consecutive
+            stills don't feel static
+          * track 3 — burned-in word-group captions on top of the image,
+            timed to the original Whisper word timestamps
+          * track 4 — optional background music ducked under the voice
+
+        Beats without `image_url` are silently dropped — story_audio
+        already refuses to assemble when more than half are missing, so
+        this is just the "1-2 individual misses" fallback path.
+        """
+        w, h = _dims(aspect)
+        elements: list[dict] = []
+        total = max(audio_duration, beats[-1]["end"] if beats else 0.0)
+
+        # 1) voice
+        if audio_url and audio_url.startswith("http"):
+            elements.append({
+                "type": "audio", "source": audio_url,
+                "track": 1, "time": 0, "duration": total,
+            })
+
+        # 2) image stills (per beat, with Ken Burns)
+        for i, b in enumerate(beats):
+            url = (b.get("image_url") or "").strip()
+            if not url or not url.startswith("http"):
+                continue
+            start = float(b.get("start") or 0.0)
+            end = float(b.get("end") or start)
+            dur = max(0.1, end - start)
+            elements.append({
+                "type": "image", "source": url,
+                "track": 2, "time": start, "duration": dur, "fit": "cover",
+                "animations": _ken_burns(dur, "out" if i % 2 else "in"),
+            })
+
+        # 3) captions
+        for c in captions:
+            text = (c.get("text") or "").strip()
+            if not text:
+                continue
+            start = float(c.get("start") or 0.0)
+            end = float(c.get("end") or start)
+            dur = max(0.2, end - start)
+            elements.append({
+                "type": "text", "text": text,
+                "track": 3, "time": start, "duration": dur,
+                "y": "82%", "width": "86%",
+                "font_family": "Montserrat", "font_weight": "700",
+                "font_size": "6.5 vh", "fill_color": "#ffffff",
+                "background_color": "rgba(0,0,0,0.55)", "x_alignment": "50%",
+            })
+
+        # 4) optional music
+        music_url = _music_url_for(music_mood)
+        if music_url and total > 0:
+            elements.append({
+                "type": "audio", "source": music_url,
+                "track": 4, "time": 0, "duration": total,
+                "volume": 18,
+            })
+
+        return {"output_format": "mp4", "width": w, "height": h, "elements": elements}
+
+    async def render_story(
+        self, *,
+        audio_url: str, audio_duration: float,
+        beats: list[dict], captions: list[dict],
+        aspect: str, music_mood: str = "none",
+    ) -> RenderResult:
+        """Submit a story_audio render. Identical polling contract to
+        the existing render() / poll() pair — the production worker
+        treats the returned render_id the same way."""
+        if not any((b.get("image_url") or "").startswith("http") for b in beats):
+            return RenderResult("failed", error="no real beat images to assemble")
+        source = self.build_story_source(
+            audio_url=audio_url, audio_duration=audio_duration,
+            beats=beats, captions=captions,
+            aspect=aspect, music_mood=music_mood,
+        )
+        body = {"source": source}
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
+            r = await c.post(
+                "https://api.creatomate.com/v1/renders",
+                headers={"Authorization": f"Bearer {self.api_key}",
+                         "Content-Type": "application/json"},
+                json=body,
+            )
+        if r.status_code in (401, 403):
+            return RenderResult("failed", error=f"Creatomate auth failed ({r.status_code})")
+        if r.status_code >= 400:
+            return RenderResult("failed", error=f"Creatomate HTTP {r.status_code}: {r.text[:160]}")
+        data = r.json()
+        item = data[0] if isinstance(data, list) and data else data
+        rid = item.get("id")
+        url = item.get("url")
+        st = str(item.get("status", "")).lower()
+        if st == "succeeded" and url:
+            return RenderResult("succeeded", render_id=str(rid), url=url)
+        return RenderResult("processing", render_id=str(rid))
 
     def _build_source(self, scenes: list[dict], aspect: str) -> dict:
         """Build a Creatomate source applying the full production layer:
