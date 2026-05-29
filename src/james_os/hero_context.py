@@ -178,9 +178,107 @@ def invalidate_cache(tenant_id: UUID | None = None) -> None:
     re-describes. Called by media upload endpoints."""
     key = str(tenant_id or settings.default_tenant_id)
     _CACHE.pop(key, None)
+    _BYTES_CACHE.pop(key, None)
+
+
+# ── reference image bytes cache ───────────────────────────────────────
+#
+# When the story pipeline generates a hero-tagged image via gpt-image-1's
+# edit endpoint, it needs the actual PNG/JPEG bytes of the hero photos
+# (not just their URLs). Downloading them per beat would be wasteful —
+# one render with 3 hero beats would re-fetch the same 5 photos 3 times.
+# Cache the bytes per-process per-tenant; bust on hero upload.
+
+# Per gpt-image-1's edit endpoint, each reference image must be <4 MB
+# and roughly 1024x1024 quality. We resize on download with PIL so
+# Supabase-original photos don't blow the limit and so the model isn't
+# wasting compute on full-res inputs that don't help identity capture.
+_REF_MAX_SIDE = 1024
+_REF_MAX_BYTES = 3 * 1024 * 1024     # 3 MB — leave headroom under the
+                                     #          4 MB API limit per file
+_REF_MAX_COUNT = 3                    # 1-3 refs is the sweet spot — more
+                                     # tends to confuse gpt-image-1
+
+# tenant → list of (filename, bytes) tuples
+_BYTES_CACHE: dict[str, list[tuple[str, bytes]]] = {}
+
+
+def _shrink_image(data: bytes) -> bytes | None:
+    """Resize the longer edge to <= _REF_MAX_SIDE and recompress to PNG
+    until it fits under _REF_MAX_BYTES. Returns None if Pillow can't
+    decode the file (caller skips it)."""
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+    except ImportError:
+        # Pillow missing means we can't shrink — return as-is and let
+        # gpt-image-1 reject if too large. Caller flags the failure.
+        return data
+    try:
+        img = Image.open(BytesIO(data))
+        img.load()
+    except Exception:  # noqa: BLE001
+        return None
+    # Convert to RGB for PNG output; PIL keeps alpha for RGBA→PNG which
+    # works fine, but we strip exotic modes that gpt-image-1 might choke on.
+    if img.mode not in ("RGB", "RGBA"):
+        img = img.convert("RGB")
+    w, h = img.size
+    longer = max(w, h)
+    if longer > _REF_MAX_SIDE:
+        scale = _REF_MAX_SIDE / longer
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    # Try PNG first; if still over the cap, drop to JPEG quality 85.
+    buf = BytesIO()
+    img.save(buf, "PNG", optimize=True)
+    if buf.getbuffer().nbytes <= _REF_MAX_BYTES:
+        return buf.getvalue()
+    if img.mode == "RGBA":
+        img = img.convert("RGB")
+    buf = BytesIO()
+    img.save(buf, "JPEG", quality=85, optimize=True)
+    return buf.getvalue() if buf.getbuffer().nbytes <= _REF_MAX_BYTES else None
+
+
+async def get_hero_photo_files(
+    tenant_id: UUID | None = None,
+) -> list[tuple[str, bytes]]:
+    """Up to _REF_MAX_COUNT hero photos, downloaded + resized + cached.
+
+    Returns [(filename, bytes), ...] suitable for OpenAI's files= kwarg
+    on the images.edit endpoint. Empty list when no hero photos exist
+    OR when every download / resize failed (the caller falls back to
+    the no-reference image-generate path)."""
+    key = str(tenant_id or settings.default_tenant_id)
+    if key in _BYTES_CACHE:
+        return _BYTES_CACHE[key]
+
+    ctx = await get_hero_context(tenant_id)
+    if ctx is None or not ctx.photo_urls:
+        _BYTES_CACHE[key] = []
+        return []
+
+    out: list[tuple[str, bytes]] = []
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
+        for i, url in enumerate(ctx.photo_urls[:_REF_MAX_COUNT]):
+            try:
+                r = await c.get(url, follow_redirects=True)
+                r.raise_for_status()
+                shrunk = _shrink_image(r.content)
+                if shrunk is None:
+                    continue
+                # Always emit as .png filename — gpt-image-1 reads bytes
+                # not extensions, but a clean filename helps logs.
+                out.append((f"hero-{i + 1}.png", shrunk))
+            except Exception:  # noqa: BLE001
+                continue
+
+    _BYTES_CACHE[key] = out
+    return out
 
 
 __all__ = [
     "HeroContext", "get_hero_context", "describe_hero_from_photos",
-    "invalidate_cache",
+    "get_hero_photo_files", "invalidate_cache",
 ]

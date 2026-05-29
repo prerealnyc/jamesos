@@ -74,6 +74,10 @@ class Beat:
     image_prompt: str = ""             # LLM-generated visual idea
     image_url: str | None = None       # Supabase Storage URL once rendered
     image_error: str = ""              # honest marker if a beat failed
+    uses_hero: bool = False            # LLM-tagged "the hero is the subject"
+                                       # of this beat; routes image gen
+                                       # through the reference-photo path
+                                       # in imagegen.generate_post_image_with_refs.
     # ── avatar_story_mix mode only ──
     role: str = "broll"                # "avatar" (James on camera) or "broll"
     role_reason: str = ""              # LLM's one-line why
@@ -665,13 +669,24 @@ async def write_image_prompts(
         )
     except Exception:  # noqa: BLE001
         return
-    by_idx = {
-        int(p["index"]): str(p.get("prompt") or "").strip()
-        for p in (out.get("beats") or [])
-        if isinstance(p, dict) and "index" in p
-    }
+    by_idx: dict[int, dict] = {}
+    for p in (out.get("beats") or []):
+        if not isinstance(p, dict) or "index" not in p:
+            continue
+        try:
+            idx = int(p["index"])
+        except (TypeError, ValueError):
+            continue
+        by_idx[idx] = {
+            "prompt": str(p.get("prompt") or "").strip(),
+            "uses_hero": bool(p.get("uses_hero")),
+        }
     for b in beats:
-        b.image_prompt = by_idx.get(b.index, "")
+        entry = by_idx.get(b.index)
+        if entry is None:
+            continue
+        b.image_prompt = entry["prompt"]
+        b.uses_hero = entry["uses_hero"]
 
 
 # ── image generation per beat (parallel) ──────────────────────────────
@@ -680,21 +695,42 @@ async def write_image_prompts(
 async def _gen_one_beat_image(
     beat: Beat, aspect: str, platform: str, style: str,
     tenant_id: str,
+    *,
+    hero_refs: list[tuple[str, bytes]] | None = None,
 ) -> None:
-    """Generate, persist, attach. Mutates `beat` in place. A single
-    failure doesn't crash the whole run — the beat just keeps an empty
-    image_url and the caller can decide whether to fail the production
-    or render with placeholders."""
+    """Generate, persist, attach. Mutates `beat` in place.
+
+    When `beat.uses_hero` is true AND `hero_refs` is non-empty, the
+    image is generated via gpt-image-1's edit endpoint with those
+    reference photos as visual conditioning — the recurring person
+    appears across all hero beats as the SAME character. Other beats
+    use the cheaper text-only generate path.
+
+    A single failure doesn't crash the whole run — the beat keeps an
+    empty image_url and the caller can decide whether to fail or render
+    with placeholders.
+    """
     if not beat.image_prompt:
         beat.image_error = "no prompt"
         return
-    png, _meta, err = await generate_post_image(
-        topic=beat.image_prompt,
-        platform=platform,
-        brief="",
-        aspect=aspect,
-        style=style,
-    )
+    if beat.uses_hero and hero_refs:
+        from .imagegen import generate_post_image_with_refs
+        png, _meta, err = await generate_post_image_with_refs(
+            topic=beat.image_prompt,
+            references=hero_refs,
+            platform=platform,
+            brief="",
+            aspect=aspect,
+            style=style,
+        )
+    else:
+        png, _meta, err = await generate_post_image(
+            topic=beat.image_prompt,
+            platform=platform,
+            brief="",
+            aspect=aspect,
+            style=style,
+        )
     if not png:
         beat.image_error = err or "image gen failed"
         return
@@ -718,15 +754,23 @@ async def gen_beat_images(
     tenant_id: str,
     *,
     concurrency: int = 4,
+    hero_refs: list[tuple[str, bytes]] | None = None,
 ) -> None:
     """Parallel fill of every beat's image_url. The concurrency cap
     keeps us under OpenAI's images RPM ceiling and from blowing the
-    Supabase Storage upload pool at the same time."""
+    Supabase Storage upload pool at the same time.
+
+    `hero_refs` is fetched once per render (see hero_context.
+    get_hero_photo_files) and shared across every beat — hero-tagged
+    beats use them via gpt-image-1's edit endpoint."""
     sem = asyncio.Semaphore(concurrency)
 
     async def _one(b: Beat) -> None:
         async with sem:
-            await _gen_one_beat_image(b, aspect, platform, style, tenant_id)
+            await _gen_one_beat_image(
+                b, aspect, platform, style, tenant_id,
+                hero_refs=hero_refs,
+            )
 
     await asyncio.gather(*(_one(b) for b in beats))
 
@@ -787,13 +831,18 @@ async def build_story_audio_assets(
             error="could not segment words into beats",
         )
 
-    # Hero context — if the user uploaded hero_photo assets we describe
-    # the hero once per tenant (cached) and inject the description into
-    # the prompt LLM so it can place consistent hero shots. None when
-    # no hero photos exist — prompts proceed without character context.
-    from .hero_context import get_hero_context as _hero_ctx
+    # Hero context — when the user uploaded hero_photo assets we both
+    # describe the hero (text → into the prompt LLM) AND fetch the
+    # photo bytes (binary → into gpt-image-1's edit endpoint per
+    # uses_hero-tagged beat). Two layers: the description steers the
+    # prompt LLM toward placing hero shots; the bytes lock the face.
+    from .hero_context import (
+        get_hero_context as _hero_ctx,
+        get_hero_photo_files as _hero_files,
+    )
     hero_ctx = await _hero_ctx()
     hero_description = hero_ctx.description if hero_ctx else ""
+    hero_refs = await _hero_files() if hero_ctx else []
 
     await write_image_prompts(
         beats, brand_context, style, hero_description=hero_description,
@@ -805,7 +854,9 @@ async def build_story_audio_assets(
             error=f"LLM did not return visual prompts for {len(missing)} beat(s)",
         )
 
-    await gen_beat_images(beats, aspect, platform, style, tid)
+    await gen_beat_images(
+        beats, aspect, platform, style, tid, hero_refs=hero_refs,
+    )
     failed = [b for b in beats if not b.image_url]
     if failed and len(failed) > len(beats) // 2:
         return StoryAudioResult(
@@ -837,6 +888,7 @@ def beats_to_dict(beats: list[Beat]) -> list[dict[str, Any]]:
             "index": b.index, "start": b.start, "end": b.end,
             "text": b.text, "image_prompt": b.image_prompt,
             "image_url": b.image_url, "image_error": b.image_error,
+            "uses_hero": b.uses_hero,
             "role": b.role, "role_reason": b.role_reason,
             "video_url": b.video_url, "video_error": b.video_error,
         }
@@ -909,9 +961,13 @@ async def build_avatar_story_mix_assets(
     # see avatar-beat text as context, just doesn't paint for them.
     broll_beats = [b for b in beats if b.role == "broll"]
     if broll_beats:
-        from .hero_context import get_hero_context as _hero_ctx
+        from .hero_context import (
+            get_hero_context as _hero_ctx,
+            get_hero_photo_files as _hero_files,
+        )
         hero_ctx = await _hero_ctx()
         hero_description = hero_ctx.description if hero_ctx else ""
+        hero_refs = await _hero_files() if hero_ctx else []
         await write_image_prompts(
             broll_beats, brand_context, style,
             hero_description=hero_description,
@@ -923,7 +979,10 @@ async def build_avatar_story_mix_assets(
                 error=f"LLM did not return visual prompts for "
                       f"{len(missing_prompt)} of {len(broll_beats)} broll beats",
             )
-        await gen_beat_images(broll_beats, aspect, platform, style, tid)
+        await gen_beat_images(
+            broll_beats, aspect, platform, style, tid,
+            hero_refs=hero_refs,
+        )
         failed_img = [b for b in broll_beats if not b.image_url]
         if failed_img and len(failed_img) > len(broll_beats) // 2:
             return StoryAudioResult(

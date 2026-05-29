@@ -216,4 +216,101 @@ async def generate_post_image(
     return png, meta, ""
 
 
-__all__ = ["generate_seed_image", "generate_post_image", "POST_STYLES"]
+async def generate_post_image_with_refs(
+    topic: str,
+    *,
+    references: list[tuple[str, bytes]],   # [(filename, bytes), ...]
+    platform: str = "linkedin",
+    brief: str = "",
+    aspect: str = "",
+    style: str = _DEFAULT_STYLE,
+) -> tuple[bytes | None, dict, str]:
+    """Topic + reference image bytes → PNG bytes.
+
+    Calls gpt-image-1's edit endpoint instead of generate, passing 1-3
+    reference photos as visual conditioning. Used for hero-tagged
+    beats so the recurring character stays visually consistent across
+    a slideshow, rather than the LLM-text-description path which
+    produces a different generic person every beat.
+
+    References should already be resized to <4 MB each (see
+    hero_context.get_hero_photo_files). The returned PNG is the same
+    shape/aspect as generate_post_image — the worker treats both paths
+    identically downstream.
+
+    Honest fallback: if `references` is empty, calls through to
+    generate_post_image so the caller can pass refs unconditionally
+    without an `if` ladder. Single source of truth for the prompt build.
+    """
+    if not references:
+        return await generate_post_image(
+            topic, platform=platform, brief=brief, aspect=aspect, style=style,
+        )
+    client = _client()
+    if client is None:
+        return None, {}, (
+            "No OpenAI key — add OPENAI_API_KEY in Settings to enable "
+            "post-image generation."
+        )
+    topic = (topic or "").strip()
+    if not topic:
+        return None, {}, "topic is required"
+    chosen_aspect = (aspect or "").strip() or _POST_ASPECT.get(
+        platform.lower(), "16:9"
+    )
+    size = _SIZE_FOR_ASPECT.get(chosen_aspect, "1536x1024")
+    chosen_style = (style or _DEFAULT_STYLE).lower()
+    if chosen_style not in POST_STYLES:
+        chosen_style = _DEFAULT_STYLE
+    # The prompt explicitly tells the model to preserve the recurring
+    # subject from the references — without this nudge, gpt-image-1 will
+    # sometimes ignore the reference identity for stylistic reasons.
+    edit_prompt = (
+        _build_post_prompt(topic, brief, chosen_style)
+        + " The recurring person from the reference photos must be "
+        "rendered as the subject of this scene with the same face, "
+        "build, hair, beard, and signature dress. Do not substitute "
+        "a different person."
+    )[:1000]
+    # OpenAI's SDK accepts file-like inputs for images.edit. BytesIO
+    # works directly; gpt-image-1 reads bytes regardless of extension.
+    from io import BytesIO
+    image_files = [
+        (name, BytesIO(data), "image/png")
+        for name, data in references
+    ]
+    try:
+        res = await client.images.edit(
+            model=settings.image_model,
+            image=image_files,
+            prompt=edit_prompt,
+            size=size,
+            n=1,
+        )
+    except Exception as e:  # noqa: BLE001
+        return None, {}, f"image edit failed: {e}"
+    item = res.data[0] if res.data else None
+    b64 = getattr(item, "b64_json", None) if item else None
+    if not b64:
+        return None, {}, "image model returned no PNG bytes"
+    try:
+        png = base64.b64decode(b64)
+    except Exception as e:  # noqa: BLE001
+        return None, {}, f"could not decode image bytes: {e}"
+    meta = {
+        "prompt": edit_prompt,
+        "size": size,
+        "aspect": chosen_aspect,
+        "platform": platform,
+        "model": settings.image_model,
+        "topic": topic,
+        "style": chosen_style,
+        "used_refs": len(references),
+    }
+    return png, meta, ""
+
+
+__all__ = [
+    "generate_seed_image", "generate_post_image",
+    "generate_post_image_with_refs", "POST_STYLES",
+]
