@@ -33,6 +33,10 @@ const nextConfig = {
       // Post-image generation lives at /images/* — separate from the
       // /images page route, since the Next page resolves first.
       { source: "/images/:path*", destination: `${BACKEND}/images/:path*` },
+      // Hero context — the page is /hero, the endpoints are /hero/context
+      // and /hero/context/refresh. Catch-all here so the rewrite picks
+      // up sub-paths but not the bare /hero page (which is a Next route).
+      { source: "/hero/:path*", destination: `${BACKEND}/hero/:path*` },
       { source: "/api/:path*", destination: `${BACKEND}/api/:path*` },
     ];
   },

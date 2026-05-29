@@ -236,22 +236,87 @@ def _clean_text(s: str) -> str:
 # ── caption lines pinned to word groups ───────────────────────────────
 
 
+# Common English stopwords + filler — words that should NEVER be the
+# emphasized one in a flash. The emphasis word is usually a noun or a
+# strong verb; never "the" or "and". Conservative list — we lean on
+# longest-word ties to break a phrase like "I felt obligated" toward
+# "obligated".
+_CAPTION_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "but", "of", "in", "on", "at", "to",
+    "for", "with", "you", "your", "my", "we", "i", "is", "was", "are",
+    "were", "be", "been", "will", "would", "can", "could", "do", "did",
+    "does", "this", "that", "it", "what", "when", "where", "who", "how",
+    "as", "by", "from", "if", "so", "not", "no", "yes", "than", "then",
+    "into", "out", "up", "down", "more", "less", "they", "them", "their",
+    "he", "she", "him", "her", "his", "hers", "us", "our", "ours",
+    "have", "has", "had", "just", "very", "too", "only", "also", "still",
+    "only", "any", "all", "some", "every",
+})
+
+
+def _emphasize_in_phrase(text: str) -> str:
+    """Return `text` with the strongest content word uppercased.
+
+    Heuristic: longest non-stopword token wins. Ties → first occurrence.
+    Single-word phrases get the whole word uppercased (still reads as
+    emphasis vs. surrounding lowercase flashes). Stripped of common
+    edge punctuation when comparing length so "calendar." and
+    "calendar" tie length-wise.
+
+    Examples:
+      'decades come off the calendar' → 'decades come off the CALENDAR'
+      'so loud that'                   → 'so LOUD that'
+      'I felt obligated'               → 'i felt OBLIGATED'
+    """
+    tokens = text.split()
+    if not tokens:
+        return text
+    if len(tokens) == 1:
+        return tokens[0].upper()
+    best_i = -1
+    best_len = 0
+    for i, tok in enumerate(tokens):
+        bare = "".join(c for c in tok.lower() if c.isalpha() or c == "'")
+        if bare in _CAPTION_STOPWORDS:
+            continue
+        if len(bare) > best_len:
+            best_len = len(bare)
+            best_i = i
+    if best_i < 0:
+        # Everything is a stopword (e.g. "but it is") — uppercase the
+        # longest token anyway so something pops.
+        best_i = max(range(len(tokens)), key=lambda i: len(tokens[i]))
+    tokens[best_i] = tokens[best_i].upper()
+    return " ".join(tokens)
+
+
 def caption_lines(
-    words: list[TranscribedWord], group: int = 4
+    words: list[TranscribedWord], group: int = 3
 ) -> list[dict]:
-    """Group words into 3-4-word caption flashes (TikTok-style) pinned
-    to the actual spoken-word timestamps. Each entry is
-    {start, end, text}. Used by the Creatomate assembler to drop one
-    text element per group."""
+    """Group words into 2-3-word caption flashes (TikTok-style) pinned
+    to the actual spoken-word timestamps, with the strongest content
+    word in each flash rendered in ALL CAPS for visible emphasis.
+
+    Each entry is {start, end, text, emphasis_word}.
+
+    Reference videos use 2-3 words per flash; 4 felt cluttered. The
+    emphasis-word treatment matches the pattern in the references
+    ("decades come off the CALENDAR", "so LOUD that") without requiring
+    Creatomate's multi-style inline text.
+    """
     out: list[dict] = []
     if not words:
         return out
     for i in range(0, len(words), group):
         chunk = words[i:i + group]
+        raw_text = _clean_text(" ".join(w.word for w in chunk))
         out.append({
             "start": round(chunk[0].start, 3),
             "end": round(chunk[-1].end, 3),
-            "text": _clean_text(" ".join(w.word for w in chunk)),
+            "text": _emphasize_in_phrase(raw_text),
+            # Preserve the unstyled text in case any downstream wants
+            # to render its own emphasis pattern.
+            "raw_text": raw_text,
         })
     return out
 
@@ -285,51 +350,96 @@ with the same `index`.
 """
 
 
-_CINEMATIC_PROMPT_SYSTEM = """You are the cinematographer for a short
-documentary-style video. The voiceover is being read by an AI clone of
-the brand owner; the video plays that audio over a sequence of cinematic
-AI-generated stills, one per beat of the script.
+_CINEMATIC_PROMPT_SYSTEM = """You are the cinematographer + editor for
+a short documentary-style reel. The voiceover is being read by an AI
+clone of the brand's hero; the reel plays that audio over a sequence
+of AI-generated cinematic stills, one per beat of the script. Your job
+is to choose the SHOT for every beat so the reel feels like ONE film
+the audience cannot look away from.
 
-For each beat, write ONE prompt that names the SINGLE SYMBOLIC IMAGE
-that lands the meaning. NOT what the speaker literally says — the
-metaphor object that a political ad or Netflix documentary would cut to.
+— STORY ARC (apply across the beats) —
 
-Strong examples of the pattern (study them):
-  beat: "the math gets worse"
-    → close-up of a ledger page with red ink running down the column,
-      hard side light, deep shadows, brass pen lying across the figures
-  beat: "decades come off the calendar"
-    → calendar pages tearing through a dim concrete room, swirling
-      dust, hard overhead spotlight, papers caught mid-air
-  beat: "no one is coming to save you"
-    → a single empty wooden chair under a hanging bulb in a vast dark
-      hall, hard top-down light, gravitas
+Treat the beats as a three-act structure:
+  Act 1 (first 1-2 beats)   STAKES.  Establish the cost / problem.
+  Act 2 (middle beats)      TENSION. Visualize the struggle, the choice,
+                                     the comparison, the antagonist.
+  Act 3 (last 1-2 beats)    LANDING. The lesson, the symbol of mastery,
+                                     the quiet moment of conviction.
+
+Every beat should ADVANCE the arc. A beat that just repeats the
+previous shot's emotional register is a missed beat — re-imagine it.
+
+— SHOT VOCABULARY (reach for, in order of impact) —
+
+  HERO INSERTS (when present)
+    The brand's hero may appear in beats that are about HIM — what he
+    saw, what he did, where he was standing. Use sparingly: 1-2 hero
+    beats per reel maximum, ideally Act 1 (setting his stakes) or Act
+    3 (the moment of conviction). When you place a hero shot, you MUST
+    reference the hero description in the prompt verbatim so the
+    character stays consistent.
+
+  OBJECT SYMBOLS
+    A ledger with red ink. A brass key on a contract. A signed deed.
+    An empty wooden chair. A clock at 4 AM. Calendar pages mid-air.
+    These are the most reliable beats — pick a SINGLE object that
+    embodies the line.
+
+  PLACE SYMBOLS
+    An empty boardroom at night. A foggy crossroads. A wood-paneled
+    office with one lamp on. A skyline through rain on a window.
+    Sense of where the story lives.
+
+  ATMOSPHERE SHOTS
+    Light beams through dust. Paper in motion. A coffee mug going cold.
+    Use to underscore a quiet beat or transition.
+
+— STRONG WORKED EXAMPLES (study them) —
+
+  beat: "Most investors miss this market"
+    → close-up of a leather-bound ledger on a dim mahogany desk, one
+      lamp casting hard side light, red ink crawling down a column,
+      a brass pen abandoned across the figures
+  beat: "I watched my mentor walk away from a hundred deals"
+    → mid-shot of the HERO from behind, standing in a dim wood-paneled
+      brokerage office, hand reaching for a stack of contracts he is
+      sliding away, hard rim light from a window
   beat: "the deal that broke him"
-    → close-up of a brass key resting on a contract, harsh side light,
-      shallow depth, single bead of moisture beside it
+    → close-up of a brass key resting on a torn contract, harsh side
+      light, shallow depth, single bead of condensation beside it
+  beat: "no one is coming to save you"
+    → a single empty wooden chair under a hanging Edison bulb in a
+      vast dark hall, hard top-down light, dust suspended in the beam
+  beat: "the quiet decision you make alone at 4 AM"
+    → wall clock in deep shadow, hands at 4:00, hard top-down light
+      catching a single bead of condensation on the brass case
+  beat: "the next forty years are decided right now"
+    → calendar pages tearing through a dim concrete room, mid-air,
+      swirling dust caught in a hard overhead spotlight
 
-Pattern in every example: ONE symbolic object, DRAMATIC directional
-light, DEEP shadows, atmospheric detail, no faces unless the beat is
-about a person's face.
+— CONTINUITY (non-negotiable) —
 
-CONTINUITY MATTERS: every prompt should read like the same film — same
-desaturated cool color grading, same lighting language, same scale.
-Don't switch from "ledger close-up" to "wide aerial city" between beats.
+Every prompt MUST share the same film: same desaturated cool color
+grading (deep blues, muted browns, occasional warm rim), same lighting
+vocabulary (hard directional spot / side / top-down / window beam),
+same scale (close-ups and mid-shots, never wide aerial / drone).
 
-Hard rules:
-  * One symbolic subject, hero/close-up framed.
-  * Always specify the lighting (spotlight, hard side light, window
-    beam, rim light, top-down, etc.) with direction and quality.
-  * Always specify the mood (gravitas, weight, foreboding, stillness).
-  * Add an atmospheric detail (dust, smoke, paper in motion, light
-    beams, raindrops, condensation) when fitting.
-  * No text/logos/captions in the image — we burn captions over.
-  * No close-up faces unless the beat is about a person's face.
-  * 18-35 words per prompt — these are denser than the photoreal ones.
+— HARD RULES —
+
+  * One symbolic subject per beat, hero/close-up/mid framed.
+  * ALWAYS name the lighting direction and quality.
+  * ALWAYS name the mood (gravitas, weight, stillness, foreboding).
+  * Atmospheric detail (dust, smoke, beams, condensation, paper in
+    motion, raindrops) when it fits the beat.
+  * NO text/logos/captions in the image — we burn captions over later.
+  * NO close-up faces unless the beat is about a person's face.
+  * When you place a hero shot, reference the hero description.
+  * 22-40 words per prompt — these are dense, not generic.
 
 Return STRICT JSON:
-{"beats": [{"index": int, "prompt": str}, ...]}
+{"beats": [{"index": int, "prompt": str, "uses_hero": bool}, ...]}
 Exactly one entry per input beat, same order, same `index`.
+`uses_hero` true when the prompt features the hero, false otherwise.
 """
 
 
@@ -503,6 +613,8 @@ async def write_image_prompts(
     beats: list[Beat],
     brand_context: str,
     style: str,
+    *,
+    hero_description: str = "",
 ) -> None:
     """Mutates `beats` in place — fills each beat's `image_prompt`.
 
@@ -513,6 +625,13 @@ async def write_image_prompts(
         box / calendar-pages aesthetic.
       * Everything else (photoreal, editorial, bw_photo, minimal) uses
         _PROMPT_SYSTEM which describes what the image SHOWS literally.
+
+    `hero_description` — when present, the cinematic system prompt may
+    place 1-2 hero-shot beats where the script is about the hero himself
+    (his stakes, his decision, his moment of conviction). The hero
+    description is injected verbatim into the LLM payload so it can be
+    referenced consistently across beats. Empty string = no hero
+    context, prompts proceed without any "the hero" references.
 
     Style branching at the prompt-generation level is intentional —
     POST_STYLES[style] also kicks in at the image-render layer, and
@@ -533,6 +652,7 @@ async def write_image_prompts(
     payload = {
         "brand_context": brand_context[:600],
         "style_note": POST_STYLES.get(style, POST_STYLES["editorial"])[:240],
+        "hero_description": hero_description[:600] if hero_description else "",
         "beats": [
             {"index": b.index, "text": b.text} for b in beats
         ],
@@ -541,7 +661,7 @@ async def write_image_prompts(
         out = await get_llm().complete_json(
             system=system,
             messages=[{"role": "user", "content": json.dumps(payload)}],
-            max_tokens=1400, temperature=0.5,
+            max_tokens=1600, temperature=0.5,
         )
     except Exception:  # noqa: BLE001
         return
@@ -667,7 +787,17 @@ async def build_story_audio_assets(
             error="could not segment words into beats",
         )
 
-    await write_image_prompts(beats, brand_context, style)
+    # Hero context — if the user uploaded hero_photo assets we describe
+    # the hero once per tenant (cached) and inject the description into
+    # the prompt LLM so it can place consistent hero shots. None when
+    # no hero photos exist — prompts proceed without character context.
+    from .hero_context import get_hero_context as _hero_ctx
+    hero_ctx = await _hero_ctx()
+    hero_description = hero_ctx.description if hero_ctx else ""
+
+    await write_image_prompts(
+        beats, brand_context, style, hero_description=hero_description,
+    )
     missing = [b for b in beats if not b.image_prompt]
     if missing:
         return StoryAudioResult(
@@ -779,7 +909,13 @@ async def build_avatar_story_mix_assets(
     # see avatar-beat text as context, just doesn't paint for them.
     broll_beats = [b for b in beats if b.role == "broll"]
     if broll_beats:
-        await write_image_prompts(broll_beats, brand_context, style)
+        from .hero_context import get_hero_context as _hero_ctx
+        hero_ctx = await _hero_ctx()
+        hero_description = hero_ctx.description if hero_ctx else ""
+        await write_image_prompts(
+            broll_beats, brand_context, style,
+            hero_description=hero_description,
+        )
         missing_prompt = [b for b in broll_beats if not b.image_prompt]
         if missing_prompt:
             return StoryAudioResult(

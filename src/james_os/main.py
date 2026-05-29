@@ -504,6 +504,48 @@ async def video_caption_styles() -> dict:
     return {"presets": list_presets()}
 
 
+@app.get("/hero/context")
+async def hero_context_get() -> dict:
+    """Current hero description + sample photos.
+
+    Reads the in-process cache; computes on first call when the user has
+    uploaded hero_photo assets. Returns null fields when nothing is
+    uploaded yet — frontend renders an empty-state prompt to upload."""
+    from .hero_context import get_hero_context as _get
+    ctx = await _get()
+    if ctx is None:
+        return {"description": "", "photo_count": 0, "photo_urls": [], "video_urls": []}
+    return {
+        "description": ctx.description,
+        "photo_count": ctx.photo_count,
+        "photo_urls": ctx.photo_urls,
+        "video_urls": ctx.video_urls,
+    }
+
+
+@app.post("/hero/context/refresh")
+async def hero_context_refresh() -> dict:
+    """Force-recompute the hero description even if cached.
+
+    Used by the /hero page after the user uploads a new batch of photos
+    — the upload endpoint invalidates the cache automatically, but a
+    manual refresh button lets the user pull a fresh description
+    without re-uploading.
+    """
+    from .hero_context import get_hero_context as _get
+    from .hero_context import invalidate_cache as _bust
+    _bust()
+    ctx = await _get(force_refresh=True)
+    if ctx is None:
+        return {"description": "", "photo_count": 0, "photo_urls": [], "video_urls": []}
+    return {
+        "description": ctx.description,
+        "photo_count": ctx.photo_count,
+        "photo_urls": ctx.photo_urls,
+        "video_urls": ctx.video_urls,
+    }
+
+
 @app.get("/video/image-styles")
 async def video_image_styles() -> dict:
     """Image style library (the look-and-feel for AI-generated B-roll
@@ -964,6 +1006,12 @@ async def media_upload(
     )
     background.add_task(_run_media_analysis, UUID(created["id"]))
     created["analysis_status"] = "pending"
+    # Hero uploads change the brand's recurring-character context; the
+    # in-process description cache needs to refresh so the next story
+    # render sees the new photos.
+    if role in ("hero_photo", "hero_video"):
+        from .hero_context import invalidate_cache as _hero_bust
+        _hero_bust()
     return created
 
 
@@ -974,7 +1022,7 @@ async def media_link(req: MediaLinkRequest) -> dict:
         raise HTTPException(status_code=400, detail=f"role must be one of {MEDIA_ROLES}")
     if not req.url.strip():
         raise HTTPException(status_code=400, detail="url is required")
-    return await create_media(
+    created = await create_media(
         role=req.role,
         source_type="url",
         uri=req.url.strip(),
@@ -983,6 +1031,10 @@ async def media_link(req: MediaLinkRequest) -> dict:
         tags=req.tags,
         notes=req.notes,
     )
+    if req.role in ("hero_photo", "hero_video"):
+        from .hero_context import invalidate_cache as _hero_bust
+        _hero_bust()
+    return created
 
 
 @app.patch("/media/{media_id}")

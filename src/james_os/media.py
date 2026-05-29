@@ -24,7 +24,18 @@ from uuid import UUID, uuid4
 from .config import settings
 from .db import acquire
 
-ROLES = ("style_reference", "james_clip", "broll", "post_image")
+ROLES = (
+    "style_reference",
+    "james_clip",
+    "broll",
+    "post_image",
+    # Hero references — used by the story modes so AI image generation
+    # can reference the brand's hero as a recurring visual character
+    # across beats. Photos describe appearance; videos can be sampled
+    # for hero clips. See get_hero_context() in story_video.py.
+    "hero_photo",
+    "hero_video",
+)
 
 # Local store lives beside the repo; served read-only at /media-files.
 _MEDIA_ROOT = Path(__file__).resolve().parent.parent.parent / "media_store"

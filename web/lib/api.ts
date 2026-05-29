@@ -219,7 +219,13 @@ export type Guardrail = {
   created_at: string | null;
 };
 
-export type MediaRole = "style_reference" | "james_clip" | "broll" | "post_image";
+export type MediaRole =
+  | "style_reference"
+  | "james_clip"
+  | "broll"
+  | "post_image"
+  | "hero_photo"
+  | "hero_video";
 
 /** Aesthetic preset for /images/generate. Each maps to a distinct
  *  prompt prefix on the backend (see imagegen.POST_STYLES). Same topic
@@ -405,6 +411,14 @@ export const api = {
   listImageStyles: () =>
     jget<{ presets: { name: string; label: string; description: string }[] }>(
       "/video/image-styles",
+    ),
+  getHeroContext: () =>
+    jget<{ description: string; photo_count: number; photo_urls: string[]; video_urls: string[] }>(
+      "/hero/context",
+    ),
+  refreshHeroContext: () =>
+    jpost<{ description: string; photo_count: number; photo_urls: string[]; video_urls: string[] }>(
+      "/hero/context/refresh", {},
     ),
   generatePostImage: (body: {
     topic: string;
