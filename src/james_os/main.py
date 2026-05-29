@@ -459,7 +459,7 @@ async def video_produce(req: VideoProduceRequest, background: BackgroundTasks) -
     try:
         prod = await start_production(
             req.script.strip(), req.platform, req.aspect, req.title,
-            req.scenes, req.mode, req.caption_style,
+            req.scenes, req.mode, req.caption_style, req.image_style,
         )
     except ValueError as e:
         # start_production rejects malformed timeline payloads — surface as 400
@@ -502,6 +502,47 @@ async def video_caption_styles() -> dict:
     """
     from .caption_styles import list_presets
     return {"presets": list_presets()}
+
+
+@app.get("/video/image-styles")
+async def video_image_styles() -> dict:
+    """Image style library (the look-and-feel for AI-generated B-roll
+    stills). Each item: {name, label, description}.
+
+    Default chip on the frontend is "story default" (sends image_style
+    blank, which the pipeline resolves to 'cinematic' for story modes).
+    """
+    from .imagegen import POST_STYLES
+    # Human-friendly labels + one-line descriptions; the long prefix
+    # in POST_STYLES isn't shown to users.
+    META = {
+        "cinematic": {
+            "label": "Cinematic",
+            "description": "Film-still drama: one symbolic object, hard light, moody color grade.",
+        },
+        "photoreal": {
+            "label": "Photoreal",
+            "description": "Documentary photography: real-world subjects, natural light.",
+        },
+        "editorial": {
+            "label": "Editorial",
+            "description": "Clean flat-vector illustration. Metaphor-friendly.",
+        },
+        "minimal": {
+            "label": "Minimal",
+            "description": "Bold geometric / abstract. Reads at thumbnail.",
+        },
+        "bw_photo": {
+            "label": "B&W photo",
+            "description": "Black-and-white documentary. Institutional / serious.",
+        },
+    }
+    return {"presets": [
+        {"name": name,
+         "label": META.get(name, {}).get("label", name),
+         "description": META.get(name, {}).get("description", "")}
+        for name in POST_STYLES
+    ]}
 
 
 @app.get("/video/clips/library")

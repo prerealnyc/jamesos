@@ -59,6 +59,7 @@ async def start_production(
     script: str, platform: str, aspect: str, title: str = "",
     scenes: list[dict] | None = None, mode: str = "mixed",
     caption_style: str = "",
+    image_style: str = "",
     tenant_id: UUID | None = None,
 ) -> dict:
     """Create a production.
@@ -100,11 +101,11 @@ async def start_production(
         row = await conn.fetchrow(
             """INSERT INTO video_productions
                  (status, title, platform, aspect, script, scenes, mode,
-                  caption_style,
+                  caption_style, image_style,
                   avatar_provider, broll_provider, assembly_provider)
-               VALUES ('queued',$1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10) RETURNING *""",
+               VALUES ('queued',$1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11) RETURNING *""",
             title, platform, aspect, script, json.dumps(scenes or []), mode,
-            caption_style or "",
+            caption_style or "", image_style or "",
             get_avatar_provider().name, settings.video_provider,
             get_assembly_provider().name,
         )
@@ -404,13 +405,19 @@ async def _run_story_audio(row, tenant_id: UUID | None) -> None:
         "Real-estate broker and brand voice, Staten Island / NYC focus. "
         f"Platform: {row['platform']}. Aspect: {row['aspect']}."
     )
-    # Default to photoreal — for a real-estate brand the documentary
-    # photo aesthetic lands harder than illustration, per /images audit.
-    style = "photoreal"
+    # Image style: user-pinned wins, else default to 'cinematic' for
+    # story-mode (matches the reference video aesthetic — film stills,
+    # symbolic objects, dramatic light).
+    try:
+        istyle = (row["image_style"] or "").strip()
+    except (KeyError, TypeError):
+        istyle = ""
+    if not istyle:
+        istyle = "cinematic"
     assets = await build_story_audio_assets(
         avatar_video_url=avatar_url,
         aspect=row["aspect"],
-        style=style,
+        style=istyle,
         brand_context=brand_context,
         platform=row["platform"],
         tenant_id=str(tenant_id) if tenant_id else None,
@@ -522,10 +529,19 @@ async def _run_avatar_story_mix(row, tenant_id: UUID | None) -> None:
         "Real-estate broker and brand voice, Staten Island / NYC focus. "
         f"Platform: {row['platform']}. Aspect: {row['aspect']}."
     )
+    # Mix mode: image_style applies only to B-roll beats (avatar beats
+    # use the actual HeyGen video slice, no AI image). User-pinned wins,
+    # else default to 'cinematic' for the dramatic-cutaway look.
+    try:
+        istyle = (row["image_style"] or "").strip()
+    except (KeyError, TypeError):
+        istyle = ""
+    if not istyle:
+        istyle = "cinematic"
     assets = await build_avatar_story_mix_assets(
         avatar_video_url=avatar_url,
         aspect=row["aspect"],
-        style="photoreal",
+        style=istyle,
         brand_context=brand_context,
         platform=row["platform"],
         tenant_id=str(tenant_id) if tenant_id else None,

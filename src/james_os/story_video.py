@@ -285,6 +285,54 @@ with the same `index`.
 """
 
 
+_CINEMATIC_PROMPT_SYSTEM = """You are the cinematographer for a short
+documentary-style video. The voiceover is being read by an AI clone of
+the brand owner; the video plays that audio over a sequence of cinematic
+AI-generated stills, one per beat of the script.
+
+For each beat, write ONE prompt that names the SINGLE SYMBOLIC IMAGE
+that lands the meaning. NOT what the speaker literally says — the
+metaphor object that a political ad or Netflix documentary would cut to.
+
+Strong examples of the pattern (study them):
+  beat: "the math gets worse"
+    → close-up of a ledger page with red ink running down the column,
+      hard side light, deep shadows, brass pen lying across the figures
+  beat: "decades come off the calendar"
+    → calendar pages tearing through a dim concrete room, swirling
+      dust, hard overhead spotlight, papers caught mid-air
+  beat: "no one is coming to save you"
+    → a single empty wooden chair under a hanging bulb in a vast dark
+      hall, hard top-down light, gravitas
+  beat: "the deal that broke him"
+    → close-up of a brass key resting on a contract, harsh side light,
+      shallow depth, single bead of moisture beside it
+
+Pattern in every example: ONE symbolic object, DRAMATIC directional
+light, DEEP shadows, atmospheric detail, no faces unless the beat is
+about a person's face.
+
+CONTINUITY MATTERS: every prompt should read like the same film — same
+desaturated cool color grading, same lighting language, same scale.
+Don't switch from "ledger close-up" to "wide aerial city" between beats.
+
+Hard rules:
+  * One symbolic subject, hero/close-up framed.
+  * Always specify the lighting (spotlight, hard side light, window
+    beam, rim light, top-down, etc.) with direction and quality.
+  * Always specify the mood (gravitas, weight, foreboding, stillness).
+  * Add an atmospheric detail (dust, smoke, paper in motion, light
+    beams, raindrops, condensation) when fitting.
+  * No text/logos/captions in the image — we burn captions over.
+  * No close-up faces unless the beat is about a person's face.
+  * 18-35 words per prompt — these are denser than the photoreal ones.
+
+Return STRICT JSON:
+{"beats": [{"index": int, "prompt": str}, ...]}
+Exactly one entry per input beat, same order, same `index`.
+"""
+
+
 _CAPTION_PICK_SYSTEM = """You are the editor for a short-form social
 video. Given the script and the target platform, pick the caption preset
 that best matches the energy and the audience. Choices and when to use:
@@ -458,12 +506,30 @@ async def write_image_prompts(
 ) -> None:
     """Mutates `beats` in place — fills each beat's `image_prompt`.
 
+    The system prompt branches on `style`:
+      * 'cinematic' uses _CINEMATIC_PROMPT_SYSTEM which trains the LLM
+        to reach for symbolic objects + dramatic lighting + atmospheric
+        detail. Matches the reference videos with the gavel / ballot
+        box / calendar-pages aesthetic.
+      * Everything else (photoreal, editorial, bw_photo, minimal) uses
+        _PROMPT_SYSTEM which describes what the image SHOWS literally.
+
+    Style branching at the prompt-generation level is intentional —
+    POST_STYLES[style] also kicks in at the image-render layer, and
+    the two together (prompt + style prefix) is what produces a
+    coherent look. Mixing photoreal prompts with cinematic prefix
+    gives mediocre output.
+
     If the LLM call fails, every beat keeps an empty prompt — the caller
     refuses to render any beats and surfaces the error rather than
     paying for 12 random images.
     """
     if not beats:
         return
+    system = (
+        _CINEMATIC_PROMPT_SYSTEM if style.lower() == "cinematic"
+        else _PROMPT_SYSTEM
+    )
     payload = {
         "brand_context": brand_context[:600],
         "style_note": POST_STYLES.get(style, POST_STYLES["editorial"])[:240],
@@ -473,7 +539,7 @@ async def write_image_prompts(
     }
     try:
         out = await get_llm().complete_json(
-            system=_PROMPT_SYSTEM,
+            system=system,
             messages=[{"role": "user", "content": json.dumps(payload)}],
             max_tokens=1400, temperature=0.5,
         )
@@ -552,7 +618,7 @@ async def build_story_audio_assets(
     *,
     avatar_video_url: str,
     aspect: str,
-    style: str,
+    style: str,                        # the image style — photoreal / cinematic / etc
     brand_context: str,
     platform: str = "instagram",
     tenant_id: str | None = None,

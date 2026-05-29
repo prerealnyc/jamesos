@@ -391,6 +391,7 @@ export const api = {
     scenes?: Scene[];
     mode?: "mixed" | "avatar_only" | "timeline" | "story_audio" | "avatar_story_mix";
     caption_style?: string;             // blank → AI picks
+    image_style?: string;               // blank → cinematic for story modes
   }) => jpost<Production>("/video/produce", {
     platform: "instagram", aspect: "9:16", mode: "mixed", ...opts,
   }),
@@ -400,6 +401,10 @@ export const api = {
   listCaptionStyles: () =>
     jget<{ presets: { name: string; label: string; description: string }[] }>(
       "/video/caption-styles",
+    ),
+  listImageStyles: () =>
+    jget<{ presets: { name: string; label: string; description: string }[] }>(
+      "/video/image-styles",
     ),
   generatePostImage: (body: {
     topic: string;

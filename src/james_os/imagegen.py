@@ -82,6 +82,26 @@ POST_STYLES: dict[str, str] = {
         "classic editorial framing. Natural lighting, real-world setting. "
         + _BASE_RULES
     ),
+    "cinematic": (
+        # The "political-ad / Netflix-documentary cutaway" aesthetic.
+        # Matches the reference videos the user provided — strong
+        # symbolic single-subject framing with hard directional light.
+        # Used by story_audio + avatar_story_mix when image_style=
+        # 'cinematic'; the prompt-generation system in story_video.py
+        # also switches to a metaphor-finding system prompt to pair
+        # with this look. The two together (prefix + prompt system)
+        # are what makes the output read like a film still, not stock.
+        "Cinematic single-subject photograph in the style of a "
+        "political ad or Netflix documentary cutaway. Dramatic "
+        "directional lighting — spotlight, hard side light, window "
+        "beam, or rim light — with deep shadows and high contrast. "
+        "Desaturated cool palette: deep blues, muted browns, "
+        "occasional warm rim. Shallow depth of field. Atmospheric "
+        "details (dust particles, paper in motion, light beams, light "
+        "haze) where appropriate. Hero/close-up framing. Heavy mood, "
+        "gravitas. Feels like a film still, never like stock photography. "
+        + _BASE_RULES
+    ),
 }
 _DEFAULT_STYLE = "editorial"
 
