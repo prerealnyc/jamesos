@@ -107,4 +107,37 @@ async def extract_audio_mp3(
     return rc == 0
 
 
-__all__ = ["detect_speech_end", "trim_to", "extract_audio_mp3"]
+async def slice_video_silent(
+    in_path: str, out_path: str, start_s: float, end_s: float
+) -> bool:
+    """Cut [start_s, end_s] out of a video and drop the audio track.
+
+    Used by the avatar_story_mix mode to extract per-beat windows from
+    the HeyGen render. We strip the audio so it can't collide with the
+    master voice track on Creatomate (which carries the FULL HeyGen
+    audio across the whole timeline) — playing both would produce a
+    perfect echo of James's voice.
+
+    Re-encodes video (-c:v libx264) instead of stream-copying so the
+    cut is sample-accurate — `-c:v copy` snaps to the nearest keyframe
+    which can be ±2 seconds off the requested start.
+    """
+    dur = max(0.05, end_s - start_s)
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", f"{start_s:.3f}",
+        "-i", in_path,
+        "-t", f"{dur:.3f}",
+        "-an",                          # drop audio
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-movflags", "+faststart",
+        out_path,
+    ]
+    rc, _ = await _run(cmd)
+    return rc == 0
+
+
+__all__ = [
+    "detect_speech_end", "trim_to", "extract_audio_mp3",
+    "slice_video_silent",
+]

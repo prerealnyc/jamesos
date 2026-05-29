@@ -75,8 +75,15 @@ async def start_production(
         one photoreal still per beat with gpt-image-1, Creatomate stitches
         audio + stills + burned word-pinned captions. The "Agent Opus"
         story-style format.
+      * 'avatar_story_mix' — same single HeyGen render, but reused 100%:
+        audio drives the timeline AND the avatar video is sliced per
+        "James on camera" beat. The LLM classifies each beat as avatar
+        vs broll; B-roll beats still get gpt-image-1 stills, avatar
+        beats show James talking. One HeyGen spend, no audio drift.
     """
-    if mode not in ("mixed", "avatar_only", "timeline", "story_audio"):
+    if mode not in (
+        "mixed", "avatar_only", "timeline", "story_audio", "avatar_story_mix",
+    ):
         mode = "mixed"
     if mode == "timeline":
         # Cheap structural guard: a timeline render is meaningless without
@@ -86,6 +93,8 @@ async def start_production(
             raise ValueError("timeline mode needs at least one block with a real clip URL")
     if mode == "story_audio" and not script.strip():
         raise ValueError("story_audio mode requires a script (the voiceover text)")
+    if mode == "avatar_story_mix" and not script.strip():
+        raise ValueError("avatar_story_mix mode requires a script (the voiceover text)")
     async with acquire(tenant_id) as conn:
         row = await conn.fetchrow(
             """INSERT INTO video_productions
@@ -458,6 +467,108 @@ async def _run_story_audio(row, tenant_id: UUID | None) -> None:
         )
 
 
+async def _run_avatar_story_mix(row, tenant_id: UUID | None) -> None:
+    """Mixed-mode pipeline: ONE HeyGen render, reused twice.
+
+    Same five opening steps as story_audio (HeyGen → audio strip →
+    Whisper word-stamps → segment → persist), then forks:
+
+      a) LLM classifies each beat as 'avatar' (James on camera) or
+         'broll' (AI photoreal still that visualizes the moment)
+      b) broll beats get a visual prompt and a gpt-image-1 still
+      c) avatar beats get a silent video slice from the cached HeyGen
+         mp4 covering that beat's [start, end]
+      d) Creatomate stitches all of it: voice (whole), mixed visual
+         track per beat, word-pinned captions, optional music
+
+    The avatar slices are silent so the master voice on track 1 isn't
+    duplicated — playing two copies of the same HeyGen audio creates
+    a perfect echo. Verified empirically.
+    """
+    from .story_video import build_avatar_story_mix_assets, beats_to_dict
+
+    pid = row["id"]
+    script = (row["script"] or "").strip()
+    if not script:
+        return await _fail(pid, "avatar_story_mix mode needs a script", tenant_id)
+
+    async with acquire(tenant_id) as conn:
+        await _set(conn, pid, status="planning")
+    avatar_url, err = await _render_avatar(script, row["aspect"], captions=False)
+    if not avatar_url:
+        return await _fail(pid, err or "HeyGen render failed", tenant_id)
+
+    async with acquire(tenant_id) as conn:
+        await _set(conn, pid, status="rendering_clips")
+    brand_context = (
+        f"Brand: {row['title'] or 'James Prendamano'}. "
+        "Real-estate broker and brand voice, Staten Island / NYC focus. "
+        f"Platform: {row['platform']}. Aspect: {row['aspect']}."
+    )
+    assets = await build_avatar_story_mix_assets(
+        avatar_video_url=avatar_url,
+        aspect=row["aspect"],
+        style="photoreal",
+        brand_context=brand_context,
+        platform=row["platform"],
+        tenant_id=str(tenant_id) if tenant_id else None,
+    )
+    if assets.error or not assets.audio_url or not assets.beats:
+        return await _fail(pid, assets.error or "mix assets failed", tenant_id)
+
+    async with acquire(tenant_id) as conn:
+        await _set(
+            conn, pid, status="assembling",
+            scenes=json.dumps(beats_to_dict(assets.beats)),
+        )
+
+    asm = get_assembly_provider()
+    if not hasattr(asm, "render_avatar_story_mix"):
+        return await _fail(
+            pid, "assembly provider does not support avatar_story_mix mode",
+            tenant_id,
+        )
+    res = await asm.render_avatar_story_mix(
+        audio_url=assets.audio_url,
+        audio_duration=assets.audio_duration,
+        beats=beats_to_dict(assets.beats),
+        captions=assets.captions,
+        aspect=row["aspect"],
+        music_mood="calm",
+    )
+    if res.status == "processing":
+        for _ in range(_MAX_POLLS):
+            await asyncio.sleep(_POLL_EVERY)
+            res = await asm.poll(res.render_id)
+            if res.status in ("succeeded", "failed"):
+                break
+    if res.status != "succeeded" or not res.url:
+        return await _fail(pid, res.error or "mix assembly failed", tenant_id)
+
+    async with acquire(tenant_id) as conn:
+        action_id = await conn.fetchval(
+            """INSERT INTO actions (proposed_by, action_type, payload, status)
+               VALUES ('video_producer','video',$1::jsonb,'pending') RETURNING id""",
+            json.dumps({
+                "platform": row["platform"], "format": "video",
+                "content": row["title"] or script[:120],
+                "caption": row["title"] or "",
+                "media_url": res.url,
+                "stub": res.url.startswith("stub://"),
+                "mode": "avatar_story_mix",
+                "beats": len(assets.beats),
+                "avatar_beats": sum(1 for b in assets.beats if b.role == "avatar"),
+                "broll_beats": sum(1 for b in assets.beats if b.role == "broll"),
+            }),
+        )
+        await conn.execute(
+            """UPDATE video_productions SET status='succeeded', final_url=$2,
+               queued_action_id=$3, updated_at=now(), completed_at=now()
+               WHERE id=$1""",
+            pid, res.url, action_id,
+        )
+
+
 async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> None:
     """The worker. Advances the production through every stage."""
     pid = production_id
@@ -470,6 +581,8 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
 
         # Avatar-only mode forks here — one HeyGen render of the entire
         # script, no per-scene plan, no Creatomate assembly.
+        if row["mode"] == "avatar_story_mix":
+            return await _run_avatar_story_mix(row, tenant_id)
         if row["mode"] == "story_audio":
             return await _run_story_audio(row, tenant_id)
         if row["mode"] == "avatar_only":

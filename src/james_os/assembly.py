@@ -49,6 +49,13 @@ class StubAssemblyProvider(AssemblyProvider):
             url=f"stub://assembled/story-{len(beats)}-beats",
         )
 
+    async def render_avatar_story_mix(self, **kwargs) -> RenderResult:
+        beats = kwargs.get("beats") or []
+        return RenderResult(
+            status="succeeded", render_id="stub-mix",
+            url=f"stub://assembled/mix-{len(beats)}-beats",
+        )
+
     async def poll(self, render_id: str) -> RenderResult:
         return RenderResult(status="succeeded", url=f"stub://assembled/{render_id}")
 
@@ -197,6 +204,137 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             })
 
         return {"output_format": "mp4", "width": w, "height": h, "elements": elements}
+
+    def build_avatar_story_mix_source(
+        self, *,
+        audio_url: str,
+        audio_duration: float,
+        beats: list[dict],            # [{start, end, role, image_url|video_url, …}]
+        captions: list[dict],
+        aspect: str,
+        music_mood: str = "none",
+    ) -> dict:
+        """Mixed avatar-on-camera + AI-still source.
+
+        Same 4-track layout as build_story_source, but track 2 alternates
+        between video and image elements depending on each beat's role:
+
+          * role='avatar' + video_url present → video element pinned to
+            the beat window, volume=0 (master audio carries the voice
+            on track 1, so playing the slice's own audio would echo).
+          * role='broll' + image_url present → image element with Ken
+            Burns, same as story_audio.
+
+        A beat with neither URL is silently skipped (the upstream
+        builder already refused to assemble when too many were missing).
+        """
+        w, h = _dims(aspect)
+        elements: list[dict] = []
+        total = max(audio_duration, beats[-1]["end"] if beats else 0.0)
+
+        # track 1 — continuous HeyGen voice
+        if audio_url and audio_url.startswith("http"):
+            elements.append({
+                "type": "audio", "source": audio_url,
+                "track": 1, "time": 0, "duration": total,
+            })
+
+        # track 2 — alternating avatar slice / B-roll still
+        for i, b in enumerate(beats):
+            role = (b.get("role") or "broll").lower()
+            start = float(b.get("start") or 0.0)
+            end = float(b.get("end") or start)
+            dur = max(0.1, end - start)
+            if role == "avatar":
+                vurl = (b.get("video_url") or "").strip()
+                if not vurl or not vurl.startswith("http"):
+                    continue
+                elements.append({
+                    "type": "video", "source": vurl,
+                    "track": 2, "time": start, "duration": dur,
+                    "fit": "cover",
+                    "volume": 0,            # mute — master audio carries voice
+                })
+            else:
+                iurl = (b.get("image_url") or "").strip()
+                if not iurl or not iurl.startswith("http"):
+                    continue
+                elements.append({
+                    "type": "image", "source": iurl,
+                    "track": 2, "time": start, "duration": dur,
+                    "fit": "cover",
+                    "animations": _ken_burns(dur, "out" if i % 2 else "in"),
+                })
+
+        # track 3 — captions (identical to story_audio)
+        for c in captions:
+            text = (c.get("text") or "").strip()
+            if not text:
+                continue
+            start = float(c.get("start") or 0.0)
+            end = float(c.get("end") or start)
+            dur = max(0.2, end - start)
+            elements.append({
+                "type": "text", "text": text,
+                "track": 3, "time": start, "duration": dur,
+                "y": "82%", "width": "86%",
+                "font_family": "Montserrat", "font_weight": "700",
+                "font_size": "6.5 vh", "fill_color": "#ffffff",
+                "background_color": "rgba(0,0,0,0.55)", "x_alignment": "50%",
+            })
+
+        # track 4 — optional background music (ducked further than story
+        # because the master voice is louder/more present in this mode)
+        music_url = _music_url_for(music_mood)
+        if music_url and total > 0:
+            elements.append({
+                "type": "audio", "source": music_url,
+                "track": 4, "time": 0, "duration": total,
+                "volume": 15,
+            })
+
+        return {"output_format": "mp4", "width": w, "height": h, "elements": elements}
+
+    async def render_avatar_story_mix(
+        self, *,
+        audio_url: str, audio_duration: float,
+        beats: list[dict], captions: list[dict],
+        aspect: str, music_mood: str = "none",
+    ) -> RenderResult:
+        """Submit a mixed avatar+still render. Same submit/poll contract
+        as render() / render_story()."""
+        has_any = any(
+            ((b.get("role") == "avatar" and (b.get("video_url") or "").startswith("http"))
+             or ((b.get("image_url") or "").startswith("http")))
+            for b in beats
+        )
+        if not has_any:
+            return RenderResult("failed", error="no real beat clips to assemble")
+        source = self.build_avatar_story_mix_source(
+            audio_url=audio_url, audio_duration=audio_duration,
+            beats=beats, captions=captions,
+            aspect=aspect, music_mood=music_mood,
+        )
+        body = {"source": source}
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
+            r = await c.post(
+                "https://api.creatomate.com/v1/renders",
+                headers={"Authorization": f"Bearer {self.api_key}",
+                         "Content-Type": "application/json"},
+                json=body,
+            )
+        if r.status_code in (401, 403):
+            return RenderResult("failed", error=f"Creatomate auth failed ({r.status_code})")
+        if r.status_code >= 400:
+            return RenderResult("failed", error=f"Creatomate HTTP {r.status_code}: {r.text[:160]}")
+        data = r.json()
+        item = data[0] if isinstance(data, list) and data else data
+        rid = item.get("id")
+        url = item.get("url")
+        st = str(item.get("status", "")).lower()
+        if st == "succeeded" and url:
+            return RenderResult("succeeded", render_id=str(rid), url=url)
+        return RenderResult("processing", render_id=str(rid))
 
     async def render_story(
         self, *,

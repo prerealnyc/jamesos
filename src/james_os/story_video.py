@@ -74,6 +74,11 @@ class Beat:
     image_prompt: str = ""             # LLM-generated visual idea
     image_url: str | None = None       # Supabase Storage URL once rendered
     image_error: str = ""              # honest marker if a beat failed
+    # ── avatar_story_mix mode only ──
+    role: str = "broll"                # "avatar" (James on camera) or "broll"
+    role_reason: str = ""              # LLM's one-line why
+    video_url: str | None = None       # silent HeyGen slice URL when role=avatar
+    video_error: str = ""
 
 
 @dataclass
@@ -280,6 +285,118 @@ with the same `index`.
 """
 
 
+_CLASSIFY_SYSTEM = """You are the director for a short-form social video.
+The voiceover is a personal brand owner speaking — you choose, beat by
+beat, whether the viewer should SEE that person speaking on camera, or
+should see a B-roll still that visualizes what they're saying.
+
+Rule of thumb:
+  * AVATAR  — first-person declarations, emotional beats, the hook
+    that sets the stakes, the close/CTA where eye-contact lands the
+    promise. Anywhere the speaker IS the visual.
+  * BROLL — facts, numbers, locations, comparisons, anything the
+    viewer benefits from seeing literally (a street, a building, a
+    chart concept, an object). The visual carries information the
+    voice alone can't.
+
+Practical tilt: a 30-60s reel usually opens with 1 avatar beat, has
+2-4 broll beats in the middle, closes with 1 avatar beat. Don't paint
+by numbers — follow the script — but expect that shape.
+
+Return STRICT JSON:
+{"beats": [{"index": int, "role": "avatar"|"broll", "reason": str (one short clause, &lt;=12 words)}, ...]}
+Exactly one entry per input beat, same order, same `index`.
+"""
+
+
+async def classify_beats(beats: list[Beat], brand_context: str) -> None:
+    """Mutates `beats` in place — fills each beat's `role` + `role_reason`.
+
+    Honest fallback: if the LLM call fails or omits a beat, that beat
+    keeps the default role of 'broll'. The pipeline still produces a
+    usable video (it just falls back to story_audio behavior).
+    """
+    if not beats:
+        return
+    payload = {
+        "brand_context": brand_context[:600],
+        "beats": [{"index": b.index, "text": b.text} for b in beats],
+    }
+    try:
+        out = await get_llm().complete_json(
+            system=_CLASSIFY_SYSTEM,
+            messages=[{"role": "user", "content": json.dumps(payload)}],
+            max_tokens=900, temperature=0.3,
+        )
+    except Exception:  # noqa: BLE001
+        return
+    by_idx = {}
+    for entry in (out.get("beats") or []):
+        if not isinstance(entry, dict):
+            continue
+        try:
+            idx = int(entry["index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        role = str(entry.get("role") or "").strip().lower()
+        if role not in ("avatar", "broll"):
+            continue
+        by_idx[idx] = (role, str(entry.get("reason") or "").strip()[:120])
+    for b in beats:
+        if b.index in by_idx:
+            b.role, b.role_reason = by_idx[b.index]
+
+
+async def slice_avatar_beats(
+    avatar_video_bytes: bytes,
+    beats: list[Beat],
+    tenant_id: str,
+    *,
+    concurrency: int = 3,
+) -> None:
+    """For every beat with role='avatar', cut a silent video slice from
+    the cached HeyGen mp4 covering that beat's [start, end] window and
+    upload it. Mutates `beats` in place — fills `video_url` or sets
+    `video_error` on failure. Silent cuts ensure no audio collision
+    with the master voice track on the final compose.
+    """
+    from .audio_trim import slice_video_silent
+    targets = [b for b in beats if b.role == "avatar"]
+    if not targets:
+        return
+
+    # Write the source mp4 once; every slice reads from the same file.
+    with tempfile.TemporaryDirectory() as td:
+        src = f"{td}/source.mp4"
+        Path(src).write_bytes(avatar_video_bytes)
+
+        sem = asyncio.Semaphore(concurrency)
+
+        async def _one(b: Beat) -> None:
+            async with sem:
+                out_path = f"{td}/beat-{b.index:02d}.mp4"
+                ok = await slice_video_silent(src, out_path, b.start, b.end)
+                if not ok:
+                    b.video_error = "ffmpeg slice failed"
+                    return
+                try:
+                    data = Path(out_path).read_bytes()
+                except OSError as e:
+                    b.video_error = f"read sliced mp4 failed: {e}"
+                    return
+                try:
+                    url, _ = await asyncio.to_thread(
+                        media_storage().save,
+                        tenant_id, data,
+                        f"avatar-beat-{b.index:02d}-{uuid.uuid4().hex[:8]}.mp4",
+                    )
+                    b.video_url = url
+                except Exception as e:  # noqa: BLE001
+                    b.video_error = f"storage save failed: {e}"
+
+        await asyncio.gather(*(_one(b) for b in targets))
+
+
 async def write_image_prompts(
     beats: list[Beat],
     brand_context: str,
@@ -459,19 +576,136 @@ async def build_story_audio_assets(
 
 
 def beats_to_dict(beats: list[Beat]) -> list[dict[str, Any]]:
-    """Serialize for storage in video_productions.scenes (jsonb)."""
+    """Serialize for storage in video_productions.scenes (jsonb).
+
+    The mixed-mode fields (`role`, `video_url`, etc.) are always
+    included — they just stay at their defaults for plain story_audio
+    productions, which is harmless on read.
+    """
     return [
         {
             "index": b.index, "start": b.start, "end": b.end,
             "text": b.text, "image_prompt": b.image_prompt,
             "image_url": b.image_url, "image_error": b.image_error,
+            "role": b.role, "role_reason": b.role_reason,
+            "video_url": b.video_url, "video_error": b.video_error,
         }
         for b in beats
     ]
 
 
+async def build_avatar_story_mix_assets(
+    *,
+    avatar_video_url: str,
+    aspect: str,
+    style: str,
+    brand_context: str,
+    platform: str = "instagram",
+    tenant_id: str | None = None,
+) -> StoryAudioResult:
+    """Mixed-mode pipeline.
+
+    Same first six steps as build_story_audio_assets — fetch HeyGen
+    mp4, strip + persist audio, Whisper, segment into beats. Then:
+
+      a) classify each beat as 'avatar' or 'broll'
+      b) for broll beats: write a visual prompt, generate the still
+      c) for avatar beats: slice the HeyGen mp4 to that beat's window
+         (silent — the master audio carries the voice)
+
+    The returned StoryAudioResult has beats with mixed `image_url` /
+    `video_url` fields that the avatar_story_mix assembler reads.
+    """
+    tid = tenant_id or str(settings.default_tenant_id)
+    if not avatar_video_url or not avatar_video_url.startswith("http"):
+        return StoryAudioResult(
+            audio_url="", audio_duration=0.0, beats=[],
+            error="avatar_story_mix needs a real HeyGen video URL",
+        )
+
+    try:
+        video_bytes = await _download(avatar_video_url)
+    except Exception as e:  # noqa: BLE001
+        return StoryAudioResult("", 0.0, [], error=f"could not fetch HeyGen video: {e}")
+
+    audio_bytes = await _strip_to_mp3(video_bytes)
+    if not audio_bytes:
+        return StoryAudioResult("", 0.0, [], error="ffmpeg failed to extract audio")
+
+    audio_url = await persist_audio(
+        audio_bytes, f"story-audio-{uuid.uuid4().hex[:8]}", tid
+    )
+    if not audio_url:
+        return StoryAudioResult("", 0.0, [], error="could not persist audio")
+
+    try:
+        tr = await transcribe_words("voice.mp3", audio_bytes)
+    except Exception as e:  # noqa: BLE001
+        return StoryAudioResult(audio_url, 0.0, [], error=f"whisper failed: {e}")
+    if not tr.words:
+        return StoryAudioResult(
+            audio_url, tr.duration, [],
+            error="whisper returned no word timestamps",
+        )
+
+    beats = segment_beats(tr.words)
+    if not beats:
+        return StoryAudioResult(audio_url, tr.duration, [], error="no beats")
+
+    # (a) role classification
+    await classify_beats(beats, brand_context)
+
+    # (b) prompts + image gen — but only for broll beats. The LLM may
+    # see avatar-beat text as context, just doesn't paint for them.
+    broll_beats = [b for b in beats if b.role == "broll"]
+    if broll_beats:
+        await write_image_prompts(broll_beats, brand_context, style)
+        missing_prompt = [b for b in broll_beats if not b.image_prompt]
+        if missing_prompt:
+            return StoryAudioResult(
+                audio_url, tr.duration, beats,
+                error=f"LLM did not return visual prompts for "
+                      f"{len(missing_prompt)} of {len(broll_beats)} broll beats",
+            )
+        await gen_beat_images(broll_beats, aspect, platform, style, tid)
+        failed_img = [b for b in broll_beats if not b.image_url]
+        if failed_img and len(failed_img) > len(broll_beats) // 2:
+            return StoryAudioResult(
+                audio_url, tr.duration, beats,
+                error=(
+                    f"{len(failed_img)}/{len(broll_beats)} broll images failed. "
+                    f"First reason: {failed_img[0].image_error}"
+                ),
+            )
+
+    # (c) silent avatar slices for avatar-tagged beats
+    await slice_avatar_beats(video_bytes, beats, tid)
+    failed_vid = [
+        b for b in beats if b.role == "avatar" and not b.video_url
+    ]
+    avatar_count = sum(1 for b in beats if b.role == "avatar")
+    if failed_vid and len(failed_vid) > max(1, avatar_count // 2):
+        return StoryAudioResult(
+            audio_url, tr.duration, beats,
+            error=(
+                f"{len(failed_vid)}/{avatar_count} avatar slices failed. "
+                f"First reason: {failed_vid[0].video_error}"
+            ),
+        )
+
+    captions = caption_lines(tr.words)
+    return StoryAudioResult(
+        audio_url=audio_url,
+        audio_duration=tr.duration or (beats[-1].end if beats else 0.0),
+        beats=beats,
+        captions=captions,
+    )
+
+
 __all__ = [
     "Beat", "StoryAudioResult",
     "segment_beats", "caption_lines", "write_image_prompts",
-    "gen_beat_images", "build_story_audio_assets", "beats_to_dict",
+    "gen_beat_images", "build_story_audio_assets",
+    "classify_beats", "slice_avatar_beats", "build_avatar_story_mix_assets",
+    "beats_to_dict",
 ]

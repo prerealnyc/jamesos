@@ -303,7 +303,7 @@ export type ComposeResult = {
 export type Production = {
   id: string;
   status: "queued" | "planning" | "rendering_clips" | "assembling" | "succeeded" | "failed";
-  mode?: "mixed" | "avatar_only" | "timeline" | "story_audio";
+  mode?: "mixed" | "avatar_only" | "timeline" | "story_audio" | "avatar_story_mix";
   title: string;
   platform: string;
   aspect: string;
@@ -388,7 +388,8 @@ export const api = {
     jpost<Scene>("/video/render-scene", { scene, aspect }),
   produceVideo: (opts: {
     script?: string; platform?: string; aspect?: string; title?: string;
-    scenes?: Scene[]; mode?: "mixed" | "avatar_only" | "timeline" | "story_audio";
+    scenes?: Scene[];
+    mode?: "mixed" | "avatar_only" | "timeline" | "story_audio" | "avatar_story_mix";
   }) => jpost<Production>("/video/produce", {
     platform: "instagram", aspect: "9:16", mode: "mixed", ...opts,
   }),
