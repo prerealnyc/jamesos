@@ -390,12 +390,17 @@ export const api = {
     script?: string; platform?: string; aspect?: string; title?: string;
     scenes?: Scene[];
     mode?: "mixed" | "avatar_only" | "timeline" | "story_audio" | "avatar_story_mix";
+    caption_style?: string;             // blank → AI picks
   }) => jpost<Production>("/video/produce", {
     platform: "instagram", aspect: "9:16", mode: "mixed", ...opts,
   }),
   listProductions: () => jget<Production[]>("/video/productions"),
   getProduction: (id: string) => jget<Production>(`/video/productions/${id}`),
   listClipLibrary: () => jget<{ items: ClipLibraryItem[] }>("/video/clips/library"),
+  listCaptionStyles: () =>
+    jget<{ presets: { name: string; label: string; description: string }[] }>(
+      "/video/caption-styles",
+    ),
   generatePostImage: (body: {
     topic: string;
     platform?: string;

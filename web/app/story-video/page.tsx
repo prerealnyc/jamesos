@@ -22,6 +22,7 @@ import { api, mediaUrl, type Production } from "@/lib/api";
 import {
   Button, Card, CardTitle, Input, Textarea, Select, Label, Badge, Spinner, PageHeader,
 } from "@/components/ui";
+import { CaptionPicker } from "@/components/caption-picker";
 
 const STAGE_TONE: Record<string, "muted" | "accent" | "ok" | "destructive"> = {
   queued: "muted",
@@ -56,6 +57,7 @@ export default function StoryVideoPage() {
   const [aspect, setAspect] = useState("9:16");
   const [platform, setPlatform] = useState("instagram");
   const [script, setScript] = useState("");
+  const [captionStyle, setCaptionStyle] = useState("");
   const [composing, setComposing] = useState(false);
   const [producing, setProducing] = useState(false);
   const [err, setErr] = useState("");
@@ -99,6 +101,7 @@ export default function StoryVideoPage() {
         mode: "story_audio",
         script: script.trim(),
         platform, aspect,
+        caption_style: captionStyle,
         title: topic.trim() || script.trim().slice(0, 60),
       });
       setProd(p);
@@ -182,9 +185,14 @@ export default function StoryVideoPage() {
       </Card>
 
       <Card>
+        <CardTitle>3. Caption style</CardTitle>
+        <CaptionPicker value={captionStyle} onChange={setCaptionStyle} />
+      </Card>
+
+      <Card>
         <div className="flex items-center justify-between gap-4">
           <div>
-            <CardTitle>3. Produce</CardTitle>
+            <CardTitle>4. Produce</CardTitle>
             <p className="text-[12px] text-muted-foreground mt-1">
               HeyGen voice → Whisper word-stamps → image per beat →
               Creatomate stitch. Photoreal style, calm music underbed,

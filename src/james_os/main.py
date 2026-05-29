@@ -459,7 +459,7 @@ async def video_produce(req: VideoProduceRequest, background: BackgroundTasks) -
     try:
         prod = await start_production(
             req.script.strip(), req.platform, req.aspect, req.title,
-            req.scenes, req.mode,
+            req.scenes, req.mode, req.caption_style,
         )
     except ValueError as e:
         # start_production rejects malformed timeline payloads — surface as 400
@@ -490,6 +490,18 @@ async def video_production(production_id: UUID) -> dict:
     if p is None:
         raise HTTPException(status_code=404, detail="production not found")
     return p
+
+
+@app.get("/video/caption-styles")
+async def video_caption_styles() -> dict:
+    """Caption preset library. Each item: {name, label, description}.
+
+    The "AI pick" option isn't returned here — the frontend renders that
+    as its own first chip and passes caption_style='' to defer the
+    choice to pick_caption_style() in the pipeline.
+    """
+    from .caption_styles import list_presets
+    return {"presets": list_presets()}
 
 
 @app.get("/video/clips/library")

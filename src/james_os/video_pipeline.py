@@ -58,6 +58,7 @@ def _row(r) -> dict:
 async def start_production(
     script: str, platform: str, aspect: str, title: str = "",
     scenes: list[dict] | None = None, mode: str = "mixed",
+    caption_style: str = "",
     tenant_id: UUID | None = None,
 ) -> dict:
     """Create a production.
@@ -99,9 +100,11 @@ async def start_production(
         row = await conn.fetchrow(
             """INSERT INTO video_productions
                  (status, title, platform, aspect, script, scenes, mode,
+                  caption_style,
                   avatar_provider, broll_provider, assembly_provider)
-               VALUES ('queued',$1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9) RETURNING *""",
+               VALUES ('queued',$1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10) RETURNING *""",
             title, platform, aspect, script, json.dumps(scenes or []), mode,
+            caption_style or "",
             get_avatar_provider().name, settings.video_provider,
             get_assembly_provider().name,
         )
@@ -377,7 +380,9 @@ async def _run_story_audio(row, tenant_id: UUID | None) -> None:
              → assembling  (Creatomate)
              → succeeded / failed
     """
-    from .story_video import build_story_audio_assets, beats_to_dict
+    from .story_video import (
+        build_story_audio_assets, beats_to_dict, pick_caption_style,
+    )
 
     pid = row["id"]
     script = (row["script"] or "").strip()
@@ -427,6 +432,15 @@ async def _run_story_audio(row, tenant_id: UUID | None) -> None:
         return await _fail(
             pid, "assembly provider does not support story_audio mode", tenant_id,
         )
+    # Resolve caption preset — user-picked wins, else LLM picks based
+    # on script energy + platform. Honest fallback inside picker.
+    try:
+        cstyle = (row["caption_style"] or "").strip()
+    except (KeyError, TypeError):
+        cstyle = ""
+    if not cstyle:
+        cstyle, _why = await pick_caption_style(script, row["platform"], brand_context)
+
     res = await asm.render_story(
         audio_url=assets.audio_url,
         audio_duration=assets.audio_duration,
@@ -434,6 +448,7 @@ async def _run_story_audio(row, tenant_id: UUID | None) -> None:
         captions=assets.captions,
         aspect=row["aspect"],
         music_mood="calm",
+        caption_style=cstyle,
     )
     if res.status == "processing":
         for _ in range(_MAX_POLLS):
@@ -485,7 +500,9 @@ async def _run_avatar_story_mix(row, tenant_id: UUID | None) -> None:
     duplicated — playing two copies of the same HeyGen audio creates
     a perfect echo. Verified empirically.
     """
-    from .story_video import build_avatar_story_mix_assets, beats_to_dict
+    from .story_video import (
+        build_avatar_story_mix_assets, beats_to_dict, pick_caption_style,
+    )
 
     pid = row["id"]
     script = (row["script"] or "").strip()
@@ -528,6 +545,13 @@ async def _run_avatar_story_mix(row, tenant_id: UUID | None) -> None:
             pid, "assembly provider does not support avatar_story_mix mode",
             tenant_id,
         )
+    try:
+        cstyle = (row["caption_style"] or "").strip()
+    except (KeyError, TypeError):
+        cstyle = ""
+    if not cstyle:
+        cstyle, _why = await pick_caption_style(script, row["platform"], brand_context)
+
     res = await asm.render_avatar_story_mix(
         audio_url=assets.audio_url,
         audio_duration=assets.audio_duration,
@@ -535,6 +559,7 @@ async def _run_avatar_story_mix(row, tenant_id: UUID | None) -> None:
         captions=assets.captions,
         aspect=row["aspect"],
         music_mood="calm",
+        caption_style=cstyle,
     )
     if res.status == "processing":
         for _ in range(_MAX_POLLS):

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from .caption_styles import caption_element, get_preset
 from .config import settings
 
 _TIMEOUT = httpx.Timeout(45.0, connect=10.0)
@@ -136,6 +137,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         captions: list[dict],          # [{start, end, text}, …]
         aspect: str,
         music_mood: str = "none",
+        caption_style: str | None = None,
     ) -> dict:
         """Build a Creatomate source for the story_audio mode.
 
@@ -177,22 +179,17 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 "animations": _ken_burns(dur, "out" if i % 2 else "in"),
             })
 
-        # 3) captions
+        # 3) captions — preset-driven (see caption_styles.CAPTION_PRESETS)
+        preset = get_preset(caption_style)
         for c in captions:
             text = (c.get("text") or "").strip()
             if not text:
                 continue
             start = float(c.get("start") or 0.0)
             end = float(c.get("end") or start)
-            dur = max(0.2, end - start)
-            elements.append({
-                "type": "text", "text": text,
-                "track": 3, "time": start, "duration": dur,
-                "y": "82%", "width": "86%",
-                "font_family": "Montserrat", "font_weight": "700",
-                "font_size": "6.5 vh", "fill_color": "#ffffff",
-                "background_color": "rgba(0,0,0,0.55)", "x_alignment": "50%",
-            })
+            elements.append(caption_element(
+                text=text, start=start, end=end, preset=preset, track=3,
+            ))
 
         # 4) optional music
         music_url = _music_url_for(music_mood)
@@ -213,6 +210,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         captions: list[dict],
         aspect: str,
         music_mood: str = "none",
+        caption_style: str | None = None,
     ) -> dict:
         """Mixed avatar-on-camera + AI-still source.
 
@@ -266,22 +264,17 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                     "animations": _ken_burns(dur, "out" if i % 2 else "in"),
                 })
 
-        # track 3 — captions (identical to story_audio)
+        # track 3 — captions (preset-driven, see caption_styles)
+        preset = get_preset(caption_style)
         for c in captions:
             text = (c.get("text") or "").strip()
             if not text:
                 continue
             start = float(c.get("start") or 0.0)
             end = float(c.get("end") or start)
-            dur = max(0.2, end - start)
-            elements.append({
-                "type": "text", "text": text,
-                "track": 3, "time": start, "duration": dur,
-                "y": "82%", "width": "86%",
-                "font_family": "Montserrat", "font_weight": "700",
-                "font_size": "6.5 vh", "fill_color": "#ffffff",
-                "background_color": "rgba(0,0,0,0.55)", "x_alignment": "50%",
-            })
+            elements.append(caption_element(
+                text=text, start=start, end=end, preset=preset, track=3,
+            ))
 
         # track 4 — optional background music (ducked further than story
         # because the master voice is louder/more present in this mode)
@@ -300,6 +293,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         audio_url: str, audio_duration: float,
         beats: list[dict], captions: list[dict],
         aspect: str, music_mood: str = "none",
+        caption_style: str | None = None,
     ) -> RenderResult:
         """Submit a mixed avatar+still render. Same submit/poll contract
         as render() / render_story()."""
@@ -314,6 +308,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             audio_url=audio_url, audio_duration=audio_duration,
             beats=beats, captions=captions,
             aspect=aspect, music_mood=music_mood,
+            caption_style=caption_style,
         )
         body = {"source": source}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
@@ -341,6 +336,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         audio_url: str, audio_duration: float,
         beats: list[dict], captions: list[dict],
         aspect: str, music_mood: str = "none",
+        caption_style: str | None = None,
     ) -> RenderResult:
         """Submit a story_audio render. Identical polling contract to
         the existing render() / poll() pair — the production worker
@@ -351,6 +347,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             audio_url=audio_url, audio_duration=audio_duration,
             beats=beats, captions=captions,
             aspect=aspect, music_mood=music_mood,
+            caption_style=caption_style,
         )
         body = {"source": source}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:

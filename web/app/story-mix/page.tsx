@@ -26,6 +26,7 @@ import { api, mediaUrl, type Production } from "@/lib/api";
 import {
   Button, Card, CardTitle, Input, Textarea, Select, Label, Badge, Spinner, PageHeader,
 } from "@/components/ui";
+import { CaptionPicker } from "@/components/caption-picker";
 
 const STAGE_TONE: Record<string, "muted" | "accent" | "ok" | "destructive"> = {
   queued: "muted",
@@ -64,6 +65,7 @@ export default function StoryMixPage() {
   const [aspect, setAspect] = useState("9:16");
   const [platform, setPlatform] = useState("instagram");
   const [script, setScript] = useState("");
+  const [captionStyle, setCaptionStyle] = useState("");   // "" → AI picks
   const [composing, setComposing] = useState(false);
   const [producing, setProducing] = useState(false);
   const [err, setErr] = useState("");
@@ -109,6 +111,7 @@ export default function StoryMixPage() {
         mode: "avatar_story_mix",
         script: script.trim(),
         platform, aspect,
+        caption_style: captionStyle,
         title: topic.trim() || script.trim().slice(0, 60),
       });
       setProd(p);
@@ -193,9 +196,14 @@ export default function StoryMixPage() {
       </Card>
 
       <Card>
+        <CardTitle>3. Caption style</CardTitle>
+        <CaptionPicker value={captionStyle} onChange={setCaptionStyle} />
+      </Card>
+
+      <Card>
         <div className="flex items-center justify-between gap-4">
           <div>
-            <CardTitle>3. Produce</CardTitle>
+            <CardTitle>4. Produce</CardTitle>
             <p className="text-[12px] text-muted-foreground mt-1">
               HeyGen voice (1 render, reused 100%) → Whisper word-stamps →
               LLM classifies each beat as avatar vs B-roll → photoreal

@@ -285,6 +285,60 @@ with the same `index`.
 """
 
 
+_CAPTION_PICK_SYSTEM = """You are the editor for a short-form social
+video. Given the script and the target platform, pick the caption preset
+that best matches the energy and the audience. Choices and when to use:
+
+  * tiktok_yellow   — high-energy hook, fast-paced, listicle-style,
+                      anything that punches in the first 2 seconds.
+                      TikTok + Reels first-feed material.
+  * bold_pop        — universal safe choice: Mr Beast / Hormozi look.
+                      Use for any reel that doesn't clearly call for
+                      yellow or for minimal. Default when you're unsure.
+  * clean_white     — thoughtful, narrative, story arc. The "decades
+                      come off the calendar" type beat. Best for IG
+                      Reels with an emotional turn or Substack-cross.
+  * subtle_minimal  — LinkedIn, institutional, B2B, calm authority.
+                      Captions accessibility-grade — script does the
+                      heavy lifting.
+  * branded_red     — when the post is explicitly PreReal / James-brand
+                      signature; use sparingly, only when the script
+                      mentions PreReal or the visual call is for a
+                      brand-stamp look.
+
+Return STRICT JSON: {"caption_style": str, "reason": str}
+The reason is one short clause (≤ 14 words).
+"""
+
+
+async def pick_caption_style(
+    script: str, platform: str, brand_context: str = ""
+) -> tuple[str, str]:
+    """One LLM call → (preset_name, reason). Honest fallback: returns
+    the default preset on any failure so a production never crashes
+    over caption styling."""
+    from .caption_styles import CAPTION_PRESETS, DEFAULT_CAPTION_STYLE
+    payload = {
+        "platform": platform,
+        "brand_context": brand_context[:400],
+        "script": (script or "")[:1500],
+        "available": list(CAPTION_PRESETS.keys()),
+    }
+    try:
+        out = await get_llm().complete_json(
+            system=_CAPTION_PICK_SYSTEM,
+            messages=[{"role": "user", "content": json.dumps(payload)}],
+            max_tokens=120, temperature=0.2,
+        )
+    except Exception:  # noqa: BLE001
+        return DEFAULT_CAPTION_STYLE, "LLM picker failed; using default"
+    name = str(out.get("caption_style") or "").strip().lower()
+    if name not in CAPTION_PRESETS:
+        return DEFAULT_CAPTION_STYLE, f"LLM returned unknown '{name}'; default"
+    reason = str(out.get("reason") or "")[:140]
+    return name, reason
+
+
 _CLASSIFY_SYSTEM = """You are the director for a short-form social video.
 The voiceover is a personal brand owner speaking — you choose, beat by
 beat, whether the viewer should SEE that person speaking on camera, or
@@ -707,5 +761,6 @@ __all__ = [
     "segment_beats", "caption_lines", "write_image_prompts",
     "gen_beat_images", "build_story_audio_assets",
     "classify_beats", "slice_avatar_beats", "build_avatar_story_mix_assets",
+    "pick_caption_style",
     "beats_to_dict",
 ]
