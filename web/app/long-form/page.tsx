@@ -53,7 +53,12 @@ export default function LongFormPage() {
   const [sources, setSources] = useState<LongSource[]>([]);
   const [selected, setSelected] = useState<(LongSource & { candidates: ReelCandidate[] }) | null>(null);
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
+  // Two separate error slots so a stale upload failure doesn't appear
+  // to be a Drive-import failure (and vice versa). Same source-load
+  // error covers both since they share the source-list refresh.
+  const [uploadErr, setUploadErr] = useState("");
+  const [importErr, setImportErr] = useState("");
+  const [err, setErr] = useState("");      // for source-load / render / dismiss
   const [title, setTitle] = useState("");
   const [driveUrl, setDriveUrl] = useState("");
   const [importing, setImporting] = useState(false);
@@ -105,7 +110,7 @@ export default function LongFormPage() {
 
   async function onUpload(files: FileList | null) {
     if (!files || files.length === 0) return;
-    setBusy(true); setErr("");
+    setBusy(true); setUploadErr(""); setImportErr("");
     try {
       const src = await api.uploadLongSource(files[0], title.trim());
       setTitle("");
@@ -113,7 +118,7 @@ export default function LongFormPage() {
       await loadSources();
       await loadSelected(src.id);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "upload failed");
+      setUploadErr(e instanceof Error ? e.message : "upload failed");
     } finally {
       setBusy(false);
     }
@@ -122,7 +127,7 @@ export default function LongFormPage() {
   async function onDriveImport() {
     const url = driveUrl.trim();
     if (!url) return;
-    setImporting(true); setErr("");
+    setImporting(true); setImportErr(""); setUploadErr("");
     try {
       const src = await api.importLongSourceFromDrive(url, title.trim());
       setDriveUrl("");
@@ -130,7 +135,7 @@ export default function LongFormPage() {
       await loadSources();
       await loadSelected(src.id);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Drive import failed");
+      setImportErr(e instanceof Error ? e.message : "Drive import failed");
     } finally {
       setImporting(false);
     }
@@ -227,6 +232,14 @@ export default function LongFormPage() {
             {importing ? <Spinner /> : "Import"}
           </Button>
         </div>
+        {importing && (
+          <p className="text-[12px] mt-2">
+            <Spinner /> downloading from Drive…
+          </p>
+        )}
+        {importErr && (
+          <p className="text-[12px] mt-2 text-destructive">✗ {importErr}</p>
+        )}
 
         <div className="text-[11px] uppercase tracking-[1px] text-muted-foreground mt-4 mb-1">
           Or upload a file
@@ -239,10 +252,11 @@ export default function LongFormPage() {
           disabled={busy}
           className="block w-full text-[12px] text-muted-foreground file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-primary file:text-primary-foreground file:cursor-pointer"
         />
-        {(busy || importing) && (
-          <p className="text-[12px] mt-2">
-            <Spinner /> {importing ? "downloading from Drive…" : "uploading…"}
-          </p>
+        {busy && (
+          <p className="text-[12px] mt-2"><Spinner /> uploading…</p>
+        )}
+        {uploadErr && (
+          <p className="text-[12px] mt-2 text-destructive">✗ {uploadErr}</p>
         )}
         {err && <p className="text-[12px] mt-2 text-destructive">✗ {err}</p>}
       </Card>
