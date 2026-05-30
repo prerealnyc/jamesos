@@ -309,7 +309,7 @@ export type ComposeResult = {
 export type Production = {
   id: string;
   status: "queued" | "planning" | "rendering_clips" | "assembling" | "succeeded" | "failed";
-  mode?: "mixed" | "avatar_only" | "timeline" | "story_audio" | "avatar_story_mix";
+  mode?: "mixed" | "avatar_only" | "timeline" | "story_audio" | "avatar_story_mix" | "engaging_avatar";
   title: string;
   platform: string;
   aspect: string;
@@ -395,7 +395,7 @@ export const api = {
   produceVideo: (opts: {
     script?: string; platform?: string; aspect?: string; title?: string;
     scenes?: Scene[];
-    mode?: "mixed" | "avatar_only" | "timeline" | "story_audio" | "avatar_story_mix";
+    mode?: "mixed" | "avatar_only" | "timeline" | "story_audio" | "avatar_story_mix" | "engaging_avatar";
     caption_style?: string;             // blank → AI picks
     image_style?: string;               // blank → cinematic for story modes
   }) => jpost<Production>("/video/produce", {

@@ -563,6 +563,202 @@ async def classify_beats(beats: list[Beat], brand_context: str) -> None:
             b.role, b.role_reason = by_idx[b.index]
 
 
+# ── engaging_avatar mode ──────────────────────────────────────────────
+
+
+@dataclass
+class Insert:
+    """A B-roll cutaway window inside an engaging_avatar render.
+
+    Each insert overlays the avatar video for [start, end] seconds and
+    shows a cinematic still. The avatar's audio keeps playing under it.
+    """
+    index: int
+    start: float
+    end: float
+    text: str                          # phrase that triggered this insert
+    image_prompt: str = ""
+    image_url: str | None = None
+    image_error: str = ""
+    uses_hero: bool = False
+
+
+def inserts_to_dict(inserts: list[Insert]) -> list[dict[str, Any]]:
+    return [
+        {
+            "index": i.index, "start": i.start, "end": i.end,
+            "text": i.text, "image_prompt": i.image_prompt,
+            "image_url": i.image_url, "image_error": i.image_error,
+            "uses_hero": i.uses_hero,
+        }
+        for i in inserts
+    ]
+
+
+_INSERT_PICK_SYSTEM = """You are the editor for a short-form video.
+The hero is on camera the whole time, talking. Your job is to choose
+2-5 BRIEF cinematic B-roll cutaways — each 1.5-2.5 seconds — that
+amplify what he's saying at the EXACT moment he says it.
+
+Cut in when he mentions:
+  * a place (a neighborhood, a building, a street, an office)
+  * an object (a contract, a stamp, a key, a ledger, a clock)
+  * a number / statistic (a percentage, a price, a year)
+  * a dramatic concept the viewer benefits from SEEING (a deal,
+    a closing, a tear-down, a missed opportunity, a 4 AM decision)
+  * a person referenced by role (his mentor, his rival, his client) —
+    these are uses_hero=true when the person referenced IS the brand
+    hero himself
+
+DON'T cut in:
+  * In the first 0.6 seconds — let viewers see he's the speaker.
+  * In the last 0.8 seconds — close on him for emotional landing.
+  * During filler / connector words ("and so", "you know", "but
+    really").
+  * For abstract beats that have no visual ("conviction is not loud")
+    — leave those on the avatar.
+
+EVERY insert must have:
+  * start, end (seconds, decimal). Inserts must NOT overlap each other,
+    must not exceed the audio duration, and must be at least 1.2s apart
+    so the avatar gets time to breathe between cuts.
+  * uses_hero: true when the visual is OF the brand hero himself (e.g.
+    "I watched my mentor" beat where the hero IS the mentor figure).
+  * prompt: ONE concrete cinematic image prompt, 18-32 words, same
+    grammar as the story-mode cinematic prompts — single symbolic
+    subject, dramatic directional light, deep shadows, atmospheric
+    detail. NEVER include text/captions in the image.
+
+Return STRICT JSON:
+{"inserts": [{"start": float, "end": float, "text": str,
+              "prompt": str, "uses_hero": bool}, ...]}
+"""
+
+
+async def pick_insert_points(
+    *,
+    audio_duration: float,
+    words: list[TranscribedWord],
+    brand_context: str,
+    hero_description: str = "",
+) -> list[Insert]:
+    """Ask the LLM where to cut in B-roll on top of the avatar video.
+
+    Returns a list of Insert objects with windows + prompts + uses_hero
+    tags. Empty list when the LLM call fails — the engaging_avatar
+    worker treats this as "render the avatar without cutaways," which
+    is degraded but still ships a usable video.
+    """
+    if not words or audio_duration <= 1.5:
+        return []
+    # Compact the word stream into a (start, word) list for the prompt
+    # — full TranscribedWord JSON is too verbose for a 1k-token call.
+    tokens = [{"t": round(w.start, 2), "w": w.word} for w in words]
+    payload = {
+        "brand_context": brand_context[:600],
+        "hero_description": hero_description[:400] if hero_description else "",
+        "audio_duration": round(audio_duration, 2),
+        "tokens": tokens,
+    }
+    try:
+        out = await get_llm().complete_json(
+            system=_INSERT_PICK_SYSTEM,
+            messages=[{"role": "user", "content": json.dumps(payload)}],
+            max_tokens=1400, temperature=0.4,
+        )
+    except Exception:  # noqa: BLE001
+        return []
+    raw = out.get("inserts") or []
+    inserts: list[Insert] = []
+    last_end = -1e9
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            start = float(entry.get("start", 0.0))
+            end = float(entry.get("end", 0.0))
+        except (TypeError, ValueError):
+            continue
+        # Clamp to audio + minimum-spacing guard. We drop rather than
+        # mutate so a malformed LLM response can't reshape the timeline.
+        if start < 0.6 or end > audio_duration - 0.8:
+            continue
+        dur = end - start
+        if not 1.2 <= dur <= 3.0:
+            continue
+        if start < last_end + 1.2:           # min spacing
+            continue
+        prompt = str(entry.get("prompt") or "").strip()
+        if not prompt:
+            continue
+        inserts.append(Insert(
+            index=len(inserts),
+            start=round(start, 3),
+            end=round(end, 3),
+            text=str(entry.get("text") or "")[:140],
+            image_prompt=prompt,
+            uses_hero=bool(entry.get("uses_hero")),
+        ))
+        last_end = end
+        if len(inserts) >= 5:
+            break
+    return inserts
+
+
+async def gen_insert_images(
+    inserts: list[Insert],
+    aspect: str,
+    platform: str,
+    style: str,
+    tenant_id: str,
+    *,
+    concurrency: int = 4,
+    hero_refs: list[tuple[str, bytes]] | None = None,
+) -> None:
+    """Parallel fill of every insert's image_url. Mirrors gen_beat_images
+    but operates on the Insert dataclass and uses the hero-edit path
+    when insert.uses_hero is true and hero_refs are present."""
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _one(i: Insert) -> None:
+        async with sem:
+            if not i.image_prompt:
+                i.image_error = "no prompt"
+                return
+            if i.uses_hero and hero_refs:
+                from .imagegen import generate_post_image_with_refs
+                png, _meta, err = await generate_post_image_with_refs(
+                    topic=i.image_prompt,
+                    references=hero_refs,
+                    platform=platform,
+                    brief="",
+                    aspect=aspect,
+                    style=style,
+                )
+            else:
+                png, _meta, err = await generate_post_image(
+                    topic=i.image_prompt,
+                    platform=platform,
+                    brief="",
+                    aspect=aspect,
+                    style=style,
+                )
+            if not png:
+                i.image_error = err or "image gen failed"
+                return
+            try:
+                url, _ = await asyncio.to_thread(
+                    media_storage().save,
+                    tenant_id, png,
+                    f"insert-{i.index:02d}-{uuid.uuid4().hex[:8]}.png",
+                )
+                i.image_url = url
+            except Exception as e:  # noqa: BLE001
+                i.image_error = f"storage save failed: {e}"
+
+    await asyncio.gather(*(_one(i) for i in inserts))
+
+
 async def slice_avatar_beats(
     avatar_video_bytes: bytes,
     beats: list[Beat],
@@ -1017,11 +1213,115 @@ async def build_avatar_story_mix_assets(
     )
 
 
+@dataclass
+class EngagingAvatarResult:
+    """Bundle returned by build_engaging_avatar_assets."""
+    avatar_video_url: str              # HeyGen render (full duration)
+    audio_url: str                     # extracted mp3 — for captions/Whisper
+    audio_duration: float
+    inserts: list[Insert]
+    captions: list[dict]               # word-pinned flashes
+    error: str = ""
+
+
+async def build_engaging_avatar_assets(
+    *,
+    avatar_video_url: str,
+    aspect: str,
+    style: str,                        # cinematic / photoreal / etc
+    brand_context: str,
+    platform: str = "instagram",
+    tenant_id: str | None = None,
+) -> EngagingAvatarResult:
+    """Engaging-avatar pipeline.
+
+    Same first steps as story_audio: strip audio, persist, Whisper.
+    Then forks: instead of segmenting words into 8-18 beats, the LLM
+    picks 2-5 short cutaway INSERTS — windows of 1.5-2.5s where a
+    cinematic B-roll image overlays the avatar. The HeyGen video keeps
+    playing underneath; the audio is continuous.
+
+    Hero refs flow on insert.uses_hero just like in the story modes.
+    """
+    tid = tenant_id or str(settings.default_tenant_id)
+    if not avatar_video_url or not avatar_video_url.startswith("http"):
+        return EngagingAvatarResult(
+            avatar_video_url="", audio_url="", audio_duration=0.0,
+            inserts=[], captions=[],
+            error="engaging_avatar needs a real HeyGen video URL",
+        )
+
+    try:
+        video_bytes = await _download(avatar_video_url)
+    except Exception as e:  # noqa: BLE001
+        return EngagingAvatarResult(
+            "", "", 0.0, [], [],
+            error=f"could not fetch HeyGen video: {e}",
+        )
+
+    audio_bytes = await _strip_to_mp3(video_bytes)
+    if not audio_bytes:
+        return EngagingAvatarResult(
+            avatar_video_url, "", 0.0, [], [],
+            error="ffmpeg failed to extract audio",
+        )
+
+    audio_url = await persist_audio(
+        audio_bytes, f"engaging-audio-{uuid.uuid4().hex[:8]}", tid,
+    )
+    if not audio_url:
+        return EngagingAvatarResult(
+            avatar_video_url, "", 0.0, [], [],
+            error="could not persist audio",
+        )
+
+    try:
+        tr = await transcribe_words("voice.mp3", audio_bytes)
+    except Exception as e:  # noqa: BLE001
+        return EngagingAvatarResult(
+            avatar_video_url, audio_url, 0.0, [], [],
+            error=f"whisper failed: {e}",
+        )
+
+    # Hero context (description + refs) — same as story modes.
+    from .hero_context import (
+        get_hero_context as _hero_ctx,
+        get_hero_photo_files as _hero_files,
+    )
+    hero_ctx = await _hero_ctx()
+    hero_description = hero_ctx.description if hero_ctx else ""
+    hero_refs = await _hero_files() if hero_ctx else []
+
+    inserts = await pick_insert_points(
+        audio_duration=tr.duration,
+        words=tr.words,
+        brand_context=brand_context,
+        hero_description=hero_description,
+    )
+
+    if inserts:
+        await gen_insert_images(
+            inserts, aspect, platform, style, tid,
+            hero_refs=hero_refs,
+        )
+
+    captions = caption_lines(tr.words)
+    return EngagingAvatarResult(
+        avatar_video_url=avatar_video_url,
+        audio_url=audio_url,
+        audio_duration=tr.duration,
+        inserts=inserts,
+        captions=captions,
+    )
+
+
 __all__ = [
     "Beat", "StoryAudioResult",
+    "Insert", "EngagingAvatarResult",
     "segment_beats", "caption_lines", "write_image_prompts",
     "gen_beat_images", "build_story_audio_assets",
     "classify_beats", "slice_avatar_beats", "build_avatar_story_mix_assets",
-    "pick_caption_style",
+    "pick_caption_style", "pick_insert_points", "gen_insert_images",
+    "build_engaging_avatar_assets", "inserts_to_dict",
     "beats_to_dict",
 ]

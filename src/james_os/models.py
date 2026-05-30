@@ -238,7 +238,7 @@ class VideoProduceRequest(BaseModel):
     aspect: str = "9:16"
     title: str = ""
     scenes: list[dict] = Field(default_factory=list)  # edited plan from the editor
-    mode: str = "mixed"  # mixed | avatar_only | timeline | story_audio | avatar_story_mix
+    mode: str = "mixed"  # mixed | avatar_only | timeline | story_audio | avatar_story_mix | engaging_avatar
     caption_style: str = ""              # blank → AI picks (see caption_styles.py)
     image_style: str = ""                # blank → cinematic for story modes
 

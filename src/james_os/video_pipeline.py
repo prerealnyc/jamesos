@@ -82,9 +82,15 @@ async def start_production(
         "James on camera" beat. The LLM classifies each beat as avatar
         vs broll; B-roll beats still get gpt-image-1 stills, avatar
         beats show James talking. One HeyGen spend, no audio drift.
+      * 'engaging_avatar' — HeyGen avatar plays continuously (full
+        video + audio); 2-5 cinematic B-roll stills cut in for
+        1.5-2.5s each at moments the LLM picks as visually
+        amplifiable. Most-time-on-James format with B-roll as
+        punctuation, vs avatar_story_mix which alternates per beat.
     """
     if mode not in (
-        "mixed", "avatar_only", "timeline", "story_audio", "avatar_story_mix",
+        "mixed", "avatar_only", "timeline", "story_audio",
+        "avatar_story_mix", "engaging_avatar",
     ):
         mode = "mixed"
     if mode == "timeline":
@@ -97,6 +103,8 @@ async def start_production(
         raise ValueError("story_audio mode requires a script (the voiceover text)")
     if mode == "avatar_story_mix" and not script.strip():
         raise ValueError("avatar_story_mix mode requires a script (the voiceover text)")
+    if mode == "engaging_avatar" and not script.strip():
+        raise ValueError("engaging_avatar mode requires a script")
     async with acquire(tenant_id) as conn:
         row = await conn.fetchrow(
             """INSERT INTO video_productions
@@ -610,6 +618,130 @@ async def _run_avatar_story_mix(row, tenant_id: UUID | None) -> None:
         )
 
 
+async def _run_engaging_avatar(row, tenant_id: UUID | None) -> None:
+    """engaging_avatar mode — HeyGen avatar plays continuously with
+    2-5 cinematic B-roll cutaways overlaid at LLM-picked moments.
+
+    State machine:
+      queued → planning  (HeyGen render)
+             → rendering_clips  (Whisper + insert image gen)
+             → assembling  (Creatomate)
+             → succeeded
+    """
+    from .story_video import (
+        build_engaging_avatar_assets, inserts_to_dict, pick_caption_style,
+    )
+
+    pid = row["id"]
+    script = (row["script"] or "").strip()
+    if not script:
+        return await _fail(pid, "engaging_avatar mode needs a script", tenant_id)
+
+    # 1) HeyGen render (captions OFF — we burn our own with safe-zone
+    # placement that respects the insert overlays)
+    async with acquire(tenant_id) as conn:
+        await _set(conn, pid, status="planning")
+    avatar_url, err = await _render_avatar(script, row["aspect"], captions=False)
+    if not avatar_url:
+        return await _fail(pid, err or "HeyGen render failed", tenant_id)
+
+    # Persist the avatar video to our storage so Creatomate has a
+    # durable reachable URL (HeyGen URLs expire).
+    durable_avatar, _ = await _persist_clip_to_storage(
+        avatar_url, f"engaging-avatar-{pid}"
+    )
+    avatar_url = durable_avatar or avatar_url
+
+    # 2) Extract audio + Whisper + LLM picks inserts + image gen
+    async with acquire(tenant_id) as conn:
+        await _set(conn, pid, status="rendering_clips")
+    brand_context = (
+        f"Brand: {row['title'] or 'James Prendamano'}. "
+        "Real-estate broker and brand voice, Staten Island / NYC focus. "
+        f"Platform: {row['platform']}. Aspect: {row['aspect']}."
+    )
+    try:
+        istyle = (row["image_style"] or "").strip()
+    except (KeyError, TypeError):
+        istyle = ""
+    if not istyle:
+        istyle = "cinematic"
+    assets = await build_engaging_avatar_assets(
+        avatar_video_url=avatar_url,
+        aspect=row["aspect"],
+        style=istyle,
+        brand_context=brand_context,
+        platform=row["platform"],
+        tenant_id=str(tenant_id) if tenant_id else None,
+    )
+    if assets.error:
+        return await _fail(pid, assets.error, tenant_id)
+
+    # Persist insert metadata for the UI.
+    async with acquire(tenant_id) as conn:
+        await _set(
+            conn, pid, status="assembling",
+            scenes=json.dumps(inserts_to_dict(assets.inserts)),
+        )
+
+    # 3) Caption preset (auto if blank)
+    try:
+        cstyle = (row["caption_style"] or "").strip()
+    except (KeyError, TypeError):
+        cstyle = ""
+    if not cstyle:
+        cstyle, _why = await pick_caption_style(script, row["platform"], brand_context)
+
+    # 4) Creatomate compose. If no inserts (LLM picked zero), the
+    # assembler still renders the avatar with captions only — degraded
+    # but ships.
+    asm = get_assembly_provider()
+    if not hasattr(asm, "render_engaging_avatar"):
+        return await _fail(
+            pid, "assembly provider does not support engaging_avatar mode",
+            tenant_id,
+        )
+    res = await asm.render_engaging_avatar(
+        avatar_video_url=assets.avatar_video_url,
+        audio_duration=assets.audio_duration,
+        inserts=inserts_to_dict(assets.inserts),
+        captions=assets.captions,
+        aspect=row["aspect"],
+        music_mood="calm",
+        caption_style=cstyle,
+    )
+    if res.status == "processing":
+        for _ in range(_MAX_POLLS):
+            await asyncio.sleep(_POLL_EVERY)
+            res = await asm.poll(res.render_id)
+            if res.status in ("succeeded", "failed"):
+                break
+    if res.status != "succeeded" or not res.url:
+        return await _fail(pid, res.error or "engaging_avatar assembly failed", tenant_id)
+
+    async with acquire(tenant_id) as conn:
+        action_id = await conn.fetchval(
+            """INSERT INTO actions (proposed_by, action_type, payload, status)
+               VALUES ('video_producer','video',$1::jsonb,'pending') RETURNING id""",
+            json.dumps({
+                "platform": row["platform"], "format": "video",
+                "content": row["title"] or script[:120],
+                "caption": row["title"] or "",
+                "media_url": res.url,
+                "stub": res.url.startswith("stub://"),
+                "mode": "engaging_avatar",
+                "inserts": len(assets.inserts),
+                "hero_inserts": sum(1 for i in assets.inserts if i.uses_hero),
+            }),
+        )
+        await conn.execute(
+            """UPDATE video_productions SET status='succeeded', final_url=$2,
+               queued_action_id=$3, updated_at=now(), completed_at=now()
+               WHERE id=$1""",
+            pid, res.url, action_id,
+        )
+
+
 async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> None:
     """The worker. Advances the production through every stage."""
     pid = production_id
@@ -622,6 +754,8 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
 
         # Avatar-only mode forks here — one HeyGen render of the entire
         # script, no per-scene plan, no Creatomate assembly.
+        if row["mode"] == "engaging_avatar":
+            return await _run_engaging_avatar(row, tenant_id)
         if row["mode"] == "avatar_story_mix":
             return await _run_avatar_story_mix(row, tenant_id)
         if row["mode"] == "story_audio":

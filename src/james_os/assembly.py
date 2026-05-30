@@ -57,6 +57,13 @@ class StubAssemblyProvider(AssemblyProvider):
             url=f"stub://assembled/mix-{len(beats)}-beats",
         )
 
+    async def render_engaging_avatar(self, **kwargs) -> RenderResult:
+        inserts = kwargs.get("inserts") or []
+        return RenderResult(
+            status="succeeded", render_id="stub-engaging",
+            url=f"stub://assembled/engaging-{len(inserts)}-inserts",
+        )
+
     async def poll(self, render_id: str) -> RenderResult:
         return RenderResult(status="succeeded", url=f"stub://assembled/{render_id}")
 
@@ -312,6 +319,130 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             })
 
         return {"output_format": "mp4", "width": w, "height": h, "elements": elements}
+
+    def build_engaging_avatar_source(
+        self, *,
+        avatar_video_url: str,
+        audio_duration: float,
+        inserts: list[dict],          # [{start, end, image_url, text, …}]
+        captions: list[dict],
+        aspect: str,
+        music_mood: str = "none",
+        caption_style: str | None = None,
+    ) -> dict:
+        """engaging_avatar layout. The avatar video carries its own
+        audio across the whole timeline; B-roll images overlay on top
+        for short windows where the LLM wants visual punctuation.
+
+        Tracks:
+          1 — HeyGen avatar video (full duration, includes audio)
+          2 — B-roll image overlays at each insert window, with a
+              short fade in/out so the cut doesn't feel jarring
+          3 — word-pinned captions (safe-zone aware: when an insert
+              overlaps, captions take the broll y position; otherwise
+              avatar y to clear his face)
+          4 — optional background music ducked under the avatar voice
+        """
+        w, h = _dims(aspect)
+        elements: list[dict] = []
+        total = max(audio_duration, inserts[-1]["end"] if inserts else 0.0)
+
+        # track 1 — the avatar video carries its own audio
+        if avatar_video_url and avatar_video_url.startswith("http"):
+            elements.append({
+                "type": "video", "source": avatar_video_url,
+                "track": 1, "time": 0, "duration": total, "fit": "cover",
+            })
+
+        # track 2 — insert overlays with short fade in/out
+        for ins in inserts:
+            url = (ins.get("image_url") or "").strip()
+            if not url or not url.startswith("http"):
+                continue
+            start = float(ins.get("start") or 0.0)
+            end = float(ins.get("end") or start)
+            dur = max(0.4, end - start)
+            elements.append({
+                "type": "image", "source": url,
+                "track": 2, "time": start, "duration": dur, "fit": "cover",
+                "animations": [
+                    {"time": 0, "duration": 0.15, "type": "fade"},
+                    {"time": max(0, dur - 0.15), "duration": 0.15,
+                     "type": "fade", "reversed": True},
+                ],
+            })
+
+        # track 3 — captions with safe-zone awareness. For each flash,
+        # treat as broll-zone iff an insert overlays its midpoint.
+        preset = get_preset(caption_style)
+        for c in captions:
+            text = (c.get("text") or "").strip()
+            if not text:
+                continue
+            start = float(c.get("start") or 0.0)
+            end = float(c.get("end") or start)
+            midpoint = (start + end) / 2
+            role = "avatar"
+            for ins in inserts:
+                ins_start = float(ins.get("start") or 0.0)
+                ins_end = float(ins.get("end") or ins_start)
+                if ins_start <= midpoint < ins_end:
+                    role = "broll"
+                    break
+            elements.append(caption_element(
+                text=text, start=start, end=end, preset=preset, track=3,
+                role=role,
+            ))
+
+        # track 4 — optional music heavily ducked under avatar voice
+        music_url = _music_url_for(music_mood)
+        if music_url and total > 0:
+            elements.append({
+                "type": "audio", "source": music_url,
+                "track": 4, "time": 0, "duration": total,
+                "volume": 12,
+            })
+
+        return {"output_format": "mp4", "width": w, "height": h, "elements": elements}
+
+    async def render_engaging_avatar(
+        self, *,
+        avatar_video_url: str,
+        audio_duration: float,
+        inserts: list[dict], captions: list[dict],
+        aspect: str, music_mood: str = "none",
+        caption_style: str | None = None,
+    ) -> RenderResult:
+        """Submit an engaging_avatar render. Same poll contract."""
+        if not (avatar_video_url or "").startswith("http"):
+            return RenderResult("failed", error="no avatar video URL")
+        source = self.build_engaging_avatar_source(
+            avatar_video_url=avatar_video_url,
+            audio_duration=audio_duration,
+            inserts=inserts, captions=captions,
+            aspect=aspect, music_mood=music_mood,
+            caption_style=caption_style,
+        )
+        body = {"source": source}
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
+            r = await c.post(
+                "https://api.creatomate.com/v1/renders",
+                headers={"Authorization": f"Bearer {self.api_key}",
+                         "Content-Type": "application/json"},
+                json=body,
+            )
+        if r.status_code in (401, 403):
+            return RenderResult("failed", error=f"Creatomate auth failed ({r.status_code})")
+        if r.status_code >= 400:
+            return RenderResult("failed", error=f"Creatomate HTTP {r.status_code}: {r.text[:160]}")
+        data = r.json()
+        item = data[0] if isinstance(data, list) and data else data
+        rid = item.get("id")
+        url = item.get("url")
+        st = str(item.get("status", "")).lower()
+        if st == "succeeded" and url:
+            return RenderResult("succeeded", render_id=str(rid), url=url)
+        return RenderResult("processing", render_id=str(rid))
 
     async def render_avatar_story_mix(
         self, *,
