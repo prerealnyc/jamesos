@@ -570,8 +570,13 @@ async def classify_beats(beats: list[Beat], brand_context: str) -> None:
 class Insert:
     """A B-roll cutaway window inside an engaging_avatar render.
 
-    Each insert overlays the avatar video for [start, end] seconds and
-    shows a cinematic still. The avatar's audio keeps playing under it.
+    Each insert overlays the avatar video for [start, end] seconds.
+    Two output paths:
+      * image_url — static still from gpt-image-1 (cheap, no motion)
+      * video_url — Runway-animated 5s clip seeded by the still
+        (real motion, ~$0.50 each). When video_url is present, the
+        Creatomate source uses it as a video element instead of the
+        still — the avatar's audio keeps playing under either way.
     """
     index: int
     start: float
@@ -581,6 +586,8 @@ class Insert:
     image_url: str | None = None
     image_error: str = ""
     uses_hero: bool = False
+    video_url: str | None = None       # Runway image-to-video output
+    video_error: str = ""
 
 
 def inserts_to_dict(inserts: list[Insert]) -> list[dict[str, Any]]:
@@ -590,6 +597,7 @@ def inserts_to_dict(inserts: list[Insert]) -> list[dict[str, Any]]:
             "text": i.text, "image_prompt": i.image_prompt,
             "image_url": i.image_url, "image_error": i.image_error,
             "uses_hero": i.uses_hero,
+            "video_url": i.video_url, "video_error": i.video_error,
         }
         for i in inserts
     ]
@@ -787,6 +795,114 @@ async def pick_insert_points(
         ))
         last_end = end
     return inserts
+
+
+# Runway gen4_turbo only supports a fixed ratio set; map our aspect.
+_RUNWAY_INSERT_RATIO = {
+    "9:16": "720:1280", "16:9": "1280:720", "1:1": "960:960",
+}
+# Runway's minimum image-to-video duration is 5s. Our insert windows
+# are 1.5-2s, so we generate 5s and Creatomate trims via the element's
+# `duration` field. No re-encode pass needed.
+_RUNWAY_INSERT_DURATION = 5
+# Polling parameters per Runway task — same defaults as the older
+# mixed-mode broll renderer in video_pipeline.py.
+_RUNWAY_POLL_EVERY = 5.0
+_RUNWAY_MAX_POLLS = 36                  # 3 minutes per insert ceiling
+
+
+async def animate_inserts(
+    inserts: list[Insert],
+    aspect: str,
+    tenant_id: str,
+    *,
+    concurrency: int = 2,
+) -> None:
+    """Chain each insert's still through Runway image-to-video so the
+    cutaway has real motion instead of just Creatomate's Ken Burns.
+
+    Mutates each insert in place — fills `video_url` on success, sets
+    `video_error` on failure. Honest fallback: when Runway fails or is
+    stubbed, the Creatomate source falls back to the static image.
+
+    Concurrency capped at 2 because Runway's gen4_turbo rate-limits
+    aggressively above that for the dev plan. Each call is ~30-60s
+    end-to-end (submit + poll), so 5 inserts = ~2-3 min wall-clock.
+    """
+    from .video import get_video_provider
+
+    targets = [
+        i for i in inserts
+        if (i.image_url or "").startswith("http")
+    ]
+    if not targets:
+        return
+
+    provider = get_video_provider()
+    if provider.name == "stub":
+        for i in targets:
+            i.video_error = "Runway not configured (VIDEO_PROVIDER=stub)"
+        return
+
+    ratio = _RUNWAY_INSERT_RATIO.get(aspect, _RUNWAY_INSERT_RATIO["9:16"])
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _one(insert: Insert) -> None:
+        async with sem:
+            # Build a motion-focused prompt. Runway leans on the still
+            # for composition and on the text prompt for what should
+            # MOVE. We pass the image_prompt unchanged because the
+            # cinematic prompts already mention atmospheric details
+            # (dust, smoke, paper in motion, light beams) that Runway
+            # picks up as motion cues.
+            sub = await provider.submit(
+                insert.image_prompt[:900] or insert.text[:200],
+                insert.image_url,
+                model=settings.runway_model,
+                ratio=ratio,
+                duration=_RUNWAY_INSERT_DURATION,
+            )
+            if sub.status == "failed":
+                insert.video_error = sub.error or "Runway submit failed"
+                return
+            poll_url = None
+            for _ in range(_RUNWAY_MAX_POLLS):
+                await asyncio.sleep(_RUNWAY_POLL_EVERY)
+                p = await provider.poll(sub.provider_job_id)
+                if p.status == "succeeded":
+                    poll_url = p.result_url
+                    break
+                if p.status == "failed":
+                    insert.video_error = p.error or "Runway render failed"
+                    return
+            if not poll_url:
+                insert.video_error = "Runway poll timed out"
+                return
+
+            # Download from Runway's CDN (jwt-signed, expires fast) and
+            # rehost on Supabase so Creatomate has a durable URL for
+            # assembly. Same pattern as _persist_clip_to_storage in
+            # video_pipeline.py — kept local here so this module isn't
+            # cross-coupled to the pipeline worker.
+            try:
+                async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as c:
+                    r = await c.get(poll_url, follow_redirects=True)
+                    r.raise_for_status()
+                    data = r.content
+            except Exception as e:  # noqa: BLE001
+                insert.video_error = f"download from Runway failed: {e}"
+                return
+            try:
+                url, _ = await asyncio.to_thread(
+                    media_storage().save,
+                    tenant_id, data,
+                    f"insert-vid-{insert.index:02d}-{uuid.uuid4().hex[:8]}.mp4",
+                )
+                insert.video_url = url
+            except Exception as e:  # noqa: BLE001
+                insert.video_error = f"storage save failed: {e}"
+
+    await asyncio.gather(*(_one(i) for i in targets))
 
 
 async def gen_insert_images(
@@ -1388,6 +1504,12 @@ async def build_engaging_avatar_assets(
             inserts, aspect, platform, style, tid,
             hero_refs=hero_refs,
         )
+        # Chain each generated still through Runway image-to-video.
+        # Honest fallback: every insert that fails to animate keeps its
+        # static image_url and the Creatomate source falls back to a
+        # still element. Tracked per-insert via video_error so the UI
+        # can show what was actually rendered as motion.
+        await animate_inserts(inserts, aspect, tid)
 
     captions = caption_lines(tr.words)
     return EngagingAvatarResult(
@@ -1406,6 +1528,7 @@ __all__ = [
     "gen_beat_images", "build_story_audio_assets",
     "classify_beats", "slice_avatar_beats", "build_avatar_story_mix_assets",
     "pick_caption_style", "pick_insert_points", "gen_insert_images",
+    "animate_inserts",
     "build_engaging_avatar_assets", "inserts_to_dict",
     "beats_to_dict",
 ]

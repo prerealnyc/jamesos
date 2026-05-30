@@ -354,23 +354,39 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 "track": 1, "time": 0, "duration": total, "fit": "cover",
             })
 
-        # track 2 — insert overlays with short fade in/out
+        # track 2 — insert overlays with short fade in/out. Prefer the
+        # Runway-animated video clip when available so the cutaway has
+        # real motion; fall back to the static gpt-image-1 still when
+        # only the image rendered. Video elements are muted (volume=0)
+        # because the avatar's voice on track 1 is the master audio.
         for ins in inserts:
-            url = (ins.get("image_url") or "").strip()
+            video_url = (ins.get("video_url") or "").strip()
+            image_url = (ins.get("image_url") or "").strip()
+            url = video_url if video_url.startswith("http") else image_url
             if not url or not url.startswith("http"):
                 continue
             start = float(ins.get("start") or 0.0)
             end = float(ins.get("end") or start)
             dur = max(0.4, end - start)
-            elements.append({
-                "type": "image", "source": url,
+            common = {
                 "track": 2, "time": start, "duration": dur, "fit": "cover",
                 "animations": [
                     {"time": 0, "duration": 0.15, "type": "fade"},
                     {"time": max(0, dur - 0.15), "duration": 0.15,
                      "type": "fade", "reversed": True},
                 ],
-            })
+            }
+            if video_url.startswith("http"):
+                elements.append({
+                    "type": "video", "source": video_url,
+                    "volume": 0,        # avatar audio carries the voice
+                    **common,
+                })
+            else:
+                elements.append({
+                    "type": "image", "source": image_url,
+                    **common,
+                })
 
         # track 3 — captions with safe-zone awareness. For each flash,
         # treat as broll-zone iff an insert overlays its midpoint.
