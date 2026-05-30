@@ -464,6 +464,15 @@ export const api = {
     if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
     return d as LongSource;
   },
+  async importLongSourceFromDrive(driveUrl: string, title = "") {
+    const fd = new FormData();
+    fd.append("drive_url", driveUrl);
+    fd.append("title", title);
+    const r = await fetch(u("/long-form/drive-import"), { method: "POST", body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    return d as LongSource;
+  },
   reanalyzeLongSource: (id: string) =>
     jpost<{ queued: boolean }>(`/long-form/${id}/reanalyze`, {}),
   async renderLongCandidate(candidateId: string, opts: {

@@ -84,6 +84,59 @@ def _download_sync(file_id: str) -> bytes:
     return buf.getvalue()
 
 
+def _file_metadata_sync(file_id: str) -> dict:
+    """Pull name + size + mimeType for a single file id. Used by the
+    URL-based importer so we can name the upload sensibly and reject
+    non-video items before paying the download cost."""
+    svc = _service()
+    return svc.files().get(
+        fileId=file_id,
+        fields="id, name, mimeType, size",
+        **_SHARED_DRIVE,
+    ).execute()
+
+
+# Drive sharable URL → file id. Covers every shape Google produces:
+#   https://drive.google.com/file/d/<ID>/view?usp=sharing
+#   https://drive.google.com/file/d/<ID>/edit
+#   https://drive.google.com/open?id=<ID>
+#   https://drive.google.com/uc?id=<ID>&export=download
+#   https://docs.google.com/file/d/<ID>/preview
+# ID is 25-44 chars of [A-Za-z0-9_-]. Reject anything shorter — a
+# stray "id=42" in a tracking query string isn't a real file id.
+import re as _re
+
+_DRIVE_ID_RE = _re.compile(r"(?:/d/|[?&]id=)([A-Za-z0-9_-]{25,})")
+
+
+def extract_drive_file_id(url: str) -> str | None:
+    """Pull the file id out of any sharable Drive URL. Returns None
+    when the URL doesn't contain a recognisable id — the caller
+    surfaces a 400 to the user rather than guessing."""
+    if not url:
+        return None
+    m = _DRIVE_ID_RE.search(url.strip())
+    return m.group(1) if m else None
+
+
+async def fetch_drive_file_by_url(url: str) -> tuple[bytes, str, str]:
+    """Download a Drive file by sharable URL.
+
+    Returns (bytes, filename, mime_type). Raises DriveNotConfigured
+    when the service account isn't set, ValueError when the URL
+    doesn't parse, or the underlying google-api exception when the
+    file isn't accessible (the caller maps these to 4xx responses).
+    """
+    file_id = extract_drive_file_id(url)
+    if not file_id:
+        raise ValueError("could not parse a Drive file id from that URL")
+    meta = await asyncio.to_thread(_file_metadata_sync, file_id)
+    name = str(meta.get("name") or f"drive-{file_id}.mp4")
+    mime = str(meta.get("mimeType") or "")
+    data = await asyncio.to_thread(_download_sync, file_id)
+    return data, name, mime
+
+
 async def list_drive_videos(folder_id: str | None = None) -> list[dict]:
     fid = (folder_id or settings.google_drive_folder_id or "").strip()
     if not fid:

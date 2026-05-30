@@ -55,6 +55,8 @@ export default function LongFormPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [title, setTitle] = useState("");
+  const [driveUrl, setDriveUrl] = useState("");
+  const [importing, setImporting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [renderingId, setRenderingId] = useState<string | null>(null);
@@ -117,6 +119,23 @@ export default function LongFormPage() {
     }
   }
 
+  async function onDriveImport() {
+    const url = driveUrl.trim();
+    if (!url) return;
+    setImporting(true); setErr("");
+    try {
+      const src = await api.importLongSourceFromDrive(url, title.trim());
+      setDriveUrl("");
+      setTitle("");
+      await loadSources();
+      await loadSelected(src.id);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Drive import failed");
+    } finally {
+      setImporting(false);
+    }
+  }
+
   async function reanalyze(id: string) {
     setBusy(true); setErr("");
     try {
@@ -173,20 +192,45 @@ export default function LongFormPage() {
       />
 
       <Card>
-        <CardTitle>Upload long source</CardTitle>
+        <CardTitle>Add a long source</CardTitle>
         <p className="text-[12px] text-muted-foreground mb-3">
           50-60 min files OK. Audio is extracted at low bitrate (mono
           16 kHz 32 kbps) so 60 min fits Whisper's 25 MB cap; longer
-          sources get auto-chunked. Drive URLs land here after going
-          through the Reference Library importer (coming soon as a
-          one-click).
+          sources get auto-chunked. Drive URLs are downloaded directly
+          via the service account — the file must be shared with the
+          service-account email (configured in Settings).
         </p>
         <Input
-          placeholder="Title (optional)"
+          placeholder="Title (optional, applied to both upload + Drive paths)"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          className="mb-2"
+          className="mb-3"
         />
+
+        <div className="text-[11px] uppercase tracking-[1px] text-muted-foreground mt-2 mb-1">
+          From Google Drive
+        </div>
+        <div className="flex gap-2">
+          <Input
+            placeholder="Paste sharable Drive URL (file/d/…/view or open?id=…)"
+            value={driveUrl}
+            onChange={(e) => setDriveUrl(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") onDriveImport(); }}
+            disabled={importing}
+            className="flex-1"
+          />
+          <Button
+            onClick={onDriveImport}
+            disabled={importing || !driveUrl.trim()}
+            className="text-[12px] !px-3"
+          >
+            {importing ? <Spinner /> : "Import"}
+          </Button>
+        </div>
+
+        <div className="text-[11px] uppercase tracking-[1px] text-muted-foreground mt-4 mb-1">
+          Or upload a file
+        </div>
         <input
           ref={fileRef}
           type="file"
@@ -195,7 +239,11 @@ export default function LongFormPage() {
           disabled={busy}
           className="block w-full text-[12px] text-muted-foreground file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-primary file:text-primary-foreground file:cursor-pointer"
         />
-        {busy && <p className="text-[12px] mt-2"><Spinner /> uploading…</p>}
+        {(busy || importing) && (
+          <p className="text-[12px] mt-2">
+            <Spinner /> {importing ? "downloading from Drive…" : "uploading…"}
+          </p>
+        )}
         {err && <p className="text-[12px] mt-2 text-destructive">✗ {err}</p>}
       </Card>
 

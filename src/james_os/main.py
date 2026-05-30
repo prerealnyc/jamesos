@@ -542,6 +542,63 @@ async def long_form_upload(
     return src
 
 
+@app.post("/long-form/drive-import", status_code=201)
+async def long_form_drive_import(
+    background: BackgroundTasks,
+    drive_url: str = Form(...),
+    title: str = Form(""),
+) -> dict:
+    """Pull a long video from a sharable Drive URL straight into the
+    cutter. Same end shape as /long-form/upload — persists the file to
+    Supabase Storage and kicks ingest_source in the background.
+
+    Accepts every sharable Drive URL shape (file/d/{id}/view, open?id=,
+    uc?id=, docs.google.com/file/d/{id}/preview). The service account
+    needs read access to the file (share the file with the service
+    account's email).
+    """
+    from .drive import (
+        DriveNotConfigured, extract_drive_file_id, fetch_drive_file_by_url,
+    )
+    from .long_form import create_source, ingest_source
+
+    url = (drive_url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="drive_url is required")
+    if not extract_drive_file_id(url):
+        raise HTTPException(
+            status_code=400,
+            detail="not a recognisable Drive URL — share-link or open?id= form",
+        )
+    try:
+        data, name, mime = await fetch_drive_file_by_url(url)
+    except DriveNotConfigured as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001 — wrap any google-api error
+        raise HTTPException(
+            status_code=502,
+            detail=f"Drive download failed (is the file shared with the service account?): {e}",
+        ) from e
+    if not data:
+        raise HTTPException(status_code=502, detail="Drive returned empty file")
+    # Reject non-video mimes here — same as the upload route, the cut
+    # step assumes a video stream. The user gets a clean 400 instead
+    # of an ffmpeg failure 30 seconds in.
+    if mime and not mime.startswith("video/"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Drive file is not a video (mime: {mime})",
+        )
+
+    tenant = str(settings.default_tenant_id)
+    served_uri, _ = media_storage().save(tenant, data, name)
+    src = await create_source(title=(title or name), source_url=served_uri)
+    background.add_task(ingest_source, UUID(src["id"]))
+    return src
+
+
 @app.get("/long-form/sources")
 async def long_form_list() -> dict:
     """List of long-form sources for this tenant, newest first.
