@@ -473,6 +473,21 @@ export const api = {
     if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
     return d as LongSource;
   },
+  browseDriveFolder: (folderId = "") =>
+    jget<{
+      folder_id: string;
+      default_folder_id: string;
+      videos: { id: string; name: string; mimeType?: string; size?: string; modifiedTime?: string }[];
+    }>(`/long-form/drive-browse${folderId ? `?folder_id=${encodeURIComponent(folderId)}` : ""}`),
+  async importLongSourceFromDriveId(fileId: string, title = "") {
+    const fd = new FormData();
+    fd.append("file_id", fileId);
+    fd.append("title", title);
+    const r = await fetch(u("/long-form/drive-import-id"), { method: "POST", body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    return d as LongSource;
+  },
   reanalyzeLongSource: (id: string) =>
     jpost<{ queued: boolean }>(`/long-form/${id}/reanalyze`, {}),
   async renderLongCandidate(candidateId: string, opts: {

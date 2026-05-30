@@ -1,5 +1,6 @@
 """FastAPI app — the public surface of JAMES OS."""
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -538,6 +539,100 @@ async def long_form_upload(
     src = await create_source(
         title=title or (file.filename or ""), source_url=served_uri,
     )
+    background.add_task(ingest_source, UUID(src["id"]))
+    return src
+
+
+@app.get("/long-form/drive-browse")
+async def long_form_drive_browse(folder_id: str = "") -> dict:
+    """List videos the service account can see in a Drive folder.
+
+    folder_id can be either:
+      * the raw 33-char Drive folder id, OR
+      * a sharable folder URL like https://drive.google.com/drive/folders/<ID>
+        (we extract the id) OR
+      * empty — falls back to the configured GOOGLE_DRIVE_FOLDER_ID
+
+    Returns the same shape as list_drive_videos: each item carries
+    {id, name, mimeType, size, modifiedTime}. The frontend renders these
+    as tile cards so users can click-import instead of pasting URLs.
+    """
+    import re as _re
+    from .drive import (
+        DriveNotConfigured, list_drive_videos,
+    )
+    fid = (folder_id or "").strip()
+    if fid:
+        # Tolerate full Drive folder URLs as well as raw IDs.
+        m = _re.search(r"/folders/([A-Za-z0-9_-]{20,})", fid)
+        if m:
+            fid = m.group(1)
+        elif not _re.match(r"^[A-Za-z0-9_-]{20,}$", fid):
+            raise HTTPException(
+                status_code=400,
+                detail="folder_id should be a Drive folder URL or its id",
+            )
+    try:
+        files = await list_drive_videos(fid or None)
+    except DriveNotConfigured as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502,
+            detail=f"Drive list failed (is the folder shared with the service account?): {e}",
+        ) from e
+    # Surface a default-folder hint so the frontend can display "browsing
+    # folder X" without an extra round-trip.
+    default = (settings.google_drive_folder_id or "").strip()
+    return {
+        "folder_id": fid or default,
+        "default_folder_id": default,
+        "videos": files,
+    }
+
+
+@app.post("/long-form/drive-import-id", status_code=201)
+async def long_form_drive_import_by_id(
+    background: BackgroundTasks,
+    file_id: str = Form(...),
+    title: str = Form(""),
+) -> dict:
+    """Same as /long-form/drive-import but accepts a raw file id instead
+    of a sharable URL. Used by the folder-browser UI which already has
+    the canonical id from list_drive_videos and doesn't need to round-
+    trip through a URL string (skipping the lowercase-l/capital-I
+    typo class entirely)."""
+    from .drive import (
+        DriveNotConfigured, _file_metadata_sync, _download_sync,
+    )
+    fid = (file_id or "").strip()
+    if not fid:
+        raise HTTPException(status_code=400, detail="file_id is required")
+    try:
+        meta = await asyncio.to_thread(_file_metadata_sync, fid)
+        name = str(meta.get("name") or f"drive-{fid}.mp4")
+        mime = str(meta.get("mimeType") or "")
+        if mime and not mime.startswith("video/"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"file is not a video (mime: {mime})",
+            )
+        data = await asyncio.to_thread(_download_sync, fid)
+    except DriveNotConfigured as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502,
+            detail=f"Drive download failed: {e}",
+        ) from e
+    if not data:
+        raise HTTPException(status_code=502, detail="Drive returned empty file")
+    tenant = str(settings.default_tenant_id)
+    served_uri, _ = media_storage().save(tenant, data, name)
+    from .long_form import create_source, ingest_source
+    src = await create_source(title=(title or name), source_url=served_uri)
     background.add_task(ingest_source, UUID(src["id"]))
     return src
 

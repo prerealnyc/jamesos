@@ -22,6 +22,11 @@ import {
   Button, Card, CardTitle, Input, Spinner, Badge, PageHeader,
 } from "@/components/ui";
 
+type DriveVideo = {
+  id: string; name: string;
+  mimeType?: string; size?: string; modifiedTime?: string;
+};
+
 const STATUS_TONE: Record<string, "muted" | "accent" | "ok" | "destructive"> = {
   uploading: "muted",
   transcribing: "accent",
@@ -62,6 +67,16 @@ export default function LongFormPage() {
   const [title, setTitle] = useState("");
   const [driveUrl, setDriveUrl] = useState("");
   const [importing, setImporting] = useState(false);
+  // Folder browser state — show tiles from a Drive folder so the user
+  // can click-import instead of pasting URLs. Default folder comes
+  // from the backend (settings.google_drive_folder_id).
+  const [browseUrl, setBrowseUrl] = useState("");
+  const [browseFolderId, setBrowseFolderId] = useState("");
+  const [defaultFolderId, setDefaultFolderId] = useState("");
+  const [browseVideos, setBrowseVideos] = useState<DriveVideo[]>([]);
+  const [browsing, setBrowsing] = useState(false);
+  const [browseErr, setBrowseErr] = useState("");
+  const [importingId, setImportingId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [renderingId, setRenderingId] = useState<string | null>(null);
@@ -138,6 +153,41 @@ export default function LongFormPage() {
       setImportErr(e instanceof Error ? e.message : "Drive import failed");
     } finally {
       setImporting(false);
+    }
+  }
+
+  async function browseFolder(folderArg = "") {
+    setBrowsing(true); setBrowseErr("");
+    try {
+      const r = await api.browseDriveFolder(folderArg);
+      setBrowseVideos(r.videos);
+      setBrowseFolderId(r.folder_id);
+      if (r.default_folder_id) setDefaultFolderId(r.default_folder_id);
+    } catch (e) {
+      setBrowseErr(e instanceof Error ? e.message : "could not browse Drive");
+    } finally {
+      setBrowsing(false);
+    }
+  }
+
+  // On first load, fetch the default folder's contents so the user
+  // sees their videos immediately without clicking anything.
+  useEffect(() => {
+    browseFolder("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function importFromTile(v: DriveVideo) {
+    setImportingId(v.id);
+    setImportErr("");
+    try {
+      const src = await api.importLongSourceFromDriveId(v.id, v.name);
+      await loadSources();
+      await loadSelected(src.id);
+    } catch (e) {
+      setImportErr(e instanceof Error ? e.message : "import failed");
+    } finally {
+      setImportingId(null);
     }
   }
 
@@ -259,6 +309,83 @@ export default function LongFormPage() {
           <p className="text-[12px] mt-2 text-destructive">✗ {uploadErr}</p>
         )}
         {err && <p className="text-[12px] mt-2 text-destructive">✗ {err}</p>}
+      </Card>
+
+      <Card>
+        <div className="flex items-center justify-between mb-2">
+          <CardTitle>Pick from Drive folder</CardTitle>
+          <Button
+            variant="secondary"
+            onClick={() => browseFolder(browseUrl.trim() || "")}
+            disabled={browsing}
+            className="text-[12px] !px-3 !py-1"
+          >
+            {browsing ? <Spinner /> : "↻ Refresh"}
+          </Button>
+        </div>
+        <p className="text-[12px] text-muted-foreground mb-3">
+          Click a tile to import — no URL pasting, no lowercase-l /
+          capital-I typo risk. Default folder pulls from
+          GOOGLE_DRIVE_FOLDER_ID in Settings ({defaultFolderId
+            ? defaultFolderId.slice(0, 8) + "…"
+            : "not set"}). To browse a different folder,
+          paste its URL below.
+        </p>
+        <div className="flex gap-2 mb-3">
+          <Input
+            placeholder="(optional) Drive folder URL — drive.google.com/drive/folders/…"
+            value={browseUrl}
+            onChange={(e) => setBrowseUrl(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") browseFolder(browseUrl.trim()); }}
+            disabled={browsing}
+            className="flex-1"
+          />
+          <Button
+            onClick={() => browseFolder(browseUrl.trim())}
+            disabled={browsing}
+            className="text-[12px] !px-3"
+          >
+            Browse
+          </Button>
+        </div>
+        {browseErr && (
+          <p className="text-[12px] text-destructive mb-2">✗ {browseErr}</p>
+        )}
+        {browseVideos.length === 0 && !browsing && (
+          <p className="text-[12px] text-muted-foreground">
+            No videos in this folder yet (or it isn&apos;t shared with the
+            service account).
+          </p>
+        )}
+        {browseVideos.length > 0 && (
+          <div className="grid grid-cols-2 gap-2 mt-2">
+            {browseVideos.map((v) => {
+              const isImporting = importingId === v.id;
+              return (
+                <button
+                  key={v.id}
+                  onClick={() => importFromTile(v)}
+                  disabled={isImporting || !!importingId}
+                  className="text-left border border-border rounded-md p-3 hover:border-primary transition-colors disabled:opacity-60 disabled:cursor-not-allowed bg-background"
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    {isImporting ? <Spinner /> : <span className="text-[11px]">▶</span>}
+                    <span className="text-[12px] font-medium truncate">{v.name}</span>
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">
+                    {v.modifiedTime
+                      ? new Date(v.modifiedTime).toLocaleDateString()
+                      : ""}
+                    {v.size ? ` · ${(parseInt(v.size, 10) / (1024 * 1024)).toFixed(0)} MB` : ""}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground font-mono mt-1 truncate">
+                    {v.id}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </Card>
 
       <Card>
