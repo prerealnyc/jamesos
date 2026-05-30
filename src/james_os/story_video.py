@@ -596,43 +596,61 @@ def inserts_to_dict(inserts: list[Insert]) -> list[dict[str, Any]]:
 
 
 _INSERT_PICK_SYSTEM = """You are the editor for a short-form video.
-The hero is on camera the whole time, talking. Your job is to choose
-2-5 BRIEF cinematic B-roll cutaways — each 1.5-2.5 seconds — that
-amplify what he's saying at the EXACT moment he says it.
+The hero is on camera the whole time, talking. Your job is to drop
+one cinematic B-roll cutaway in EVERY slot you're given — no skipping
+slots, no extras. Each insert lasts 1.5-2.0 seconds and the image
+must visualize the SPECIFIC PHRASE spoken in that 1.5-2.0s window.
 
-Cut in when he mentions:
-  * a place (a neighborhood, a building, a street, an office)
-  * an object (a contract, a stamp, a key, a ledger, a clock)
-  * a number / statistic (a percentage, a price, a year)
-  * a dramatic concept the viewer benefits from SEEING (a deal,
-    a closing, a tear-down, a missed opportunity, a 4 AM decision)
-  * a person referenced by role (his mentor, his rival, his client) —
-    these are uses_hero=true when the person referenced IS the brand
-    hero himself
+You'll receive a list of slots. Each slot has:
+  * slot_start, slot_end  — the 5s window you're editing inside
+  * words[]               — the words spoken in this slot with their
+                            individual {t: float, w: str} timestamps
 
-DON'T cut in:
-  * In the first 0.6 seconds — let viewers see he's the speaker.
-  * In the last 0.8 seconds — close on him for emotional landing.
-  * During filler / connector words ("and so", "you know", "but
-    really").
-  * For abstract beats that have no visual ("conviction is not loud")
-    — leave those on the avatar.
+For each slot, return ONE insert:
+  * Pick start INSIDE the slot, between (slot_start + 0.4) and
+    (slot_end - 1.8). Land it on a word that names a place / object /
+    number / dramatic concept when one exists in the slot; otherwise
+    pick the most CONCRETE word in the slot (a verb of action, a
+    proper noun, anything visualisable). Avoid pure connector words
+    ('and', 'so', 'but') as the anchor.
+  * end = start + 1.7 typically. Always within the slot bounds.
+  * prompt: ONE concrete cinematic image prompt, 18-30 words, that
+    paints WHAT THE ANCHOR WORD/PHRASE describes — not the script as
+    a whole. Single symbolic subject, dramatic directional light, deep
+    shadows, atmospheric detail. NEVER text/captions in the image.
+  * uses_hero: true ONLY when the anchor word/phrase is about the
+    brand hero himself (e.g. "I watched my mentor" = uses_hero,
+    because the hero IS the mentor figure; "the calendar" = no).
+  * text: short label of the anchor word(s), max 4 words.
 
-EVERY insert must have:
-  * start, end (seconds, decimal). Inserts must NOT overlap each other,
-    must not exceed the audio duration, and must be at least 1.2s apart
-    so the avatar gets time to breathe between cuts.
-  * uses_hero: true when the visual is OF the brand hero himself (e.g.
-    "I watched my mentor" beat where the hero IS the mentor figure).
-  * prompt: ONE concrete cinematic image prompt, 18-32 words, same
-    grammar as the story-mode cinematic prompts — single symbolic
-    subject, dramatic directional light, deep shadows, atmospheric
-    detail. NEVER include text/captions in the image.
+CRITICAL: Every slot gets exactly one insert. Even an "abstract" slot
+("conviction is not loud") needs ONE — pick a metaphorical image like
+"a single Edison bulb glowing alone in a dark room". Never return
+fewer entries than slots.
 
 Return STRICT JSON:
-{"inserts": [{"start": float, "end": float, "text": str,
-              "prompt": str, "uses_hero": bool}, ...]}
+{"inserts": [{"slot": int, "start": float, "end": float,
+              "text": str, "prompt": str, "uses_hero": bool}, ...]}
+The slot field is the 0-indexed slot the insert is for. Same order
+as the slots in the payload.
 """
+
+# Cadence in seconds — one cutaway per slot of this size. 5s means a
+# 30s reel gets ~5 inserts (one per slot). User-configurable later via
+# a per-render field if they want to tune; the default matches the
+# explicit ask ("every 5 seconds").
+_INSERT_CADENCE_S = 5.0
+_INSERT_MIN_DUR = 1.5
+_INSERT_MAX_DUR = 2.0
+# Lead-in pad: first slot starts at this offset so viewers see James
+# begin before any cut. 3s = roughly long enough to register the
+# speaker (~10 words at typical pace) without burning the whole first
+# slot of cadence.
+_INSERT_LEAD_IN_S = 3.0
+# Tail safety zone — keep this much of the end on the avatar so the
+# reel closes on him. 0.4s is the smallest we can go without cutting
+# off the final spoken word.
+_INSERT_TAIL_S = 0.4
 
 
 async def pick_insert_points(
@@ -641,56 +659,124 @@ async def pick_insert_points(
     words: list[TranscribedWord],
     brand_context: str,
     hero_description: str = "",
+    cadence_s: float = _INSERT_CADENCE_S,
 ) -> list[Insert]:
-    """Ask the LLM where to cut in B-roll on top of the avatar video.
+    """Word-anchored dense cutaway picker.
 
-    Returns a list of Insert objects with windows + prompts + uses_hero
-    tags. Empty list when the LLM call fails — the engaging_avatar
-    worker treats this as "render the avatar without cutaways," which
-    is degraded but still ships a usable video.
+    Slices the audio into `cadence_s` slots starting at _INSERT_LEAD_IN_S
+    (so the viewer sees James start). For each slot, the LLM picks
+    one 1.5-2.0s insert + prompt that visualizes the SPECIFIC phrase
+    spoken in that window — not the script overall. This matches the
+    'one cut every 5s, tied to the words right now' format the user
+    asked for, replacing the earlier sparse 2-5-discretion picker.
+
+    Empty list when:
+      * audio is too short for at least one slot;
+      * the LLM call fails;
+      * every returned insert fails sanity validation.
     """
-    if not words or audio_duration <= 1.5:
+    if not words or audio_duration <= _INSERT_LEAD_IN_S + _INSERT_MIN_DUR:
         return []
-    # Compact the word stream into a (start, word) list for the prompt
-    # — full TranscribedWord JSON is too verbose for a 1k-token call.
-    tokens = [{"t": round(w.start, 2), "w": w.word} for w in words]
+
+    # Build slot list. Slot is viable when it can fit MIN_DUR of insert
+    # before audio_duration - TAIL. We allow the LAST slot to be
+    # narrower than cadence_s (down to MIN_DUR) so the tail of the
+    # script still gets one cutaway when there's room.
+    slots: list[dict] = []
+    t = _INSERT_LEAD_IN_S
+    slot_idx = 0
+    latest_end = audio_duration - _INSERT_TAIL_S
+    while t + _INSERT_MIN_DUR <= latest_end:
+        slot_end = min(t + cadence_s, latest_end)
+        slot_words = [
+            {"t": round(w.start, 2), "w": w.word}
+            for w in words
+            if w.start >= t and w.start < slot_end
+        ]
+        # An empty slot means the speaker is silent — skip so we don't
+        # paint over a pause. Rare in normal scripts.
+        if slot_words:
+            slots.append({
+                "slot": slot_idx,
+                "slot_start": round(t, 2),
+                "slot_end": round(slot_end, 2),
+                "words": slot_words,
+            })
+            slot_idx += 1
+        t += cadence_s
+
+    if not slots:
+        return []
+
     payload = {
         "brand_context": brand_context[:600],
         "hero_description": hero_description[:400] if hero_description else "",
         "audio_duration": round(audio_duration, 2),
-        "tokens": tokens,
+        "slots": slots,
     }
     try:
         out = await get_llm().complete_json(
             system=_INSERT_PICK_SYSTEM,
             messages=[{"role": "user", "content": json.dumps(payload)}],
-            max_tokens=1400, temperature=0.4,
+            # Bump the ceiling — denser cadence = more inserts =
+            # more prompt text returned.
+            max_tokens=2400, temperature=0.4,
         )
     except Exception:  # noqa: BLE001
         return []
-    raw = out.get("inserts") or []
+
+    by_slot: dict[int, dict] = {}
+    for entry in (out.get("inserts") or []):
+        if not isinstance(entry, dict):
+            continue
+        try:
+            s_idx = int(entry.get("slot", -1))
+        except (TypeError, ValueError):
+            continue
+        if s_idx < 0:
+            continue
+        by_slot[s_idx] = entry
+
     inserts: list[Insert] = []
     last_end = -1e9
-    for entry in raw:
-        if not isinstance(entry, dict):
+    for s in slots:
+        entry = by_slot.get(s["slot"])
+        if entry is None:
             continue
         try:
             start = float(entry.get("start", 0.0))
             end = float(entry.get("end", 0.0))
         except (TypeError, ValueError):
             continue
-        # Clamp to audio + minimum-spacing guard. We drop rather than
-        # mutate so a malformed LLM response can't reshape the timeline.
-        if start < 0.6 or end > audio_duration - 0.8:
-            continue
+        # Clamp start/end to the slot's window so a hallucinated
+        # timestamp can't escape its lane.
+        start = max(start, float(s["slot_start"]) + 0.3)
+        end = min(end, float(s["slot_end"]),
+                  audio_duration - _INSERT_TAIL_S)
         dur = end - start
-        if not 1.2 <= dur <= 3.0:
-            continue
-        if start < last_end + 1.2:           # min spacing
+        if dur < _INSERT_MIN_DUR:
+            # Renormalize: pin to slot_start + lead, extend to MIN_DUR
+            start = float(s["slot_start"]) + 0.3
+            end = min(start + _INSERT_MIN_DUR,
+                      audio_duration - _INSERT_TAIL_S)
+            dur = end - start
+        if dur > _INSERT_MAX_DUR:
+            end = start + _INSERT_MAX_DUR
+            dur = _INSERT_MAX_DUR
+        if dur < _INSERT_MIN_DUR:
             continue
         prompt = str(entry.get("prompt") or "").strip()
         if not prompt:
             continue
+        # Minimum spacing between inserts so cuts don't pile up at slot
+        # boundaries when the LLM's start drifts late in one slot and
+        # early in the next.
+        if start < last_end + 0.4:
+            start = last_end + 0.4
+            end = min(start + dur, float(s["slot_end"]),
+                      audio_duration - _INSERT_TAIL_S)
+            if end - start < _INSERT_MIN_DUR:
+                continue
         inserts.append(Insert(
             index=len(inserts),
             start=round(start, 3),
@@ -700,8 +786,6 @@ async def pick_insert_points(
             uses_hero=bool(entry.get("uses_hero")),
         ))
         last_end = end
-        if len(inserts) >= 5:
-            break
     return inserts
 
 
