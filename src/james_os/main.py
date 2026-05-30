@@ -597,28 +597,24 @@ async def long_form_drive_import_by_id(
     file_id: str = Form(...),
     title: str = Form(""),
 ) -> dict:
-    """Same as /long-form/drive-import but accepts a raw file id instead
-    of a sharable URL. Used by the folder-browser UI which already has
-    the canonical id from list_drive_videos and doesn't need to round-
-    trip through a URL string (skipping the lowercase-l/capital-I
-    typo class entirely).
+    """Same as /long-form/drive-import but accepts a raw file id.
 
-    Streams the Drive download to a temp file then streams the upload
-    to Supabase Storage — peak memory stays at ~16 MB regardless of
-    source size, so 3-4 GB podcast files don't OOM the host.
+    Returns IMMEDIATELY with a placeholder long_sources row at status
+    'uploading'. The Drive download + Supabase upload + transcript +
+    candidate selection all happen in a single background task. The
+    /long-form page polls every 5s so the user sees the row appear
+    instantly and the status flip as work progresses — no 20-min
+    HTTP hang on big files.
     """
-    import tempfile
-    from pathlib import Path as _P
-
-    from .drive import (
-        DriveNotConfigured, _file_metadata_sync, fetch_drive_file_to_path,
+    from .drive import DriveNotConfigured, _file_metadata_sync
+    from .long_form import (
+        create_source_placeholder, fetch_from_drive_then_ingest,
     )
     fid = (file_id or "").strip()
     if not fid:
         raise HTTPException(status_code=400, detail="file_id is required")
-    # Probe metadata first — cheap call, lets us reject non-video sources
-    # without spending the download bandwidth on something that can't be
-    # cut anyway.
+    # Cheap metadata probe — reject non-video BEFORE creating a row
+    # so we don't litter the table with broken placeholders.
     try:
         meta = await asyncio.to_thread(_file_metadata_sync, fid)
         name = str(meta.get("name") or f"drive-{fid}.mp4")
@@ -635,35 +631,13 @@ async def long_form_drive_import_by_id(
     except Exception as e:  # noqa: BLE001
         raise HTTPException(
             status_code=502,
-            detail=f"Drive metadata failed: {e}",
+            detail=f"Drive metadata failed (is the file shared with the service account?): {e}",
         ) from e
 
-    with tempfile.TemporaryDirectory() as td:
-        local_path = f"{td}/{name}"
-        try:
-            await fetch_drive_file_to_path(fid, local_path)
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(
-                status_code=502,
-                detail=f"Drive download failed: {e}",
-            ) from e
-        if not _P(local_path).exists() or _P(local_path).stat().st_size == 0:
-            raise HTTPException(status_code=502, detail="Drive returned empty file")
-        # Stream the upload — never read the full file into RAM.
-        tenant = str(settings.default_tenant_id)
-        try:
-            served_uri, _ = await asyncio.to_thread(
-                media_storage().save_from_path, tenant, local_path, name,
-            )
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(
-                status_code=502,
-                detail=f"Storage upload failed: {e}",
-            ) from e
-
-    from .long_form import create_source, ingest_source
-    src = await create_source(title=(title or name), source_url=served_uri)
-    background.add_task(ingest_source, UUID(src["id"]))
+    src = await create_source_placeholder(title=(title or name))
+    background.add_task(
+        fetch_from_drive_then_ingest, UUID(src["id"]), fid, name,
+    )
     return src
 
 
@@ -687,11 +661,11 @@ async def long_form_drive_import(
     )
     from .long_form import create_source, ingest_source
 
-    import tempfile
-    from pathlib import Path as _P
-
     from .drive import (
-        DriveNotConfigured, _file_metadata_sync, fetch_drive_file_to_path,
+        DriveNotConfigured, _file_metadata_sync, extract_drive_file_id,
+    )
+    from .long_form import (
+        create_source_placeholder, fetch_from_drive_then_ingest,
     )
     url = (drive_url or "").strip()
     if not url:
@@ -702,7 +676,7 @@ async def long_form_drive_import(
             status_code=400,
             detail="not a recognisable Drive URL — share-link or open?id= form",
         )
-    # Cheap metadata probe — reject non-video before paying download cost.
+    # Probe metadata before creating a row.
     try:
         meta = await asyncio.to_thread(_file_metadata_sync, fid)
         name = str(meta.get("name") or f"drive-{fid}.mp4")
@@ -722,32 +696,10 @@ async def long_form_drive_import(
             detail=f"Drive download failed (is the file shared with the service account?): {e}",
         ) from e
 
-    # Stream Drive → disk → Supabase Storage. Peak RAM stays at one
-    # chunk (~16 MB) regardless of source size.
-    with tempfile.TemporaryDirectory() as td:
-        local_path = f"{td}/{name}"
-        try:
-            await fetch_drive_file_to_path(fid, local_path)
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(
-                status_code=502,
-                detail=f"Drive download failed: {e}",
-            ) from e
-        if not _P(local_path).exists() or _P(local_path).stat().st_size == 0:
-            raise HTTPException(status_code=502, detail="Drive returned empty file")
-        tenant = str(settings.default_tenant_id)
-        try:
-            served_uri, _ = await asyncio.to_thread(
-                media_storage().save_from_path, tenant, local_path, name,
-            )
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(
-                status_code=502,
-                detail=f"Storage upload failed: {e}",
-            ) from e
-
-    src = await create_source(title=(title or name), source_url=served_uri)
-    background.add_task(ingest_source, UUID(src["id"]))
+    src = await create_source_placeholder(title=(title or name))
+    background.add_task(
+        fetch_from_drive_then_ingest, UUID(src["id"]), fid, name,
+    )
     return src
 
 

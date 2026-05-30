@@ -94,6 +94,85 @@ async def create_source(
     return _row(row)
 
 
+async def create_source_placeholder(
+    *, title: str, tenant_id: UUID | None = None,
+) -> dict:
+    """Create a long_sources row with no source_url yet — caller will
+    fill it in via a background task after the Drive download + upload
+    complete. Used by the async drive-import flow so the HTTP request
+    returns instantly and the long upload happens in the background.
+
+    Sets a sentinel source_url so the NOT NULL DEFAULT '' doesn't trip
+    the worker's "is this a real URL" check.
+    """
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            """INSERT INTO long_sources
+                 (title, source_url, status)
+               VALUES ($1, 'pending://', 'uploading')
+               RETURNING *""",
+            title[:200],
+        )
+    return _row(row)
+
+
+async def set_source_url(
+    source_id: UUID, source_url: str, tenant_id: UUID | None = None,
+) -> None:
+    async with acquire(tenant_id) as conn:
+        await _set(conn, source_id, source_url=source_url)
+
+
+async def fetch_from_drive_then_ingest(
+    source_id: UUID,
+    drive_file_id: str,
+    filename: str,
+    tenant_id: UUID | None = None,
+) -> None:
+    """End-to-end background worker for Drive imports.
+
+    Replaces the synchronous code path in /long-form/drive-import-id
+    that hung the HTTP request for ~20 min on a 1.4 GB file. Stages:
+      uploading  → stream Drive → /tmp file → stream → Supabase Storage
+                   → write source_url to the row
+      then hands off to ingest_source() which carries the row through
+      transcribing → analyzing → ready.
+
+    Sets status='failed' on any download/upload error so the user sees
+    a clear stage at which it broke (not just a vanished row).
+    """
+    import tempfile
+    from pathlib import Path as _P
+
+    from .drive import fetch_drive_file_to_path
+
+    with tempfile.TemporaryDirectory() as td:
+        local_path = f"{td}/{filename}"
+        try:
+            await fetch_drive_file_to_path(drive_file_id, local_path)
+        except Exception as e:  # noqa: BLE001
+            return await _fail(
+                source_id, f"Drive download failed: {e}", tenant_id,
+            )
+        if not _P(local_path).exists() or _P(local_path).stat().st_size == 0:
+            return await _fail(
+                source_id, "Drive returned empty file", tenant_id,
+            )
+        tid_str = str(tenant_id or settings.default_tenant_id)
+        try:
+            served_uri, _ = await asyncio.to_thread(
+                media_storage().save_from_path, tid_str, local_path, filename,
+            )
+        except Exception as e:  # noqa: BLE001
+            return await _fail(
+                source_id, f"Storage upload failed: {e}", tenant_id,
+            )
+    await set_source_url(source_id, served_uri, tenant_id)
+    # ingest_source picks up from here — strips audio, Whispers,
+    # finds candidates. Same path as a normal file upload.
+    await ingest_source(source_id, tenant_id)
+
+
 async def _set(conn, source_id: UUID, **cols) -> None:
     sets = ", ".join(f"{k} = ${i + 2}" for i, k in enumerate(cols))
     await conn.execute(
@@ -463,7 +542,8 @@ async def dismiss_candidate(
 
 
 __all__ = [
-    "create_source", "ingest_source",
+    "create_source", "create_source_placeholder", "set_source_url",
+    "ingest_source", "fetch_from_drive_then_ingest",
     "list_sources", "get_source_with_candidates", "get_candidate",
     "link_candidate_to_production", "dismiss_candidate",
     "find_candidates", "transcribe_long",
