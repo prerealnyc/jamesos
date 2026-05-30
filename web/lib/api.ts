@@ -70,6 +70,37 @@ async function jpost<T>(path: string, body: unknown): Promise<T> {
   return r.json();
 }
 
+/** Shared helper for multipart fetches that should usually return JSON.
+ *  When the server returns non-JSON (Next dev proxy hiccup, gateway
+ *  HTML error page, etc.) we surface the HTTP code + a short body
+ *  snippet instead of letting "Unexpected token 'I'…" leak through. */
+async function _safeJsonOrThrow<T>(r: Response): Promise<T> {
+  const text = await r.text();
+  let parsed: { detail?: string } | T | null = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = null;
+  }
+  if (!r.ok) {
+    if (parsed && typeof parsed === "object" && "detail" in parsed) {
+      throw new Error((parsed as { detail: string }).detail || `HTTP ${r.status}`);
+    }
+    // Non-JSON error body — show the HTTP code + a snippet so the
+    // user has SOMETHING actionable instead of a JSON-parse error.
+    const snippet = text.slice(0, 120).replace(/\s+/g, " ").trim();
+    throw new Error(
+      snippet
+        ? `HTTP ${r.status} — ${snippet}${text.length > 120 ? "…" : ""}`
+        : `HTTP ${r.status}`,
+    );
+  }
+  if (!parsed) {
+    throw new Error("Server returned empty or invalid response");
+  }
+  return parsed as T;
+}
+
 export type QueueItem = {
   id: string;
   status: string;
@@ -460,18 +491,14 @@ export const api = {
     fd.append("file", file);
     fd.append("title", title);
     const r = await fetch(u("/long-form/upload"), { method: "POST", body: fd });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
-    return d as LongSource;
+    return _safeJsonOrThrow<LongSource>(r);
   },
   async importLongSourceFromDrive(driveUrl: string, title = "") {
     const fd = new FormData();
     fd.append("drive_url", driveUrl);
     fd.append("title", title);
     const r = await fetch(u("/long-form/drive-import"), { method: "POST", body: fd });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
-    return d as LongSource;
+    return _safeJsonOrThrow<LongSource>(r);
   },
   browseDriveFolder: (folderId = "") =>
     jget<{
@@ -484,9 +511,7 @@ export const api = {
     fd.append("file_id", fileId);
     fd.append("title", title);
     const r = await fetch(u("/long-form/drive-import-id"), { method: "POST", body: fd });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
-    return d as LongSource;
+    return _safeJsonOrThrow<LongSource>(r);
   },
   reanalyzeLongSource: (id: string) =>
     jpost<{ queued: boolean }>(`/long-form/${id}/reanalyze`, {}),
