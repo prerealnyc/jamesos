@@ -25,6 +25,7 @@ const NAV: Group[] = [
     title: "Production",
     items: [
       { href: "/design-studio", label: "Content Studio", sub: "On-voice draft generation", icon: "design", live: true },
+      { href: "/long-form", label: "Long Form Cutter", sub: "50-60 min podcast → standalone reels", icon: "pipeline", live: true },
       { href: "/engaging-video", label: "Engaging Reel", sub: "James full video + B-roll cutaways", icon: "pipeline", live: true },
       { href: "/story-mix", label: "Story Reel (mix)", sub: "James on camera + AI B-roll · 1 HeyGen render", icon: "pipeline", live: true },
       { href: "/heygen-video", label: "HeyGen Video", sub: "Avatar-only · one HeyGen render", icon: "pipeline", live: true },

@@ -37,6 +37,9 @@ const nextConfig = {
       // and /hero/context/refresh. Catch-all here so the rewrite picks
       // up sub-paths but not the bare /hero page (which is a Next route).
       { source: "/hero/:path*", destination: `${BACKEND}/hero/:path*` },
+      // Long Form Cutter — sub-paths only (sources, upload, render,
+      // candidates) so the bare /long-form route stays the Next page.
+      { source: "/long-form/:path*", destination: `${BACKEND}/long-form/:path*` },
       { source: "/api/:path*", destination: `${BACKEND}/api/:path*` },
     ];
   },

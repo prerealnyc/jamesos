@@ -506,6 +506,137 @@ async def video_caption_styles() -> dict:
     return {"presets": list_presets()}
 
 
+# ── long form cutter (podcast → reel candidates → per-reel render) ──
+
+@app.post("/long-form/upload", status_code=201)
+async def long_form_upload(
+    background: BackgroundTasks,
+    file: UploadFile = File(...),
+    title: str = Form(""),
+) -> dict:
+    """Upload a long video (podcast / interview / talk). Persists to
+    Supabase Storage, kicks ingest_source() in the background — it
+    extracts audio, Whisper-transcribes with word stamps, LLM picks
+    3-5 standalone reel candidates. Poll GET /long-form/{id} for
+    status flips uploading → transcribing → analyzing → ready.
+    """
+    from .long_form import create_source, ingest_source
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty file")
+    if not (file.content_type or "").startswith("video/"):
+        # Audio-only sources are also valid (raw podcast mp3), but the
+        # later cut step assumes a video stream exists. For now refuse
+        # non-video uploads with a clean message rather than half-
+        # supporting them.
+        raise HTTPException(
+            status_code=400,
+            detail="long_form/upload requires a video file (mp4/mov/webm)",
+        )
+    tenant = str(settings.default_tenant_id)
+    served_uri, _ = media_storage().save(tenant, data, file.filename or "long.mp4")
+    src = await create_source(
+        title=title or (file.filename or ""), source_url=served_uri,
+    )
+    background.add_task(ingest_source, UUID(src["id"]))
+    return src
+
+
+@app.get("/long-form/sources")
+async def long_form_list() -> dict:
+    """List of long-form sources for this tenant, newest first.
+
+    NOTE: this route is /long-form/sources (not bare /long-form) so it
+    doesn't collide with the Next.js page route at /long-form.
+    """
+    from .long_form import list_sources
+    return {"sources": await list_sources()}
+
+
+@app.get("/long-form/{source_id}")
+async def long_form_get(source_id: UUID) -> dict:
+    """Source + its non-dismissed candidates."""
+    from .long_form import get_source_with_candidates
+    s = await get_source_with_candidates(source_id)
+    if s is None:
+        raise HTTPException(status_code=404, detail="source not found")
+    return s
+
+
+@app.post("/long-form/{source_id}/reanalyze", status_code=202)
+async def long_form_reanalyze(
+    source_id: UUID, background: BackgroundTasks,
+) -> dict:
+    """Re-run ingest_source on an existing row — useful when the LLM
+    candidate finder is updated, or when a source got stuck. Status
+    bounces back to transcribing and the worker takes it from there."""
+    from .long_form import ingest_source
+    async with acquire() as conn:
+        await conn.execute(
+            "UPDATE long_sources SET status = 'transcribing', "
+            "error = NULL, updated_at = now() WHERE id = $1",
+            source_id,
+        )
+    background.add_task(ingest_source, source_id)
+    return {"queued": True}
+
+
+@app.post("/long-form/candidates/{candidate_id}/render", status_code=201)
+async def long_form_candidate_render(
+    candidate_id: UUID, background: BackgroundTasks,
+    platform: str = Form("instagram"), aspect: str = Form("9:16"),
+    image_style: str = Form(""), caption_style: str = Form(""),
+) -> dict:
+    """Take a candidate window and produce a Reel — kicks a
+    long_form_reel production. Returns the production row so the
+    caller can poll /video/productions/{id} for the final URL."""
+    from .long_form import (
+        get_candidate, get_source_with_candidates,
+        link_candidate_to_production,
+    )
+    cand = await get_candidate(candidate_id)
+    if cand is None:
+        raise HTTPException(status_code=404, detail="candidate not found")
+    src = await get_source_with_candidates(UUID(cand["source_id"]))
+    if src is None:
+        raise HTTPException(status_code=404, detail="source not found")
+    # Stuff the candidate window onto the production's scenes jsonb so
+    # the long_form_reel worker can pick it up without a join.
+    payload = [{
+        "source_id": cand["source_id"],
+        "candidate_id": cand["id"],
+        "source_url": src["source_url"],
+        "start_s": cand["start_s"],
+        "end_s": cand["end_s"],
+        "hook_quote": cand["hook_quote"],
+        "summary": cand["summary"],
+    }]
+    try:
+        prod = await start_production(
+            cand["hook_quote"][:200],     # script slot carries the hook for logs
+            platform, aspect,
+            cand["summary"][:120] or "Reel from long-form",
+            payload, "long_form_reel",
+            caption_style, image_style,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await link_candidate_to_production(
+        UUID(candidate_id) if isinstance(candidate_id, str) else candidate_id,
+        UUID(prod["id"]),
+    )
+    background.add_task(run_production, UUID(prod["id"]))
+    return prod
+
+
+@app.post("/long-form/candidates/{candidate_id}/dismiss")
+async def long_form_candidate_dismiss(candidate_id: UUID) -> dict:
+    """Hide a candidate from the list (keeps the row for audit)."""
+    from .long_form import dismiss_candidate
+    await dismiss_candidate(candidate_id)
+    return {"ok": True}
+
+
 @app.get("/hero/context")
 async def hero_context_get() -> dict:
     """Current hero description + sample photos.

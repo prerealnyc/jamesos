@@ -137,7 +137,91 @@ async def slice_video_silent(
     return rc == 0
 
 
+async def slice_video(
+    in_path: str, out_path: str, start_s: float, end_s: float
+) -> bool:
+    """Cut [start_s, end_s] out of a video keeping the audio track.
+
+    Used by the long_form_cutter mode to extract a 30-45s reel window
+    out of a 50-60 min source. Same sample-accurate cut policy as
+    slice_video_silent — re-encodes rather than stream-copying so the
+    cut starts exactly on the requested timestamp, not the nearest
+    keyframe. AAC audio for portable mp4 playback.
+    """
+    dur = max(0.05, end_s - start_s)
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", f"{start_s:.3f}",
+        "-i", in_path,
+        "-t", f"{dur:.3f}",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        out_path,
+    ]
+    rc, _ = await _run(cmd)
+    return rc == 0
+
+
+async def extract_audio_lowbit(
+    in_path: str, out_path: str, bitrate: str = "32k"
+) -> bool:
+    """Strip a video file to a low-bitrate mono mp3 sized for chunked
+    Whisper transcription of long sources (50-60 min podcasts).
+
+    32 kbps mono 16 kHz keeps a 60-min file at roughly 14 MB — well
+    inside Whisper's 25 MB upload cap, with audio quality fine for
+    STT. Use extract_audio_mp3 (the higher-quality 96 kbps variant)
+    for shorter clips that don't need the compression headroom.
+    """
+    cmd = [
+        "ffmpeg", "-y", "-i", in_path,
+        "-vn", "-ac", "1", "-ar", "16000",
+        "-b:a", bitrate, "-acodec", "libmp3lame",
+        out_path,
+    ]
+    rc, _ = await _run(cmd)
+    return rc == 0
+
+
+async def split_audio_chunks(
+    in_path: str, out_dir: str, chunk_seconds: int = 600,
+) -> list[str]:
+    """Split a long mp3 into fixed-length chunks for Whisper.
+
+    Whisper's 25 MB cap is per-file. A 60-min mp3 at 32 kbps fits
+    under it; longer or higher-quality sources need splitting. We
+    output `chunk_000.mp3 chunk_001.mp3 …` in `out_dir` and return
+    the list of paths in playback order. The caller stitches the
+    transcripts with time offsets of N × chunk_seconds.
+    """
+    from pathlib import Path as _P
+    _P(out_dir).mkdir(parents=True, exist_ok=True)
+    pattern = f"{out_dir}/chunk_%03d.mp3"
+    cmd = [
+        "ffmpeg", "-y", "-i", in_path,
+        "-f", "segment", "-segment_time", str(chunk_seconds),
+        "-c", "copy", pattern,
+    ]
+    rc, _ = await _run(cmd)
+    if rc != 0:
+        return []
+    return sorted(
+        str(p) for p in _P(out_dir).glob("chunk_*.mp3")
+    )
+
+
+async def probe_duration(in_path: str) -> float:
+    """Return the duration of a video/audio file in seconds, or 0.0
+    when ffmpeg can't parse it. Uses ffmpeg -i since ffprobe isn't
+    guaranteed to be on PATH on every dev machine."""
+    cmd = ["ffmpeg", "-i", in_path]
+    _, log = await _run(cmd)
+    return _parse_total_duration(log)
+
+
 __all__ = [
     "detect_speech_end", "trim_to", "extract_audio_mp3",
-    "slice_video_silent",
+    "slice_video_silent", "slice_video", "extract_audio_lowbit",
+    "split_audio_chunks", "probe_duration",
 ]

@@ -87,10 +87,16 @@ async def start_production(
         1.5-2.5s each at moments the LLM picks as visually
         amplifiable. Most-time-on-James format with B-roll as
         punctuation, vs avatar_story_mix which alternates per beat.
+      * 'long_form_reel' — same engaging-avatar treatment but the
+        "avatar" track is a CUT from a real long-form source (podcast,
+        interview) instead of a HeyGen render. Source + candidate
+        window are stored on the production's `scenes` jsonb as
+        {source_id, candidate_id, source_url, start_s, end_s} so the
+        worker can ffmpeg-cut [start, end] and proceed identically.
     """
     if mode not in (
         "mixed", "avatar_only", "timeline", "story_audio",
-        "avatar_story_mix", "engaging_avatar",
+        "avatar_story_mix", "engaging_avatar", "long_form_reel",
     ):
         mode = "mixed"
     if mode == "timeline":
@@ -742,6 +748,184 @@ async def _run_engaging_avatar(row, tenant_id: UUID | None) -> None:
         )
 
 
+async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
+    """long_form_reel mode — cut a window out of a long-form source,
+    then run the engaging-avatar treatment on the cut.
+
+    The candidate metadata lives in row['scenes'] (jsonb) shaped as:
+      {source_id, candidate_id, source_url, start_s, end_s, hook_quote}
+
+    Stages:
+      planning         — ffmpeg-cut [start_s, end_s] from source
+                         mp4; persist the cut to Supabase Storage so
+                         Creatomate can fetch it
+      rendering_clips  — extract audio, Whisper word-stamps, LLM
+                         picks B-roll inserts every 5s, gen + Runway
+                         animate (same path as engaging_avatar)
+      assembling       — Creatomate stitches: source cut on track 1
+                         + B-roll overlays on track 2 + word-pinned
+                         captions on track 3 + royalty-free music
+                         underbed on track 4
+    """
+    import tempfile
+    from pathlib import Path as _P
+
+    from .audio_trim import slice_video
+    from .story_video import (
+        build_engaging_avatar_assets,
+        inserts_to_dict,
+        pick_caption_style,
+    )
+
+    pid = row["id"]
+    plan = row["scenes"]
+    if isinstance(plan, str):
+        plan = json.loads(plan)
+    if not plan or not isinstance(plan, list) or not plan[0]:
+        return await _fail(pid, "long_form_reel needs candidate metadata", tenant_id)
+    meta = plan[0]
+    source_url = (meta.get("source_url") or "").strip()
+    try:
+        start_s = float(meta["start_s"])
+        end_s = float(meta["end_s"])
+    except (KeyError, TypeError, ValueError):
+        return await _fail(pid, "candidate window malformed", tenant_id)
+    if not source_url.startswith("http") or end_s <= start_s:
+        return await _fail(pid, "candidate window malformed", tenant_id)
+
+    # ── 1) Cut the source ────────────────────────────────────────
+    async with acquire(tenant_id) as conn:
+        await _set(conn, pid, status="planning")
+
+    with tempfile.TemporaryDirectory() as td:
+        src_path = f"{td}/source.mp4"
+        out_path = f"{td}/cut.mp4"
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(900.0, connect=15.0),
+            ) as c:
+                async with c.stream("GET", source_url) as r:
+                    r.raise_for_status()
+                    with open(src_path, "wb") as fh:
+                        async for chunk in r.aiter_bytes(chunk_size=1 << 20):
+                            fh.write(chunk)
+        except Exception as e:  # noqa: BLE001
+            return await _fail(pid, f"could not fetch source: {e}", tenant_id)
+
+        if not await slice_video(src_path, out_path, start_s, end_s):
+            return await _fail(pid, "ffmpeg cut failed", tenant_id)
+
+        try:
+            cut_bytes = _P(out_path).read_bytes()
+        except OSError as e:
+            return await _fail(pid, f"could not read cut: {e}", tenant_id)
+
+    tid_str = str(tenant_id or settings.default_tenant_id)
+    try:
+        cut_url, _ = await asyncio.to_thread(
+            media_storage().save, tid_str, cut_bytes,
+            f"reel-cut-{pid}.mp4",
+        )
+    except Exception as e:  # noqa: BLE001
+        return await _fail(pid, f"could not persist cut: {e}", tenant_id)
+
+    # ── 2) Reuse the engaging-avatar pipeline on the cut ─────────
+    # build_engaging_avatar_assets expects a video URL with audio
+    # baked in — our cut has it — and produces inserts + captions
+    # the same way. Hero refs flow automatically.
+    async with acquire(tenant_id) as conn:
+        await _set(conn, pid, status="rendering_clips")
+    brand_context = (
+        f"Source: long-form podcast / interview. "
+        f"Window: [{start_s:.1f}s – {end_s:.1f}s]. "
+        f"Hook: {(meta.get('hook_quote') or '')[:200]}. "
+        f"Platform: {row['platform']}. Aspect: {row['aspect']}."
+    )
+    try:
+        istyle = (row["image_style"] or "").strip()
+    except (KeyError, TypeError):
+        istyle = ""
+    if not istyle:
+        istyle = "cinematic"
+
+    assets = await build_engaging_avatar_assets(
+        avatar_video_url=cut_url,
+        aspect=row["aspect"],
+        style=istyle,
+        brand_context=brand_context,
+        platform=row["platform"],
+        tenant_id=str(tenant_id) if tenant_id else None,
+    )
+    if assets.error:
+        return await _fail(pid, assets.error, tenant_id)
+
+    async with acquire(tenant_id) as conn:
+        # Preserve the candidate meta on element 0 and append the
+        # rendered insert metadata after, so the UI can show both.
+        merged_scenes = [meta, *inserts_to_dict(assets.inserts)]
+        await _set(
+            conn, pid, status="assembling",
+            scenes=json.dumps(merged_scenes),
+        )
+
+    try:
+        cstyle = (row["caption_style"] or "").strip()
+    except (KeyError, TypeError):
+        cstyle = ""
+    if not cstyle:
+        cstyle, _why = await pick_caption_style(
+            assets.audio_url, row["platform"], brand_context,
+        )
+
+    asm = get_assembly_provider()
+    if not hasattr(asm, "render_engaging_avatar"):
+        return await _fail(
+            pid, "assembly provider does not support long_form_reel",
+            tenant_id,
+        )
+    res = await asm.render_engaging_avatar(
+        avatar_video_url=assets.avatar_video_url,
+        audio_duration=assets.audio_duration,
+        inserts=inserts_to_dict(assets.inserts),
+        captions=assets.captions,
+        aspect=row["aspect"],
+        music_mood="calm",
+        caption_style=cstyle,
+    )
+    if res.status == "processing":
+        for _ in range(_MAX_POLLS):
+            await asyncio.sleep(_POLL_EVERY)
+            res = await asm.poll(res.render_id)
+            if res.status in ("succeeded", "failed"):
+                break
+    if res.status != "succeeded" or not res.url:
+        return await _fail(pid, res.error or "long_form_reel assembly failed", tenant_id)
+
+    async with acquire(tenant_id) as conn:
+        action_id = await conn.fetchval(
+            """INSERT INTO actions (proposed_by, action_type, payload, status)
+               VALUES ('video_producer','video',$1::jsonb,'pending') RETURNING id""",
+            json.dumps({
+                "platform": row["platform"], "format": "video",
+                "content": row["title"] or meta.get("hook_quote", "")[:120],
+                "caption": meta.get("hook_quote", "")[:160],
+                "media_url": res.url,
+                "stub": res.url.startswith("stub://"),
+                "mode": "long_form_reel",
+                "source_id": meta.get("source_id"),
+                "candidate_id": meta.get("candidate_id"),
+                "window": f"{start_s:.1f}-{end_s:.1f}s",
+                "inserts": len(assets.inserts),
+            }),
+        )
+        await conn.execute(
+            """UPDATE video_productions SET status='succeeded', final_url=$2,
+               queued_action_id=$3, updated_at=now(), completed_at=now()
+               WHERE id=$1""",
+            pid, res.url, action_id,
+        )
+
+
 async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> None:
     """The worker. Advances the production through every stage."""
     pid = production_id
@@ -754,6 +938,8 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
 
         # Avatar-only mode forks here — one HeyGen render of the entire
         # script, no per-scene plan, no Creatomate assembly.
+        if row["mode"] == "long_form_reel":
+            return await _run_long_form_reel(row, tenant_id)
         if row["mode"] == "engaging_avatar":
             return await _run_engaging_avatar(row, tenant_id)
         if row["mode"] == "avatar_story_mix":

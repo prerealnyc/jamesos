@@ -341,6 +341,36 @@ export type ClipLibraryItem = {
   assemblable: boolean;
 };
 
+/** A long-form source uploaded for the Long Form Cutter. After
+ *  ingest_source runs it carries a transcript, a duration, and a
+ *  list of candidates the LLM picked as standalone reel windows. */
+export type LongSource = {
+  id: string;
+  title: string;
+  source_url: string;
+  audio_url: string;
+  duration_s: number;
+  status: "uploading" | "transcribing" | "analyzing" | "ready" | "failed";
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/** One LLM-picked 30-45s window inside a LongSource. Each candidate
+ *  can be rendered into a video_production with mode=long_form_reel. */
+export type ReelCandidate = {
+  id: string;
+  source_id: string;
+  start_s: number;
+  end_s: number;
+  hook_quote: string;
+  summary: string;
+  score: number;
+  production_id: string | null;
+  dismissed: boolean;
+  created_at: string;
+};
+
 export type AutopilotConfig = {
   enabled: boolean;
   daily_count: number;
@@ -419,6 +449,43 @@ export const api = {
   refreshHeroContext: () =>
     jpost<{ description: string; photo_count: number; photo_urls: string[]; video_urls: string[] }>(
       "/hero/context/refresh", {},
+    ),
+  // ── Long Form Cutter ────────────────────────────────────────────
+  listLongSources: () =>
+    jget<{ sources: LongSource[] }>("/long-form/sources"),
+  getLongSource: (id: string) =>
+    jget<LongSource & { candidates: ReelCandidate[] }>(`/long-form/${id}`),
+  async uploadLongSource(file: File, title = "") {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("title", title);
+    const r = await fetch(u("/long-form/upload"), { method: "POST", body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    return d as LongSource;
+  },
+  reanalyzeLongSource: (id: string) =>
+    jpost<{ queued: boolean }>(`/long-form/${id}/reanalyze`, {}),
+  async renderLongCandidate(candidateId: string, opts: {
+    platform?: string; aspect?: string;
+    image_style?: string; caption_style?: string;
+  } = {}) {
+    const fd = new FormData();
+    fd.append("platform", opts.platform || "instagram");
+    fd.append("aspect", opts.aspect || "9:16");
+    fd.append("image_style", opts.image_style || "");
+    fd.append("caption_style", opts.caption_style || "");
+    const r = await fetch(
+      u(`/long-form/candidates/${candidateId}/render`),
+      { method: "POST", body: fd },
+    );
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    return d as Production;
+  },
+  dismissLongCandidate: (candidateId: string) =>
+    jpost<{ ok: boolean }>(
+      `/long-form/candidates/${candidateId}/dismiss`, {},
     ),
   generatePostImage: (body: {
     topic: string;
