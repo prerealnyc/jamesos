@@ -601,13 +601,24 @@ async def long_form_drive_import_by_id(
     of a sharable URL. Used by the folder-browser UI which already has
     the canonical id from list_drive_videos and doesn't need to round-
     trip through a URL string (skipping the lowercase-l/capital-I
-    typo class entirely)."""
+    typo class entirely).
+
+    Streams the Drive download to a temp file then streams the upload
+    to Supabase Storage — peak memory stays at ~16 MB regardless of
+    source size, so 3-4 GB podcast files don't OOM the host.
+    """
+    import tempfile
+    from pathlib import Path as _P
+
     from .drive import (
-        DriveNotConfigured, _file_metadata_sync, _download_sync,
+        DriveNotConfigured, _file_metadata_sync, fetch_drive_file_to_path,
     )
     fid = (file_id or "").strip()
     if not fid:
         raise HTTPException(status_code=400, detail="file_id is required")
+    # Probe metadata first — cheap call, lets us reject non-video sources
+    # without spending the download bandwidth on something that can't be
+    # cut anyway.
     try:
         meta = await asyncio.to_thread(_file_metadata_sync, fid)
         name = str(meta.get("name") or f"drive-{fid}.mp4")
@@ -617,7 +628,6 @@ async def long_form_drive_import_by_id(
                 status_code=400,
                 detail=f"file is not a video (mime: {mime})",
             )
-        data = await asyncio.to_thread(_download_sync, fid)
     except DriveNotConfigured as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except HTTPException:
@@ -625,12 +635,32 @@ async def long_form_drive_import_by_id(
     except Exception as e:  # noqa: BLE001
         raise HTTPException(
             status_code=502,
-            detail=f"Drive download failed: {e}",
+            detail=f"Drive metadata failed: {e}",
         ) from e
-    if not data:
-        raise HTTPException(status_code=502, detail="Drive returned empty file")
-    tenant = str(settings.default_tenant_id)
-    served_uri, _ = media_storage().save(tenant, data, name)
+
+    with tempfile.TemporaryDirectory() as td:
+        local_path = f"{td}/{name}"
+        try:
+            await fetch_drive_file_to_path(fid, local_path)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502,
+                detail=f"Drive download failed: {e}",
+            ) from e
+        if not _P(local_path).exists() or _P(local_path).stat().st_size == 0:
+            raise HTTPException(status_code=502, detail="Drive returned empty file")
+        # Stream the upload — never read the full file into RAM.
+        tenant = str(settings.default_tenant_id)
+        try:
+            served_uri, _ = await asyncio.to_thread(
+                media_storage().save_from_path, tenant, local_path, name,
+            )
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502,
+                detail=f"Storage upload failed: {e}",
+            ) from e
+
     from .long_form import create_source, ingest_source
     src = await create_source(title=(title or name), source_url=served_uri)
     background.add_task(ingest_source, UUID(src["id"]))
@@ -657,38 +687,65 @@ async def long_form_drive_import(
     )
     from .long_form import create_source, ingest_source
 
+    import tempfile
+    from pathlib import Path as _P
+
+    from .drive import (
+        DriveNotConfigured, _file_metadata_sync, fetch_drive_file_to_path,
+    )
     url = (drive_url or "").strip()
     if not url:
         raise HTTPException(status_code=400, detail="drive_url is required")
-    if not extract_drive_file_id(url):
+    fid = extract_drive_file_id(url)
+    if not fid:
         raise HTTPException(
             status_code=400,
             detail="not a recognisable Drive URL — share-link or open?id= form",
         )
+    # Cheap metadata probe — reject non-video before paying download cost.
     try:
-        data, name, mime = await fetch_drive_file_by_url(url)
+        meta = await asyncio.to_thread(_file_metadata_sync, fid)
+        name = str(meta.get("name") or f"drive-{fid}.mp4")
+        mime = str(meta.get("mimeType") or "")
+        if mime and not mime.startswith("video/"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Drive file is not a video (mime: {mime})",
+            )
     except DriveNotConfigured as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:  # noqa: BLE001 — wrap any google-api error
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
         raise HTTPException(
             status_code=502,
             detail=f"Drive download failed (is the file shared with the service account?): {e}",
         ) from e
-    if not data:
-        raise HTTPException(status_code=502, detail="Drive returned empty file")
-    # Reject non-video mimes here — same as the upload route, the cut
-    # step assumes a video stream. The user gets a clean 400 instead
-    # of an ffmpeg failure 30 seconds in.
-    if mime and not mime.startswith("video/"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Drive file is not a video (mime: {mime})",
-        )
 
-    tenant = str(settings.default_tenant_id)
-    served_uri, _ = media_storage().save(tenant, data, name)
+    # Stream Drive → disk → Supabase Storage. Peak RAM stays at one
+    # chunk (~16 MB) regardless of source size.
+    with tempfile.TemporaryDirectory() as td:
+        local_path = f"{td}/{name}"
+        try:
+            await fetch_drive_file_to_path(fid, local_path)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502,
+                detail=f"Drive download failed: {e}",
+            ) from e
+        if not _P(local_path).exists() or _P(local_path).stat().st_size == 0:
+            raise HTTPException(status_code=502, detail="Drive returned empty file")
+        tenant = str(settings.default_tenant_id)
+        try:
+            served_uri, _ = await asyncio.to_thread(
+                media_storage().save_from_path, tenant, local_path, name,
+            )
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502,
+                detail=f"Storage upload failed: {e}",
+            ) from e
+
     src = await create_source(title=(title or name), source_url=served_uri)
     background.add_task(ingest_source, UUID(src["id"]))
     return src

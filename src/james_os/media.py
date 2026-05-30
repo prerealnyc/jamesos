@@ -17,6 +17,7 @@ object storage; that swap is isolated to `MediaStorage`.
 """
 
 import json
+import os
 import re
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -64,6 +65,28 @@ class MediaStorage:
         path = tenant_dir / name
         path.write_bytes(data)
         return f"{_SERVE_PREFIX}/{tenant}/{name}", str(path)
+
+    def save_from_path(
+        self, tenant: str, src_path: str, filename: str | None = None,
+    ) -> tuple[str, str]:
+        """Streaming variant — moves/copies a file on disk into the
+        store without loading it into memory. Mirrors SupabaseStorage's
+        save_from_path so the long_form ingest can call the same method
+        regardless of backend.
+        """
+        import shutil
+        name = filename or os.path.basename(src_path) or "upload.bin"
+        ext = ""
+        if "." in name:
+            ext = "." + _EXT_RE.sub("", name.rsplit(".", 1)[-1])[:8]
+        out_name = f"{uuid4().hex}{ext}"
+        tenant_dir = self.root / tenant
+        tenant_dir.mkdir(parents=True, exist_ok=True)
+        out_path = tenant_dir / out_name
+        # copyfile streams in 16 KB chunks under the hood — never loads
+        # the whole file into RAM regardless of source size.
+        shutil.copyfile(src_path, out_path)
+        return f"{_SERVE_PREFIX}/{tenant}/{out_name}", str(out_path)
 
     def delete(self, file_path: str | None) -> None:
         if not file_path:

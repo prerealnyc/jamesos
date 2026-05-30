@@ -126,6 +126,9 @@ async def fetch_drive_file_by_url(url: str) -> tuple[bytes, str, str]:
     when the service account isn't set, ValueError when the URL
     doesn't parse, or the underlying google-api exception when the
     file isn't accessible (the caller maps these to 4xx responses).
+
+    Memory-loads the entire file. For large sources (>~200 MB) prefer
+    fetch_drive_file_to_path which streams chunks to disk.
     """
     file_id = extract_drive_file_id(url)
     if not file_id:
@@ -135,6 +138,47 @@ async def fetch_drive_file_by_url(url: str) -> tuple[bytes, str, str]:
     mime = str(meta.get("mimeType") or "")
     data = await asyncio.to_thread(_download_sync, file_id)
     return data, name, mime
+
+
+def _download_sync_to_path(file_id: str, out_path: str) -> None:
+    """Stream a Drive file to disk in 16 MB chunks. Peak memory stays
+    at one chunk regardless of source size — required for 3-4 GB
+    podcast files where the bytes-into-RAM path of _download_sync
+    would OOM a modest host.
+
+    MediaIoBaseDownload accepts any io.IOBase subclass; passing the
+    open file handle directly is what makes the streaming work.
+    """
+    from googleapiclient.http import MediaIoBaseDownload
+    svc = _service()
+    request = svc.files().get_media(fileId=file_id, **_SHARED_DRIVE)
+    # 16 MB chunks balance overhead (fewer round-trips) against
+    # progress granularity. For a 4 GB file that's ~256 chunks.
+    chunksize = 16 * 1024 * 1024
+    with open(out_path, "wb") as fh:
+        downloader = MediaIoBaseDownload(fh, request, chunksize=chunksize)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+
+
+async def fetch_drive_file_to_path(
+    file_id: str, out_path: str,
+) -> tuple[str, str]:
+    """Streaming download to a path on disk. Returns (name, mime_type).
+    Caller owns the resulting file (delete after use).
+
+    Use this for any Drive ingestion where the source could be >~200 MB
+    (long-form podcast videos, multi-hour interviews). For small
+    photos/clips, fetch_drive_file_by_url is fine.
+    """
+    if not file_id:
+        raise ValueError("file_id is required")
+    meta = await asyncio.to_thread(_file_metadata_sync, file_id)
+    name = str(meta.get("name") or f"drive-{file_id}.mp4")
+    mime = str(meta.get("mimeType") or "")
+    await asyncio.to_thread(_download_sync_to_path, file_id, out_path)
+    return name, mime
 
 
 async def list_drive_videos(folder_id: str | None = None) -> list[dict]:

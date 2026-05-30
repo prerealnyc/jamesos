@@ -142,12 +142,104 @@ class SupabaseMediaStorage:
                     raise SupabaseStorageError("TUS server reported no progress")
                 offset = new_offset
 
+    def _upload_resumable_from_path(self, path: str, src_path: str, mime: str) -> None:
+        """Same as _upload_resumable but reads chunks from a file on disk
+        instead of slicing a bytes object — peak memory stays at one
+        chunk (_TUS_CHUNK = 6 MB), regardless of source file size.
+
+        Used by save_from_path() for the long_form ingest path where a
+        single source can be 3-4 GB and loading it into RAM would OOM
+        a modest host.
+        """
+        import os as _os
+        size = _os.path.getsize(src_path)
+        meta = (
+            f"bucketName {self._b64(self.bucket)},"
+            f"objectName {self._b64(path)},"
+            f"contentType {self._b64(mime)},"
+            f"cacheControl {self._b64('3600')}"
+        )
+        # Longer timeout for big files — 4 GB / typical 5 Mbit/s up is
+        # ~100 min; 30 min is the sane default ceiling per call (TUS
+        # PATCHes are individually small so this is per-chunk).
+        with httpx.Client(timeout=httpx.Timeout(1800.0, connect=10.0)) as c:
+            r = c.post(
+                f"{self.base}/storage/v1/upload/resumable",
+                headers=self._h({
+                    "Tus-Resumable": "1.0.0",
+                    "Upload-Length": str(size),
+                    "Upload-Metadata": meta,
+                    "Content-Type": "application/octet-stream",
+                    "x-upsert": "true",
+                }),
+            )
+            if r.status_code not in (201, 200):
+                raise SupabaseStorageError(
+                    f"TUS create failed: HTTP {r.status_code} {r.text[:200]}"
+                )
+            location = r.headers.get("Location") or r.headers.get("location")
+            if not location:
+                raise SupabaseStorageError("TUS create returned no Location header")
+            offset = 0
+            with open(src_path, "rb") as fh:
+                while offset < size:
+                    chunk = fh.read(_TUS_CHUNK)
+                    if not chunk:
+                        break
+                    pr = c.patch(
+                        location,
+                        headers=self._h({
+                            "Tus-Resumable": "1.0.0",
+                            "Upload-Offset": str(offset),
+                            "Content-Type": "application/offset+octet-stream",
+                        }),
+                        content=chunk,
+                    )
+                    if pr.status_code != 204:
+                        raise SupabaseStorageError(
+                            f"TUS PATCH failed at {offset}: "
+                            f"HTTP {pr.status_code} {pr.text[:200]}"
+                        )
+                    new_offset = int(pr.headers.get("Upload-Offset") or
+                                     pr.headers.get("upload-offset") or
+                                     (offset + len(chunk)))
+                    if new_offset <= offset:
+                        raise SupabaseStorageError("TUS server reported no progress")
+                    offset = new_offset
+
+    def save_from_path(
+        self, tenant: str, src_path: str, filename: str | None = None,
+    ) -> tuple[str, str]:
+        """Streaming variant of save() — uploads from a file on disk
+        without loading it into memory. Same return shape (public_url,
+        internal_path). Use this for any source likely to exceed ~50 MB
+        (long-form podcast videos, multi-hour interviews, etc).
+
+        Filename falls back to the basename of src_path when None.
+        """
+        import os as _os
+        self._ensure_bucket()
+        name = filename or _os.path.basename(src_path) or "upload.bin"
+        ext = _safe_ext(name)
+        path = f"{tenant}/{uuid4().hex}{ext}"
+        mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        # Always use TUS for path-based saves — these are large by
+        # definition, and the single-POST path's 50 MB cap would fail
+        # anyway.
+        self._upload_resumable_from_path(path, src_path, mime)
+        public_url = f"{self.base}/storage/v1/object/public/{self.bucket}/{path}"
+        return public_url, f"supabase://{self.bucket}/{path}"
+
     def save(self, tenant: str, data: bytes, filename: str) -> tuple[str, str]:
         """Upload bytes; return (public_url, internal_path).
 
         Small files take the standard POST path. Large files (> ~6 MB) use
         the TUS resumable protocol, which bypasses the single-POST 50 MB
         cap and survives flaky connections via chunked PATCHes.
+
+        For files known to be very large (>~50 MB) prefer save_from_path()
+        which streams directly from disk and never holds the full content
+        in memory.
         """
         self._ensure_bucket()
         ext = _safe_ext(filename)
