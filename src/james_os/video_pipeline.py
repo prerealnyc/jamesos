@@ -770,7 +770,7 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
     import tempfile
     from pathlib import Path as _P
 
-    from .audio_trim import slice_video
+    from .audio_trim import slice_video_compact
     from .story_video import (
         build_engaging_avatar_assets,
         inserts_to_dict,
@@ -832,7 +832,12 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
             except Exception as e:  # noqa: BLE001
                 return await _fail(pid, f"could not fetch source: {e}", tenant_id)
 
-        if not await slice_video(src_path, out_path, start_s, end_s):
+        # Compact slicer (CRF 26 + 96k mono + height-capped) keeps the
+        # working artifact under Supabase Storage's service-tier size
+        # cap (HTTP 413 kicks in around 50-100 MB). Talking-head
+        # footage compresses well so the quality drop is minor — and
+        # Creatomate re-encodes for the final reel anyway.
+        if not await slice_video_compact(src_path, out_path, start_s, end_s):
             return await _fail(pid, "ffmpeg cut failed", tenant_id)
 
         try:

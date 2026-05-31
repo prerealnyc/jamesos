@@ -736,22 +736,22 @@ async def long_form_get(source_id: UUID) -> dict:
     return s
 
 
-@app.post("/long-form/{source_id}/reanalyze", status_code=202)
-async def long_form_reanalyze(
-    source_id: UUID, background: BackgroundTasks,
-) -> dict:
-    """Re-run ingest_source on an existing row — useful when the LLM
-    candidate finder is updated, or when a source got stuck. Status
-    bounces back to transcribing and the worker takes it from there."""
-    from .long_form import ingest_source
-    async with acquire() as conn:
-        await conn.execute(
-            "UPDATE long_sources SET status = 'transcribing', "
-            "error = NULL, updated_at = now() WHERE id = $1",
-            source_id,
-        )
-    background.add_task(ingest_source, source_id)
-    return {"queued": True}
+@app.post("/long-form/{source_id}/reanalyze", status_code=200)
+async def long_form_reanalyze(source_id: UUID) -> dict:
+    """Re-run the candidate picker on an already-ingested row — no
+    re-download, no re-transcribe. Synchronous so the caller gets the
+    new count back immediately and can refresh the tile grid.
+
+    Useful after a picker prompt change. For a full re-ingest, delete
+    the row and re-import the Drive file."""
+    from .long_form import reanalyze_source
+    try:
+        count = await reanalyze_source(source_id)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500, detail=f"reanalyze failed: {e}",
+        ) from e
+    return {"source_id": str(source_id), "new_candidates": count}
 
 
 @app.post("/long-form/candidates/{candidate_id}/render", status_code=201)

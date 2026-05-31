@@ -163,6 +163,36 @@ async def slice_video(
     return rc == 0
 
 
+async def slice_video_compact(
+    in_path: str, out_path: str, start_s: float, end_s: float,
+    max_height: int = 1080,
+) -> bool:
+    """Same as slice_video but tuned to fit comfortably under typical
+    storage size caps (Supabase Storage service tier rejects big files
+    with HTTP 413).
+
+    Talking-head footage compresses well: CRF 26 + mono 96k audio +
+    height cap = roughly 1.2 Mbit/s. A 12-min source comes out around
+    100 MB; a 2-min cut around 17 MB. Visual quality is fine for the
+    working artifact — Creatomate re-encodes the final reel anyway.
+    """
+    dur = max(0.05, end_s - start_s)
+    # -2 in scale keeps even pixel dimensions (libx264 requires that).
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", f"{start_s:.3f}",
+        "-i", in_path,
+        "-t", f"{dur:.3f}",
+        "-vf", f"scale=-2:'min({max_height},ih)'",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+        "-c:a", "aac", "-b:a", "96k", "-ac", "1",
+        "-movflags", "+faststart",
+        out_path,
+    ]
+    rc, _ = await _run(cmd)
+    return rc == 0
+
+
 async def extract_audio_lowbit(
     in_path: str, out_path: str, bitrate: str = "32k"
 ) -> bool:

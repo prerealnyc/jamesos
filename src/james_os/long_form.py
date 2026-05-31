@@ -341,44 +341,73 @@ async def transcribe_long(
 
 
 _CANDIDATE_SYSTEM = """You are a short-form Reels editor reading the
-transcript of a long-form podcast or interview. Your job is to find the
-3-5 BEST 30-45 second clips inside this transcript that would work as
-STANDALONE Instagram / TikTok Reels.
+transcript of a long-form podcast or interview. Your job is to find
+the BEST 30-45 second clips inside this transcript that would work
+as Instagram / TikTok Reels.
 
-A good candidate has:
-  * A strong HOOK in the first 1-2 seconds — a question, a claim, a
-    surprising statement, the start of a story. Something that makes
-    a scroller stop.
-  * A complete arc inside 30-45 seconds — the hook leads to an
-    insight, a punchline, a reveal, or a memorable line. Not just a
-    fragment of a bigger conversation.
-  * Either the hero answering an engaging question, or the hero
-    delivering a punchy take / personal story. The clip stands on
-    its own without the rest of the podcast for context.
-  * Conversational energy — momentum, specificity, emotional weight.
-    Skip "let me think about that…" preambles and meandering setup.
+PICK GENEROUSLY. From any source over 5 minutes, you should be able
+to find at least 5 candidates. From a 30+ minute source, find 10-15.
+Real podcasts don't have all perfect moments — your job is to surface
+the ones that are RELATIVELY strongest, not only the perfect ones.
 
-Avoid:
-  * Cold opens that need the previous 2 minutes to make sense.
-  * Banter / pleasantries / "thanks for having me".
-  * Long pauses or filler-heavy stretches.
-  * Anything <25s or >50s — those are different formats.
+A great candidate has:
+  * A strong HOOK in the first 1-2 seconds — a question, a claim,
+    a surprising statement, a vivid image, the start of a story.
+  * A self-contained idea inside 30-45 seconds — a take, a story,
+    a reveal, a memorable line. It doesn't need the rest of the
+    podcast to land.
+  * Energy — specificity, emotional weight, a real point of view.
 
-For each candidate, return:
-  * start_s, end_s — decimal seconds into the source.
-  * hook_quote   — the literal opening line (≤ 80 chars) — the first
-                   sentence the viewer hears.
+A decent candidate (still worth picking) has:
+  * A reasonable hook even if not killer.
+  * A complete thought inside the window even if it's not a
+    standalone banger.
+  * Something a creator could caption and post.
+
+Avoid only:
+  * "Thanks for having me" / introductions / outros.
+  * Long stretches of "yeah, mm-hmm" backchanneling.
+  * Anything that's literally <20s or >60s of usable content.
+
+For each candidate return:
+  * start_s, end_s — decimal seconds. Window must be 25-55 seconds.
+  * hook_quote   — the literal opening line (≤ 80 chars).
   * summary      — one sentence describing what's in this clip and
                    why it works as a Reel (≤ 140 chars).
-  * score        — 1-10 confidence that this is a STRONG standalone
-                   Reel. 9-10 = obvious banger; 5-6 = decent but not
-                   the strongest; <5 = don't return it.
+  * score        — 1-10. 9-10 = obvious banger, 6-7 = solid pick,
+                   4-5 = decent fallback, <4 = skip. RETURN scores
+                   4 and up — don't self-censor; the user can
+                   dismiss weak ones.
 
 Return STRICT JSON:
 {"candidates": [{"start_s": float, "end_s": float, "hook_quote": str,
                  "summary": str, "score": int}, ...]}
 
-Exactly 3-5 entries. Highest-score-first.
+Aim for 5-12 entries on a typical source. NEVER return an empty
+array — pick the relatively best moments even if nothing is perfect.
+Highest-score-first.
+"""
+
+
+# Second-pass fallback: when the strict picker returns zero, run a
+# loosened pass asking for "anything usable". This catches the case
+# where the LLM was too strict for a real (imperfect) podcast.
+_CANDIDATE_SYSTEM_LOOSE = """You are a short-form Reels editor. The
+strict pass found nothing — that almost always means you were too
+picky.
+
+This time, pick the 5-10 best 25-55-second moments from this
+transcript, even if none of them are perfect. Every podcast has
+quotable moments; surface them. Use your judgement — a moment that
+expresses a real opinion or tells a real micro-story is enough.
+
+Avoid only: backchannels, pleasantries, hello/goodbye, dead air.
+
+Return STRICT JSON in the same shape:
+{"candidates": [{"start_s": float, "end_s": float, "hook_quote": str,
+                 "summary": str, "score": int}, ...]}
+
+5-10 entries minimum. Highest-score-first.
 """
 
 
@@ -402,15 +431,51 @@ async def find_candidates(
         "word_count": len(words),
         "tokens": tokens,
     }
+    cleaned = await _llm_pick_candidates(
+        _CANDIDATE_SYSTEM, payload, duration_s,
+    )
+    # Fallback: if the strict pass found nothing on a source long
+    # enough to obviously contain reel-worthy moments, try a loosened
+    # second pass. The LLM is often over-cautious on imperfect
+    # podcasts; "anything usable" beats zero every time.
+    if not cleaned and duration_s >= 120:
+        loose = await _llm_pick_candidates(
+            _CANDIDATE_SYSTEM_LOOSE, payload, duration_s,
+        )
+        if loose:
+            print(
+                f"[long_form] strict pass returned 0; loose pass found "
+                f"{len(loose)} candidates"
+            )
+        cleaned = loose
+    if not cleaned:
+        # Honest signal so the user can read it in the row's error.
+        print(
+            f"[long_form] zero candidates for source duration={duration_s:.1f}s "
+            f"transcript={len(full_text)}c — picker prompt may need tuning"
+        )
+    return cleaned[:15]
+
+
+async def _llm_pick_candidates(
+    system: str, payload: dict, duration_s: float,
+) -> list[dict]:
+    """Single LLM call + parse + clamp. Shared by the strict and loose
+    candidate passes. Returns up to 15 cleaned candidates sorted by
+    descending score."""
     try:
         out = await get_llm().complete_json(
-            system=_CANDIDATE_SYSTEM,
+            system=system,
             messages=[{"role": "user", "content": json.dumps(payload)}],
-            max_tokens=2200, temperature=0.3,
+            max_tokens=3000, temperature=0.4,
         )
     except Exception:  # noqa: BLE001
         return []
     raw = out.get("candidates") or []
+    if not raw and out:
+        # Some models return the array at the top level instead.
+        if isinstance(out, list):
+            raw = out
     cleaned: list[dict] = []
     for entry in raw:
         if not isinstance(entry, dict):
@@ -422,12 +487,29 @@ async def find_candidates(
         except (TypeError, ValueError, KeyError):
             continue
         dur = end - start
-        # Sanity-clamp: refuse anything outside the 25-50s window so we
-        # don't store garbage rows from a hallucinated response.
-        if not 25.0 <= dur <= 50.0:
+        # In practice, the LLM often marks the HOOK only (a 1-12 s
+        # sentence) rather than a full 30-45 s arc, regardless of how
+        # much the prompt insists. We snap any usable timestamp up to
+        # a 30 s window centered on the LLM's mark, and trim windows
+        # that are too long. Only reject if the timestamps are wildly
+        # out of range (negative, past the source, or > 90 s — a sign
+        # the LLM hallucinated).
+        if dur <= 0 or dur > 90.0:
             continue
         if start < 0 or end > duration_s + 0.5:
             continue
+        # Snap to the rendering target [30, 45]:
+        #   short → extend symmetrically around the LLM's anchor
+        #   too long → trim from the tail to keep the hook at the start
+        if dur < 30.0:
+            slack = (30.0 - dur) / 2.0
+            start = max(0.0, start - slack)
+            end = min(duration_s, start + 30.0)
+            # If we ran off the end of the source, pull start back.
+            if end - start < 30.0:
+                start = max(0.0, end - 30.0)
+        elif dur > 45.0:
+            end = start + 45.0
         cleaned.append({
             "start_s": round(start, 2),
             "end_s": round(end, 2),
@@ -436,7 +518,7 @@ async def find_candidates(
             "score": max(1, min(10, score)),
         })
     cleaned.sort(key=lambda c: c["score"], reverse=True)
-    return cleaned[:5]
+    return cleaned
 
 
 async def save_candidates(
@@ -584,6 +666,43 @@ async def dismiss_candidate(
         )
 
 
+async def reanalyze_source(
+    source_id: UUID, tenant_id: UUID | None = None,
+) -> int:
+    """Re-run the candidate picker on an already-ingested source —
+    NO re-download, NO re-transcribe. Returns the number of new
+    candidates inserted.
+
+    Used after a picker prompt change so the user can refresh the
+    tile grid without paying for another Whisper pass.
+    """
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            "SELECT id, full_text, words, duration_s FROM long_sources "
+            "WHERE id = $1", source_id,
+        )
+        if row is None:
+            return 0
+    raw_words = row["words"]
+    if isinstance(raw_words, str):
+        raw_words = json.loads(raw_words)
+    words_list = [
+        TranscribedWord(
+            word=str(w.get("word") or w.get("w") or ""),
+            start=float(w.get("start") or w.get("t") or 0.0),
+            end=float(w.get("end") or w.get("t1") or w.get("start") or 0.0),
+        )
+        for w in (raw_words or []) if isinstance(w, dict)
+    ]
+    new = await find_candidates(
+        full_text=row["full_text"] or "",
+        words=words_list,
+        duration_s=float(row["duration_s"] or 0.0),
+    )
+    await save_candidates(source_id, new, tenant_id)
+    return len(new)
+
+
 async def create_whole_source_candidate(
     source_id: UUID, tenant_id: UUID | None = None,
 ) -> dict | None:
@@ -660,5 +779,5 @@ __all__ = [
     "list_sources", "get_source_with_candidates", "get_candidate",
     "link_candidate_to_production", "dismiss_candidate",
     "find_candidates", "transcribe_long", "reap_orphaned_sources",
-    "create_whole_source_candidate",
+    "create_whole_source_candidate", "reanalyze_source",
 ]
