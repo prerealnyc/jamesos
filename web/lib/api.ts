@@ -514,7 +514,9 @@ export const api = {
     return _safeJsonOrThrow<LongSource>(r);
   },
   reanalyzeLongSource: (id: string) =>
-    jpost<{ queued: boolean }>(`/long-form/${id}/reanalyze`, {}),
+    jpost<{ source_id: string; new_candidates: number }>(
+      `/long-form/${id}/reanalyze`, {},
+    ),
   async renderLongCandidate(candidateId: string, opts: {
     platform?: string; aspect?: string;
     image_style?: string; caption_style?: string;
@@ -526,6 +528,27 @@ export const api = {
     fd.append("caption_style", opts.caption_style || "");
     const r = await fetch(
       u(`/long-form/candidates/${candidateId}/render`),
+      { method: "POST", body: fd },
+    );
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    return d as Production;
+  },
+  // Render the WHOLE source as one reel — for short talking clips
+  // where the candidate picker isn't relevant. caption_style picks
+  // one of the five presets ('', 'tiktok_yellow', 'clean_white',
+  // 'bold_pop', 'subtle_minimal', 'branded_red'); blank → AI picks.
+  async renderLongSourceWhole(sourceId: string, opts: {
+    platform?: string; aspect?: string;
+    image_style?: string; caption_style?: string;
+  } = {}) {
+    const fd = new FormData();
+    fd.append("platform", opts.platform || "instagram");
+    fd.append("aspect", opts.aspect || "9:16");
+    fd.append("image_style", opts.image_style || "");
+    fd.append("caption_style", opts.caption_style || "");
+    const r = await fetch(
+      u(`/long-form/${sourceId}/render-whole`),
       { method: "POST", body: fd },
     );
     const d = await r.json();

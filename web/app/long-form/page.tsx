@@ -80,6 +80,14 @@ export default function LongFormPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [renderingId, setRenderingId] = useState<string | null>(null);
+  // Caption style for the next render — '' means auto-pick. Loaded
+  // from /video/caption-styles so the dropdown stays in sync with
+  // whatever presets the backend ships.
+  const [captionStyle, setCaptionStyle] = useState("");
+  const [captionStyles, setCaptionStyles] = useState<
+    { name: string; label: string; description: string }[]
+  >([]);
+  const [renderingWhole, setRenderingWhole] = useState(false);
 
   async function loadSources() {
     try {
@@ -101,6 +109,10 @@ export default function LongFormPage() {
 
   useEffect(() => {
     loadSources();
+    // Caption styles list — populates the dropdown above the candidates.
+    api.listCaptionStyles()
+      .then((r) => setCaptionStyles(r.presets))
+      .catch(() => { /* dropdown stays empty, default to (auto-pick) */ });
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
 
@@ -208,7 +220,9 @@ export default function LongFormPage() {
     setRenderingId(c.id);
     setErr("");
     try {
-      const prod = await api.renderLongCandidate(c.id);
+      const prod = await api.renderLongCandidate(c.id, {
+        caption_style: captionStyle,
+      });
       // Optimistically link production_id locally
       if (selected) {
         setSelected({
@@ -222,6 +236,26 @@ export default function LongFormPage() {
       setErr(e instanceof Error ? e.message : "render failed");
     } finally {
       setRenderingId(null);
+    }
+  }
+
+  // Render the ENTIRE source as one reel — for short talking clips
+  // where the candidate picker isn't useful. Uses the same caption
+  // style the user selected for candidate rendering.
+  async function renderWholeSource() {
+    if (!selected) return;
+    setRenderingWhole(true);
+    setErr("");
+    try {
+      await api.renderLongSourceWhole(selected.id, {
+        caption_style: captionStyle,
+      });
+      // Production goes straight to the queue; user can poll there.
+      await loadSelected(selected.id);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "render-whole failed");
+    } finally {
+      setRenderingWhole(false);
     }
   }
 
@@ -454,10 +488,48 @@ export default function LongFormPage() {
             <p className="text-destructive text-[12px] mt-2">✗ {selected.error}</p>
           )}
 
+          {/* Caption style picker — applies to BOTH the candidate
+             render buttons below AND the "Render whole" button. Blank
+             value = AI auto-picks based on the script. */}
+          {selected.status === "ready" && (
+            <div className="mt-4 flex items-center gap-2 flex-wrap p-3 rounded-md bg-muted/40 border border-border">
+              <span className="text-[12px] text-muted-foreground">
+                Caption style
+              </span>
+              <select
+                value={captionStyle}
+                onChange={(e) => setCaptionStyle(e.target.value)}
+                className="text-[12px] px-2 py-1 rounded border border-border bg-background"
+              >
+                <option value="">Auto-pick (AI chooses)</option>
+                {captionStyles.map((p) => (
+                  <option key={p.name} value={p.name}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+              {captionStyle && captionStyles.find((p) => p.name === captionStyle) && (
+                <span className="text-[11px] text-muted-foreground">
+                  — {captionStyles.find((p) => p.name === captionStyle)?.description}
+                </span>
+              )}
+              <Button
+                onClick={renderWholeSource}
+                disabled={renderingWhole}
+                variant="secondary"
+                className="text-[12px] !px-3 !py-1 ml-auto"
+                title="Skip the LLM picker and render the entire clip as one reel — for short talking clips where the whole thing IS the reel."
+              >
+                {renderingWhole ? <Spinner /> : "Render whole as reel"}
+              </Button>
+            </div>
+          )}
+
           {selected.status === "ready" && selected.candidates.length === 0 && (
             <p className="text-[12px] text-muted-foreground mt-3">
-              No candidates returned by the LLM. Try Re-analyze, or the
-              source may not contain clear standalone moments.
+              No candidates returned by the LLM. Try Re-analyze, or use
+              "Render whole as reel" above to skip candidate selection
+              and treat the whole clip as a single reel.
             </p>
           )}
 
