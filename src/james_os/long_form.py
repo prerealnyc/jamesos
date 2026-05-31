@@ -96,22 +96,29 @@ async def create_source(
 
 async def create_source_placeholder(
     *, title: str, tenant_id: UUID | None = None,
+    drive_file_id: str = "",
 ) -> dict:
     """Create a long_sources row with no source_url yet — caller will
-    fill it in via a background task after the Drive download + upload
-    complete. Used by the async drive-import flow so the HTTP request
-    returns instantly and the long upload happens in the background.
+    fill it in via a background task after ingest. Used by the async
+    drive-import flow so the HTTP request returns instantly.
 
-    Sets a sentinel source_url so the NOT NULL DEFAULT '' doesn't trip
-    the worker's "is this a real URL" check.
+    When drive_file_id is set, the row carries it on the dedicated
+    column. The Drive download then happens in the background worker
+    and the file is NEVER uploaded to Supabase Storage — we keep Drive
+    as the canonical store and re-fetch when needed. Skips the
+    HTTP-413 size-cap class entirely for any video Drive will hold
+    (which is anything; Drive doesn't cap individual file size).
+
+    source_url stays at the 'pending://' sentinel for Drive sources;
+    the cut step reads drive_file_id and refetches.
     """
     async with acquire(tenant_id) as conn:
         row = await conn.fetchrow(
             """INSERT INTO long_sources
-                 (title, source_url, status)
-               VALUES ($1, 'pending://', 'uploading')
+                 (title, source_url, status, drive_file_id)
+               VALUES ($1, 'pending://', 'uploading', $2)
                RETURNING *""",
-            title[:200],
+            title[:200], drive_file_id or None,
         )
     return _row(row)
 
@@ -131,15 +138,19 @@ async def fetch_from_drive_then_ingest(
 ) -> None:
     """End-to-end background worker for Drive imports.
 
-    Replaces the synchronous code path in /long-form/drive-import-id
-    that hung the HTTP request for ~20 min on a 1.4 GB file. Stages:
-      uploading  → stream Drive → /tmp file → stream → Supabase Storage
-                   → write source_url to the row
-      then hands off to ingest_source() which carries the row through
-      transcribing → analyzing → ready.
+    Drive-as-source-of-truth: stream the file to /tmp, run audio
+    extract + Whisper + LLM candidate selection all against the local
+    file in ONE pass, then delete the temp file. The full video stays
+    in Drive — never uploaded to Supabase, never double-handled.
 
-    Sets status='failed' on any download/upload error so the user sees
-    a clear stage at which it broke (not just a vanished row).
+    State transitions:
+      uploading  → fetching the file from Drive
+      transcribing → ffmpeg audio extract + Whisper word stamps
+      analyzing  → LLM finds reel candidates
+      ready
+
+    Sets status='failed' on any error so the user sees the stage at
+    which it broke (not just a stuck row).
     """
     import tempfile
     from pathlib import Path as _P
@@ -158,19 +169,81 @@ async def fetch_from_drive_then_ingest(
             return await _fail(
                 source_id, "Drive returned empty file", tenant_id,
             )
+        # Run audio extract + Whisper + LLM against the SAME local
+        # file we just downloaded — no Supabase round-trip, no
+        # double-download.
+        await _process_local_video(source_id, local_path, tenant_id)
+
+
+async def _process_local_video(
+    source_id: UUID,
+    video_path: str,
+    tenant_id: UUID | None = None,
+) -> None:
+    """Audio extract + chunked Whisper + LLM candidate selection
+    against a video file already on local disk. Shared between
+    fetch_from_drive_then_ingest (where the file came from Drive) and
+    ingest_source (where it was downloaded from source_url).
+
+    Persists the extracted audio mp3 to Supabase Storage so the LLM
+    prompt LLM doesn't redo the extract on re-analyze; the original
+    video stays in Drive or wherever it lives.
+    """
+    import tempfile
+
+    from .audio_trim import extract_audio_lowbit, probe_duration
+
+    async with acquire(tenant_id) as conn:
+        await _set(conn, source_id, status="transcribing")
+
+    with tempfile.TemporaryDirectory() as td:
+        audio_path = f"{td}/audio.mp3"
+        chunk_dir = f"{td}/chunks"
+
+        if not await extract_audio_lowbit(video_path, audio_path, _LOWBIT_BITRATE):
+            return await _fail(
+                source_id, "ffmpeg audio extract failed", tenant_id,
+            )
+
         tid_str = str(tenant_id or settings.default_tenant_id)
         try:
-            served_uri, _ = await asyncio.to_thread(
-                media_storage().save_from_path, tid_str, local_path, filename,
+            audio_bytes = Path(audio_path).read_bytes()
+            persisted_audio, _ = await asyncio.to_thread(
+                media_storage().save,
+                tid_str, audio_bytes,
+                f"long-audio-{uuid.uuid4().hex[:8]}.mp3",
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
+            persisted_audio = ""
+
+        full_text, words, duration_s = await transcribe_long(
+            audio_path, chunk_dir,
+        )
+        if not full_text:
             return await _fail(
-                source_id, f"Storage upload failed: {e}", tenant_id,
+                source_id, "Whisper returned no transcript", tenant_id,
             )
-    await set_source_url(source_id, served_uri, tenant_id)
-    # ingest_source picks up from here — strips audio, Whispers,
-    # finds candidates. Same path as a normal file upload.
-    await ingest_source(source_id, tenant_id)
+
+    async with acquire(tenant_id) as conn:
+        await _set(
+            conn, source_id,
+            status="analyzing",
+            audio_url=persisted_audio,
+            duration_s=duration_s or await probe_duration(video_path),
+            full_text=full_text[:200_000],
+            words=json.dumps([
+                {"w": w.word, "t": round(w.start, 3), "e": round(w.end, 3)}
+                for w in words
+            ]),
+        )
+
+    candidates = await find_candidates(
+        full_text=full_text, words=words, duration_s=duration_s,
+    )
+    await save_candidates(source_id, candidates, tenant_id)
+
+    async with acquire(tenant_id) as conn:
+        await _set(conn, source_id, status="ready", error=None)
 
 
 async def _set(conn, source_id: UUID, **cols) -> None:
@@ -389,9 +462,14 @@ async def save_candidates(
 async def ingest_source(source_id: UUID, tenant_id: UUID | None = None) -> None:
     """Move a source through transcribing → analyzing → ready.
 
-    Kicked from /long-form/upload as a BackgroundTask. Each stage is
-    a separate connection so a 60-min Whisper poll doesn't starve the
-    DB pool.
+    Kicked from /long-form/upload as a BackgroundTask after the user
+    uploaded a file (Drive sources go through fetch_from_drive_then_
+    ingest which uses Drive-as-source-of-truth).
+
+    For non-Drive sources: download source_url to a temp file, then
+    hand off to _process_local_video for the shared audio + Whisper
+    + LLM path. Each stage is a separate connection so a 60-min
+    Whisper poll doesn't starve the DB pool.
     """
     import httpx
 
@@ -404,20 +482,28 @@ async def ingest_source(source_id: UUID, tenant_id: UUID | None = None) -> None:
         if row["status"] in ("ready", "failed"):
             return
         source_url = row["source_url"]
+        drive_file_id = row.get("drive_file_id") if hasattr(row, "get") else row["drive_file_id"]
 
-    # 1) Fetch the source file. For Supabase Storage URLs this is a
-    # simple download; for Drive URLs we'd want the drive.py importer
-    # to land it in Storage first (out of scope for this commit).
-    if not source_url.startswith("http"):
+    # Drive sources land here only via a re-analyze on an already-
+    # ingested row. Refetch from Drive in that case rather than from
+    # the (non-existent) Supabase URL.
+    if drive_file_id:
+        from .drive import fetch_drive_file_to_path
+        with tempfile.TemporaryDirectory() as td:
+            local_path = f"{td}/source.mp4"
+            try:
+                await fetch_drive_file_to_path(drive_file_id, local_path)
+            except Exception as e:  # noqa: BLE001
+                return await _fail(
+                    source_id, f"Drive re-fetch failed: {e}", tenant_id,
+                )
+            return await _process_local_video(source_id, local_path, tenant_id)
+
+    if not source_url or not source_url.startswith("http"):
         return await _fail(source_id, "source_url is not a real URL", tenant_id)
-
-    async with acquire(tenant_id) as conn:
-        await _set(conn, source_id, status="transcribing")
 
     with tempfile.TemporaryDirectory() as td:
         src_path = f"{td}/source.mp4"
-        audio_path = f"{td}/audio.mp3"
-        chunk_dir = f"{td}/chunks"
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(900.0, connect=15.0),
@@ -431,50 +517,7 @@ async def ingest_source(source_id: UUID, tenant_id: UUID | None = None) -> None:
             return await _fail(
                 source_id, f"could not download source: {e}", tenant_id,
             )
-
-        if not await extract_audio_lowbit(src_path, audio_path, _LOWBIT_BITRATE):
-            return await _fail(source_id, "ffmpeg audio extract failed", tenant_id)
-
-        # Persist the audio mp3 to Supabase Storage so we don't redo
-        # the extract if the source is reanalyzed. Cached on the row.
-        try:
-            tid_str = str(tenant_id or settings.default_tenant_id)
-            audio_bytes = Path(audio_path).read_bytes()
-            persisted_audio, _ = await asyncio.to_thread(
-                media_storage().save, tid_str, audio_bytes,
-                f"long-audio-{source_id.hex[:8]}.mp3"
-                if hasattr(source_id, "hex") else f"long-audio-{uuid.uuid4().hex[:8]}.mp3",
-            )
-        except Exception:  # noqa: BLE001
-            persisted_audio = ""
-
-        full_text, words, duration_s = await transcribe_long(
-            audio_path, chunk_dir,
-        )
-        if not full_text:
-            return await _fail(source_id, "Whisper returned no transcript", tenant_id)
-
-    async with acquire(tenant_id) as conn:
-        await _set(
-            conn, source_id,
-            status="analyzing",
-            audio_url=persisted_audio,
-            duration_s=duration_s,
-            full_text=full_text[:200_000],
-            words=json.dumps([
-                {"w": w.word, "t": round(w.start, 3), "e": round(w.end, 3)}
-                for w in words
-            ]),
-        )
-
-    # 3) LLM finds candidates
-    candidates = await find_candidates(
-        full_text=full_text, words=words, duration_s=duration_s,
-    )
-    await save_candidates(source_id, candidates, tenant_id)
-
-    async with acquire(tenant_id) as conn:
-        await _set(conn, source_id, status="ready", error=None)
+        await _process_local_video(source_id, src_path, tenant_id)
 
 
 # ── reads ─────────────────────────────────────────────────────────────
@@ -484,7 +527,7 @@ async def list_sources(tenant_id: UUID | None = None) -> list[dict]:
     async with acquire(tenant_id) as conn:
         rows = await conn.fetch(
             """SELECT id, title, source_url, audio_url, duration_s, status,
-                      error, created_at, updated_at
+                      error, drive_file_id, created_at, updated_at
                FROM long_sources ORDER BY created_at DESC LIMIT 50"""
         )
     return [_row(r) for r in rows]
@@ -541,10 +584,30 @@ async def dismiss_candidate(
         )
 
 
+async def reap_orphaned_sources(tenant_id: UUID | None = None) -> int:
+    """Flip in-flight long_sources rows to 'failed' on process restart.
+    A 1.4 GB Drive import takes 20+ minutes; if the dev server reloads
+    mid-ingest the background task dies but the row stays at status
+    'uploading' / 'transcribing' / 'analyzing' forever — looks alive in
+    the UI, never moves. Reap them at startup the same way the
+    autopilot does its own runs."""
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            """UPDATE long_sources
+                  SET status = 'failed',
+                      error  = 'interrupted — server restarted before '
+                               'ingest finished',
+                      updated_at = now()
+                WHERE status IN ('uploading', 'transcribing', 'analyzing')
+                RETURNING id"""
+        )
+    return len(rows)
+
+
 __all__ = [
     "create_source", "create_source_placeholder", "set_source_url",
     "ingest_source", "fetch_from_drive_then_ingest",
     "list_sources", "get_source_with_candidates", "get_candidate",
     "link_candidate_to_production", "dismiss_candidate",
-    "find_candidates", "transcribe_long",
+    "find_candidates", "transcribe_long", "reap_orphaned_sources",
 ]

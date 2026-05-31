@@ -121,6 +121,14 @@ async def lifespan(app: FastAPI):
         await reap_orphaned_runs()
     except Exception:  # noqa: BLE001 — never block startup on a reap failure
         pass
+    # Same idea for Long Form Cutter ingests — a 1.4 GB Drive download
+    # spans 20+ min, far longer than uvicorn's typical reload cycle, so
+    # the row will end up orphaned on every dev-restart without this.
+    from .long_form import reap_orphaned_sources
+    try:
+        await reap_orphaned_sources()
+    except Exception:  # noqa: BLE001 — never block startup on a reap failure
+        pass
     scheduler = asyncio.create_task(_autopilot_scheduler())
     yield
     scheduler.cancel()
@@ -634,7 +642,9 @@ async def long_form_drive_import_by_id(
             detail=f"Drive metadata failed (is the file shared with the service account?): {e}",
         ) from e
 
-    src = await create_source_placeholder(title=(title or name))
+    src = await create_source_placeholder(
+        title=(title or name), drive_file_id=fid,
+    )
     background.add_task(
         fetch_from_drive_then_ingest, UUID(src["id"]), fid, name,
     )
@@ -696,7 +706,9 @@ async def long_form_drive_import(
             detail=f"Drive download failed (is the file shared with the service account?): {e}",
         ) from e
 
-    src = await create_source_placeholder(title=(title or name))
+    src = await create_source_placeholder(
+        title=(title or name), drive_file_id=fid,
+    )
     background.add_task(
         fetch_from_drive_then_ingest, UUID(src["id"]), fid, name,
     )
@@ -766,7 +778,12 @@ async def long_form_candidate_render(
     payload = [{
         "source_id": cand["source_id"],
         "candidate_id": cand["id"],
+        # Drive-as-source-of-truth: the worker prefers drive_file_id
+        # when present (re-fetches from Drive on every cut, no
+        # Supabase round-trip). Falls back to source_url for legacy
+        # rows that did the old Supabase upload path.
         "source_url": src["source_url"],
+        "drive_file_id": src.get("drive_file_id") or "",
         "start_s": cand["start_s"],
         "end_s": cand["end_s"],
         "hook_quote": cand["hook_quote"],

@@ -785,12 +785,17 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
         return await _fail(pid, "long_form_reel needs candidate metadata", tenant_id)
     meta = plan[0]
     source_url = (meta.get("source_url") or "").strip()
+    drive_file_id = (meta.get("drive_file_id") or "").strip()
     try:
         start_s = float(meta["start_s"])
         end_s = float(meta["end_s"])
     except (KeyError, TypeError, ValueError):
         return await _fail(pid, "candidate window malformed", tenant_id)
-    if not source_url.startswith("http") or end_s <= start_s:
+    if end_s <= start_s:
+        return await _fail(pid, "candidate window malformed", tenant_id)
+    # Drive source-of-truth path needs only drive_file_id; legacy
+    # Supabase-backed sources still need a usable source_url.
+    if not drive_file_id and not source_url.startswith("http"):
         return await _fail(pid, "candidate window malformed", tenant_id)
 
     # ── 1) Cut the source ────────────────────────────────────────
@@ -800,17 +805,32 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
     with tempfile.TemporaryDirectory() as td:
         src_path = f"{td}/source.mp4"
         out_path = f"{td}/cut.mp4"
-        try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(900.0, connect=15.0),
-            ) as c:
-                async with c.stream("GET", source_url) as r:
-                    r.raise_for_status()
-                    with open(src_path, "wb") as fh:
-                        async for chunk in r.aiter_bytes(chunk_size=1 << 20):
-                            fh.write(chunk)
-        except Exception as e:  # noqa: BLE001
-            return await _fail(pid, f"could not fetch source: {e}", tenant_id)
+        # Prefer Drive when drive_file_id is set on the row — re-fetch
+        # the original from the service account every time (fast,
+        # free, no Supabase size cap). Falls back to source_url for
+        # the legacy upload path.
+        if drive_file_id:
+            from .drive import fetch_drive_file_to_path, DriveNotConfigured
+            try:
+                await fetch_drive_file_to_path(drive_file_id, src_path)
+            except DriveNotConfigured as e:
+                return await _fail(pid, f"drive not configured: {e}", tenant_id)
+            except Exception as e:  # noqa: BLE001
+                return await _fail(
+                    pid, f"could not re-fetch from Drive: {e}", tenant_id,
+                )
+        else:
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(900.0, connect=15.0),
+                ) as c:
+                    async with c.stream("GET", source_url) as r:
+                        r.raise_for_status()
+                        with open(src_path, "wb") as fh:
+                            async for chunk in r.aiter_bytes(chunk_size=1 << 20):
+                                fh.write(chunk)
+            except Exception as e:  # noqa: BLE001
+                return await _fail(pid, f"could not fetch source: {e}", tenant_id)
 
         if not await slice_video(src_path, out_path, start_s, end_s):
             return await _fail(pid, "ffmpeg cut failed", tenant_id)
