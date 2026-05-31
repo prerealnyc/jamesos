@@ -815,6 +815,59 @@ async def long_form_candidate_dismiss(candidate_id: UUID) -> dict:
     return {"ok": True}
 
 
+@app.post("/long-form/{source_id}/render-whole", status_code=201)
+async def long_form_render_whole(
+    source_id: UUID, background: BackgroundTasks,
+    platform: str = Form("instagram"), aspect: str = Form("9:16"),
+    image_style: str = Form(""), caption_style: str = Form(""),
+) -> dict:
+    """Render the ENTIRE source as a single reel — for short talking
+    clips (1-2 min) where the whole clip already IS the reel and we
+    don't want the LLM picker chopping it.
+
+    Synthesizes a candidate row covering [0, duration_s] (idempotent —
+    reuses an existing whole-source candidate if one is there) and hands
+    it to the long_form_reel worker so the engaging-avatar treatment
+    (captions, B-roll cutaways at 5s cadence, music) applies unchanged.
+    """
+    from .long_form import (
+        create_whole_source_candidate, get_source_with_candidates,
+        link_candidate_to_production,
+    )
+    cand = await create_whole_source_candidate(source_id)
+    if cand is None:
+        raise HTTPException(
+            status_code=400,
+            detail="source not ready or has no duration_s — finish ingest first",
+        )
+    src = await get_source_with_candidates(source_id)
+    if src is None:
+        raise HTTPException(status_code=404, detail="source not found")
+    payload = [{
+        "source_id": cand["source_id"],
+        "candidate_id": cand["id"],
+        "source_url": src["source_url"],
+        "drive_file_id": src.get("drive_file_id") or "",
+        "start_s": cand["start_s"],
+        "end_s": cand["end_s"],
+        "hook_quote": cand["hook_quote"],
+        "summary": cand["summary"],
+    }]
+    try:
+        prod = await start_production(
+            (cand["hook_quote"] or src["title"])[:200],
+            platform, aspect,
+            (cand["summary"] or src["title"] or "Reel")[:120],
+            payload, "long_form_reel",
+            caption_style, image_style,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await link_candidate_to_production(UUID(cand["id"]), UUID(prod["id"]))
+    background.add_task(run_production, UUID(prod["id"]))
+    return prod
+
+
 @app.get("/hero/context")
 async def hero_context_get() -> dict:
     """Current hero description + sample photos.

@@ -584,6 +584,56 @@ async def dismiss_candidate(
         )
 
 
+async def create_whole_source_candidate(
+    source_id: UUID, tenant_id: UUID | None = None,
+) -> dict | None:
+    """Synthesize a candidate row covering the entire source.
+
+    For short talking clips (1-2 min content already shaped for social),
+    we don't need the LLM picker — the whole clip IS the reel. The
+    /render-whole endpoint calls this, then hands the new candidate to
+    the existing per-candidate render path so all the engaging-avatar
+    treatment (captions, B-roll cutaways, music) applies unchanged.
+
+    Idempotent-ish: if a 'whole' candidate already exists for this
+    source (hook starts with the marker), reuse it.
+
+    Returns the candidate row, or None if the source isn't ready or
+    has no duration_s yet.
+    """
+    async with acquire(tenant_id) as conn:
+        src = await conn.fetchrow(
+            "SELECT duration_s, full_text, title FROM long_sources WHERE id = $1",
+            source_id,
+        )
+        if src is None or not src["duration_s"] or src["duration_s"] <= 0:
+            return None
+        # Reuse existing whole-source candidate if there is one.
+        existing = await conn.fetchrow(
+            """SELECT * FROM reel_candidates
+                WHERE source_id = $1
+                  AND hook_quote LIKE '[WHOLE]%'
+                  AND dismissed = false
+                ORDER BY created_at DESC LIMIT 1""",
+            source_id,
+        )
+        if existing is not None:
+            return _row(existing)
+        # First ~80 chars of the transcript stand in as a hook so the
+        # downstream prompt isn't empty.
+        ft = (src["full_text"] or "").strip().split("\n", 1)[0][:240]
+        hook = f"[WHOLE] {ft}" if ft else f"[WHOLE] {src['title']}"
+        summary = (src["title"] or "Talking clip")[:160]
+        row = await conn.fetchrow(
+            """INSERT INTO reel_candidates
+                 (source_id, start_s, end_s, hook_quote, summary, score)
+               VALUES ($1, 0, $2, $3, $4, 1.0)
+               RETURNING *""",
+            source_id, float(src["duration_s"]), hook, summary,
+        )
+    return _row(row)
+
+
 async def reap_orphaned_sources(tenant_id: UUID | None = None) -> int:
     """Flip in-flight long_sources rows to 'failed' on process restart.
     A 1.4 GB Drive import takes 20+ minutes; if the dev server reloads
@@ -610,4 +660,5 @@ __all__ = [
     "list_sources", "get_source_with_candidates", "get_candidate",
     "link_candidate_to_production", "dismiss_candidate",
     "find_candidates", "transcribe_long", "reap_orphaned_sources",
+    "create_whole_source_candidate",
 ]
