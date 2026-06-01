@@ -464,6 +464,63 @@ export const api = {
   }) => jpost<Production>("/video/produce", {
     platform: "instagram", aspect: "9:16", mode: "mixed", ...opts,
   }),
+  // ── Analytics ───────────────────────────────────────────────────
+  // Reads aggregate stats over the scraped social-media posts in the
+  // events table. NO scraping happens here — that's /trends/refresh.
+  listAnalyticsHandles: () =>
+    jget<{ handles: { platform: string; handle: string; posts: number; last_post_at: string | null }[] }>(
+      "/analytics/handles",
+    ),
+  analyticsSummary: (opts: { handle?: string; platform?: string; days?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.handle) q.set("handle", opts.handle);
+    if (opts.platform) q.set("platform", opts.platform);
+    if (opts.days != null) q.set("days", String(opts.days));
+    return jget<{
+      handle: string; platform: string; days: number;
+      post_count: number; views: number; likes: number; comments: number;
+      shares: number; engagement: number; engagement_rate: number;
+      median_outlier: number; avg_outlier: number;
+      by_platform: Record<string, number>;
+      best_post: {
+        url: string; caption: string; views: number; outlier_score: number;
+        platform: string; thumbnail: string; posted_at: string;
+      } | null;
+    }>(`/analytics/summary?${q}`);
+  },
+  analyticsPosts: (opts: { handle?: string; platform?: string; days?: number; sort?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.handle) q.set("handle", opts.handle);
+    if (opts.platform) q.set("platform", opts.platform);
+    if (opts.days != null) q.set("days", String(opts.days));
+    if (opts.sort) q.set("sort", opts.sort);
+    if (opts.limit != null) q.set("limit", String(opts.limit));
+    return jget<{
+      posts: {
+        platform: string; handle: string; url: string; caption: string;
+        thumbnail: string; views: number; likes: number; comments: number;
+        shares: number; engagement_rate: number; outlier_score: number;
+        velocity: number; posted_at: string;
+      }[];
+    }>(`/analytics/posts?${q}`);
+  },
+  analyticsTimeline: (opts: { handle?: string; platform?: string; days?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.handle) q.set("handle", opts.handle);
+    if (opts.platform) q.set("platform", opts.platform);
+    if (opts.days != null) q.set("days", String(opts.days));
+    return jget<{
+      timeline: { date: string; views: number; posts: number; engagement: number }[];
+    }>(`/analytics/timeline?${q}`);
+  },
+  analyticsCohort: (opts: { platform?: string; days?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.platform) q.set("platform", opts.platform);
+    if (opts.days != null) q.set("days", String(opts.days));
+    return jget<{
+      rows: { platform: string; handle: string; posts: number; views: number; engagement: number; median_outlier: number }[];
+    }>(`/analytics/cohort?${q}`);
+  },
   listProductions: () => jget<Production[]>("/video/productions"),
   getProduction: (id: string) => jget<Production>(`/video/productions/${id}`),
   listClipLibrary: () => jget<{ items: ClipLibraryItem[] }>("/video/clips/library"),

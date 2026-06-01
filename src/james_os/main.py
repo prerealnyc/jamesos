@@ -1219,6 +1219,67 @@ async def trends_refresh(req: WatchlistRefreshRequest) -> dict:
     return result
 
 
+# ── analytics ────────────────────────────────────────────────────────
+
+
+@app.get("/analytics/handles")
+async def analytics_handles() -> dict:
+    """Every (platform, handle) pair with at least one scraped post —
+    used as the dropdown source on /analytics."""
+    from .analytics import list_tracked_handles
+    return {"handles": await list_tracked_handles()}
+
+
+@app.get("/analytics/summary")
+async def analytics_summary(
+    handle: str = "", platform: str = "", days: int = 30,
+) -> dict:
+    """Per-handle (or cohort-wide when blank) summary card numbers."""
+    from .analytics import handle_summary
+    return await handle_summary(handle=handle, platform=platform, days=days)
+
+
+@app.get("/analytics/posts")
+async def analytics_posts(
+    handle: str = "", platform: str = "", days: int = 30,
+    sort: str = "outlier", limit: int = 30,
+) -> dict:
+    """Sortable list of recent posts for the analytics table."""
+    from .analytics import list_posts
+    return {
+        "posts": await list_posts(
+            handle=handle, platform=platform, days=days,
+            sort=sort, limit=limit,
+        ),
+    }
+
+
+@app.get("/analytics/timeline")
+async def analytics_timeline(
+    handle: str = "", platform: str = "", days: int = 30,
+) -> dict:
+    """Daily aggregates (views / posts / engagement) for the trend chart."""
+    from .analytics import daily_timeline
+    return {
+        "timeline": await daily_timeline(
+            handle=handle, platform=platform, days=days,
+        ),
+    }
+
+
+@app.get("/analytics/cohort")
+async def analytics_cohort(platform: str = "", days: int = 30) -> dict:
+    """Every tracked handle ranked by views in the window — the
+    leaderboard view across the watchlist cohort."""
+    from .analytics import cohort_leaderboard
+    return {
+        "rows": await cohort_leaderboard(platform=platform, days=days),
+    }
+
+
+# ── trend → script handoff (back to existing routes) ────────────────
+
+
 @app.post("/generate-script", response_model=ContentDraft)
 async def generate_script(req: ScriptRequest) -> ContentDraft:
     """Turn a trend event into a brand-voice shooting script. Pulls the
