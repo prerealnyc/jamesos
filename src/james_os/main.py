@@ -23,6 +23,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .ask import ask
+from pydantic import BaseModel
+
 from .config import settings
 from .dashboard_api import router as dashboard_api_router
 from .db import acquire, close_pool, init_pool
@@ -1269,11 +1271,73 @@ async def analytics_timeline(
 
 @app.get("/analytics/cohort")
 async def analytics_cohort(platform: str = "", days: int = 30) -> dict:
-    """Every tracked handle ranked by views in the window — the
-    leaderboard view across the watchlist cohort."""
-    from .analytics import cohort_leaderboard
+    """Per-brand-account leaderboard ranked by views in the window —
+    one row per configured account so the user can compare their own
+    accounts (personal IG vs brand IG vs TikTok). Configured accounts
+    with no data yet appear with zeroes."""
+    from .analytics import accounts_leaderboard
     return {
-        "rows": await cohort_leaderboard(platform=platform, days=days),
+        "rows": await accounts_leaderboard(platform=platform, days=days),
+    }
+
+
+# ── brand accounts (the BRAND's own social handles) ─────────────────
+
+
+@app.get("/analytics/accounts")
+async def analytics_accounts_list() -> dict:
+    """The configured brand accounts. Empty list when none configured."""
+    from .brand_accounts import get_brand_accounts
+    return {"accounts": await get_brand_accounts()}
+
+
+class _BrandAccount(BaseModel):
+    platform: str
+    handle: str
+    name: str = ""
+
+
+class _BrandAccountsRequest(BaseModel):
+    accounts: list[_BrandAccount]
+
+
+@app.post("/analytics/accounts")
+async def analytics_accounts_set(req: _BrandAccountsRequest) -> dict:
+    """Wholesale replace the brand's tracked accounts. accounts =
+    [{platform, handle, name?}]. Returns the cleaned list."""
+    from .brand_accounts import set_brand_accounts
+    cleaned = await set_brand_accounts(
+        [a.model_dump() for a in req.accounts]
+    )
+    return {"accounts": cleaned}
+
+
+@app.post("/analytics/refresh")
+async def analytics_refresh(limit: int = 30) -> dict:
+    """Scrape recent posts for every configured brand account, ingest
+    them. Reuses the watchlist refresh path so the same Apify actors,
+    scoring, and ingestion code run unchanged — just over the brand
+    accounts instead of the peer watchlist.
+
+    Returns the per-account counts so the UI shows what came in."""
+    from .brand_accounts import brand_handles_by_platform
+    from .trends import refresh_watchlist
+    handles = await brand_handles_by_platform()
+    if not handles:
+        return {
+            "scraped": 0, "stored": 0,
+            "note": "No brand accounts configured — add some first.",
+        }
+    try:
+        result = await refresh_watchlist(handles, max(1, min(limit, 50)))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502, detail=f"refresh failed: {e}",
+        ) from e
+    return {
+        "scraped": result.get("found", 0),
+        "stored": len(result.get("stored_event_ids") or []),
+        "provider": result.get("provider"),
     }
 
 

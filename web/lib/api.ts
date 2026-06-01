@@ -468,8 +468,22 @@ export const api = {
   // Reads aggregate stats over the scraped social-media posts in the
   // events table. NO scraping happens here — that's /trends/refresh.
   listAnalyticsHandles: () =>
-    jget<{ handles: { platform: string; handle: string; posts: number; last_post_at: string | null }[] }>(
+    jget<{ handles: { platform: string; handle: string; name?: string; posts: number; last_post_at: string | null }[] }>(
       "/analytics/handles",
+    ),
+  // Brand accounts — the handles the BRAND owns. Analytics filters to
+  // these only; peer/competitor data lives on /trends/watchlist.
+  listBrandAccounts: () =>
+    jget<{ accounts: { platform: string; handle: string; name?: string }[] }>(
+      "/analytics/accounts",
+    ),
+  setBrandAccounts: (accounts: { platform: string; handle: string; name?: string }[]) =>
+    jpost<{ accounts: { platform: string; handle: string; name?: string }[] }>(
+      "/analytics/accounts", { accounts },
+    ),
+  refreshAnalytics: (limit = 30) =>
+    jpost<{ scraped: number; stored: number; provider?: string; note?: string }>(
+      `/analytics/refresh?limit=${limit}`, {},
     ),
   analyticsSummary: (opts: { handle?: string; platform?: string; days?: number } = {}) => {
     const q = new URLSearchParams();

@@ -1,4 +1,9 @@
-"""Analytics — aggregate reads over scraped social-media data.
+"""Analytics — aggregate reads over the BRAND's social-media data.
+
+Scoped to handles the brand actually owns — see `brand_accounts.py`.
+Peer / competitor data from `trends.get_watchlist()` is intentionally
+excluded so the dashboard answers "how is OUR content doing," not
+"how is the cohort doing." Cohort comparison happens elsewhere.
 
 Note on asyncpg + jsonb: the pool returned by `acquire()` does NOT
 register a JSON codec, so `row["payload"]` comes back as a string of
@@ -42,6 +47,7 @@ from typing import Any
 from uuid import UUID
 
 from .apify import TREND_CATEGORY
+from .brand_accounts import brand_handle_set
 from .db import acquire
 
 
@@ -95,10 +101,17 @@ async def _load_posts(
     *, platform: str = "", handle: str = "",
     since: datetime | None = None,
     tenant_id: UUID | None = None,
+    allowed_handles: set[str] | None = None,
 ) -> list[dict]:
     """Pull post payloads from the events table, filtered to trends and
-    (optionally) a platform / handle / posted-since window. Returns the
-    JSONB payloads as dicts.
+    (optionally) a platform / handle / posted-since window.
+
+    `allowed_handles` is the brand-account whitelist: when non-None and
+    non-empty, only posts whose handle is in this set are returned —
+    that's how analytics stays scoped to the brand's own content. When
+    None, no whitelist filter is applied (used by internal helpers
+    that have already scoped the read). When empty set, returns zero
+    posts (correctly — no accounts configured means no data).
     """
     clauses = [
         "payload ->> 'category' = $1",
@@ -120,6 +133,16 @@ async def _load_posts(
         # posted_at lives inside the JSONB payload; parse + compare.
         clauses.append(
             f"nullif(payload ->> 'posted_at', '')::timestamptz >= ${len(args)}"
+        )
+    if allowed_handles is not None:
+        if not allowed_handles:
+            # No accounts configured → no posts. Don't run a query
+            # that would silently leak peer content.
+            return []
+        args.append(list(allowed_handles))
+        clauses.append(
+            f"lower(replace(payload ->> 'handle', '@', '')) "
+            f"= ANY(${len(args)}::text[])"
         )
     sql = f"""
         SELECT payload, effective_at
@@ -147,13 +170,19 @@ async def _load_posts(
 async def list_tracked_handles(
     tenant_id: UUID | None = None,
 ) -> list[dict]:
-    """Every (platform, handle) pair that has at least one scraped post
-    in the trend events table. Counts give the user a fast read of
-    what's being tracked.
+    """The brand's configured accounts, joined with post counts from
+    the events table. Returns every configured handle even when no
+    posts exist yet — so the empty state on the UI ("scrape your
+    accounts to populate this") is honest.
     """
+    from .brand_accounts import get_brand_accounts
+    accounts = await get_brand_accounts(tenant_id)
+    if not accounts:
+        return []
+    # One query, group counts by handle.
     sql = """
         SELECT payload ->> 'platform' AS platform,
-               replace(payload ->> 'handle', '@', '') AS handle,
+               lower(replace(payload ->> 'handle', '@', '')) AS handle,
                count(*) AS posts,
                max(nullif(payload ->> 'posted_at', '')::timestamptz) AS last_post_at
           FROM events
@@ -161,19 +190,32 @@ async def list_tracked_handles(
            AND superseded_by IS NULL
            AND payload ->> 'handle' IS NOT NULL
          GROUP BY 1, 2
-         ORDER BY posts DESC, handle ASC
     """
     async with acquire(tenant_id) as conn:
         rows = await conn.fetch(sql, TREND_CATEGORY)
-    return [
-        {
-            "platform": r["platform"] or "",
-            "handle": r["handle"] or "",
-            "posts": int(r["posts"]),
-            "last_post_at": r["last_post_at"].isoformat() if r["last_post_at"] else None,
-        }
+    by_key = {
+        ((r["platform"] or "").lower(), (r["handle"] or "").lower()): r
         for r in rows
-    ]
+    }
+    out: list[dict] = []
+    for a in accounts:
+        platform = (a.get("platform") or "").lower()
+        handle = (a.get("handle") or "").lower()
+        r = by_key.get((platform, handle))
+        out.append({
+            "platform": platform,
+            "handle": handle,
+            "name": a.get("name") or "",
+            "posts": int(r["posts"]) if r else 0,
+            "last_post_at": (
+                r["last_post_at"].isoformat()
+                if r and r["last_post_at"] else None
+            ),
+        })
+    # Configured-with-data first, then unscraped (zero posts) at the
+    # bottom so the user can see what's pending.
+    out.sort(key=lambda x: (-x["posts"], x["handle"]))
+    return out
 
 
 # ── per-handle summary ───────────────────────────────────────────────
@@ -195,8 +237,10 @@ async def handle_summary(
     if days > 0:
         from datetime import timedelta
         since = datetime.now(timezone.utc) - timedelta(days=days)
+    allowed = await brand_handle_set(tenant_id)
     posts = await _load_posts(
         platform=platform, handle=handle, since=since, tenant_id=tenant_id,
+        allowed_handles=allowed,
     )
     n = len(posts)
     views = sum(int(p.get("views") or 0) for p in posts)
@@ -279,8 +323,10 @@ async def list_posts(
         datetime.now(timezone.utc) - timedelta(days=days)
         if days > 0 else None
     )
+    allowed = await brand_handle_set(tenant_id)
     posts = await _load_posts(
         platform=platform, handle=handle, since=since, tenant_id=tenant_id,
+        allowed_handles=allowed,
     )
     key = _SORT_KEYS.get(sort, _SORT_KEYS["outlier"])
     posts.sort(key=key, reverse=True)
@@ -321,8 +367,10 @@ async def daily_timeline(
         hour=0, minute=0, second=0, microsecond=0,
     )
     since = today - timedelta(days=days)
+    allowed = await brand_handle_set(tenant_id)
     posts = await _load_posts(
         platform=platform, handle=handle, since=since, tenant_id=tenant_id,
+        allowed_handles=allowed,
     )
     by_day: dict[str, dict] = {}
     for p in posts:
@@ -346,34 +394,53 @@ async def daily_timeline(
     return out
 
 
-# ── cohort leaderboard ──────────────────────────────────────────────
+# ── per-brand-account leaderboard ────────────────────────────────────
 
 
-async def cohort_leaderboard(
+async def accounts_leaderboard(
     *, platform: str = "", days: int = 30,
     tenant_id: UUID | None = None,
 ) -> list[dict]:
-    """Every tracked handle ranked by total views in the window, with
-    the median outlier score (signal of consistent breakouts, not just
-    big accounts). Use this on the analytics page to surface who's
-    moving relative to the cohort."""
+    """One row per brand account, ranked by views in the window. When
+    the brand owns 3 accounts (e.g. personal IG + brand IG + TikTok),
+    this is the side-by-side comparison view.
+
+    Configured-but-not-yet-scraped accounts appear with zero stats —
+    that's deliberate so the user sees "this account needs a refresh"
+    rather than the account silently disappearing.
+    """
     from datetime import timedelta
+    from .brand_accounts import get_brand_accounts
     since = (
         datetime.now(timezone.utc) - timedelta(days=days)
         if days > 0 else None
     )
+    accounts = await get_brand_accounts(tenant_id)
+    if not accounts:
+        return []
+    allowed = {(a.get("handle") or "").lower() for a in accounts if a.get("handle")}
     posts = await _load_posts(
         platform=platform, since=since, tenant_id=tenant_id,
+        allowed_handles=allowed,
     )
     grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for p in posts:
         h = (p.get("handle") or "").replace("@", "").lower()
-        pl = p.get("platform") or ""
+        pl = (p.get("platform") or "").lower()
         if not h:
             continue
         grouped[(pl, h)].append(p)
     rows: list[dict] = []
-    for (pl, h), bucket in grouped.items():
+    # Iterate over the CONFIGURED accounts (not the grouped data) so
+    # accounts with no posts yet still appear.
+    for a in accounts:
+        pl = (a.get("platform") or "").lower()
+        h = (a.get("handle") or "").lower()
+        if not h:
+            continue
+        if platform and platform != pl:
+            continue
+        bucket = grouped.get((pl, h), [])
         views = sum(int(p.get("views") or 0) for p in bucket)
         outliers = [float(p.get("outlier_score") or 0.0) for p in bucket]
         med = sorted(outliers)[len(outliers) // 2] if outliers else 0.0
@@ -381,6 +448,7 @@ async def cohort_leaderboard(
         rows.append({
             "platform": pl,
             "handle": h,
+            "name": a.get("name") or "",
             "posts": len(bucket),
             "views": views,
             "engagement": eng,
@@ -392,5 +460,5 @@ async def cohort_leaderboard(
 
 __all__ = [
     "list_tracked_handles", "handle_summary", "list_posts",
-    "daily_timeline", "cohort_leaderboard",
+    "daily_timeline", "accounts_leaderboard",
 ]

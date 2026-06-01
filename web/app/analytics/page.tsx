@@ -1,30 +1,33 @@
 "use client";
 
 /**
- * Analytics — aggregate views over the scraped social-media data.
+ * Analytics — performance for the BRAND's own social accounts.
  *
- * Reads /analytics/{handles,summary,posts,timeline,cohort}. Source is
- * the `events` table where every Apify-scraped post lives. The page
- * does NOT trigger new scrapes — use Market Research / Trends for
- * that; this is a viewer.
+ * Scoped to handles configured in /analytics/accounts; peer /
+ * competitor data on the watchlist is intentionally excluded so the
+ * dashboard answers "how is OUR content doing." Cohort comparison
+ * lives in Market Research instead.
  *
- * Sections:
- *   1. Filter bar   — handle / platform / days
- *   2. Summary cards — totals + engagement rate + median outlier
- *   3. Best post    — the breakout, by outlier score
- *   4. Timeline     — daily views (lightweight inline SVG bar chart)
- *   5. Top posts    — sortable table
- *   6. Cohort       — leaderboard across every tracked handle
+ * Sections (only render when ≥1 brand account is configured):
+ *   1. Accounts management — add / remove brand handles
+ *   2. Filter bar   — account / platform / days
+ *   3. Summary cards — totals + engagement rate + median outlier
+ *   4. Best post    — the breakout, by outlier score
+ *   5. Timeline     — daily views (lightweight inline SVG bar chart)
+ *   6. Top posts    — sortable table
+ *   7. Accounts leaderboard — side-by-side when the brand owns
+ *      multiple accounts (personal IG + brand IG + TikTok)
  *
- * Honest scope: no live-pull, no follower-growth (we don't capture
- * follower counts yet), no LinkedIn / X (not in the scraper set).
+ * Honest scope: scrapes IG / TikTok / YouTube via Apify; no LinkedIn
+ * / X yet; no follower-count growth (we don't capture follower counts).
  */
 
 import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { Button, Card, PageHeader, Badge, Spinner } from "@/components/ui";
 
-type Handle = { platform: string; handle: string; posts: number; last_post_at: string | null };
+type Handle = { platform: string; handle: string; name?: string; posts: number; last_post_at: string | null };
+type BrandAccount = { platform: string; handle: string; name?: string };
 type Post = {
   platform: string; handle: string; url: string; caption: string;
   thumbnail: string; views: number; likes: number; comments: number;
@@ -75,24 +78,33 @@ export default function AnalyticsPage() {
   const [posts, setPosts] = useState<Post[]>([]);
   const [timeline, setTimeline] = useState<Timeline>([]);
   const [cohort, setCohort] = useState<Cohort>([]);
+  const [accounts, setAccounts] = useState<BrandAccount[]>([]);
+  const [newPlatform, setNewPlatform] = useState("instagram");
+  const [newHandle, setNewHandle] = useState("");
+  const [newName, setNewName] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+  const [savingAccounts, setSavingAccounts] = useState(false);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
+  const [notice, setNotice] = useState("");
 
   async function loadEverything() {
     setLoading(true); setErr("");
     try {
-      const [h, s, p, t, c] = await Promise.all([
+      const [h, s, p, t, c, a] = await Promise.all([
         api.listAnalyticsHandles(),
         api.analyticsSummary({ handle, platform, days }),
         api.analyticsPosts({ handle, platform, days, sort, limit: 30 }),
         api.analyticsTimeline({ handle, platform, days }),
         api.analyticsCohort({ platform, days }),
+        api.listBrandAccounts(),
       ]);
       setHandles(h.handles);
       setSummary(s);
       setPosts(p.posts);
       setTimeline(t.timeline);
       setCohort(c.rows);
+      setAccounts(a.accounts);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "load failed");
     } finally {
@@ -101,6 +113,68 @@ export default function AnalyticsPage() {
   }
 
   useEffect(() => { loadEverything(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [handle, platform, days, sort]);
+
+  async function addAccount() {
+    const handle = newHandle.trim().replace(/^@/, "").toLowerCase();
+    if (!handle) return;
+    if (accounts.some((a) => a.platform === newPlatform && a.handle === handle)) {
+      setErr(`@${handle} on ${newPlatform} is already tracked`);
+      return;
+    }
+    setSavingAccounts(true); setErr("");
+    try {
+      const next = [
+        ...accounts,
+        { platform: newPlatform, handle, name: newName.trim() },
+      ];
+      const r = await api.setBrandAccounts(next);
+      setAccounts(r.accounts);
+      setNewHandle(""); setNewName("");
+      await loadEverything();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "could not add");
+    } finally {
+      setSavingAccounts(false);
+    }
+  }
+
+  async function removeAccount(target: BrandAccount) {
+    setSavingAccounts(true); setErr("");
+    try {
+      const next = accounts.filter(
+        (a) => !(a.platform === target.platform && a.handle === target.handle),
+      );
+      const r = await api.setBrandAccounts(next);
+      setAccounts(r.accounts);
+      if (handle === target.handle) setHandle("");
+      await loadEverything();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "could not remove");
+    } finally {
+      setSavingAccounts(false);
+    }
+  }
+
+  async function refreshFromSocial() {
+    if (accounts.length === 0) {
+      setErr("Add at least one brand account first.");
+      return;
+    }
+    setRefreshing(true); setErr(""); setNotice("");
+    try {
+      const r = await api.refreshAnalytics(30);
+      setNotice(
+        r.note
+          ? r.note
+          : `Scraped ${r.scraped} posts, stored ${r.stored} new${r.provider ? ` via ${r.provider}` : ""}.`,
+      );
+      await loadEverything();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "refresh failed");
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   const maxViews = useMemo(
     () => Math.max(1, ...timeline.map((t) => t.views)),
@@ -111,9 +185,99 @@ export default function AnalyticsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Analytics"
-        sub="Aggregate views over scraped social posts (Instagram, TikTok, YouTube). Use Market Research → Refresh to pull more data."
+        sub="Performance for the brand's own social accounts. Peer / competitor data lives in Market Research."
       />
 
+      {/* ── Accounts management ────────────────────────────────── */}
+      <Card className="!p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-[13px] font-medium">Brand accounts</p>
+            <p className="text-[11px] text-muted-foreground mt-0.5">
+              Only these handles are tracked. Add the brand's own Instagram / TikTok / YouTube here.
+            </p>
+          </div>
+          <Button
+            variant="secondary"
+            onClick={refreshFromSocial}
+            disabled={refreshing || accounts.length === 0}
+            className="text-[12px] !px-3 !py-1"
+            title={accounts.length === 0 ? "Add at least one account first" : "Scrape recent posts"}
+          >
+            {refreshing ? <Spinner /> : "Refresh from social"}
+          </Button>
+        </div>
+        {accounts.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {accounts.map((a) => (
+              <span
+                key={`${a.platform}:${a.handle}`}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-muted border border-border text-[12px]"
+              >
+                <Badge tone="muted">{platformChip(a.platform)}</Badge>
+                <span>@{a.handle}</span>
+                {a.name && <span className="text-muted-foreground text-[11px]">· {a.name}</span>}
+                <button
+                  onClick={() => removeAccount(a)}
+                  disabled={savingAccounts}
+                  className="text-muted-foreground hover:text-destructive ml-1"
+                  title="Remove this account"
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-border">
+          <select
+            value={newPlatform}
+            onChange={(e) => setNewPlatform(e.target.value)}
+            className="text-[12px] px-2 py-1.5 rounded border border-border bg-background"
+          >
+            <option value="instagram">Instagram</option>
+            <option value="tiktok">TikTok</option>
+            <option value="youtube">YouTube</option>
+          </select>
+          <input
+            placeholder="handle (no @)"
+            value={newHandle}
+            onChange={(e) => setNewHandle(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addAccount(); }}
+            className="text-[12px] px-2 py-1.5 rounded border border-border bg-background min-w-[160px]"
+          />
+          <input
+            placeholder="display name (optional)"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addAccount(); }}
+            className="text-[12px] px-2 py-1.5 rounded border border-border bg-background min-w-[180px]"
+          />
+          <Button
+            onClick={addAccount}
+            disabled={!newHandle.trim() || savingAccounts}
+            className="text-[12px] !px-3 !py-1.5"
+          >
+            {savingAccounts ? <Spinner /> : "+ Add account"}
+          </Button>
+        </div>
+      </Card>
+
+      {notice && (
+        <Card className="border-primary/40 bg-primary/5 !p-3">
+          <p className="text-[12px]">{notice}</p>
+        </Card>
+      )}
+
+      {accounts.length === 0 ? (
+        <Card className="!p-6 text-center space-y-2">
+          <p className="text-[14px] font-medium">No brand accounts yet</p>
+          <p className="text-[12px] text-muted-foreground max-w-md mx-auto">
+            Add the brand's own Instagram / TikTok / YouTube handles above. Then click <b>Refresh from social</b> to pull their recent posts.
+          </p>
+        </Card>
+      ) : (
+        <>
       {/* ── Filter bar ─────────────────────────────────────────── */}
       <Card className="flex flex-wrap items-center gap-3 !p-3">
         <div className="flex items-center gap-2">
@@ -123,10 +287,10 @@ export default function AnalyticsPage() {
             onChange={(e) => setHandle(e.target.value)}
             className="text-[12px] px-2 py-1 rounded border border-border bg-background min-w-[160px]"
           >
-            <option value="">All tracked handles</option>
-            {handles.filter((h) => h.handle).map((h) => (
-              <option key={`${h.platform}:${h.handle}`} value={h.handle}>
-                @{h.handle} ({platformChip(h.platform)}) · {h.posts}
+            <option value="">All my accounts</option>
+            {accounts.map((a) => (
+              <option key={`${a.platform}:${a.handle}`} value={a.handle}>
+                @{a.handle} ({platformChip(a.platform)})
               </option>
             ))}
           </select>
@@ -366,9 +530,9 @@ export default function AnalyticsPage() {
           {cohort.length > 0 && (
             <Card className="!p-0 overflow-hidden">
               <div className="px-4 py-3 border-b border-border">
-                <p className="text-[13px] font-medium">Cohort leaderboard</p>
+                <p className="text-[13px] font-medium">Accounts side-by-side</p>
                 <p className="text-[11px] text-muted-foreground mt-0.5">
-                  Every tracked handle ranked by total views in the window. Median outlier shows who's consistently breaking out vs their own baseline.
+                  Every brand account ranked by total views in the window. Click a row to filter the rest of the page to just that account.
                 </p>
               </div>
               <table className="w-full text-[12px]">
@@ -408,6 +572,8 @@ export default function AnalyticsPage() {
               </table>
             </Card>
           )}
+        </>
+      )}
         </>
       )}
     </div>
