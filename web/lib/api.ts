@@ -340,13 +340,15 @@ export type ComposeResult = {
 export type Production = {
   id: string;
   status: "queued" | "planning" | "rendering_clips" | "assembling" | "succeeded" | "failed";
-  mode?: "mixed" | "avatar_only" | "timeline" | "story_audio" | "avatar_story_mix" | "engaging_avatar";
+  mode?: "mixed" | "avatar_only" | "timeline" | "story_audio" | "avatar_story_mix" | "engaging_avatar" | "long_form_reel";
   title: string;
   platform: string;
   aspect: string;
   script: string;
   plan: ScenePlan | Record<string, never>;
   scenes: Scene[];
+  caption_style?: string;
+  image_style?: string;
   final_url: string | null;
   error: string | null;
   avatar_provider: string;
