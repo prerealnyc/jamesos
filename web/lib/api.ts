@@ -106,10 +106,12 @@ export type QueueItem = {
   status: string;
   platform: string;
   pillar: string;
-  format: string;
+  format: string;          // 'video', 'reel_script', 'instagram_post', etc.
   content: string;
   caption: string;
   voiceScore: number | null;
+  imageUrl?: string | null;   // post-image attachments
+  mediaUrl?: string | null;   // rendered video URL (Creatomate / Backblaze)
   proposedBy: string;
   createdAt: string | null;
   reason: string | null;

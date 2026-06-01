@@ -5,7 +5,18 @@ import { useRouter } from "next/navigation";
 import { api, type QueueItem, type QueueStats, type Guardrail } from "@/lib/api";
 import { Button, Card, PageHeader, Badge, Spinner } from "@/components/ui";
 
-const VIDEO_FORMATS = new Set(["reel_script", "video_script", "video"]);
+// "Script" formats can be turned INTO a video via the Composer — they
+// still belong on the Posts tab (they're written-content drafts), but
+// they get a "Make video →" action when approved. The Videos tab is
+// for finished renders only.
+const SCRIPT_FORMATS = new Set(["reel_script", "video_script"]);
+
+// True for finished video renders that have a playable URL. We check
+// the URL too because a row could have format='video' but no media
+// (e.g. a render that's still in flight or failed and somehow snuck in).
+function isVideoItem(it: QueueItem): boolean {
+  return it.format === "video" && !!it.mediaUrl;
+}
 
 export default function QueuePage() {
   const router = useRouter();
@@ -18,6 +29,10 @@ export default function QueuePage() {
   const [reason, setReason] = useState("");
   const [learned, setLearned] = useState<string | null>(null);
   const [filter, setFilter] = useState<"pending" | "approved" | "rejected" | "total">("pending");
+  // Content-kind tab: videos = finished renders with mediaUrl; posts =
+  // scripts + captions + image-only content. Default to "videos" since
+  // that's the new flow we're highlighting for marketing review.
+  const [kind, setKind] = useState<"videos" | "posts" | "all">("videos");
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   async function load() {
@@ -101,32 +116,73 @@ export default function QueuePage() {
         </div>
       )}
 
+      {/* Content-kind tabs — splits the queue into Videos vs Posts so
+          the marketing manager can scan whichever surface matters. Counts
+          reflect the current status filter so "Videos · 4" means
+          "4 video items in the pending bucket," not "4 videos ever." */}
+      {(() => {
+        const inStatus = filter === "total" ? items : items.filter((it) => it.status === filter);
+        const nVideos = inStatus.filter(isVideoItem).length;
+        const nPosts = inStatus.length - nVideos;
+        return (
+          <div className="flex items-center gap-2">
+            {(["videos", "posts", "all"] as const).map((k) => {
+              const active = kind === k;
+              const count = k === "videos" ? nVideos : k === "posts" ? nPosts : inStatus.length;
+              return (
+                <button
+                  key={k}
+                  onClick={() => setKind(k)}
+                  className={`text-[13px] px-3 py-1.5 rounded-full border transition-colors ${
+                    active
+                      ? "bg-primary text-primary-foreground border-primary"
+                      : "bg-background border-border hover:bg-muted"
+                  }`}
+                >
+                  {k === "videos" ? "🎬 Videos" : k === "posts" ? "📝 Posts" : "All"} · {count}
+                </button>
+              );
+            })}
+          </div>
+        );
+      })()}
+
       {loading ? (
         <Card>
           <Spinner /> <span className="text-muted-foreground text-sm ml-2">Loading queue…</span>
         </Card>
       ) : (() => {
-        const visible = filter === "total" ? items : items.filter((it) => it.status === filter);
+        const visibleStatus = filter === "total" ? items : items.filter((it) => it.status === filter);
+        const visible = kind === "all"
+          ? visibleStatus
+          : kind === "videos"
+            ? visibleStatus.filter(isVideoItem)
+            : visibleStatus.filter((it) => !isVideoItem(it));
         if (visible.length === 0) {
+          const kindLabel = kind === "videos" ? "videos" : kind === "posts" ? "posts" : "items";
           return (
             <Card>
               <p className="text-muted-foreground text-sm">
-                {filter === "pending" && "No pending items. When an agent proposes a post, it lands here for review."}
-                {filter === "approved" && "Nothing approved yet. Approved items will appear here with copy/export actions."}
-                {filter === "rejected" && "Nothing rejected. Rejections become guardrails (see below)."}
-                {filter === "total" && "Queue is empty."}
+                {filter === "pending" && `No pending ${kindLabel}. When an agent proposes one, it lands here for review.`}
+                {filter === "approved" && `No approved ${kindLabel} yet. Approved items show download/copy actions.`}
+                {filter === "rejected" && `No rejected ${kindLabel}.`}
+                {filter === "total" && `No ${kindLabel} in the queue.`}
               </p>
             </Card>
           );
         }
         return (
         <div className="flex flex-col gap-3">
-          {visible.map((it) => (
+          {visible.map((it) => {
+            const video = isVideoItem(it);
+            return (
             <Card key={it.id}>
               <div className="flex items-center gap-2 mb-2">
                 <Badge tone="primary">{it.platform}</Badge>
                 <Badge tone="accent">{it.pillar}</Badge>
-                <span className="text-xs text-muted-foreground">{it.format}</span>
+                <span className="text-xs text-muted-foreground">
+                  {video ? "🎬 video" : it.format}
+                </span>
                 <span className="ml-auto">
                   <Badge
                     tone={
@@ -141,6 +197,20 @@ export default function QueuePage() {
                   </Badge>
                 </span>
               </div>
+              {/* Inline video preview for finished renders — lets the
+                  marketing manager watch + decide without leaving the
+                  page. preload='metadata' so we don't pull the whole
+                  file on render. */}
+              {video && it.mediaUrl && (
+                <div className="mb-3 bg-black rounded-md overflow-hidden max-w-xs" style={{ aspectRatio: "9 / 16" }}>
+                  <video
+                    src={it.mediaUrl}
+                    controls
+                    preload="metadata"
+                    className="w-full h-full"
+                  />
+                </div>
+              )}
               <p className="text-[15px] leading-relaxed whitespace-pre-wrap">{it.content}</p>
               <div className="mt-3 pt-3 border-t border-border flex items-center gap-4 text-[12px] text-muted-foreground">
                 {it.voiceScore != null && (
@@ -168,7 +238,18 @@ export default function QueuePage() {
                 )}
                 {it.status === "approved" && (
                   <span className="ml-auto flex gap-3 items-center">
-                    {VIDEO_FORMATS.has(it.format) && (
+                    {video && it.mediaUrl && (
+                      <a
+                        href={it.mediaUrl}
+                        download={`reel-${it.id.slice(0, 8)}.mp4`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary font-semibold hover:underline"
+                      >
+                        ⬇ Download
+                      </a>
+                    )}
+                    {!video && SCRIPT_FORMATS.has(it.format) && (
                       <button
                         className="text-primary font-semibold hover:underline"
                         onClick={() => {
@@ -245,7 +326,8 @@ export default function QueuePage() {
                 </div>
               )}
             </Card>
-          ))}
+            );
+          })}
         </div>
         );
       })()}
