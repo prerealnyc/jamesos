@@ -32,8 +32,28 @@ const u = (path: string) => `${API_BASE}${path}`;
 export const mediaUrl = (uri: string) =>
   uri.startsWith("http") ? uri : `${API_BASE}${uri}`;
 
+// Every request includes credentials so the session cookie travels
+// cross-origin (3000 → 8001 in dev). The backend's CORS config has
+// allow_credentials=true to match.
+const FETCH_OPTS: RequestInit = { credentials: "include" };
+
+// On a 401 from any helper, redirect the browser to /login while
+// preserving the current path as a `next` query param so the user
+// lands back where they were after signing in. Skips when already
+// on an auth page so we don't bounce-loop, and skips the /auth/me
+// probe (callers handle it themselves to decide whether to render).
+function _handle401(path: string): void {
+  if (typeof window === "undefined") return;
+  if (path === "/auth/me") return;
+  const here = window.location.pathname;
+  if (here === "/login" || here === "/signup") return;
+  const next = encodeURIComponent(here + window.location.search);
+  window.location.replace(`/login?next=${next}`);
+}
+
 async function jdel<T>(path: string): Promise<T> {
-  const r = await fetch(u(path), { method: "DELETE" });
+  const r = await fetch(u(path), { method: "DELETE", ...FETCH_OPTS });
+  if (r.status === 401) { _handle401(path); throw new Error("Not authenticated"); }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -43,7 +63,9 @@ async function jpatch<T>(path: string, body: unknown): Promise<T> {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    ...FETCH_OPTS,
   });
+  if (r.status === 401) { _handle401(path); throw new Error("Not authenticated"); }
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));
     throw new Error(e.detail || `HTTP ${r.status}`);
@@ -52,7 +74,8 @@ async function jpatch<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function jget<T>(path: string): Promise<T> {
-  const r = await fetch(u(path), { cache: "no-store" });
+  const r = await fetch(u(path), { cache: "no-store", ...FETCH_OPTS });
+  if (r.status === 401) { _handle401(path); throw new Error("Not authenticated"); }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -62,7 +85,9 @@ async function jpost<T>(path: string, body: unknown): Promise<T> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    ...FETCH_OPTS,
   });
+  if (r.status === 401) { _handle401(path); throw new Error("Not authenticated"); }
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));
     throw new Error(e.detail || `HTTP ${r.status}`);
@@ -471,6 +496,35 @@ export const api = {
   }) => jpost<Production>("/video/produce", {
     platform: "instagram", aspect: "9:16", mode: "mixed", ...opts,
   }),
+  // ── Auth ────────────────────────────────────────────────────────
+  // Session cookie is httpOnly; client only sees a 200 / 401 from
+  // the server. Use whoami() on app load to discover the current
+  // user; null = not signed in.
+  whoami: async () => {
+    const r = await fetch(u("/auth/me"), {
+      cache: "no-store", credentials: "include",
+    });
+    if (r.status === 401) return null;
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json() as Promise<{
+      id: string; tenant_id: string; email: string;
+      display_name: string; role: string;
+    }>;
+  },
+  signup: (body: { email: string; password: string; display_name?: string }) =>
+    jpost<{
+      id: string; tenant_id: string; email: string;
+      display_name: string; role: string;
+    }>("/auth/signup", body),
+  login: (body: { email: string; password: string }) =>
+    jpost<{
+      id: string; tenant_id: string; email: string;
+      display_name: string; role: string;
+    }>("/auth/login", body),
+  logout: () => jpost<{ ok: boolean }>("/auth/logout", {}),
+  changePassword: (body: { current_password: string; new_password: string }) =>
+    jpost<{ ok: boolean }>("/auth/password", body),
+
   // ── Agent (Ask the memory → "Do" mode) ──────────────────────────
   // Read-only and write-capable tool calls over the system's own
   // feature set. Runs are persisted to agent_runs so the UI can
@@ -630,14 +684,14 @@ export const api = {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("title", title);
-    const r = await fetch(u("/long-form/upload"), { method: "POST", body: fd });
+    const r = await fetch(u("/long-form/upload"), { method: "POST", body: fd, credentials: "include" });
     return _safeJsonOrThrow<LongSource>(r);
   },
   async importLongSourceFromDrive(driveUrl: string, title = "") {
     const fd = new FormData();
     fd.append("drive_url", driveUrl);
     fd.append("title", title);
-    const r = await fetch(u("/long-form/drive-import"), { method: "POST", body: fd });
+    const r = await fetch(u("/long-form/drive-import"), { method: "POST", body: fd, credentials: "include" });
     return _safeJsonOrThrow<LongSource>(r);
   },
   browseDriveFolder: (folderId = "") =>
@@ -650,7 +704,7 @@ export const api = {
     const fd = new FormData();
     fd.append("file_id", fileId);
     fd.append("title", title);
-    const r = await fetch(u("/long-form/drive-import-id"), { method: "POST", body: fd });
+    const r = await fetch(u("/long-form/drive-import-id"), { method: "POST", body: fd, credentials: "include" });
     return _safeJsonOrThrow<LongSource>(r);
   },
   reanalyzeLongSource: (id: string) =>
@@ -727,7 +781,7 @@ export const api = {
     fd.append("platform", opts.platform || "");
     fd.append("notes", opts.notes || "");
     fd.append("tags", opts.tags || "");
-    const r = await fetch(u("/media/upload"), { method: "POST", body: fd });
+    const r = await fetch(u("/media/upload"), { method: "POST", body: fd, credentials: "include" });
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
     return d as MediaAsset;

@@ -241,6 +241,11 @@ def _apply(overlay: dict[str, str]) -> None:
 
 
 async def _fetch_overlay() -> dict[str, str]:
+    """Read the credentials overlay for the current tenant. Values
+    are transparently decrypted — encrypted-on-disk rows look the
+    same as plaintext rows to callers, so we can roll out encryption
+    without a data migration."""
+    from .encryption import decrypt
     async with acquire() as conn:
         cfg = await conn.fetchval(
             "SELECT config FROM tenants WHERE id = "
@@ -249,7 +254,11 @@ async def _fetch_overlay() -> dict[str, str]:
     if isinstance(cfg, str):
         cfg = json.loads(cfg)
     creds = (cfg or {}).get("credentials", {})
-    return {k: str(v) for k, v in creds.items() if k in _FIELD_NAMES and v}
+    return {
+        k: decrypt(str(v))
+        for k, v in creds.items()
+        if k in _FIELD_NAMES and v
+    }
 
 
 async def load_into_settings() -> None:
@@ -260,10 +269,12 @@ async def load_into_settings() -> None:
 async def save(updates: dict[str, str]) -> dict:
     """Persist UI edits. Empty string = clear (revert to the .env default).
 
-    Returns the fresh, masked status so the UI can render without ever
-    seeing a raw secret.
+    Values are Fernet-encrypted at write time. The in-process settings
+    object gets the PLAINTEXT (so providers can use it), but the DB
+    column carries ciphertext only.
     """
-    overlay = await _fetch_overlay()
+    from .encryption import encrypt
+    overlay = await _fetch_overlay()  # already-decrypted plaintext
     for name, raw in updates.items():
         if name not in _FIELD_NAMES:
             continue
@@ -273,12 +284,15 @@ async def save(updates: dict[str, str]) -> dict:
         else:
             overlay.pop(name, None)
 
+    # Encrypt every field before persisting.
+    encrypted = {k: encrypt(v) for k, v in overlay.items() if v}
+
     async with acquire() as conn:
         await conn.execute(
             "UPDATE tenants SET config = jsonb_set("
             "coalesce(config,'{}'::jsonb), '{credentials}', $1::jsonb) "
             "WHERE id = current_setting('app.current_tenant', true)::uuid",
-            json.dumps(overlay),
+            json.dumps(encrypted),
         )
 
     _apply(overlay)
@@ -311,8 +325,8 @@ async def status() -> dict:
         "fields": fields,
         "research_provider": settings.research_provider,
         "note": (
-            "Keys are stored per-tenant in Postgres (plaintext, same trust "
-            "level as .env) and take effect on the next request — no "
-            "restart. Adding a Perplexity key auto-activates live research."
+            "Keys are stored per-tenant in Postgres, Fernet-encrypted at "
+            "rest. They take effect on the next request — no restart. "
+            "Adding a Perplexity key auto-activates live research."
         ),
     }

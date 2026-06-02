@@ -16,6 +16,8 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Request,
+    Response,
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
@@ -149,7 +151,68 @@ app.add_middleware(
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_methods=["*"],
     allow_headers=["*"],
+    # Cookies must be allowed cross-origin (3000 → 8001) so the
+    # session cookie sticks; without this the browser drops it.
+    allow_credentials=True,
 )
+
+
+# ── auth middleware ─────────────────────────────────────────────────
+#
+# Every request:
+#   1. If path is public (/auth/*, /health, /docs, static, the SPA's
+#      own page assets) → pass through with the default tenant.
+#   2. Otherwise → resolve session cookie. On success, bind tenant_id
+#      to the request contextvar so db.acquire() picks it up. On
+#      failure, return 401.
+#
+# Putting this here (not on every route via Depends) means we don't
+# have to touch 50+ existing endpoints. Routes that need the user
+# object explicitly add Depends(require_user) and read it from
+# request.state.
+
+from fastapi import Request as _Req
+from fastapi.responses import JSONResponse as _JSON
+from .auth import (
+    COOKIE_NAME as _AUTH_COOKIE, get_session as _auth_get_session,
+    is_public_path as _auth_is_public,
+)
+from .db import set_request_tenant as _db_set_tenant
+
+
+# Paths that should NEVER hit the auth gate, beyond the /auth/*
+# prefix list inside auth.py. These are static frontend / Next.js
+# Internals that come in from the browser on a hard reload.
+_EXTRA_PUBLIC = (
+    "/dashboard/", "/media-files/", "/static/",
+    "/favicon.ico", "/robots.txt",
+)
+
+
+def _request_is_public(path: str) -> bool:
+    if _auth_is_public(path):
+        return True
+    return any(path.startswith(p) for p in _EXTRA_PUBLIC)
+
+
+@app.middleware("http")
+async def auth_middleware(request: _Req, call_next):
+    path = request.url.path
+    if _request_is_public(path):
+        return await call_next(request)
+    token = request.cookies.get(_AUTH_COOKIE) or ""
+    sess = await _auth_get_session(token) if token else None
+    if sess is None:
+        return _JSON(
+            {"detail": "not authenticated"},
+            status_code=401,
+            headers={"WWW-Authenticate": "Cookie"},
+        )
+    _db_set_tenant(sess["tenant_id"])
+    request.state.tenant_id = sess["tenant_id"]
+    request.state.user_id = sess["user_id"]
+    request.state.user_email = sess.get("email") or ""
+    return await call_next(request)
 
 
 # ─────────────────────────────────────────────────────────────────────── ui ──
@@ -322,6 +385,129 @@ async def ingest_document(
 
 
 # ──────────────────────────────────────────────────────────────────── ask ──
+
+# ── auth endpoints ──────────────────────────────────────────────────
+
+
+class _SignupRequest(BaseModel):
+    email: str
+    password: str
+    display_name: str = ""
+
+
+class _LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class _ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+def _ip_of(request: Request) -> str:
+    # Prefer X-Forwarded-For (first hop) when behind a proxy, fall back
+    # to the direct client. Capped to 64 chars at the DB layer.
+    fwd = request.headers.get("x-forwarded-for") or ""
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else ""
+
+
+@app.post("/auth/signup", status_code=201)
+async def auth_signup(req: _SignupRequest, request: Request, response: Response) -> dict:
+    from .auth import signup_user, set_session_cookie, set_csrf_cookie
+    cu, token = await signup_user(
+        email=req.email, password=req.password,
+        display_name=req.display_name,
+        user_agent=request.headers.get("user-agent", "")[:300],
+        ip=_ip_of(request),
+    )
+    set_session_cookie(response, token)
+    set_csrf_cookie(response)
+    return {
+        "id": str(cu.id), "tenant_id": str(cu.tenant_id),
+        "email": cu.email, "display_name": cu.display_name, "role": cu.role,
+    }
+
+
+@app.post("/auth/login")
+async def auth_login(req: _LoginRequest, request: Request, response: Response) -> dict:
+    from .auth import login_user, set_session_cookie, set_csrf_cookie
+    cu, token = await login_user(
+        email=req.email, password=req.password,
+        user_agent=request.headers.get("user-agent", "")[:300],
+        ip=_ip_of(request),
+    )
+    set_session_cookie(response, token)
+    set_csrf_cookie(response)
+    return {
+        "id": str(cu.id), "tenant_id": str(cu.tenant_id),
+        "email": cu.email, "display_name": cu.display_name, "role": cu.role,
+    }
+
+
+@app.post("/auth/logout")
+async def auth_logout(request: Request, response: Response) -> dict:
+    from .auth import (
+        COOKIE_NAME, clear_session_cookie, get_session, revoke_session,
+    )
+    token = request.cookies.get(COOKIE_NAME) or ""
+    if token:
+        sess = await get_session(token)
+        if sess is not None:
+            await revoke_session(sess["session_id"], sess["tenant_id"])
+    clear_session_cookie(response)
+    response.delete_cookie("jos_csrf")
+    return {"ok": True}
+
+
+@app.get("/auth/me")
+async def auth_me(request: Request) -> dict:
+    """Identity probe for the SPA. Public path so an unauth'd browser
+    can ask 'am I logged in?' and get 401 without the global middleware
+    bouncing it (handled by the /auth/* prefix exclusion)."""
+    from .auth import COOKIE_NAME, get_session
+    token = request.cookies.get(COOKIE_NAME) or ""
+    if not token:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    sess = await get_session(token)
+    if sess is None:
+        raise HTTPException(status_code=401, detail="session invalid")
+    return {
+        "id": str(sess["user_id"]), "tenant_id": str(sess["tenant_id"]),
+        "email": sess["email"] or "", "display_name": sess["display_name"] or "",
+        "role": sess["role"] or "operator",
+    }
+
+
+@app.post("/auth/password")
+async def auth_change_password(
+    req: _ChangePasswordRequest, request: Request,
+) -> dict:
+    from .auth import (
+        COOKIE_NAME, get_session, validate_password, verify_password,
+        hash_password,
+    )
+    token = request.cookies.get(COOKIE_NAME) or ""
+    sess = await get_session(token) if token else None
+    if sess is None:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    err = validate_password(req.new_password)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    async with acquire(sess["tenant_id"]) as conn:
+        row = await conn.fetchrow(
+            "SELECT password_hash FROM users WHERE id = $1", sess["user_id"],
+        )
+        if row is None or not verify_password(req.current_password, row["password_hash"] or ""):
+            raise HTTPException(status_code=403, detail="current password incorrect")
+        await conn.execute(
+            "UPDATE users SET password_hash = $2 WHERE id = $1",
+            sess["user_id"], hash_password(req.new_password),
+        )
+    return {"ok": True}
+
 
 @app.post("/ask", response_model=AskResponse)
 async def ask_endpoint(req: AskRequest) -> AskResponse:

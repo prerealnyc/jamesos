@@ -70,8 +70,15 @@ const NAV: Group[] = [
   },
 ];
 
+// Auth pages render full-bleed without the sidebar chrome — the
+// signed-in shell is for the workspace, not the front door.
+const AUTH_PATHS = ["/login", "/signup"];
+
 export function Shell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
+  if (AUTH_PATHS.includes(path)) {
+    return <>{children}</>;
+  }
   return (
     <div className="flex min-h-screen">
       <aside className="w-64 shrink-0 bg-sidebar text-sidebar-foreground border-r border-sidebar-border flex flex-col">
@@ -118,17 +125,23 @@ export function Shell({ children }: { children: React.ReactNode }) {
         </nav>
 
         <Link
+          href="/profile"
+          className={`flex items-center gap-3 px-5 py-3 text-sm border-t border-sidebar-border transition-colors ${
+            path === "/profile" ? "text-sidebar-primary" : "opacity-70 hover:opacity-100"
+          }`}
+        >
+          <Icon name="design" />
+          <span>Profile</span>
+        </Link>
+        <Link
           href="/settings"
           className={`flex items-center gap-3 px-5 py-3 text-sm border-t border-sidebar-border transition-colors ${
             path === "/settings" ? "text-sidebar-primary" : "opacity-70 hover:opacity-100"
           }`}
         >
           <Icon name="settings" />
-          <span>Settings</span>
+          <span>API connections</span>
         </Link>
-        <div className="px-5 py-3 text-[11px] opacity-50 border-t border-sidebar-border">
-          Last scan: — · 8 platforms tracked
-        </div>
       </aside>
 
       <main className="flex-1 min-w-0 bg-background">
