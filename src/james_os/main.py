@@ -328,6 +328,61 @@ async def ask_endpoint(req: AskRequest) -> AskResponse:
     return await ask(req)
 
 
+# ── agent (Ask the memory → "Do" mode) ──────────────────────────────
+
+
+class _AgentRunRequest(BaseModel):
+    prompt: str
+
+
+@app.post("/agent/run", status_code=201)
+async def agent_run(req: _AgentRunRequest, background: BackgroundTasks) -> dict:
+    """Kick an agent run. Returns immediately with the run id — the
+    actual tool-use loop runs in the background, persisting state to
+    agent_runs as it goes so the UI can poll for live updates."""
+    from .agent import create_run, run_agent
+    if not req.prompt.strip():
+        raise HTTPException(status_code=400, detail="prompt is required")
+    row = await create_run(req.prompt.strip())
+    background.add_task(run_agent, UUID(row["id"]))
+    return row
+
+
+@app.get("/agent/runs")
+async def agent_runs_list(limit: int = 30) -> dict:
+    """Recent agent runs — for the run-history sidebar on /ask."""
+    from .agent import list_runs
+    return {"runs": await list_runs(limit=limit)}
+
+
+@app.get("/agent/runs/{run_id}")
+async def agent_run_detail(run_id: UUID) -> dict:
+    """One run with its full tool_calls log."""
+    from .agent import get_run
+    r = await get_run(run_id)
+    if r is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return r
+
+
+@app.get("/agent/tools")
+async def agent_tools_list() -> dict:
+    """Every tool the agent can currently call — names + descriptions
+    so the /ask page can render a "what I can do" panel without
+    hardcoding the list."""
+    from .agent import _TOOLS
+    return {
+        "tools": [
+            {
+                "name": t.name,
+                "description": t.description,
+                "writes": t.writes,
+            }
+            for t in _TOOLS.values()
+        ],
+    }
+
+
 # ─────────────────────────────────────────────────────────────── research ──
 
 @app.post("/generate", response_model=ContentDraft)

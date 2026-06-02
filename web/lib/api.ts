@@ -466,6 +466,40 @@ export const api = {
   }) => jpost<Production>("/video/produce", {
     platform: "instagram", aspect: "9:16", mode: "mixed", ...opts,
   }),
+  // ── Agent (Ask the memory → "Do" mode) ──────────────────────────
+  // Read-only and write-capable tool calls over the system's own
+  // feature set. Runs are persisted to agent_runs so the UI can
+  // poll for progress and show history.
+  agentRun: (prompt: string) =>
+    jpost<{ id: string; status: string; prompt: string; created_at: string }>(
+      "/agent/run", { prompt },
+    ),
+  listAgentRuns: (limit = 30) =>
+    jget<{
+      runs: {
+        id: string; prompt: string; status: string; summary: string;
+        answer: string; tool_call_count: number;
+        created_at: string | null; completed_at: string | null;
+      }[];
+    }>(`/agent/runs?limit=${limit}`),
+  getAgentRun: (id: string) =>
+    jget<{
+      id: string; prompt: string; status: string; summary: string;
+      answer: string; error: string | null;
+      tool_calls: {
+        name: string; args: Record<string, unknown>;
+        result: unknown; ok: boolean; error: string;
+        started_at: string; duration_ms: number;
+      }[];
+      citations: { event_id: string; span: string; confidence: number }[];
+      created_at: string | null; updated_at: string | null;
+      completed_at: string | null;
+    }>(`/agent/runs/${id}`),
+  listAgentTools: () =>
+    jget<{ tools: { name: string; description: string; writes: boolean }[] }>(
+      "/agent/tools",
+    ),
+
   // ── Analytics ───────────────────────────────────────────────────
   // Reads aggregate stats over the scraped social-media posts in the
   // events table. NO scraping happens here — that's /trends/refresh.
