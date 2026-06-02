@@ -41,6 +41,15 @@ const nextConfig = {
       // candidates) so the bare /long-form route stays the Next page.
       { source: "/long-form/:path*", destination: `${BACKEND}/long-form/:path*` },
       { source: "/api/:path*", destination: `${BACKEND}/api/:path*` },
+      // Auth endpoints (login/signup/logout/me/password). Without these
+      // the browser hits the Next.js 3000 server (no such route) and
+      // gets a 404 instead of the FastAPI auth handlers on 8001.
+      { source: "/auth/:path*", destination: `${BACKEND}/auth/:path*` },
+      // Agent (Ask the memory → Do mode) — list runs / get run / kick.
+      { source: "/agent/:path*", destination: `${BACKEND}/agent/:path*` },
+      // Analytics — handles / summary / posts / timeline / cohort /
+      // accounts / refresh.
+      { source: "/analytics/:path*", destination: `${BACKEND}/analytics/:path*` },
     ];
   },
 };
