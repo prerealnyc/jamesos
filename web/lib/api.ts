@@ -352,6 +352,11 @@ export type Production = {
   caption_style?: string;
   image_style?: string;
   final_url: string | null;
+  // Manager review state — null until someone Approves / Rejects on
+  // the Output Library. Drives the chip + the post-review summary.
+  review_status?: "approved" | "rejected" | "approved_with_notes" | null;
+  review_reason?: string | null;
+  reviewed_at?: string | null;
   error: string | null;
   avatar_provider: string;
   broll_provider: string;
@@ -572,6 +577,32 @@ export const api = {
     }>(`/analytics/cohort?${q}`);
   },
   listProductions: () => jget<Production[]>("/video/productions"),
+  // Per-production review — feeds the video-feedback learning loop.
+  // Empty `note` on approve = pure approval (no memory event). Reject
+  // ALWAYS captures a reason; the backend rejects empty strings at
+  // the learning layer so we never pollute memory with "rejected"
+  // with no reason.
+  approveProduction: (id: string, note = "") =>
+    jpost<{ ok: boolean; id: string; status: string; learned_id: string | null }>(
+      `/video/productions/${id}/approve`, { note },
+    ),
+  rejectProduction: (id: string, reason: string) =>
+    jpost<{ ok: boolean; id: string; status: string; learned_id: string | null }>(
+      `/video/productions/${id}/reject`, { reason },
+    ),
+  listVideoFeedback: (limit = 30, tag = "") => {
+    const q = new URLSearchParams();
+    if (limit) q.set("limit", String(limit));
+    if (tag) q.set("tag", tag);
+    return jget<{
+      feedback: {
+        id: string; reason: string; status: string;
+        mode: string; caption_style: string; platform: string;
+        tags: string[]; production_id: string;
+        created_at: string | null;
+      }[];
+    }>(`/video/feedback?${q}`);
+  },
   getProduction: (id: string) => jget<Production>(`/video/productions/${id}`),
   listClipLibrary: () => jget<{ items: ClipLibraryItem[] }>("/video/clips/library"),
   listCaptionStyles: () =>

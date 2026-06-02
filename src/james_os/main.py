@@ -560,6 +560,73 @@ async def video_production(production_id: UUID) -> dict:
     return p
 
 
+# ── video review (Output Library Approve / Reject) ────────────────
+
+
+class _VideoApproveRequest(BaseModel):
+    # Optional "approved with notes" — a positive review that STILL
+    # carries forward improvement feedback. Empty note = pure approve.
+    note: str = ""
+
+
+class _VideoRejectRequest(BaseModel):
+    reason: str
+
+
+@app.post("/video/productions/{production_id}/approve")
+async def video_approve(
+    production_id: UUID, req: _VideoApproveRequest,
+) -> dict:
+    """Approve a finished video render. When `note` is non-empty,
+    persists the note to the video-feedback learning loop as an
+    `approved_with_notes` event so the next render reads it."""
+    from .video_feedback import set_production_review, record_video_feedback
+    note = (req.note or "").strip()
+    status = "approved_with_notes" if note else "approved"
+    ok = await set_production_review(production_id, status, note)
+    if not ok:
+        raise HTTPException(status_code=404, detail="production not found")
+    learned_id = None
+    if note:
+        learned_id = await record_video_feedback(
+            production_id, note, status="approved_with_notes",
+        )
+    return {
+        "ok": True, "id": str(production_id), "status": status,
+        "learned_id": learned_id,
+    }
+
+
+@app.post("/video/productions/{production_id}/reject")
+async def video_reject(
+    production_id: UUID, req: _VideoRejectRequest,
+) -> dict:
+    """Reject a finished video render. The reason becomes a
+    `video_feedback`-category memory event so the next render
+    avoids the same mistake. Empty reasons still flip the status
+    chip but don't pollute memory."""
+    from .video_feedback import set_production_review, record_video_feedback
+    reason = (req.reason or "").strip()
+    ok = await set_production_review(production_id, "rejected", reason)
+    if not ok:
+        raise HTTPException(status_code=404, detail="production not found")
+    learned_id = await record_video_feedback(
+        production_id, reason, status="rejected",
+    )
+    return {
+        "ok": True, "id": str(production_id), "status": "rejected",
+        "learned_id": learned_id,
+    }
+
+
+@app.get("/video/feedback")
+async def video_feedback_list(limit: int = 50, tag: str = "") -> dict:
+    """Recent video-feedback events for display on /library and any
+    rendering prompt that wants to see what the team has flagged."""
+    from .video_feedback import recent_video_feedback
+    return {"feedback": await recent_video_feedback(limit=limit, tag=tag)}
+
+
 @app.get("/video/caption-styles")
 async def video_caption_styles() -> dict:
     """Caption preset library. Each item: {name, label, description}.
