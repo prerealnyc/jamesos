@@ -4,8 +4,25 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Icon } from "@/components/icons";
 
-type Item = { href: string; label: string; sub: string; icon: string; live?: boolean };
+type Item = {
+  href: string; label: string; sub: string; icon: string; live?: boolean;
+  // Extra routes that should keep this sidebar entry highlighted —
+  // used by hub entries (Video Studio, Media Library) whose
+  // sub-routes live at different URLs.
+  match?: string[];
+};
 type Group = { title: string; items: Item[] };
+
+// Sidebar groups — one entry per CONCEPT, not per page. Several pages
+// share a single sidebar entry (e.g. all 7 video makers live under one
+// "Video Studio" hub at /video; Reference + Hero share "Media Library"
+// at /jp-clips with sub-tabs). The active-route logic at render time
+// highlights the matching sidebar entry for any of its sub-routes.
+const VIDEO_SUBROUTES = [
+  "/video", "/long-form", "/engaging-video", "/story-mix",
+  "/heygen-video", "/story-video", "/pipeline", "/editor",
+];
+const MEDIA_SUBROUTES = ["/jp-clips", "/hero"];
 
 const NAV: Group[] = [
   {
@@ -15,47 +32,40 @@ const NAV: Group[] = [
     ],
   },
   {
-    title: "Voice & Content",
+    title: "Voice & Brand",
     items: [
       { href: "/jp-live", label: "JP Live", sub: "Live brand health", icon: "live", live: true },
       { href: "/brand", label: "Voice Rules", sub: "Brand voice & guidelines", icon: "voice", live: true },
     ],
   },
   {
-    title: "Production",
+    title: "Make Content",
     items: [
       { href: "/design-studio", label: "Content Studio", sub: "On-voice draft generation", icon: "design", live: true },
-      { href: "/long-form", label: "Long Form Cutter", sub: "50-60 min podcast → standalone reels", icon: "pipeline", live: true },
-      { href: "/engaging-video", label: "Engaging Reel", sub: "James full video + B-roll cutaways", icon: "pipeline", live: true },
-      { href: "/story-mix", label: "Story Reel (mix)", sub: "James on camera + AI B-roll · 1 HeyGen render", icon: "pipeline", live: true },
-      { href: "/heygen-video", label: "HeyGen Video", sub: "Avatar-only · one HeyGen render", icon: "pipeline", live: true },
-      { href: "/story-video", label: "Story Video", sub: "Voice + AI image story (faceless)", icon: "pipeline", live: true },
-      { href: "/pipeline", label: "Video Studio", sub: "Mixed: B-roll + avatar + clips", icon: "pipeline", live: true },
-      { href: "/editor", label: "Timeline Editor", sub: "Stitch clips, add text & music", icon: "pipeline", live: true },
-      { href: "/jp-clips", label: "Reference Library", sub: "Clips, style refs & B-roll", icon: "clips", live: true },
-      { href: "/hero", label: "Hero Library", sub: "Photos + videos of the brand's hero", icon: "clips", live: true },
+      { href: "/video", label: "Video Studio", sub: "All 7 video makers in one place", icon: "pipeline", live: true, match: VIDEO_SUBROUTES },
       { href: "/images", label: "Post Images", sub: "AI hero images for posts", icon: "images", live: true },
     ],
   },
   {
-    title: "Distribution",
+    title: "Library",
     items: [
-      { href: "/autopilot", label: "Autopilot", sub: "Autonomous daily content", icon: "queue", live: true },
-      { href: "/queue", label: "Approval Queue", sub: "Review & publish", icon: "queue", live: true },
+      { href: "/jp-clips", label: "Media Library", sub: "Reference clips & hero footage", icon: "clips", live: true, match: MEDIA_SUBROUTES },
       { href: "/library", label: "Output Library", sub: "Finished reels — download & share", icon: "clips", live: true },
-      { href: "/analytics", label: "Analytics", sub: "Per-handle social performance", icon: "social", live: true },
     ],
   },
   {
-    title: "Engagement",
+    title: "Approve & Publish",
     items: [
-      { href: "/social-companion", label: "Social Companion", sub: "Creator watchlist & trends", icon: "social", live: true },
+      { href: "/queue", label: "Approval Queue", sub: "Videos + posts split, ready to ship", icon: "queue", live: true },
+      { href: "/autopilot", label: "Autopilot", sub: "Autonomous daily content", icon: "queue", live: true },
     ],
   },
   {
     title: "Intelligence",
     items: [
+      { href: "/analytics", label: "Analytics", sub: "Brand-account performance", icon: "social", live: true },
       { href: "/market-research", label: "Market Research", sub: "Trend radar & intel", icon: "market", live: true },
+      { href: "/social-companion", label: "Social Companion", sub: "Creator watchlist & trends", icon: "social", live: true },
     ],
   },
 ];
@@ -77,7 +87,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 {g.title}
               </div>
               {g.items.map((n) => {
-                const active = path === n.href;
+                const active =
+                  path === n.href ||
+                  (n.match?.some((m) => path === m || path.startsWith(m + "/")) ?? false);
                 return (
                   <Link
                     key={n.href}

@@ -20,6 +20,7 @@ import { api, mediaUrl, type MediaAsset } from "@/lib/api";
 import {
   Button, Card, CardTitle, Spinner, PageHeader,
 } from "@/components/ui";
+import { MediaTabs } from "@/components/media-tabs";
 
 type Bucket = "hero_photo" | "hero_video";
 
@@ -92,9 +93,10 @@ export default function HeroLibraryPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title="Hero Library"
-        sub="Upload photos and videos of the brand's hero. The system describes the hero from the photos and uses that description in cinematic image prompts so the same recurring character shows up across story reels — not 12 random AI people."
+        title="Media Library"
+        sub="Photos and videos of the brand's hero. The system describes the hero from the photos and uses that description in cinematic image prompts so the same recurring character shows up across story reels — not 12 random AI people."
       />
+      <MediaTabs />
 
       <Card>
         <CardTitle>Upload</CardTitle>

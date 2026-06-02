@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, mediaUrl, type MediaAsset, type MediaRole } from "@/lib/api";
 import { PageHeader, Card, Button, Input, Spinner, Badge } from "@/components/ui";
+import { MediaTabs } from "@/components/media-tabs";
 
 const ROLES: { key: MediaRole; label: string; blurb: string }[] = [
   {
@@ -88,9 +89,10 @@ export default function ReferenceLibraryPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title="Reference Library"
-        sub="Upload James's clips, style references, and B-roll. These drive the video pipeline — the system learns the target style and reuses your footage."
+        title="Media Library"
+        sub="The brand's footage in one place. Reference clips drive the video pipeline; hero photos/videos feed gpt-image-1 so the brand's face is recurring across generated visuals."
       />
+      <MediaTabs />
 
       <div className="flex gap-2">
         {ROLES.map((r) => (
