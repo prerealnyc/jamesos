@@ -19,6 +19,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type AskResponse } from "@/lib/api";
 import { Button, Card, Input, Spinner, Badge, PageHeader } from "@/components/ui";
+import { OnboardingChecklist } from "@/components/onboarding-checklist";
 
 type AgentRun = Awaited<ReturnType<typeof api.getAgentRun>>;
 type AgentRunListItem = Awaited<ReturnType<typeof api.listAgentRuns>>["runs"][number];
@@ -120,6 +121,8 @@ export default function AskPage() {
             : "Agent mode — Claude calls real tools to render reels, refresh analytics, approve items, and more. Every run is logged."
         }
       />
+
+      <OnboardingChecklist />
 
       {/* Mode toggle */}
       <div className="flex items-center gap-2">
@@ -241,14 +244,16 @@ export default function AskPage() {
         {mode === "do" && activeRun && (
           <div className="mt-5 space-y-3">
             <div className="flex items-center gap-2">
-              <Badge tone={
-                activeRun.status === "running" ? "accent" :
-                activeRun.status === "succeeded" ? "ok" :
-                activeRun.status === "failed" ? "destructive" : "muted"
-              }>
-                {activeRun.status === "running" && <Spinner />}{" "}
-                {activeRun.status}
-              </Badge>
+              <span className={activeRun.status === "running" ? "animate-pulse" : ""}>
+                <Badge tone={
+                  activeRun.status === "running" ? "accent" :
+                  activeRun.status === "succeeded" ? "ok" :
+                  activeRun.status === "failed" ? "destructive" : "muted"
+                }>
+                  {activeRun.status === "running" && <Spinner />}{" "}
+                  {activeRun.status}
+                </Badge>
+              </span>
               <span className="text-[12px] text-muted-foreground">
                 {activeRun.tool_calls.length} tool call{activeRun.tool_calls.length === 1 ? "" : "s"}
               </span>

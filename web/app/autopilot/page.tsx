@@ -136,7 +136,11 @@ export default function AutopilotPage() {
 
       <Card>
         <CardTitle>Recent runs</CardTitle>
-        {runs.length === 0 && <p className="text-muted-foreground text-sm mt-2">No runs yet.</p>}
+        {runs.length === 0 && (
+          <p className="text-muted-foreground text-sm mt-2">
+            No batches run yet. Click <strong>Run a batch now</strong> above to test your configured settings, or enable the daily schedule. The autopilot will then propose drafts to the <Link href="/queue" className="underline">Approval Queue</Link> every day.
+          </p>
+        )}
         <div className="flex flex-col gap-3 mt-3">
           {runs.map((r) => (
             <div key={r.id} className="border border-border rounded-md p-3">

@@ -4,9 +4,19 @@ function cx(...c: (string | false | undefined)[]) {
   return c.filter(Boolean).join(" ");
 }
 
-export function Card({ className, children }: { className?: string; children: React.ReactNode }) {
+type CardVariant = "compact" | "normal" | "flush";
+const CARD_PAD: Record<CardVariant, string> = { compact: "p-3", normal: "p-5", flush: "p-0" };
+export function Card({
+  className = "",
+  children,
+  variant = "normal",
+}: {
+  className?: string;
+  children: React.ReactNode;
+  variant?: CardVariant;
+}) {
   return (
-    <div className={cx("bg-card text-card-foreground border border-border rounded-lg shadow-sm p-5", className)}>
+    <div className={cx("bg-card text-card-foreground border border-border rounded-lg shadow-sm", CARD_PAD[variant], className)}>
       {children}
     </div>
   );

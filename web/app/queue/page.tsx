@@ -2,8 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { api, type QueueItem, type QueueStats, type Guardrail } from "@/lib/api";
 import { Button, Card, PageHeader, Badge, Spinner } from "@/components/ui";
+import { Toast } from "@/components/toast";
+import { FilterChip } from "@/components/filter-chip";
 
 // "Script" formats can be turned INTO a video via the Composer — they
 // still belong on the Posts tab (they're written-content drafts), but
@@ -34,6 +37,7 @@ export default function QueuePage() {
   // that's the new flow we're highlighting for marketing review.
   const [kind, setKind] = useState<"videos" | "posts" | "all">("videos");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; href?: string; hrefLabel?: string } | null>(null);
 
   async function load() {
     try {
@@ -56,7 +60,17 @@ export default function QueuePage() {
   async function approve(id: string) {
     setActing(id);
     try {
+      const item = items.find((i) => i.id === id);
       await api.approve(id);
+      if (item && isVideoItem(item)) {
+        setToast({
+          message: "Approved — find the download in Output Library.",
+          href: "/library",
+          hrefLabel: "Output Library",
+        });
+      } else {
+        setToast({ message: "Approved.", href: undefined, hrefLabel: undefined });
+      }
       await load();
     } finally {
       setActing(null);
@@ -130,17 +144,14 @@ export default function QueuePage() {
               const active = kind === k;
               const count = k === "videos" ? nVideos : k === "posts" ? nPosts : inStatus.length;
               return (
-                <button
+                <FilterChip
                   key={k}
+                  active={active}
                   onClick={() => setKind(k)}
-                  className={`text-[13px] px-3 py-1.5 rounded-full border transition-colors ${
-                    active
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "bg-background border-border hover:bg-muted"
-                  }`}
+                  count={count}
                 >
-                  {k === "videos" ? "🎬 Videos" : k === "posts" ? "📝 Posts" : "All"} · {count}
-                </button>
+                  {k === "videos" ? "🎬 Videos" : k === "posts" ? "📝 Posts" : "All"}
+                </FilterChip>
               );
             })}
           </div>
@@ -160,13 +171,50 @@ export default function QueuePage() {
             : visibleStatus.filter((it) => !isVideoItem(it));
         if (visible.length === 0) {
           const kindLabel = kind === "videos" ? "videos" : kind === "posts" ? "posts" : "items";
+          const videoRenderers = (
+            <>
+              Render some from{" "}
+              <Link href="/long-form" className="text-primary hover:underline">
+                Long Form Cutter
+              </Link>{" "}
+              or{" "}
+              <Link href="/engaging-video" className="text-primary hover:underline">
+                Engaging Reel
+              </Link>
+              .
+            </>
+          );
+          const postSources = (
+            <>
+              Drafts from{" "}
+              <Link href="/design-studio" className="text-primary hover:underline">
+                Content Studio
+              </Link>{" "}
+              or{" "}
+              <Link href="/autopilot" className="text-primary hover:underline">
+                Autopilot
+              </Link>{" "}
+              show up here for review.
+            </>
+          );
           return (
             <Card>
               <p className="text-muted-foreground text-sm">
-                {filter === "pending" && `No pending ${kindLabel}. When an agent proposes one, it lands here for review.`}
-                {filter === "approved" && `No approved ${kindLabel} yet. Approved items show download/copy actions.`}
-                {filter === "rejected" && `No rejected ${kindLabel}.`}
-                {filter === "total" && `No ${kindLabel} in the queue.`}
+                {filter === "pending" && kind === "videos" && (
+                  <>No pending videos. {videoRenderers}</>
+                )}
+                {filter === "pending" && kind === "posts" && (
+                  <>No pending posts. {postSources}</>
+                )}
+                {filter === "pending" && kind === "all" && (
+                  <>
+                    No pending items. {videoRenderers} {postSources}
+                  </>
+                )}
+                {filter === "approved" && `No approved ${kindLabel} yet.`}
+                {filter === "rejected" &&
+                  "Nothing rejected. When you reject something, the reason teaches the system."}
+                {filter === "total" && "Queue is empty."}
               </p>
             </Card>
           );
@@ -360,6 +408,16 @@ export default function QueuePage() {
             voice-QA gate fails anything that violates it.
           </p>
         </Card>
+      )}
+
+      {toast && (
+        <Toast
+          message={toast.message}
+          kind="success"
+          href={toast.href}
+          hrefLabel={toast.hrefLabel}
+          onClose={() => setToast(null)}
+        />
       )}
     </div>
   );

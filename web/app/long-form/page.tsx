@@ -21,6 +21,7 @@ import {
 import {
   Button, Card, CardTitle, Input, Spinner, Badge, PageHeader,
 } from "@/components/ui";
+import { Toast } from "@/components/toast";
 
 type DriveVideo = {
   id: string; name: string;
@@ -88,6 +89,11 @@ export default function LongFormPage() {
     { name: string; label: string; description: string }[]
   >([]);
   const [renderingWhole, setRenderingWhole] = useState(false);
+  const [toast, setToast] = useState<{ message: string; href?: string; hrefLabel?: string } | null>(null);
+  // Tick counter that re-renders every second while a selected source is
+  // mid-flight, so the "last update Ns ago" indicator next to the status
+  // badge stays fresh. Independent from the 5s backend poll above.
+  const [, setNowTick] = useState(0);
 
   async function loadSources() {
     try {
@@ -134,6 +140,25 @@ export default function LongFormPage() {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sources, selected?.id, selected?.status]);
+
+  // Re-render every second while the selected source is mid-flight so
+  // the "last update Ns ago" hint stays current. Independent of the
+  // backend poll — only forces a render of the relative-time text.
+  useEffect(() => {
+    const midflight =
+      selected?.status === "uploading" ||
+      selected?.status === "transcribing" ||
+      selected?.status === "analyzing";
+    if (!midflight) return;
+    const t = setInterval(() => setNowTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [selected?.status, selected?.id]);
+
+  function secondsSince(iso: string): number {
+    const t = new Date(iso).getTime();
+    if (!t || Number.isNaN(t)) return 0;
+    return Math.max(0, Math.floor((Date.now() - t) / 1000));
+  }
 
   async function onUpload(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -232,6 +257,11 @@ export default function LongFormPage() {
           ),
         });
       }
+      setToast({
+        message: "Reel queued — rendering in the background.",
+        href: "/queue",
+        hrefLabel: "Approval Queue",
+      });
     } catch (e) {
       setErr(e instanceof Error ? e.message : "render failed");
     } finally {
@@ -252,6 +282,11 @@ export default function LongFormPage() {
       });
       // Production goes straight to the queue; user can poll there.
       await loadSelected(selected.id);
+      setToast({
+        message: "Reel queued — rendering in the background.",
+        href: "/queue",
+        hrefLabel: "Approval Queue",
+      });
     } catch (e) {
       setErr(e instanceof Error ? e.message : "render-whole failed");
     } finally {
@@ -275,6 +310,14 @@ export default function LongFormPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      {toast && (
+        <Toast
+          message={toast.message}
+          href={toast.href}
+          hrefLabel={toast.hrefLabel}
+          onClose={() => setToast(null)}
+        />
+      )}
       <PageHeader
         title="Long Form Cutter"
         sub="Upload a podcast / interview / long-form video. The system extracts audio, transcribes with word timestamps, and the LLM finds 3-5 standalone 30-45s windows that work as Reels. Click Render on the ones worth shipping — each runs the engaging-avatar pipeline (real footage + B-roll inserts + captions + music) and lands in the approval queue."
@@ -473,6 +516,13 @@ export default function LongFormPage() {
             <Badge tone={STATUS_TONE[selected.status] || "muted"}>
               {STATUS_LABEL[selected.status] || selected.status}
             </Badge>
+            {(selected.status === "uploading" ||
+              selected.status === "transcribing" ||
+              selected.status === "analyzing") && (
+              <span className="text-[11px] text-muted-foreground">
+                · last update {secondsSince(selected.updated_at)}s ago
+              </span>
+            )}
             <span className="text-[12px] text-muted-foreground">
               {fmtTime(selected.duration_s)} duration
             </span>

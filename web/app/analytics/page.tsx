@@ -25,6 +25,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { Button, Card, PageHeader, Badge, Spinner } from "@/components/ui";
+import { FilterChip } from "@/components/filter-chip";
 
 type Handle = { platform: string; handle: string; name?: string; posts: number; last_post_at: string | null };
 type BrandAccount = { platform: string; handle: string; name?: string };
@@ -202,7 +203,9 @@ export default function AnalyticsPage() {
             onClick={refreshFromSocial}
             disabled={refreshing || accounts.length === 0}
             className="text-[12px] !px-3 !py-1"
-            title={accounts.length === 0 ? "Add at least one account first" : "Scrape recent posts"}
+            title={accounts.length === 0
+              ? "Add at least one brand account first — there's nothing to scrape yet."
+              : "Scrape recent posts from your configured handles via Apify."}
           >
             {refreshing ? <Spinner /> : "Refresh from social"}
           </Button>
@@ -312,17 +315,13 @@ export default function AnalyticsPage() {
           <span className="text-[12px] text-muted-foreground">Window</span>
           <div className="flex items-center gap-1">
             {DAYS_OPTIONS.map((d) => (
-              <button
+              <FilterChip
                 key={d}
+                active={days === d}
                 onClick={() => setDays(d)}
-                className={`text-[12px] px-2.5 py-1 rounded border transition-colors ${
-                  days === d
-                    ? "bg-primary text-primary-foreground border-primary"
-                    : "bg-background border-border hover:bg-muted"
-                }`}
               >
                 {d}d
-              </button>
+              </FilterChip>
             ))}
           </div>
         </div>

@@ -21,6 +21,8 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, type Production } from "@/lib/api";
 import { Button, Card, PageHeader, Badge, Spinner } from "@/components/ui";
+import { SkeletonCard } from "@/components/skeleton";
+import { FilterChip } from "@/components/filter-chip";
 
 const MODE_LABEL: Record<string, string> = {
   long_form_reel: "Long Form Reel",
@@ -186,7 +188,9 @@ export default function LibraryPage() {
       )}
 
       {loading ? (
-        <div className="flex items-center gap-2 text-muted-foreground"><Spinner /> Loading…</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} aspect="9 / 16" />)}
+        </div>
       ) : items.length === 0 ? (
         <Card>
           <p className="text-muted-foreground text-[14px]">
@@ -203,30 +207,24 @@ export default function LibraryPage() {
           {modes.length > 1 && (
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-[12px] text-muted-foreground">Filter:</span>
-              <button
+              <FilterChip
+                active={modeFilter === "all"}
                 onClick={() => setModeFilter("all")}
-                className={`text-[12px] px-3 py-1 rounded-full border transition-colors ${
-                  modeFilter === "all"
-                    ? "bg-primary text-primary-foreground border-primary"
-                    : "bg-background border-border hover:bg-muted"
-                }`}
+                count={items.length}
               >
-                All · {items.length}
-              </button>
+                All
+              </FilterChip>
               {modes.map((m) => {
                 const n = items.filter((p) => (p.mode || "mixed") === m).length;
                 return (
-                  <button
+                  <FilterChip
                     key={m}
+                    active={modeFilter === m}
                     onClick={() => setModeFilter(m)}
-                    className={`text-[12px] px-3 py-1 rounded-full border transition-colors ${
-                      modeFilter === m
-                        ? "bg-primary text-primary-foreground border-primary"
-                        : "bg-background border-border hover:bg-muted"
-                    }`}
+                    count={n}
                   >
-                    {MODE_LABEL[m] || m} · {n}
-                  </button>
+                    {MODE_LABEL[m] || m}
+                  </FilterChip>
                 );
               })}
             </div>
@@ -241,17 +239,14 @@ export default function LibraryPage() {
               ["approved", "✓ Approved", reviewCounts.approved],
               ["rejected", "✗ Rejected", reviewCounts.rejected],
             ] as const).map(([k, label, n]) => (
-              <button
+              <FilterChip
                 key={k}
+                active={reviewFilter === k}
                 onClick={() => setReviewFilter(k as typeof reviewFilter)}
-                className={`text-[12px] px-3 py-1 rounded-full border transition-colors ${
-                  reviewFilter === k
-                    ? "bg-primary text-primary-foreground border-primary"
-                    : "bg-background border-border hover:bg-muted"
-                }`}
+                count={n}
               >
-                {label} · {n}
-              </button>
+                {label}
+              </FilterChip>
             ))}
             {feedback.length > 0 && (
               <button
@@ -364,20 +359,16 @@ export default function LibraryPage() {
                       same as text feedback). */}
                   {!review && (
                     <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => approve(p)}
-                        disabled={acting === p.id}
-                        className="text-[12px] px-3 py-1.5 rounded-md bg-primary text-primary-foreground hover:opacity-90 transition-opacity disabled:opacity-50"
-                      >
+                      <Button onClick={() => approve(p)} disabled={acting === p.id}>
                         {acting === p.id ? <Spinner /> : "✓ Approve"}
-                      </button>
-                      <button
+                      </Button>
+                      <Button
+                        variant="secondary"
                         onClick={() => { setRejectFor(p); setRejectReason(""); setErr(""); }}
                         disabled={acting === p.id}
-                        className="text-[12px] px-3 py-1.5 rounded-md border border-border hover:bg-muted hover:text-destructive transition-colors disabled:opacity-50"
                       >
                         ✗ Reject…
-                      </button>
+                      </Button>
                     </div>
                   )}
                   <div className="flex items-center gap-2 mt-auto">
@@ -390,12 +381,9 @@ export default function LibraryPage() {
                     >
                       ⬇ Download
                     </a>
-                    <button
-                      onClick={() => copyUrl(p)}
-                      className="text-[12px] px-3 py-1.5 rounded-md border border-border hover:bg-muted transition-colors"
-                    >
+                    <Button variant="secondary" onClick={() => copyUrl(p)}>
                       {copiedId === p.id ? "✓ Copied" : "Copy URL"}
-                    </button>
+                    </Button>
                     <a
                       href={p.final_url || "#"}
                       target="_blank"

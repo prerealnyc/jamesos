@@ -16,9 +16,13 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
-import { Button, Card, Input, PageHeader, Spinner } from "@/components/ui";
+import { Badge, Button, Card, Input, PageHeader, Spinner } from "@/components/ui";
 
 type Me = NonNullable<Awaited<ReturnType<typeof api.whoami>>>;
+
+function platformChip(p: string): string {
+  return ({ instagram: "IG", tiktok: "TT", youtube: "YT" } as Record<string, string>)[p] || p;
+}
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -31,6 +35,12 @@ export default function ProfilePage() {
   const [pwErr, setPwErr] = useState("");
   const [pwOk, setPwOk] = useState(false);
 
+  // Brand accounts mirror (full management at /analytics)
+  const [accounts, setAccounts] = useState<{ platform: string; handle: string; name?: string }[]>([]);
+  const [newPlatform, setNewPlatform] = useState("instagram");
+  const [newHandle, setNewHandle] = useState("");
+  const [accountBusy, setAccountBusy] = useState(false);
+
   useEffect(() => {
     (async () => {
       try {
@@ -42,6 +52,31 @@ export default function ProfilePage() {
       }
     })();
   }, [router]);
+
+  useEffect(() => {
+    api.listBrandAccounts().then((r) => setAccounts(r.accounts)).catch(() => {});
+  }, []);
+
+  async function addAccount() {
+    const h = newHandle.trim().replace(/^@/, "").toLowerCase();
+    if (!h) return;
+    setAccountBusy(true);
+    try {
+      const next = [...accounts, { platform: newPlatform, handle: h }];
+      const r = await api.setBrandAccounts(next);
+      setAccounts(r.accounts);
+      setNewHandle("");
+    } finally { setAccountBusy(false); }
+  }
+
+  async function removeAccount(target: { platform: string; handle: string }) {
+    setAccountBusy(true);
+    try {
+      const next = accounts.filter(a => !(a.platform === target.platform && a.handle === target.handle));
+      const r = await api.setBrandAccounts(next);
+      setAccounts(r.accounts);
+    } finally { setAccountBusy(false); }
+  }
 
   async function logout() {
     try { await api.logout(); } catch { /* fall through */ }
@@ -103,6 +138,74 @@ export default function ProfilePage() {
         </dl>
         <div className="pt-3 border-t border-border">
           <Button variant="secondary" onClick={logout}>Sign out</Button>
+        </div>
+      </Card>
+
+      {/* Workspace — Brand accounts (compact mirror of /analytics) */}
+      <Card className="!p-4 space-y-3">
+        <div>
+          <p className="text-[13px] font-medium">Workspace — Brand accounts</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            The handles analytics and autopilot track for this workspace.
+          </p>
+        </div>
+        {accounts.length > 0 ? (
+          <div className="flex flex-wrap gap-2">
+            {accounts.map((a) => (
+              <span
+                key={`${a.platform}:${a.handle}`}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-muted border border-border text-[12px]"
+              >
+                <Badge tone="muted">{platformChip(a.platform)}</Badge>
+                <span>@{a.handle}</span>
+                <button
+                  onClick={() => removeAccount(a)}
+                  disabled={accountBusy}
+                  className="text-muted-foreground hover:text-destructive ml-1"
+                  title="Remove this account"
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[12px] text-muted-foreground">
+            Add your social handles so analytics and autopilot know what to track.
+          </p>
+        )}
+        <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-border">
+          <select
+            value={newPlatform}
+            onChange={(e) => setNewPlatform(e.target.value)}
+            className="text-[12px] px-2 py-1.5 rounded border border-border bg-background"
+          >
+            <option value="instagram">Instagram</option>
+            <option value="tiktok">TikTok</option>
+            <option value="youtube">YouTube</option>
+          </select>
+          <Input
+            placeholder="handle (no @)"
+            value={newHandle}
+            onChange={(e) => setNewHandle(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addAccount(); }}
+            className="text-[12px] !py-1.5 min-w-[160px]"
+          />
+          <Button
+            onClick={addAccount}
+            disabled={!newHandle.trim() || accountBusy}
+            className="text-[12px] !px-3 !py-1.5"
+          >
+            {accountBusy ? <Spinner /> : "+ Add"}
+          </Button>
+        </div>
+        <div>
+          <Link
+            href="/analytics"
+            className="text-[13px] text-primary hover:underline"
+          >
+            Open full analytics →
+          </Link>
         </div>
       </Card>
 
