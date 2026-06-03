@@ -19,3 +19,4 @@ build/
 htmlcov/
 # Uploaded reference/media files (local dev storage) — never commit user media.
 media_store/
+.claude/
