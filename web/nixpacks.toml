@@ -1,0 +1,15 @@
+# Frontend deployment config — Railway picks this up when the service
+# root is set to `web/`. Standard Next.js build + start.
+
+[phases.setup]
+nixPkgs = ["nodejs_20"]
+
+[phases.install]
+cmds = ["npm ci"]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+# Railway sets $PORT; Next.js respects PORT when started via `next start`.
+cmd = "npx next start -p $PORT"

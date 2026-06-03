@@ -1,0 +1,21 @@
+# Backend deployment config — Railway picks this up from the repo root
+# and builds the FastAPI service. The frontend has its own nixpacks
+# config under web/ for the Next.js service.
+
+[phases.setup]
+# ffmpeg is required for video slicing + audio extraction (long-form
+# cutter pipeline). nixpacks doesn't ship it by default — add via apt.
+aptPkgs = ["ffmpeg"]
+# Pin the Python version to match local dev (.venv is 3.12).
+nixPkgs = ["python312", "uv"]
+
+[phases.install]
+# uv is dramatically faster than pip and handles the pyproject.toml
+# nicely. Creates a venv at /opt/venv that the start command uses.
+cmds = [
+  "uv venv /opt/venv",
+  "uv pip install --python /opt/venv/bin/python -e .",
+]
+
+[start]
+cmd = "/opt/venv/bin/uvicorn james_os.main:app --host 0.0.0.0 --port $PORT"

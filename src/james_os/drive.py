@@ -34,17 +34,48 @@ class DriveNotConfigured(RuntimeError):
 
 def _service():
     """Build an authenticated Drive client. Imports inside so the SDK is
-    optional — the rest of the app runs even if google-api isn't installed."""
+    optional — the rest of the app runs even if google-api isn't installed.
+
+    GOOGLE_SERVICE_ACCOUNT_JSON can be either:
+      * A filesystem path (local dev) — read as a file
+      * Inline JSON starting with '{' (cloud deploys with no disk) —
+        parsed directly
+      * Base64-encoded JSON (when shell-escaping the JSON is painful)
+    """
+    import base64, json as _json
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
 
-    path = (settings.google_service_account_json or "").strip()
-    if not path:
+    raw = (settings.google_service_account_json or "").strip()
+    if not raw:
         raise DriveNotConfigured(
-            "Set GOOGLE_SERVICE_ACCOUNT_JSON (path to the service-account "
-            "key file) in .env or Settings."
+            "Set GOOGLE_SERVICE_ACCOUNT_JSON (path to the file, the "
+            "inline JSON, or base64-encoded JSON) in .env or Settings."
         )
-    creds = service_account.Credentials.from_service_account_file(path, scopes=_SCOPES)
+
+    info: dict | None = None
+    if raw.startswith("{"):
+        # Inline JSON.
+        try:
+            info = _json.loads(raw)
+        except _json.JSONDecodeError as e:
+            raise DriveNotConfigured(
+                f"GOOGLE_SERVICE_ACCOUNT_JSON looks like JSON but didn't parse: {e}"
+            ) from e
+    elif not raw.startswith("/") and not raw.endswith(".json"):
+        # Best-effort base64 decode (won't match a file path or JSON).
+        try:
+            decoded = base64.b64decode(raw, validate=True).decode("utf-8")
+            if decoded.startswith("{"):
+                info = _json.loads(decoded)
+        except (ValueError, _json.JSONDecodeError):
+            info = None
+
+    if info is not None:
+        creds = service_account.Credentials.from_service_account_info(info, scopes=_SCOPES)
+    else:
+        # Fall through to the file-path interpretation (local dev).
+        creds = service_account.Credentials.from_service_account_file(raw, scopes=_SCOPES)
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 

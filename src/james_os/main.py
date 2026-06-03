@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -146,13 +147,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS — dev defaults (Next.js on :3000), extend via ALLOWED_ORIGINS env
+# (comma-separated list of full origins, no trailing slash). Production
+# deploys MUST set ALLOWED_ORIGINS to the frontend's HTTPS origin or the
+# browser will refuse the cookie cross-site.
+_cors_default = ["http://localhost:3000", "http://127.0.0.1:3000"]
+_cors_extra = [
+    o.strip() for o in (os.environ.get("ALLOWED_ORIGINS", "") or "").split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=_cors_default + _cors_extra,
     allow_methods=["*"],
     allow_headers=["*"],
-    # Cookies must be allowed cross-origin (3000 → 8001) so the
-    # session cookie sticks; without this the browser drops it.
+    # Cookies must be allowed cross-origin (3000 → 8001 in dev; frontend
+    # ↔ backend in prod) so the session cookie sticks; without this the
+    # browser drops it.
     allow_credentials=True,
 )
 
