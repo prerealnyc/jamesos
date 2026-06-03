@@ -10,12 +10,12 @@ FROM node:20-slim AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# BACKEND_ORIGIN is read at build time by next.config.mjs to bake the
-# rewrites in. Provide a placeholder default so the build doesn't
-# fail when the env isn't set yet; the real value is injected on
-# Railway via the service's env var.
-ARG BACKEND_ORIGIN=http://localhost:8001
-ENV BACKEND_ORIGIN=$BACKEND_ORIGIN
+# next.config.mjs reads process.env.BACKEND_ORIGIN at module load —
+# which on Railway happens when `next start` runs inside the final
+# container, not at build time. The build itself doesn't need this
+# var (it's only used by the dev rewrites layer), so we don't set
+# ENV in the build stage. Setting ENV here would FREEZE the runtime
+# value to the build-time default and shadow Railway's runtime env.
 RUN npm run build
 
 FROM node:20-slim AS run
