@@ -10,12 +10,15 @@ FROM node:20-slim AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# next.config.mjs reads process.env.BACKEND_ORIGIN at module load —
-# which on Railway happens when `next start` runs inside the final
-# container, not at build time. The build itself doesn't need this
-# var (it's only used by the dev rewrites layer), so we don't set
-# ENV in the build stage. Setting ENV here would FREEZE the runtime
-# value to the build-time default and shadow Railway's runtime env.
+# Next bakes rewrites into .next/routes-manifest.json at BUILD time,
+# so BACKEND_ORIGIN must be present when `npm run build` runs. Railway
+# auto-injects service env vars as docker build args when the Dockerfile
+# declares them as ARG — the ENV line then exposes the value to the
+# `npm run build` process. We only set this in the build stage; the
+# run stage stays clean so Railway's runtime env still wins there
+# (next.config.mjs also re-reads inside rewrites() as a safety net).
+ARG BACKEND_ORIGIN
+ENV BACKEND_ORIGIN=$BACKEND_ORIGIN
 RUN npm run build
 
 FROM node:20-slim AS run
