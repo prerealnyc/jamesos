@@ -2,10 +2,17 @@
 
 // Proxy backend calls to the FastAPI origin so the browser stays
 // same-origin (no CORS) in dev and prod. Override with BACKEND_ORIGIN.
-const BACKEND = process.env.BACKEND_ORIGIN || "http://localhost:8001";
+//
+// The env lookup MUST happen inside the function — Next.js evaluates
+// the rewrites at runtime (after Railway has injected env vars), but
+// any top-level `const X = process.env.Y` is evaluated when the module
+// first loads, which on Railway can be before the env is fully set
+// in the Node process. Moving the lookup inside `rewrites()` makes
+// it deterministic.
 
 const nextConfig = {
   async rewrites() {
+    const BACKEND = process.env.BACKEND_ORIGIN || "http://localhost:8001";
     return [
       { source: "/ask", destination: `${BACKEND}/ask` },
       { source: "/health", destination: `${BACKEND}/health` },
