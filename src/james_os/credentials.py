@@ -121,6 +121,19 @@ MANAGED_FIELDS: list[ManagedField] = [
     ManagedField("meta_access_token", "Meta (IG/FB/Threads) token", "Publishing & social"),
     ManagedField("twitter_bearer_token", "X/Twitter bearer token", "Publishing & social"),
     ManagedField("xpoz_api_key", "Xpoz API key", "Publishing & social"),
+    # Meta Developer App credentials — used by the upcoming Instagram /
+    # Facebook OAuth flow. App ID is technically public (it ships in
+    # client-side OAuth URLs) but we still treat it as managed for
+    # easy editing. Secret is server-side only and never exposed.
+    ManagedField(
+        "meta_app_id", "Meta App ID (Instagram / Facebook OAuth)",
+        "Publishing & social", secret=False,
+        placeholder="e.g. 1234567890123456",
+    ),
+    ManagedField(
+        "meta_app_secret", "Meta App Secret (Instagram / Facebook OAuth)",
+        "Publishing & social",
+    ),
 ]
 
 _FIELD_NAMES = {f.name for f in MANAGED_FIELDS}

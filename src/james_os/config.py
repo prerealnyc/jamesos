@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     minimax_api_key: str = ""      # video generation
     postproxy_api_key: str = ""    # multi-platform publishing
     meta_access_token: str = ""    # Meta Graph (IG/FB/Threads)
+    meta_app_id: str = ""          # Meta Developer App ID (OAuth client)
+    meta_app_secret: str = ""      # Meta Developer App Secret (server-side)
     twitter_bearer_token: str = "" # X/Twitter
     xpoz_api_key: str = ""         # social engagement read
 
