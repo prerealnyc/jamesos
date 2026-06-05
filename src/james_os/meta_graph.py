@@ -45,19 +45,23 @@ def _token(which: str = "content") -> str:
     """Get the right token for the job. `which`:
        * 'content' — IG/FB content + insights (meta_access_token)
        * 'ads'     — Marketing API / Ads Manager (meta_ads_access_token)
-    Falls back to the content token when the ads token isn't set, so
-    a single-token setup still works for everything the content scopes
-    can reach."""
+
+    Falls back EITHER WAY when one of the two tokens isn't set. This
+    matters because a Meta System User token with a wide scope set
+    (read_insights, pages_show_list, instagram_basic, ads_read, ...)
+    can serve both sides — so a single-token setup works everywhere.
+    """
     primary = (settings.meta_access_token or "").strip()
     ads = (settings.meta_ads_access_token or "").strip()
     if which == "ads":
         t = ads or primary
     else:
-        t = primary
+        t = primary or ads
     if not t:
         raise MetaNotConfigured(
-            "Set meta_access_token in /settings — paste a long-lived "
-            "Graph API token from your Meta Developer App."
+            "Set meta_access_token (or meta_ads_access_token) in "
+            "/settings — paste a long-lived Graph API token from your "
+            "Meta Developer App."
         )
     return t
 
@@ -143,20 +147,41 @@ async def inspect() -> dict:
     """
     out: dict[str, Any] = {"ok": False}
 
-    out["content_token"] = await _probe_token("content")
-    out["ads_token"] = await _probe_token("ads")
+    # Probe both. With the recent fallback, if only one is set the
+    # content/ads functions still work — they share the token under
+    # the hood. But here we report each slot honestly.
+    primary_set = bool((settings.meta_access_token or "").strip())
+    ads_set = bool((settings.meta_ads_access_token or "").strip())
 
-    if not out["content_token"]["is_configured"]:
-        out["error"] = "No meta_access_token configured — paste one in /settings."
+    if primary_set:
+        out["content_token"] = await _probe_token("content")
+    else:
+        out["content_token"] = {"is_configured": False, "is_valid": False, "scopes": []}
+
+    if ads_set:
+        out["ads_token"] = await _probe_token("ads")
+    else:
+        out["ads_token"] = {"is_configured": False, "is_valid": False, "scopes": []}
+
+    # The effective token used for content-side calls — falls back
+    # ads→content per _token(). Use this to decide if we can proceed.
+    effective = out["content_token"] if out["content_token"]["is_configured"] \
+        else out["ads_token"]
+
+    if not effective["is_configured"]:
+        out["error"] = (
+            "No Meta token configured — paste meta_access_token or "
+            "meta_ads_access_token in /settings."
+        )
         return out
 
     # Keep `token` for backward compat with the older response shape.
-    out["token"] = out["content_token"]
+    out["token"] = effective
 
-    if not out["content_token"]["is_valid"]:
+    if not effective["is_valid"]:
         out["error"] = (
-            out["content_token"].get("error")
-            or "Content token is invalid (Meta reports is_valid=false). "
+            effective.get("error")
+            or "Token is invalid (Meta reports is_valid=false). "
                "Regenerate from the Graph API Explorer or your app's settings."
         )
         return out
