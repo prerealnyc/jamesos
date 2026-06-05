@@ -41,8 +41,19 @@ class MetaApiError(RuntimeError):
     verbatim error so the UI can show it without us re-interpreting."""
 
 
-def _token() -> str:
-    t = (settings.meta_access_token or "").strip()
+def _token(which: str = "content") -> str:
+    """Get the right token for the job. `which`:
+       * 'content' — IG/FB content + insights (meta_access_token)
+       * 'ads'     — Marketing API / Ads Manager (meta_ads_access_token)
+    Falls back to the content token when the ads token isn't set, so
+    a single-token setup still works for everything the content scopes
+    can reach."""
+    primary = (settings.meta_access_token or "").strip()
+    ads = (settings.meta_ads_access_token or "").strip()
+    if which == "ads":
+        t = ads or primary
+    else:
+        t = primary
     if not t:
         raise MetaNotConfigured(
             "Set meta_access_token in /settings — paste a long-lived "
@@ -51,9 +62,9 @@ def _token() -> str:
     return t
 
 
-async def _get(path: str, params: dict[str, Any] | None = None) -> dict:
+async def _get(path: str, params: dict[str, Any] | None = None, which: str = "content") -> dict:
     """One GET against Graph API, with the token tacked on."""
-    q = {"access_token": _token(), **(params or {})}
+    q = {"access_token": _token(which), **(params or {})}
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as c:
         r = await c.get(f"{GRAPH}{path}", params=q)
     if r.status_code >= 400:
@@ -69,14 +80,18 @@ async def _get(path: str, params: dict[str, Any] | None = None) -> dict:
 # ── token + identity ────────────────────────────────────────────────
 
 
-async def debug_token() -> dict:
+async def debug_token(which: str = "content") -> dict:
     """`/debug_token` — what scopes this token has, when it expires,
     which app it belongs to, which user it represents. The
-    authoritative answer to "what can we actually do."""
-    token = _token()
+    authoritative answer to "what can we actually do.
+
+    `which` picks which configured token to inspect — content vs ads.
+    """
+    token = _token(which)
     return await _get(
         "/debug_token",
         params={"input_token": token},
+        which=which,
     )
 
 
@@ -95,43 +110,55 @@ async def my_pages() -> dict:
     )
 
 
-async def inspect() -> dict:
-    """All-in-one probe. Returns a structured 'here's what works'
-    report the UI can render verbatim:
-
-        {
-          ok: true,
-          token: { app_id, type, expires_at, scopes: [...], is_valid },
-          user: { id, name },
-          pages: [{ id, name, instagram_business_account: { id, username } } ...],
-          actionable: [ "Can fetch IG media for @x", "Missing scope: ..." ],
-        }
-
-    Any error surfaces with the verbatim Meta message — usually the
-    fastest path to fixing it (expired token, missing scope, etc).
-    """
-    out: dict[str, Any] = {"ok": False}
-
-    # Step 1 — debug_token
+async def _probe_token(which: str) -> dict:
+    """Helper — debug_token + summary for one of the configured tokens.
+    Returns {is_configured, is_valid, type, scopes, expires_at, error?}."""
     try:
-        dt = await debug_token()
+        dt = await debug_token(which)
         data = dt.get("data", {})
-        out["token"] = {
+        return {
+            "is_configured": True,
             "is_valid": bool(data.get("is_valid", False)),
             "type": data.get("type", ""),
             "app_id": data.get("app_id", ""),
             "application": data.get("application", ""),
             "user_id": data.get("user_id", ""),
             "expires_at": data.get("expires_at", 0),
-            "data_access_expires_at": data.get("data_access_expires_at", 0),
             "scopes": data.get("scopes", []),
         }
-        if not out["token"]["is_valid"]:
-            out["error"] = "Token is invalid (Meta reports is_valid=false). " \
-                "Regenerate from the Graph API Explorer or your app's settings."
-            return out
+    except MetaNotConfigured:
+        return {"is_configured": False, "is_valid": False, "scopes": []}
     except MetaApiError as e:
-        out["error"] = f"debug_token failed: {e}"
+        return {
+            "is_configured": True, "is_valid": False, "scopes": [],
+            "error": str(e),
+        }
+
+
+async def inspect() -> dict:
+    """All-in-one probe. Returns a structured 'here's what works'
+    report the UI can render verbatim. Probes BOTH the content token
+    (meta_access_token) and the ads token (meta_ads_access_token)
+    when configured, so you can see what each one unlocks.
+    """
+    out: dict[str, Any] = {"ok": False}
+
+    out["content_token"] = await _probe_token("content")
+    out["ads_token"] = await _probe_token("ads")
+
+    if not out["content_token"]["is_configured"]:
+        out["error"] = "No meta_access_token configured — paste one in /settings."
+        return out
+
+    # Keep `token` for backward compat with the older response shape.
+    out["token"] = out["content_token"]
+
+    if not out["content_token"]["is_valid"]:
+        out["error"] = (
+            out["content_token"].get("error")
+            or "Content token is invalid (Meta reports is_valid=false). "
+               "Regenerate from the Graph API Explorer or your app's settings."
+        )
         return out
 
     # Step 2 — /me
@@ -158,17 +185,22 @@ async def inspect() -> dict:
         out["error"] = f"/me/accounts failed: {e}"
         return out
 
-    # Build an "actionable" summary
-    scopes = set(out["token"]["scopes"])
+    # Build an "actionable" summary — covers BOTH tokens' scopes
+    content_scopes = set(out["content_token"]["scopes"])
+    ads_scopes = set(out["ads_token"]["scopes"]) if out["ads_token"]["is_configured"] else set()
+    all_scopes = content_scopes | ads_scopes
+
     actionable: list[str] = []
     needed = {
         "instagram_basic": "Read IG profile + media",
         "instagram_manage_insights": "Read IG post + account insights",
         "pages_show_list": "List your Facebook Pages",
         "pages_read_engagement": "Read FB Page engagement",
+        "ads_read": "Read Ads Manager campaigns + insights (via ads token)",
+        "business_management": "Read Business Manager assets",
     }
     for scope, what in needed.items():
-        if scope in scopes:
+        if scope in all_scopes:
             actionable.append(f"✓ {what} (has `{scope}`)")
         else:
             actionable.append(f"✗ Missing `{scope}` — needed to: {what}")
@@ -180,6 +212,10 @@ async def inspect() -> dict:
     actionable.append(
         f"→ {len(out['pages'])} Facebook Page(s), {ig_count} with linked Instagram Business account"
     )
+    if out["ads_token"]["is_configured"]:
+        actionable.append(
+            f"→ Ads token configured (type: {out['ads_token']['type'] or 'unknown'})"
+        )
 
     out["actionable"] = actionable
     out["ok"] = True

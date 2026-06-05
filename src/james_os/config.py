@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     meta_business_id: str = ""     # Meta Business Manager ID
     meta_ad_account_id: str = ""   # Ads Manager account (act_XXXXXXXXX)
     meta_ig_business_id: str = ""  # IG Business account ID (auto-discoverable)
+    meta_ads_access_token: str = "" # Separate EAA token for Ads / Marketing API
     twitter_bearer_token: str = "" # X/Twitter
     xpoz_api_key: str = ""         # social engagement read
 

@@ -152,6 +152,16 @@ MANAGED_FIELDS: list[ManagedField] = [
         "Publishing & social", secret=False,
         placeholder="auto-discovered if blank",
     ),
+    # Separate token for Ads Manager / Marketing API. Different scope
+    # set (ads_read, ads_management, business_management) than the
+    # content-side meta_access_token (instagram_basic, *_insights,
+    # pages_*). Using the right token per endpoint avoids missing-
+    # scope errors. Both are EAA-prefixed long-lived tokens.
+    ManagedField(
+        "meta_ads_access_token",
+        "Meta Ads Manager / Marketing API token",
+        "Publishing & social",
+    ),
 ]
 
 _FIELD_NAMES = {f.name for f in MANAGED_FIELDS}
