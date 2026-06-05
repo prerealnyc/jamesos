@@ -1588,6 +1588,49 @@ async def analytics_timeline(
     }
 
 
+# ── Meta Graph integration ──────────────────────────────────────────
+
+
+@app.get("/integrations/meta/inspect")
+async def integrations_meta_inspect() -> dict:
+    """One-shot probe of the configured meta_access_token. Returns
+    {ok, token, user, pages, actionable, error?} so the UI can render
+    'here's what works' before any real fetch. Verbatim Meta error
+    messages — those are the most useful diagnostic."""
+    from .meta_graph import inspect, MetaNotConfigured
+    try:
+        return await inspect()
+    except MetaNotConfigured as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.get("/integrations/meta/ig-media")
+async def integrations_meta_ig_media(
+    ig_business_id: str = "", limit: int = 30,
+) -> dict:
+    """Recent IG Business media for the configured token. If
+    ig_business_id is blank, auto-discover via the first Page that has
+    a linked Instagram Business account."""
+    from .meta_graph import inspect, ig_recent_media, MetaNotConfigured
+    try:
+        if not ig_business_id:
+            probe = await inspect()
+            for p in probe.get("pages", []):
+                iba = (p.get("instagram_business_account") or {}).get("id")
+                if iba:
+                    ig_business_id = iba
+                    break
+        if not ig_business_id:
+            raise HTTPException(
+                status_code=404,
+                detail="No Instagram Business account found on any Page "
+                       "this token can see.",
+            )
+        return await ig_recent_media(ig_business_id, limit=limit)
+    except MetaNotConfigured as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 @app.get("/analytics/cohort")
 async def analytics_cohort(platform: str = "", days: int = 30) -> dict:
     """Per-brand-account leaderboard ranked by views in the window —

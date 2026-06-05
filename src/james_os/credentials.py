@@ -134,6 +134,24 @@ MANAGED_FIELDS: list[ManagedField] = [
         "meta_app_secret", "Meta App Secret (Instagram / Facebook OAuth)",
         "Publishing & social",
     ),
+    # Business / Ads Manager identifiers — used to scope Graph API
+    # calls to a specific business or ad account. Not secrets but
+    # tedious to dig out, so we store them here for one-click use.
+    ManagedField(
+        "meta_business_id", "Meta Business Manager ID",
+        "Publishing & social", secret=False,
+        placeholder="e.g. 1234567890123456",
+    ),
+    ManagedField(
+        "meta_ad_account_id", "Meta Ad Account ID (Ads insights)",
+        "Publishing & social", secret=False,
+        placeholder="e.g. act_1234567890",
+    ),
+    ManagedField(
+        "meta_ig_business_id", "Instagram Business Account ID (optional)",
+        "Publishing & social", secret=False,
+        placeholder="auto-discovered if blank",
+    ),
 ]
 
 _FIELD_NAMES = {f.name for f in MANAGED_FIELDS}
