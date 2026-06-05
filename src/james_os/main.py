@@ -1588,6 +1588,28 @@ async def analytics_timeline(
     }
 
 
+# ── Unified connected-accounts view (Meta + PostProxy) ─────────────
+
+
+@app.get("/integrations/connections")
+async def integrations_connections() -> dict:
+    """Every brand profile reachable across Meta + PostProxy in one
+    list. The Analytics page reads this to render its 'Connected
+    accounts' section without caring which integration owns what."""
+    from .connections import list_all_connections
+    return await list_all_connections()
+
+
+@app.get("/integrations/profile/{provider}/{profile_id}/posts")
+async def integrations_profile_posts(
+    provider: str, profile_id: str, limit: int = 20,
+) -> dict:
+    """Recent posts for one connected profile. Routes to the right
+    backend based on `provider` ('meta' | 'postproxy')."""
+    from .connections import list_profile_posts
+    return await list_profile_posts(provider, profile_id, limit)
+
+
 # ── PostProxy integration (X / IG / LinkedIn / TikTok via one API) ──
 
 

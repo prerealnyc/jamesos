@@ -25,6 +25,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { Button, Card, PageHeader, Badge, Spinner } from "@/components/ui";
+import { ConnectedAccounts } from "@/components/connected-accounts";
 import { FilterChip } from "@/components/filter-chip";
 
 type Handle = { platform: string; handle: string; name?: string; posts: number; last_post_at: string | null };
@@ -189,7 +190,10 @@ export default function AnalyticsPage() {
         sub="Performance for the brand's own social accounts. Peer / competitor data lives in Market Research."
       />
 
-      {/* ── Accounts management ────────────────────────────────── */}
+      {/* ── Connected accounts (live API connections) ─────────── */}
+      <ConnectedAccounts />
+
+      {/* ── Accounts management (Apify public scrape) ─────────── */}
       <Card className="!p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div>

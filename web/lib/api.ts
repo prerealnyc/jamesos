@@ -559,6 +559,30 @@ export const api = {
       "/agent/tools",
     ),
 
+  // ── Connected accounts (Meta + PostProxy unified) ──────────────
+  listConnections: () =>
+    jget<{
+      profiles: {
+        provider: "meta" | "postproxy";
+        platform: string;
+        id: string;
+        handle: string;
+        name: string;
+        status: string;
+        post_count: number;
+        avatar_url: string;
+        expires_at: string | null;
+        raw: Record<string, unknown>;
+      }[];
+      providers: Record<string, { configured: boolean; ok?: boolean; error?: string; profile_count?: number; scopes?: string[]; type?: string }>;
+      by_platform: Record<string, number>;
+      total: number;
+    }>("/integrations/connections"),
+  listProfilePosts: (provider: string, profileId: string, limit = 20) =>
+    jget<Record<string, unknown>>(
+      `/integrations/profile/${provider}/${encodeURIComponent(profileId)}/posts?limit=${limit}`,
+    ),
+
   // ── Analytics ───────────────────────────────────────────────────
   // Reads aggregate stats over the scraped social-media posts in the
   // events table. NO scraping happens here — that's /trends/refresh.
