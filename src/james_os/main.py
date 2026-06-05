@@ -1588,6 +1588,61 @@ async def analytics_timeline(
     }
 
 
+# ── PostProxy integration (X / IG / LinkedIn / TikTok via one API) ──
+
+
+@app.get("/integrations/postproxy/inspect")
+async def integrations_postproxy_inspect() -> dict:
+    """Probe — confirms the key works AND lists every connected
+    social account so the UI can render 'here's what's reachable'
+    before any data fetch."""
+    from .postproxy import inspect, PostProxyNotConfigured
+    try:
+        return await inspect()
+    except PostProxyNotConfigured as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.get("/integrations/postproxy/posts")
+async def integrations_postproxy_posts(
+    platform: str = "twitter", limit: int = 30,
+) -> dict:
+    """Recent posts on a given platform via PostProxy. `platform` is
+    one of: twitter, instagram, tiktok, linkedin, youtube, facebook,
+    threads, pinterest, bluesky, telegram, google_business."""
+    from .postproxy import list_posts, PostProxyNotConfigured, PostProxyError
+    try:
+        return await list_posts(
+            platforms=[platform] if platform else None,
+            per_page=int(limit),
+        )
+    except PostProxyNotConfigured as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except PostProxyError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@app.get("/integrations/postproxy/post-stats")
+async def integrations_postproxy_post_stats(
+    post_ids: str = "", profile_ids: str = "",
+    since_iso: str = "", until_iso: str = "",
+) -> dict:
+    """Per-post metrics snapshots. Pass comma-separated `post_ids`
+    (up to 50) OR `profile_ids` to get every post under those
+    profiles in the time window."""
+    from .postproxy import post_stats, PostProxyNotConfigured, PostProxyError
+    try:
+        return await post_stats(
+            post_ids=[p.strip() for p in post_ids.split(",") if p.strip()],
+            profile_ids=[p.strip() for p in profile_ids.split(",") if p.strip()],
+            since_iso=since_iso, until_iso=until_iso,
+        )
+    except PostProxyNotConfigured as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except PostProxyError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
 # ── Meta Graph integration ──────────────────────────────────────────
 
 
