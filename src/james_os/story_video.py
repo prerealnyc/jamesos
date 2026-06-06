@@ -468,21 +468,34 @@ that best matches the energy and the audience. Choices and when to use:
                       mentions PreReal or the visual call is for a
                       brand-stamp look.
 
+If the payload includes an `avoid` block, it lists caption choices /
+positions a human has already REJECTED on past renders. Treat it as a
+hard constraint — do not pick a style or describe a placement the avoid
+block warns against.
+
 Return STRICT JSON: {"caption_style": str, "reason": str}
 The reason is one short clause (≤ 14 words).
 """
 
 
 async def pick_caption_style(
-    script: str, platform: str, brand_context: str = ""
+    script: str, platform: str, brand_context: str = "",
+    avoid: str = "",
 ) -> tuple[str, str]:
     """One LLM call → (preset_name, reason). Honest fallback: returns
     the default preset on any failure so a production never crashes
-    over caption styling."""
+    over caption styling.
+
+    `avoid` — a video_feedback.video_avoid_block() string of past human
+    rejections (caption + general tags). Passed as its own payload field
+    so it survives brand_context truncation and steers the picker away
+    from styles/positions a human already rejected. Empty = no steering.
+    """
     from .caption_styles import CAPTION_PRESETS, DEFAULT_CAPTION_STYLE
     payload = {
         "platform": platform,
         "brand_context": brand_context[:400],
+        "avoid": avoid[:800],
         "script": (script or "")[:1500],
         "available": list(CAPTION_PRESETS.keys()),
     }
@@ -636,6 +649,11 @@ CRITICAL: Every slot gets exactly one insert. Even an "abstract" slot
 "a single Edison bulb glowing alone in a dark room". Never return
 fewer entries than slots.
 
+If the payload includes an `avoid` block, it lists B-roll behaviours a
+human has already REJECTED on past renders (e.g. inserts too short,
+uncanny close-ups, wrong vibe). Treat every line as a hard rule — your
+inserts must NOT repeat any of those mistakes.
+
 Return STRICT JSON:
 {"inserts": [{"slot": int, "start": float, "end": float,
               "text": str, "prompt": str, "uses_hero": bool}, ...]}
@@ -667,6 +685,7 @@ async def pick_insert_points(
     words: list[TranscribedWord],
     brand_context: str,
     hero_description: str = "",
+    avoid: str = "",
     cadence_s: float = _INSERT_CADENCE_S,
 ) -> list[Insert]:
     """Word-anchored dense cutaway picker.
@@ -719,6 +738,7 @@ async def pick_insert_points(
     payload = {
         "brand_context": brand_context[:600],
         "hero_description": hero_description[:400] if hero_description else "",
+        "avoid": avoid[:800],
         "audio_duration": round(audio_duration, 2),
         "slots": slots,
     }
@@ -1432,6 +1452,7 @@ async def build_engaging_avatar_assets(
     brand_context: str,
     platform: str = "instagram",
     tenant_id: str | None = None,
+    broll_avoid: str = "",
 ) -> EngagingAvatarResult:
     """Engaging-avatar pipeline.
 
@@ -1442,6 +1463,10 @@ async def build_engaging_avatar_assets(
     playing underneath; the audio is continuous.
 
     Hero refs flow on insert.uses_hero just like in the story modes.
+
+    `broll_avoid` — a video_feedback.video_avoid_block() string of past
+    human B-roll rejections, forwarded into the insert-picker prompt so
+    the LLM stops repeating cutaway mistakes. Empty = no steering.
     """
     tid = tenant_id or str(settings.default_tenant_id)
     if not avatar_video_url or not avatar_video_url.startswith("http"):
@@ -1497,6 +1522,7 @@ async def build_engaging_avatar_assets(
         words=tr.words,
         brand_context=brand_context,
         hero_description=hero_description,
+        avoid=broll_avoid,
     )
 
     if inserts:

@@ -559,6 +559,44 @@ export const api = {
       "/agent/tools",
     ),
 
+  // ── Autopilot bulk generation ───────────────────────────────────
+  // One click → N pieces, 50/50 text+image / video, into the queue.
+  bulkGenerate: (count: number, days = 0) =>
+    jpost<{ started: boolean; requested: number; note?: string }>(
+      "/autopilot/bulk", { count, days },
+    ),
+
+  // ── Live analytics (aggregated across connected accounts) ───────
+  analyticsLiveSummary: () =>
+    jget<{
+      total_followers: number; followers_partial?: boolean;
+      total_posts: number; account_count: number; platform_count: number;
+      per_platform: { platform: string; accounts: number; posts: number; followers: number | null }[];
+      notes?: string[];
+    }>("/analytics/live/summary"),
+  analyticsLiveBreakdown: () =>
+    jget<{
+      rows: {
+        provider: string; platform: string; id: string; handle: string;
+        name: string; status: string; posts: number;
+        followers: number | null; recent_engagement: number | null;
+      }[];
+      notes?: string[];
+    }>("/analytics/live/breakdown"),
+
+  // ── Social Research roster (weekly Apify influencer scrape) ─────
+  researchRoster: () =>
+    jget<{
+      creators: {
+        platform: string; handle: string; name?: string;
+        interests?: string[]; post_count: number; last_post_at: string | null;
+      }[];
+    }>("/research/roster"),
+  refreshResearchRoster: (limit = 15) =>
+    jpost<{ started: boolean }>(`/research/roster/refresh?limit=${limit}`, {}),
+  researchRosterStatus: () =>
+    jget<{ last_refresh: string | null; due: boolean }>("/research/roster/status"),
+
   // ── Connected accounts (Meta + PostProxy unified) ──────────────
   listConnections: () =>
     jget<{

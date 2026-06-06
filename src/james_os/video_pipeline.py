@@ -32,6 +32,7 @@ from .heygen import get_avatar_provider
 from .imagegen import generate_seed_image
 from .media import storage as media_storage
 from .video import get_video_provider
+from .video_feedback import video_avoid_block
 from .video_plan import generate_scene_plan
 
 _POLL_EVERY = 5.0
@@ -39,6 +40,19 @@ _MAX_POLLS = 60  # ~5 min ceiling per async stage
 
 # Runway gen4_turbo accepts a fixed set of ratios; map our aspect to one.
 _RUNWAY_RATIO = {"9:16": "720:1280", "16:9": "1280:720", "1:1": "960:960"}
+
+
+async def _avoid_block(tags: list[str] | None, tenant_id: UUID | None) -> str:
+    """Fetch the <avoid> steering block for a render, degrade-safe.
+
+    video_avoid_block already swallows its own errors, but we double-wrap
+    here so a render NEVER breaks over feedback retrieval — on any failure
+    we simply forgo the steering for this one run and return "".
+    """
+    try:
+        return await video_avoid_block(tags=tags, tenant_id=tenant_id)
+    except Exception:  # noqa: BLE001 — feedback must never break a render
+        return ""
 
 
 def _row(r) -> dict:
@@ -414,10 +428,17 @@ async def _run_story_audio(row, tenant_id: UUID | None) -> None:
     # 2) Strip + Whisper + segment + image-gen (the heavy lift).
     async with acquire(tenant_id) as conn:
         await _set(conn, pid, status="rendering_clips")
+    # Past human rejections steer this render. story_audio's only LLM
+    # visual call is the per-beat image prompt (via brand_context), so we
+    # fold the B-roll avoid block into brand_context; captions get their
+    # own avoid block in the picker below.
+    broll_avoid = await _avoid_block(["broll"], tenant_id)
+    cap_avoid = await _avoid_block(["captions"], tenant_id)
     brand_context = (
         f"Brand: {row['title'] or 'James Prendamano'}. "
         "Real-estate broker and brand voice, Staten Island / NYC focus. "
         f"Platform: {row['platform']}. Aspect: {row['aspect']}."
+        f"{chr(10) + broll_avoid if broll_avoid else ''}"
     )
     # Image style: user-pinned wins, else default to 'cinematic' for
     # story-mode (matches the reference video aesthetic — film stills,
@@ -460,7 +481,9 @@ async def _run_story_audio(row, tenant_id: UUID | None) -> None:
     except (KeyError, TypeError):
         cstyle = ""
     if not cstyle:
-        cstyle, _why = await pick_caption_style(script, row["platform"], brand_context)
+        cstyle, _why = await pick_caption_style(
+            script, row["platform"], brand_context, avoid=cap_avoid,
+        )
 
     res = await asm.render_story(
         audio_url=assets.audio_url,
@@ -538,10 +561,16 @@ async def _run_avatar_story_mix(row, tenant_id: UUID | None) -> None:
 
     async with acquire(tenant_id) as conn:
         await _set(conn, pid, status="rendering_clips")
+    # Steer the B-roll beat prompts away from past rejections via
+    # brand_context (feeds both the beat classifier and the image-prompt
+    # LLM); captions get their own avoid block in the picker below.
+    broll_avoid = await _avoid_block(["broll"], tenant_id)
+    cap_avoid = await _avoid_block(["captions"], tenant_id)
     brand_context = (
         f"Brand: {row['title'] or 'James Prendamano'}. "
         "Real-estate broker and brand voice, Staten Island / NYC focus. "
         f"Platform: {row['platform']}. Aspect: {row['aspect']}."
+        f"{chr(10) + broll_avoid if broll_avoid else ''}"
     )
     # Mix mode: image_style applies only to B-roll beats (avatar beats
     # use the actual HeyGen video slice, no AI image). User-pinned wins,
@@ -580,7 +609,9 @@ async def _run_avatar_story_mix(row, tenant_id: UUID | None) -> None:
     except (KeyError, TypeError):
         cstyle = ""
     if not cstyle:
-        cstyle, _why = await pick_caption_style(script, row["platform"], brand_context)
+        cstyle, _why = await pick_caption_style(
+            script, row["platform"], brand_context, avoid=cap_avoid,
+        )
 
     res = await asm.render_avatar_story_mix(
         audio_url=assets.audio_url,
@@ -661,6 +692,11 @@ async def _run_engaging_avatar(row, tenant_id: UUID | None) -> None:
     # 2) Extract audio + Whisper + LLM picks inserts + image gen
     async with acquire(tenant_id) as conn:
         await _set(conn, pid, status="rendering_clips")
+    # B-roll inserts are this mode's only generated visual; steer the
+    # insert-picker via the builder's dedicated broll_avoid param.
+    # Captions get their own avoid block in the picker below.
+    broll_avoid = await _avoid_block(["broll"], tenant_id)
+    cap_avoid = await _avoid_block(["captions"], tenant_id)
     brand_context = (
         f"Brand: {row['title'] or 'James Prendamano'}. "
         "Real-estate broker and brand voice, Staten Island / NYC focus. "
@@ -679,6 +715,7 @@ async def _run_engaging_avatar(row, tenant_id: UUID | None) -> None:
         brand_context=brand_context,
         platform=row["platform"],
         tenant_id=str(tenant_id) if tenant_id else None,
+        broll_avoid=broll_avoid,
     )
     if assets.error:
         return await _fail(pid, assets.error, tenant_id)
@@ -696,7 +733,9 @@ async def _run_engaging_avatar(row, tenant_id: UUID | None) -> None:
     except (KeyError, TypeError):
         cstyle = ""
     if not cstyle:
-        cstyle, _why = await pick_caption_style(script, row["platform"], brand_context)
+        cstyle, _why = await pick_caption_style(
+            script, row["platform"], brand_context, avoid=cap_avoid,
+        )
 
     # 4) Creatomate compose. If no inserts (LLM picked zero), the
     # assembler still renders the avatar with captions only — degraded
@@ -860,6 +899,11 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
     # the same way. Hero refs flow automatically.
     async with acquire(tenant_id) as conn:
         await _set(conn, pid, status="rendering_clips")
+    # Same engaging-avatar treatment, so the same avoid blocks apply:
+    # B-roll inserts via the builder's broll_avoid param, captions via
+    # the picker below.
+    broll_avoid = await _avoid_block(["broll"], tenant_id)
+    cap_avoid = await _avoid_block(["captions"], tenant_id)
     brand_context = (
         f"Source: long-form podcast / interview. "
         f"Window: [{start_s:.1f}s – {end_s:.1f}s]. "
@@ -880,6 +924,7 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
         brand_context=brand_context,
         platform=row["platform"],
         tenant_id=str(tenant_id) if tenant_id else None,
+        broll_avoid=broll_avoid,
     )
     if assets.error:
         return await _fail(pid, assets.error, tenant_id)
@@ -899,7 +944,7 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
         cstyle = ""
     if not cstyle:
         cstyle, _why = await pick_caption_style(
-            assets.audio_url, row["platform"], brand_context,
+            assets.audio_url, row["platform"], brand_context, avoid=cap_avoid,
         )
 
     asm = get_assembly_provider()

@@ -203,6 +203,67 @@ async def recent_video_feedback(
     return out
 
 
+async def video_avoid_block(
+    tags: list[str] | None = None,
+    limit: int = 8,
+    tenant_id: UUID | None = None,
+) -> str:
+    """Phase 2 of the loop: read past human rejections back into a render.
+
+    Fetches recent `video_feedback` events and formats them as an
+    `<avoid>...</avoid>` block the rendering LLM calls can be steered by
+    (same shape as the text-content frustration ledger in content.py).
+    Mirrors learning.recent_guardrails → prompts <avoid> for video.
+
+    `tags` filters which aspects to pull. A caption-style prompt wants
+    ['captions', 'general']; a B-roll prompt wants ['broll', 'general'].
+    When `tags` is None we pull everything. Results across tags are
+    merged and de-duped (a single event tagged both 'captions' and
+    'general' appears once), newest-first, capped at `limit`.
+
+    Returns "" when there's nothing learned yet (so prompts stay clean)
+    and on ANY failure — a feedback-fetch error must never break a
+    render, only forgo the steering for this one run.
+    """
+    try:
+        rows: list[dict] = []
+        seen: set[str] = set()
+        # One query per requested tag (recent_video_feedback filters by a
+        # single tag), then merge. No tags → one unfiltered pull.
+        queries = list(dict.fromkeys(tags or [])) or [""]
+        for tag in queries:
+            for fb in await recent_video_feedback(
+                tenant_id=tenant_id, limit=limit, tag=tag,
+            ):
+                fid = fb.get("id")
+                if fid in seen:
+                    continue
+                seen.add(fid)
+                rows.append(fb)
+        if not rows:
+            return ""
+        # Newest-first across the merged set, then cap.
+        rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+        rows = rows[:limit]
+        lines = []
+        for fb in rows:
+            reason = (fb.get("reason") or "").strip()
+            if not reason:
+                continue
+            fb_tags = fb.get("tags") or []
+            tag_label = fb_tags[0] if fb_tags else "general"
+            lines.append(f"• [{tag_label}] {reason}")
+        if not lines:
+            return ""
+        body = "\n".join(lines)
+        return (
+            "<avoid> Past human rejections — do NOT repeat these:\n"
+            f"{body}\n</avoid>"
+        )
+    except Exception:  # noqa: BLE001 — never break a render over feedback
+        return ""
+
+
 async def set_production_review(
     production_id: UUID, status: str, reason: str = "",
     tenant_id: UUID | None = None,
@@ -229,5 +290,6 @@ async def set_production_review(
 
 __all__ = [
     "record_video_feedback", "recent_video_feedback",
+    "video_avoid_block",
     "set_production_review", "VIDEO_FEEDBACK_CATEGORY",
 ]

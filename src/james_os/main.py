@@ -100,12 +100,18 @@ async def _autopilot_scheduler() -> None:
     import asyncio
 
     from .autopilot import get_config, run_batch, should_run_today
+    from .research_roster import maybe_weekly_refresh
 
     while True:
         try:
             if should_run_today(await get_config()):
                 await run_batch("scheduled")
         except Exception:  # noqa: BLE001 — a tick failure must not kill the loop
+            pass
+        try:
+            # Self-gates to >7-day-stale; safe to call every tick.
+            await maybe_weekly_refresh()
+        except Exception:  # noqa: BLE001
             pass
         await asyncio.sleep(1800)  # check every 30 minutes
 
@@ -234,6 +240,14 @@ _DASH = Path(__file__).parent / "dashboard"
 # Dashboard compatibility API (must be registered before the static mount
 # and before the root route so /api/* is owned by the router).
 app.include_router(dashboard_api_router)
+
+# Feature routers built as standalone APIRouters (see their modules).
+from .autopilot_bulk_api import router as autopilot_bulk_router
+from .analytics_live import router as analytics_live_router
+from .research_roster_api import router as research_roster_router
+app.include_router(autopilot_bulk_router)
+app.include_router(analytics_live_router)
+app.include_router(research_roster_router)
 
 
 @app.get("/", include_in_schema=False)

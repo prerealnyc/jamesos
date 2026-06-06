@@ -60,6 +60,8 @@ const nextConfig = {
       // Integrations — Meta Graph + PostProxy + the unified
       // /integrations/connections view the Analytics page reads.
       { source: "/integrations/:path*", destination: `${BACKEND}/integrations/:path*` },
+      // Social Research roster (weekly influencer scrape).
+      { source: "/research/:path*", destination: `${BACKEND}/research/:path*` },
     ];
   },
 };
