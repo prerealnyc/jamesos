@@ -10,6 +10,9 @@ type Item = {
   // used by hub entries (Video Studio, Media Library) whose
   // sub-routes live at different URLs.
   match?: string[];
+  // Visually nest under the entry above (e.g. Content Studio under
+  // Autopilot) — adds left indent + a connector dot.
+  indent?: boolean;
 };
 type Group = { title: string; items: Item[] };
 
@@ -32,40 +35,39 @@ const NAV: Group[] = [
     ],
   },
   {
-    title: "Voice & Brand",
+    // Autopilot is the headline — one-click content at scale. Content
+    // Studio nests under it for the manual path (build one piece by hand).
+    title: "Create",
     items: [
-      { href: "/jp-live", label: "JP Live", sub: "Live brand health", icon: "live", live: true },
-      { href: "/brand", label: "Voice Rules", sub: "Brand voice & guidelines", icon: "voice", live: true },
+      { href: "/autopilot", label: "Autopilot", sub: "One-click multi-day content batches", icon: "queue", live: true },
+      { href: "/design-studio", label: "Content Studio", sub: "Manual: write one draft by hand", icon: "design", live: true, indent: true },
+      { href: "/video", label: "Video Studio", sub: "All 7 video makers in one place", icon: "pipeline", live: true, match: VIDEO_SUBROUTES, indent: true },
+      { href: "/images", label: "Post Images", sub: "AI hero images for posts", icon: "images", live: true, indent: true },
     ],
   },
   {
-    title: "Make Content",
-    items: [
-      { href: "/design-studio", label: "Content Studio", sub: "On-voice draft generation", icon: "design", live: true },
-      { href: "/video", label: "Video Studio", sub: "All 7 video makers in one place", icon: "pipeline", live: true, match: VIDEO_SUBROUTES },
-      { href: "/images", label: "Post Images", sub: "AI hero images for posts", icon: "images", live: true },
-    ],
-  },
-  {
-    title: "Library",
-    items: [
-      { href: "/jp-clips", label: "Media Library", sub: "Reference clips & hero footage", icon: "clips", live: true, match: MEDIA_SUBROUTES },
-      { href: "/library", label: "Output Library", sub: "Finished reels — download & share", icon: "clips", live: true },
-    ],
-  },
-  {
-    title: "Approve & Publish",
+    title: "Review & Library",
     items: [
       { href: "/queue", label: "Approval Queue", sub: "Videos + posts split, ready to ship", icon: "queue", live: true },
-      { href: "/autopilot", label: "Autopilot", sub: "Autonomous daily content", icon: "queue", live: true },
+      { href: "/library", label: "Output Library", sub: "Finished content — download & share", icon: "clips", live: true },
+      { href: "/jp-clips", label: "Media Library", sub: "Reference clips & hero footage", icon: "clips", live: true, match: MEDIA_SUBROUTES },
     ],
   },
   {
     title: "Intelligence",
     items: [
-      { href: "/analytics", label: "Analytics", sub: "Brand-account performance", icon: "social", live: true },
-      { href: "/market-research", label: "Market Research", sub: "Trend radar & intel", icon: "market", live: true },
-      { href: "/social-companion", label: "Social Companion", sub: "Creator watchlist & trends", icon: "social", live: true },
+      { href: "/analytics", label: "Analytics", sub: "Your brand-account performance", icon: "social", live: true },
+      // Social Companion folded in here — peer/competitor research is
+      // part of "Social Research" alongside the trend radar.
+      { href: "/market-research", label: "Social Research", sub: "Influencers, trends & peer intel", icon: "market", live: true, match: ["/market-research", "/social-companion"] },
+    ],
+  },
+  {
+    // Voice & brand health — reference material, not daily-driver. Bottom.
+    title: "Brand Reference",
+    items: [
+      { href: "/brand", label: "Voice Rules", sub: "Brand voice & guidelines", icon: "voice", live: true },
+      { href: "/jp-live", label: "JP Live", sub: "Live brand health", icon: "live", live: true },
     ],
   },
 ];
@@ -101,12 +103,15 @@ export function Shell({ children }: { children: React.ReactNode }) {
                   <Link
                     key={n.href}
                     href={n.href}
-                    className={`flex items-center gap-3 px-5 py-2.5 text-sm transition-colors border-l-2 ${
+                    className={`flex items-center gap-3 py-2.5 text-sm transition-colors border-l-2 ${
+                      n.indent ? "pl-9 pr-5" : "px-5"
+                    } ${
                       active
                         ? "bg-sidebar-accent border-sidebar-primary text-sidebar-primary"
                         : "border-transparent opacity-75 hover:opacity-100 hover:bg-sidebar-accent/50"
                     }`}
                   >
+                    {n.indent && <span className="text-[10px] opacity-40 -ml-3">└</span>}
                     <Icon name={n.icon} className={active ? "text-sidebar-primary" : "opacity-80"} />
                     <span className="flex-1 leading-tight">
                       <span className="block font-medium">{n.label}</span>

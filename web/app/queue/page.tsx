@@ -77,6 +77,26 @@ export default function QueuePage() {
     }
   }
 
+  // Hard delete — removes the row entirely (vs reject which keeps it +
+  // learns from the reason). Confirmed inline so a stray click doesn't
+  // nuke an item.
+  async function deleteItem(id: string) {
+    if (!window.confirm("Delete this item permanently? This can't be undone.")) return;
+    setActing(id);
+    try {
+      await api.deleteQueueItem(id);
+      setToast({ message: "Deleted.", href: undefined, hrefLabel: undefined });
+      await load();
+    } catch (e) {
+      setToast({
+        message: e instanceof Error ? e.message : "Delete failed",
+        href: undefined, hrefLabel: undefined,
+      });
+    } finally {
+      setActing(null);
+    }
+  }
+
   async function confirmReject(id: string) {
     setActing(id);
     try {
@@ -268,7 +288,15 @@ export default function QueuePage() {
                 )}
                 <span>by {it.proposedBy}</span>
                 {it.status === "pending" && rejecting !== it.id && (
-                  <span className="ml-auto flex gap-2">
+                  <span className="ml-auto flex gap-2 items-center">
+                    <button
+                      onClick={() => deleteItem(it.id)}
+                      disabled={acting === it.id}
+                      className="text-[12px] text-muted-foreground hover:text-destructive disabled:opacity-40 px-1"
+                      title="Delete permanently (no learning)"
+                    >
+                      🗑 Delete
+                    </button>
                     <Button
                       variant="secondary"
                       onClick={() => {
@@ -332,11 +360,31 @@ export default function QueuePage() {
                     >
                       download .txt
                     </button>
+                    <button
+                      onClick={() => deleteItem(it.id)}
+                      disabled={acting === it.id}
+                      className="text-muted-foreground hover:text-destructive disabled:opacity-40"
+                      title="Delete permanently"
+                    >
+                      🗑
+                    </button>
                   </span>
                 )}
-                {it.status === "rejected" && it.reason && (
-                  <span className="ml-auto text-muted-foreground text-[11px] italic max-w-[60%] truncate" title={it.reason}>
-                    rejection: {it.reason}
+                {it.status === "rejected" && (
+                  <span className="ml-auto flex items-center gap-2">
+                    {it.reason && (
+                      <span className="text-muted-foreground text-[11px] italic max-w-[40%] truncate" title={it.reason}>
+                        rejection: {it.reason}
+                      </span>
+                    )}
+                    <button
+                      onClick={() => deleteItem(it.id)}
+                      disabled={acting === it.id}
+                      className="text-[12px] text-muted-foreground hover:text-destructive disabled:opacity-40"
+                      title="Delete permanently"
+                    >
+                      🗑
+                    </button>
                   </span>
                 )}
               </div>

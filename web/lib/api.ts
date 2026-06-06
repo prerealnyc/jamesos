@@ -875,6 +875,8 @@ export const api = {
       `/api/queue/${id}/reject`,
       { reason }
     ),
+  deleteQueueItem: (id: string) =>
+    jdel<{ ok: boolean; deleted: boolean }>(`/api/queue/${id}`),
   guardrails: () =>
     jget<{ guardrails: Guardrail[] }>("/api/guardrails"),
   integrations: () =>

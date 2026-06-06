@@ -508,6 +508,18 @@ async def reject_item(item_id: UUID, body: dict = Body(default={})) -> dict:
     }
 
 
+@router.delete("/queue/{item_id}")
+async def delete_item(item_id: UUID) -> dict:
+    """Hard-delete a queue item. Unlike reject (which keeps the row +
+    learns from it), delete removes it entirely — for spam, dupes, or
+    test rows the marketing manager just wants gone. No learning event."""
+    async with acquire() as conn:
+        tag = await conn.execute("DELETE FROM actions WHERE id=$1", item_id)
+    if not tag.endswith(" 1"):
+        raise HTTPException(status_code=404, detail=f"action {item_id} not found")
+    return {"ok": True, "id": str(item_id), "deleted": True}
+
+
 @router.get("/guardrails")
 async def guardrails() -> dict:
     """The learned 'never do this' ledger from past rejections."""
