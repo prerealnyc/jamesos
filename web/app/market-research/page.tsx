@@ -7,14 +7,55 @@ import { TrendCard, ALL_PLATFORMS } from "@/components/trends";
 
 type Tab = "trends" | "topic";
 
+// Roster creator shape (from api.researchRoster()).
+type RosterCreator = {
+  platform: string;
+  handle: string;
+  name?: string;
+  interests?: string[];
+  post_count: number;
+  last_post_at: string | null;
+};
+
+function fmtRelative(iso: string | null): string {
+  if (!iso) return "never";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return `${Math.floor(ms / 1000)}s ago`;
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
+  const days = Math.floor(ms / 86_400_000);
+  if (days < 30) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+// Short platform badge — IG / TT / YT etc. from a platform string.
+function platformBadge(platform: string): string {
+  const p = platform.trim().toLowerCase();
+  const map: Record<string, string> = {
+    instagram: "IG",
+    ig: "IG",
+    tiktok: "TT",
+    tt: "TT",
+    youtube: "YT",
+    yt: "YT",
+    twitter: "X",
+    x: "X",
+    linkedin: "LI",
+    facebook: "FB",
+    threads: "TH",
+  };
+  return map[p] || platform.slice(0, 2).toUpperCase();
+}
+
 export default function MarketResearchPage() {
   const [tab, setTab] = useState<Tab>("trends");
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title="Market Research"
-        sub="Find what's going viral in your space and turn it into on-voice scripts — plus live internet intelligence, all saved to memory."
+        title="Social Research"
+        sub="The creators and influencers we track, what's going viral in your space, and live peer intel — all saved to memory."
       />
+      <InfluencerRoster />
       <div className="flex gap-2">
         <TabButton active={tab === "trends"} onClick={() => setTab("trends")}>
           Trend radar
@@ -48,6 +89,109 @@ function TabButton({
     >
       {children}
     </button>
+  );
+}
+
+// ── Influencer roster: creators we scrape weekly via Apify ──
+
+function InfluencerRoster() {
+  const [creators, setCreators] = useState<RosterCreator[]>([]);
+  const [status, setStatus] = useState<{ last_refresh: string | null; due: boolean } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    Promise.all([
+      api.researchRoster().catch(() => ({ creators: [] as RosterCreator[] })),
+      api.researchRosterStatus().catch(() => null),
+    ])
+      .then(([roster, st]) => {
+        setCreators(roster.creators || []);
+        setStatus(st);
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function refresh() {
+    setRefreshing(true);
+    setNote(null);
+    try {
+      await api.refreshResearchRoster();
+      setNote("Scraping latest posts… check back in a minute.");
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : "Could not start refresh.");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  return (
+    <Card>
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <h2 className="font-semibold text-[15px]">Influencers we track</h2>
+            {status?.due && <Badge tone="accent">due for refresh</Badge>}
+          </div>
+          <p className="text-[12px] text-muted-foreground mt-1">
+            Last scraped {status ? fmtRelative(status.last_refresh) : "…"} · auto-refreshes weekly.
+          </p>
+        </div>
+        <Button onClick={refresh} disabled={refreshing}>
+          {refreshing ? <Spinner /> : "Refresh now"}
+        </Button>
+      </div>
+
+      {note && (
+        <div className="mt-4 text-[12px] text-primary border border-primary/40 rounded-md p-3">
+          {note}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="mt-5 flex items-center gap-2 text-[13px] text-muted-foreground">
+          <Spinner /> Loading roster…
+        </div>
+      ) : creators.length === 0 ? (
+        <div className="mt-5 text-[13px] text-muted-foreground border border-dashed border-border rounded-md p-4">
+          No influencers tracked yet. Add creators in the watchlist below and they&apos;ll be scraped weekly.
+        </div>
+      ) : (
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {creators.map((c, i) => (
+            <div
+              key={`${c.platform}:${c.handle}:${i}`}
+              className="bg-background border border-border rounded-md p-3 flex flex-col gap-2"
+            >
+              <div className="flex items-center gap-2">
+                <Badge tone="primary">{platformBadge(c.platform)}</Badge>
+                <span className="text-[13px] font-semibold truncate">@{c.handle}</span>
+              </div>
+              {c.name && (
+                <div className="text-[12px] text-muted-foreground truncate">{c.name}</div>
+              )}
+              {c.interests && c.interests.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {c.interests.slice(0, 4).map((tag) => (
+                    <span
+                      key={tag}
+                      className="text-[11px] rounded-full px-2 py-0.5 border border-border text-muted-foreground"
+                    >
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="flex items-center justify-between text-[11px] text-muted-foreground mt-auto pt-1">
+                <span>{c.post_count} posts tracked</span>
+                <span>{c.last_post_at ? fmtRelative(c.last_post_at) : "no posts yet"}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 

@@ -1,25 +1,30 @@
 "use client";
 
 /**
- * Output Library — every finished video render in one place.
+ * Output Library — every finished output in one place: video reels AND
+ * approved text posts (paired with their generated hero image).
  *
- * Lists production rows with status='succeeded' and a final_url, sorted
- * newest-first. Each card has an inline HTML5 preview, a Download
- * button (anchor with the download attribute), and a Copy URL button.
+ * A content-kind toggle (All / 🎬 Videos / 📝 Posts) splits the two
+ * surfaces:
+ *  - Videos = production rows with status='succeeded' and a final_url,
+ *    each with an inline HTML5 preview, Download/Copy URL, and the
+ *    manager Approve/Reject review loop.
+ *  - Posts = APPROVED, non-video queue items (format !== 'video') — the
+ *    written content paired with the complementary image the engine
+ *    generated for it. Copy text + Download image.
  *
- * Filter chips along the top let you narrow to a single mode
- * (long_form_reel, engaging_avatar, etc.) — useful as the library
- * grows. Lightweight client-side filter, no server roundtrip.
+ * Mode + review filter chips narrow the video grid. All client-side,
+ * no server roundtrip.
  *
  * Honest scope: this is a viewer / catalog only — it does NOT delete
- * or re-render. Use /pipeline for that. Plays from Creatomate's
+ * or re-render. Use /pipeline for that. Videos play from Creatomate's
  * Backblaze URL directly; if Creatomate's TTL ever expires those, we
  * fall back to the persisted mirror at /video/clips/library.
  */
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type Production } from "@/lib/api";
+import { api, mediaUrl, type Production, type QueueItem } from "@/lib/api";
 import { Button, Card, PageHeader, Badge, Spinner } from "@/components/ui";
 import { SkeletonCard } from "@/components/skeleton";
 import { FilterChip } from "@/components/filter-chip";
@@ -67,12 +72,22 @@ type Feedback = Awaited<ReturnType<typeof api.listVideoFeedback>>["feedback"][nu
 
 export default function LibraryPage() {
   const [items, setItems] = useState<Production[]>([]);
+  // Approved, non-video queue items — the text posts paired with their
+  // generated hero image. Loaded alongside the video productions.
+  const [posts, setPosts] = useState<QueueItem[]>([]);
   const [feedback, setFeedback] = useState<Feedback[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
+  // Content-kind tab — what the library shows: everything, finished
+  // video renders, or approved text+image posts. Default "all" so the
+  // user sees both surfaces at once.
+  const [kind, setKind] = useState<"all" | "videos" | "posts">("all");
   const [modeFilter, setModeFilter] = useState<string>("all");
   const [reviewFilter, setReviewFilter] = useState<"all" | "unreviewed" | "approved" | "rejected">("all");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  // Posts have their own copy-feedback id namespace so a copied video
+  // URL chip and a copied post-text chip don't collide.
+  const [copiedPostId, setCopiedPostId] = useState<string | null>(null);
   // Reject modal — open with the target production, capture reason,
   // submit. Empty reasons are not allowed (the backend learns from
   // the reason, so blank rejections are useless).
@@ -85,8 +100,9 @@ export default function LibraryPage() {
   async function load() {
     setLoading(true);
     try {
-      const [all, fb] = await Promise.all([
+      const [all, q, fb] = await Promise.all([
         api.listProductions(),
+        api.queue().catch(() => [] as QueueItem[]),
         api.listVideoFeedback(30).catch(() => ({ feedback: [] })),
       ]);
       // Keep only finished renders that actually have a playable URL.
@@ -94,6 +110,14 @@ export default function LibraryPage() {
         .filter((p) => p.status === "succeeded" && !!p.final_url)
         .sort((a, b) => (b.completed_at || b.updated_at).localeCompare(a.completed_at || a.updated_at));
       setItems(finished);
+      // Posts surface = APPROVED, non-video queue items. These are the
+      // written drafts (with their generated hero image) the manager
+      // has signed off on — the text+image output the library now shows
+      // alongside finished reels.
+      const approvedPosts = (q || [])
+        .filter((it) => it.status === "approved" && it.format !== "video")
+        .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+      setPosts(approvedPosts);
       setFeedback(fb.feedback || []);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "load failed");
@@ -174,11 +198,21 @@ export default function LibraryPage() {
     } catch { /* noop — older browsers */ }
   }
 
+  async function copyPostText(it: QueueItem) {
+    const text = (it.content || it.caption || "").trim();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedPostId(it.id);
+      setTimeout(() => setCopiedPostId((id) => (id === it.id ? null : id)), 1500);
+    } catch { /* noop — older browsers */ }
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
         title="Output Library"
-        sub="Every finished video render. Click Download to save, Copy to share the URL, or watch inline."
+        sub="Every finished output — video reels and approved text posts with their generated images. Download, copy, or review inline."
       />
 
       {err && (
@@ -187,22 +221,62 @@ export default function LibraryPage() {
         </Card>
       )}
 
+      {/* Content-kind tabs — split the library into finished video reels
+          vs approved text+image posts. Same FilterChip pattern as the
+          Approval Queue. Always visible (even while empty) so the user
+          understands the two surfaces exist. */}
+      {!loading && (
+        <div className="flex items-center gap-2 flex-wrap">
+          {(["all", "videos", "posts"] as const).map((k) => {
+            const count = k === "videos" ? items.length : k === "posts" ? posts.length : items.length + posts.length;
+            return (
+              <FilterChip
+                key={k}
+                active={kind === k}
+                onClick={() => setKind(k)}
+                count={count}
+              >
+                {k === "videos" ? "🎬 Videos" : k === "posts" ? "📝 Posts" : "All"}
+              </FilterChip>
+            );
+          })}
+        </div>
+      )}
+
       {loading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} aspect="9 / 16" />)}
         </div>
-      ) : items.length === 0 ? (
+      ) : items.length === 0 && posts.length === 0 ? (
         <Card>
           <p className="text-muted-foreground text-[14px]">
-            No finished renders yet. Kick a video render from{" "}
+            Nothing here yet. Kick a video render from{" "}
             <Link href="/long-form" className="text-primary hover:underline">Long Form Cutter</Link>,{" "}
             <Link href="/engaging-video" className="text-primary hover:underline">Engaging Reel</Link>, or{" "}
             <Link href="/pipeline" className="text-primary hover:underline">Video Studio</Link>{" "}
-            and it'll land here when it finishes.
+            — or approve text posts in the{" "}
+            <Link href="/queue" className="text-primary hover:underline">Approval Queue</Link>{" "}
+            and they'll land here with their images.
           </p>
         </Card>
       ) : (
         <>
+          {/* ── Videos surface (also shown in "All") ──────────────── */}
+          {kind !== "posts" && (
+            items.length === 0 ? (
+              kind === "videos" && (
+                <Card>
+                  <p className="text-muted-foreground text-[14px]">
+                    No finished renders yet. Kick a video render from{" "}
+                    <Link href="/long-form" className="text-primary hover:underline">Long Form Cutter</Link>,{" "}
+                    <Link href="/engaging-video" className="text-primary hover:underline">Engaging Reel</Link>, or{" "}
+                    <Link href="/pipeline" className="text-primary hover:underline">Video Studio</Link>{" "}
+                    and it'll land here when it finishes.
+                  </p>
+                </Card>
+              )
+            ) : (
+              <>
           {/* Mode filter chips — show counts so the user knows what's there. */}
           {modes.length > 1 && (
             <div className="flex items-center gap-2 flex-wrap">
@@ -397,6 +471,91 @@ export default function LibraryPage() {
               );
             })}
           </div>
+              </>
+            )
+          )}
+
+          {/* ── Posts surface (also shown in "All") ───────────────
+              Approved, non-video queue items: the written content paired
+              with the hero image the engine generated for it. Copy the
+              text, download the image. This is the text+image output the
+              library surfaces alongside finished reels. */}
+          {kind !== "videos" && (
+            posts.length === 0 ? (
+              <Card>
+                <p className="text-muted-foreground text-[14px]">
+                  No approved posts yet. Approve text posts in the{" "}
+                  <Link href="/queue" className="text-primary hover:underline">Approval Queue</Link>{" "}
+                  and they'll appear here with their images.
+                </p>
+              </Card>
+            ) : (
+              <>
+                {kind === "all" && (
+                  <p className="text-[11px] uppercase tracking-wider text-muted-foreground pt-2">
+                    📝 Posts
+                  </p>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {posts.map((it) => {
+                    const text = (it.content || it.caption || "").trim();
+                    const img = it.imageUrl ? mediaUrl(it.imageUrl) : null;
+                    return (
+                      <Card key={it.id} className="overflow-hidden flex flex-col gap-3">
+                        {img ? (
+                          <a href={img} target="_blank" rel="noopener noreferrer" className="block">
+                            <img
+                              src={img}
+                              alt=""
+                              loading="lazy"
+                              className="w-full aspect-square object-cover rounded-md bg-muted"
+                            />
+                          </a>
+                        ) : (
+                          <div className="w-full aspect-square rounded-md bg-muted flex items-center justify-center text-[12px] text-muted-foreground">
+                            no image
+                          </div>
+                        )}
+                        <div className="flex flex-col gap-1.5">
+                          <p
+                            className="text-[13px] leading-snug line-clamp-5 whitespace-pre-wrap"
+                            title={text}
+                          >
+                            {text || "(no text)"}
+                          </p>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <Badge tone="muted">{it.platform}</Badge>
+                            {it.pillar && <Badge tone="accent">{it.pillar}</Badge>}
+                            <Badge tone="muted">{it.format}</Badge>
+                            <Badge tone="ok">✓ Approved</Badge>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground">
+                            {fmtDate(it.createdAt)}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2 mt-auto">
+                          <Button variant="secondary" onClick={() => copyPostText(it)}>
+                            {copiedPostId === it.id ? "✓ Copied" : "Copy text"}
+                          </Button>
+                          {img && (
+                            <a
+                              href={img}
+                              download={`${it.platform || "post"}-${it.id.slice(0, 8)}.png`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="ml-auto text-[12px] text-primary hover:underline"
+                            >
+                              ⬇ Download image
+                            </a>
+                          )}
+                        </div>
+                      </Card>
+                    );
+                  })}
+                </div>
+              </>
+            )
+          )}
         </>
       )}
 

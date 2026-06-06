@@ -9,6 +9,7 @@ import {
 
 const PLATFORMS = ["instagram", "linkedin", "facebook", "tiktok", "x"];
 const FORMATS = ["reel_script", "post", "caption", "thread"];
+const BULK_SIZES = [5, 7, 10, 14, 30];
 
 function runTone(s: string): "muted" | "accent" | "ok" | "destructive" {
   if (s === "succeeded") return "ok";
@@ -22,6 +23,9 @@ export default function AutopilotPage() {
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
   const [msg, setMsg] = useState("");
+  const [bulkCount, setBulkCount] = useState(10);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkNotice, setBulkNotice] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   async function loadAll() {
@@ -65,6 +69,15 @@ export default function AutopilotPage() {
       setTimeout(() => api.listAutopilotRuns().then(setRuns), 800);
     } finally { setRunning(false); }
   }
+  async function bulkGenerate() {
+    const n = Math.max(1, Math.min(60, Math.round(bulkCount) || 1));
+    setBulkBusy(true); setBulkNotice(null);
+    try {
+      await api.bulkGenerate(n);
+      setBulkNotice(`Started — ${n} pieces generating in the background. They'll appear in the Approval Queue as they finish.`);
+      setTimeout(() => api.listAutopilotRuns().then(setRuns).catch(() => {}), 800);
+    } finally { setBulkBusy(false); }
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -72,6 +85,54 @@ export default function AutopilotPage() {
         title="Autopilot"
         sub="Autonomous daily content. It invents fresh story-framed ideas grounded in James's voice, drafts them through voice-QA + your learned guardrails, and drops them in the approval queue. Nothing publishes — you still approve every piece."
       />
+
+      <Card className="border-primary/40 bg-primary/5">
+        <div className="flex items-center justify-between">
+          <CardTitle>Bulk create</CardTitle>
+          <Badge tone="primary">one click</Badge>
+        </div>
+        <p className="text-[12px] text-muted-foreground mt-1">
+          Half become text+image posts, half become video reels — all land in the{" "}
+          <Link href="/queue" className="underline">Approval Queue</Link> for review.
+        </p>
+
+        <Label>Batch size</Label>
+        <div className="flex flex-wrap items-center gap-2">
+          {BULK_SIZES.map((n) => (
+            <button
+              key={n}
+              onClick={() => setBulkCount(n)}
+              className={`text-[13px] rounded-full px-3.5 py-1.5 border transition-colors ${
+                bulkCount === n
+                  ? "border-primary text-foreground bg-primary/15 font-semibold"
+                  : "border-border text-muted-foreground hover:bg-secondary"
+              }`}
+            >
+              {n}
+            </button>
+          ))}
+          <div className="w-24">
+            <Input
+              type="number" min={1} max={60} value={bulkCount}
+              aria-label="Custom batch size"
+              onChange={(e) => setBulkCount(Math.max(1, Math.min(60, +e.target.value || 1)))}
+            />
+          </div>
+          <span className="text-[11px] text-muted-foreground self-center">pieces (~N days of content)</span>
+        </div>
+
+        <div className="mt-4 flex items-center gap-3">
+          <Button onClick={bulkGenerate} disabled={bulkBusy}>
+            {bulkBusy ? <Spinner /> : `Generate ${Math.max(1, Math.min(60, Math.round(bulkCount) || 1))} pieces`}
+          </Button>
+        </div>
+        {bulkNotice && (
+          <div className="mt-3 rounded-md border border-primary/40 bg-primary/10 p-3 text-[12px] text-foreground">
+            {bulkNotice}{" "}
+            <Link href="/queue" className="text-primary underline font-medium">Open the Approval Queue →</Link>
+          </div>
+        )}
+      </Card>
 
       <Card>
         <div className="flex items-center justify-between">
