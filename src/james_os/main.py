@@ -1602,12 +1602,14 @@ async def integrations_connections() -> dict:
 
 @app.get("/integrations/profile/{provider}/{profile_id}/posts")
 async def integrations_profile_posts(
-    provider: str, profile_id: str, limit: int = 20,
+    provider: str, profile_id: str, platform: str = "", limit: int = 20,
 ) -> dict:
-    """Recent posts for one connected profile. Routes to the right
-    backend based on `provider` ('meta' | 'postproxy')."""
+    """Recent posts for one connected profile, normalized to a common
+    card shape. Routes to the right backend based on `provider`
+    ('meta' | 'postproxy'). `platform` filters PostProxy posts (e.g.
+    'youtube') since one PostProxy workspace spans many platforms."""
     from .connections import list_profile_posts
-    return await list_profile_posts(provider, profile_id, limit)
+    return await list_profile_posts(provider, profile_id, platform, limit)
 
 
 # ── PostProxy integration (X / IG / LinkedIn / TikTok via one API) ──

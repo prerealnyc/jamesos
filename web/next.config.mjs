@@ -57,6 +57,9 @@ const nextConfig = {
       // Analytics — handles / summary / posts / timeline / cohort /
       // accounts / refresh.
       { source: "/analytics/:path*", destination: `${BACKEND}/analytics/:path*` },
+      // Integrations — Meta Graph + PostProxy + the unified
+      // /integrations/connections view the Analytics page reads.
+      { source: "/integrations/:path*", destination: `${BACKEND}/integrations/:path*` },
     ];
   },
 };

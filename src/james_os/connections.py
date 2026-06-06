@@ -127,27 +127,85 @@ async def list_all_connections() -> dict:
     }
 
 
-async def list_profile_posts(provider: str, profile_id: str, limit: int = 20) -> dict:
-    """Recent posts for one profile. Routes to the right backend
-    based on `provider`."""
+def _normalize_postproxy_posts(raw: dict, platform: str) -> list[dict]:
+    """Flatten PostProxy's nested post shape into the normalized card
+    shape the UI renders. Each PostProxy post can target multiple
+    platforms; we pull the matching placement's permalink + cover."""
+    out: list[dict] = []
+    for p in (raw.get("data") or []):
+        # Find the placement matching the requested platform (or the
+        # first one if no platform filter).
+        placements = p.get("platforms") or []
+        match = None
+        for pl in placements:
+            if not platform or (pl.get("platform") or "").lower() == platform.lower():
+                match = pl
+                break
+        match = match or (placements[0] if placements else {})
+        params = match.get("params") or {}
+        out.append({
+            "id": p.get("id"),
+            "caption": (p.get("body") or "")[:400],
+            "title": params.get("title") or "",
+            "permalink": match.get("permalink") or "",
+            "thumbnail": params.get("cover_url") or params.get("thumbnail_url") or "",
+            "platform": (match.get("platform") or platform or "").lower(),
+            "status": match.get("status") or p.get("status") or "",
+            "posted_at": p.get("scheduled_at") or p.get("created_at") or "",
+            # PostProxy's list endpoint doesn't carry per-post metrics;
+            # those need /api/posts/stats with explicit post_ids. The
+            # UI can request them on demand.
+            "views": None, "likes": None, "comments": None,
+        })
+    return out
+
+
+def _normalize_ig_media(raw: dict) -> list[dict]:
+    """Flatten Meta IG /media into the same normalized card shape."""
+    out: list[dict] = []
+    for m in (raw.get("data") or []):
+        out.append({
+            "id": m.get("id"),
+            "caption": (m.get("caption") or "")[:400],
+            "title": "",
+            "permalink": m.get("permalink") or "",
+            "thumbnail": m.get("thumbnail_url") or m.get("media_url") or "",
+            "platform": "instagram",
+            "status": "published",
+            "posted_at": m.get("timestamp") or "",
+            "views": None,
+            "likes": m.get("like_count"),
+            "comments": m.get("comments_count"),
+        })
+    return out
+
+
+async def list_profile_posts(
+    provider: str, profile_id: str, platform: str = "", limit: int = 20,
+) -> dict:
+    """Recent posts for one profile, NORMALIZED to a common card shape:
+        { posts: [{id, caption, title, permalink, thumbnail, platform,
+                   status, posted_at, views, likes, comments}], error? }
+    Routes to the right backend based on `provider`."""
     if provider == "postproxy":
         from .postproxy import list_posts, PostProxyError
-        # PostProxy doesn't filter posts by profile_id directly via
-        # list_posts; use post_stats with profile_ids instead.
-        from .postproxy import post_stats
         try:
-            return await post_stats(profile_ids=[profile_id])
+            raw = await list_posts(
+                platforms=[platform] if platform else None,
+                per_page=limit,
+            )
+            return {"posts": _normalize_postproxy_posts(raw, platform)}
         except PostProxyError as e:
-            return {"error": str(e)}
+            return {"error": str(e), "posts": []}
     if provider == "meta":
-        # `profile_id` here is the IG Business account id. For Pages
-        # we'd hit a different endpoint — wire that later.
+        # `profile_id` here is the IG Business account id.
         from .meta_graph import ig_recent_media, MetaApiError
         try:
-            return await ig_recent_media(profile_id, limit=limit)
+            raw = await ig_recent_media(profile_id, limit=limit)
+            return {"posts": _normalize_ig_media(raw)}
         except MetaApiError as e:
-            return {"error": str(e)}
-    return {"error": f"unknown provider: {provider}"}
+            return {"error": str(e), "posts": []}
+    return {"error": f"unknown provider: {provider}", "posts": []}
 
 
 __all__ = ["list_all_connections", "list_profile_posts"]

@@ -19,6 +19,15 @@ import { Badge, Button, Card, Spinner } from "@/components/ui";
 
 type Connections = Awaited<ReturnType<typeof api.listConnections>>;
 type Profile = Connections["profiles"][number];
+type PostList = Awaited<ReturnType<typeof api.listProfilePosts>>;
+type Post = PostList["posts"][number];
+
+function fmtNum(n: number | null): string {
+  if (n == null) return "—";
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return String(n);
+}
 
 const PLATFORM_LABEL: Record<string, { icon: string; tone: "muted" | "accent" | "ok" | "destructive" }> = {
   instagram: { icon: "IG", tone: "accent" },
@@ -61,7 +70,8 @@ export function ConnectedAccounts() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [posts, setPosts] = useState<Record<string, unknown> | null>(null);
+  const [posts, setPosts] = useState<Post[] | null>(null);
+  const [postsErr, setPostsErr] = useState("");
   const [postsLoading, setPostsLoading] = useState(false);
 
   async function load() {
@@ -78,12 +88,14 @@ export function ConnectedAccounts() {
 
   async function openProfile(p: Profile) {
     const key = `${p.provider}:${p.id}`;
-    if (expanded === key) { setExpanded(null); setPosts(null); return; }
-    setExpanded(key); setPosts(null); setPostsLoading(true);
+    if (expanded === key) { setExpanded(null); setPosts(null); setPostsErr(""); return; }
+    setExpanded(key); setPosts(null); setPostsErr(""); setPostsLoading(true);
     try {
-      setPosts(await api.listProfilePosts(p.provider, p.id, 12));
+      const r = await api.listProfilePosts(p.provider, p.id, p.platform, 12);
+      if (r.error) setPostsErr(r.error);
+      setPosts(r.posts || []);
     } catch (e) {
-      setPosts({ error: e instanceof Error ? e.message : "load failed" });
+      setPostsErr(e instanceof Error ? e.message : "load failed");
     } finally {
       setPostsLoading(false);
     }
@@ -200,20 +212,56 @@ export function ConnectedAccounts() {
                   </span>
                 </button>
                 {isOpen && (
-                  <div className="px-3 pb-3 pt-1 border-t border-border bg-muted/20">
+                  <div className="px-3 pb-3 pt-2 border-t border-border bg-muted/20">
                     {postsLoading ? (
                       <p className="text-[11px] text-muted-foreground flex items-center gap-2 py-2">
                         <Spinner /> Fetching posts…
                       </p>
-                    ) : posts && "error" in posts ? (
-                      <p className="text-[11px] text-destructive py-2">
-                        ✗ {String((posts as { error: string }).error)}
-                      </p>
-                    ) : posts ? (
-                      <pre className="text-[10px] font-mono whitespace-pre-wrap break-words max-h-64 overflow-y-auto bg-background border border-border rounded p-2 mt-2">
-                        {JSON.stringify(posts, null, 2).slice(0, 4000)}
-                      </pre>
-                    ) : null}
+                    ) : postsErr ? (
+                      <p className="text-[11px] text-destructive py-2">✗ {postsErr}</p>
+                    ) : posts && posts.length > 0 ? (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                        {posts.map((post) => (
+                          <a
+                            key={post.id}
+                            href={post.permalink || "#"}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="block rounded-md border border-border bg-background overflow-hidden hover:border-primary transition-colors"
+                          >
+                            {post.thumbnail ? (
+                              /* eslint-disable-next-line @next/next/no-img-element */
+                              <img
+                                src={post.thumbnail}
+                                alt=""
+                                className="w-full aspect-video object-cover bg-muted"
+                                loading="lazy"
+                              />
+                            ) : (
+                              <div className="w-full aspect-video bg-muted flex items-center justify-center text-muted-foreground text-[10px]">
+                                no thumbnail
+                              </div>
+                            )}
+                            <div className="p-2 space-y-1">
+                              {post.title && (
+                                <p className="text-[11px] font-medium line-clamp-1">{post.title}</p>
+                              )}
+                              <p className="text-[10px] text-muted-foreground line-clamp-2 leading-snug">
+                                {post.caption || "(no caption)"}
+                              </p>
+                              <div className="flex items-center gap-2 text-[10px] text-muted-foreground pt-0.5">
+                                {post.views != null && <span>▶ {fmtNum(post.views)}</span>}
+                                {post.likes != null && <span>♥ {fmtNum(post.likes)}</span>}
+                                {post.comments != null && <span>💬 {fmtNum(post.comments)}</span>}
+                                <span className="ml-auto">{fmtDate(post.posted_at)}</span>
+                              </div>
+                            </div>
+                          </a>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-muted-foreground py-2">No posts found.</p>
+                    )}
                   </div>
                 )}
               </li>

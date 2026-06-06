@@ -578,10 +578,19 @@ export const api = {
       by_platform: Record<string, number>;
       total: number;
     }>("/integrations/connections"),
-  listProfilePosts: (provider: string, profileId: string, limit = 20) =>
-    jget<Record<string, unknown>>(
-      `/integrations/profile/${provider}/${encodeURIComponent(profileId)}/posts?limit=${limit}`,
-    ),
+  listProfilePosts: (provider: string, profileId: string, platform = "", limit = 20) => {
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (platform) q.set("platform", platform);
+    return jget<{
+      posts: {
+        id: string; caption: string; title: string; permalink: string;
+        thumbnail: string; platform: string; status: string;
+        posted_at: string;
+        views: number | null; likes: number | null; comments: number | null;
+      }[];
+      error?: string;
+    }>(`/integrations/profile/${provider}/${encodeURIComponent(profileId)}/posts?${q}`);
+  },
 
   // ── Analytics ───────────────────────────────────────────────────
   // Reads aggregate stats over the scraped social-media posts in the
