@@ -560,6 +560,96 @@ _register(Tool(
 ))
 
 
+# ── create content (initiate work) ───────────────────────────────────
+
+
+async def _t_generate_post(topic: str, platform: str = "instagram") -> dict:
+    """Generate one on-voice text+image post draft and queue it for review."""
+    from .autopilot_bulk import _make_text_post
+    idea = {"topic": topic, "title": (topic or "")[:60], "pillar": ""}
+    return await _make_text_post(idea, platform or "instagram", None)
+
+
+_register(Tool(
+    name="generate_post",
+    description=(
+        "CREATE a new on-voice text post (with an AI hero image) about a "
+        "topic and queue it in the Approval Queue for review. Spends LLM + "
+        "image credits. Use when the user asks to write / create / draft a post."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "topic": {"type": "string", "description": "What the post is about."},
+            "platform": {"type": "string", "default": "instagram"},
+        },
+        "required": ["topic"],
+    },
+    fn=_t_generate_post,
+    writes=True,
+))
+
+
+async def _t_generate_reel(topic: str, platform: str = "instagram") -> dict:
+    """Write a short on-voice reel script and kick an engaging_avatar render."""
+    from .autopilot_bulk import _make_video
+    idea = {"topic": topic, "title": (topic or "")[:60], "pillar": ""}
+    return await _make_video(idea, platform or "instagram", None)
+
+
+_register(Tool(
+    name="generate_reel",
+    description=(
+        "CREATE a new short video reel about a topic: writes an on-voice "
+        "script, then kicks a real avatar + B-roll render (HeyGen/Runway/"
+        "Creatomate). Spends render credits and takes a few minutes; it lands "
+        "in the Approval Queue when finished. Use when the user asks to make / "
+        "create a video or reel."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "topic": {"type": "string", "description": "What the reel is about."},
+            "platform": {"type": "string", "default": "instagram"},
+        },
+        "required": ["topic"],
+    },
+    fn=_t_generate_reel,
+    writes=True,
+))
+
+
+async def _t_run_autopilot(count: int = 6) -> dict:
+    """Generate a batch of content (≈50/50 text+image posts and video reels)."""
+    from .autopilot_bulk import generate_bulk
+    n = max(1, min(int(count or 6), 12))
+    return await generate_bulk(n, 0, None)
+
+
+_register(Tool(
+    name="run_autopilot",
+    description=(
+        "Generate a BATCH of content in one go (split ~50/50 between "
+        "text+image posts and video reels), ideated from live trends + voice. "
+        "Spends significant LLM / image / render credits — confirm the count "
+        "with the user first. Capped at 12 pieces per call. Results appear in "
+        "the Approval Queue."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "count": {
+                "type": "integer",
+                "default": 6,
+                "description": "How many pieces to make (max 12).",
+            },
+        },
+    },
+    fn=_t_run_autopilot,
+    writes=True,
+))
+
+
 # ── run lifecycle ────────────────────────────────────────────────────
 
 
@@ -577,6 +667,11 @@ Rules:
     import), call the matching tool. You may chain — e.g. to render a
     podcast that's not yet imported, first import_drive_video, then
     once it's ready (status='ready'), render it.
+  * To CREATE content from a topic: generate_post (on-voice text+image
+    draft → Approval Queue), generate_reel (writes a script + kicks a
+    real video render), run_autopilot (a whole batch). These SPEND
+    credits — for a batch, confirm the count first, then report exactly
+    what you queued and where the user sees it (Approval Queue).
   * Tools that mutate state or spend money (render_*, refresh_*,
     import_*, approve_*) — be explicit in your final summary about
     what you kicked, how much it'll cost roughly, and how the user
