@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { api, type ResearchResponse, type Trend } from "@/lib/api";
 import { Button, Card, Input, Spinner, Badge, PageHeader } from "@/components/ui";
 import { TrendCard, ALL_PLATFORMS } from "@/components/trends";
+import { WatchlistEditor } from "@/components/watchlist-editor";
 
 type Tab = "trends" | "topic";
 
@@ -49,13 +50,16 @@ function platformBadge(platform: string): string {
 
 export default function MarketResearchPage() {
   const [tab, setTab] = useState<Tab>("trends");
+  // Bumped when the watchlist is edited so the roster above re-fetches.
+  const [rosterReload, setRosterReload] = useState(0);
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Social Research"
         sub="The creators and influencers we track, what's going viral in your space, and live peer intel — all saved to memory."
       />
-      <InfluencerRoster />
+      <InfluencerRoster reloadKey={rosterReload} />
+      <WatchlistEditor onWatchlistChange={() => setRosterReload((n) => n + 1)} />
       <div className="flex gap-2">
         <TabButton active={tab === "trends"} onClick={() => setTab("trends")}>
           Trend radar
@@ -94,7 +98,7 @@ function TabButton({
 
 // ── Influencer roster: creators we scrape weekly via Apify ──
 
-function InfluencerRoster() {
+function InfluencerRoster({ reloadKey = 0 }: { reloadKey?: number }) {
   const [creators, setCreators] = useState<RosterCreator[]>([]);
   const [status, setStatus] = useState<{ last_refresh: string | null; due: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -102,16 +106,23 @@ function InfluencerRoster() {
   const [note, setNote] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     Promise.all([
       api.researchRoster().catch(() => ({ creators: [] as RosterCreator[] })),
       api.researchRosterStatus().catch(() => null),
     ])
       .then(([roster, st]) => {
+        if (cancelled) return;
         setCreators(roster.creators || []);
         setStatus(st);
       })
-      .finally(() => setLoading(false));
-  }, []);
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
 
   async function refresh() {
     setRefreshing(true);
