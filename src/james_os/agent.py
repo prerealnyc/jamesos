@@ -650,38 +650,401 @@ _register(Tool(
 ))
 
 
+# ── analyze performance (read) ───────────────────────────────────────
+
+
+def _slim_post(p: dict) -> dict:
+    return {
+        k: p.get(k)
+        for k in (
+            "platform", "handle", "url", "caption", "views", "likes",
+            "comments", "shares", "engagement_rate", "outlier_score",
+            "velocity", "posted_at",
+        )
+    }
+
+
+async def _t_get_post_performance_summary(
+    handle: str = "", platform: str = "", days: int = 30, limit_top: int = 3
+) -> dict:
+    """Own aggregates + best AND worst posts in one call — the default
+    analysis read."""
+    from .analytics import handle_summary, list_posts
+    days = int(days)
+    n = max(1, min(int(limit_top), 5))
+    summary = await handle_summary(handle=handle, platform=platform, days=days)
+    top = await list_posts(
+        handle=handle, platform=platform, days=days,
+        sort="engagement_rate", limit=n,
+    )
+    pool = await list_posts(
+        handle=handle, platform=platform, days=days,
+        sort="engagement_rate", limit=200,
+    )
+    bottom = list(reversed([p for p in pool if int(p.get("views") or 0) > 0]))[:n]
+    keep = (
+        "post_count", "views", "likes", "comments", "shares", "engagement",
+        "engagement_rate", "median_outlier", "by_platform", "best_post",
+    )
+    return {
+        "window_days": days,
+        "summary": {k: summary.get(k) for k in keep},
+        "top_posts": [_slim_post(p) for p in top],
+        "bottom_posts": [_slim_post(p) for p in bottom],
+    }
+
+
+_register(Tool(
+    name="get_post_performance_summary",
+    description=(
+        "DEFAULT analytics read: the brand's own aggregate stats PLUS its top "
+        "and bottom posts for a window, so you can see what worked, what "
+        "flopped, and the patterns behind both. Use this first for any "
+        "'analyze my performance' request. Read-only."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "handle": {"type": "string", "default": ""},
+            "platform": {"type": "string", "default": ""},
+            "days": {"type": "integer", "default": 30},
+            "limit_top": {"type": "integer", "default": 3},
+        },
+    },
+    fn=_t_get_post_performance_summary,
+))
+
+
+async def _t_get_top_posts(
+    sort: str = "engagement_rate", platform: str = "",
+    handle: str = "", days: int = 30, limit: int = 5,
+) -> dict:
+    from .analytics import list_posts
+    valid = {
+        "views", "likes", "comments", "engagement", "engagement_rate",
+        "outlier", "velocity", "recent",
+    }
+    s = sort if sort in valid else "engagement_rate"
+    rows = await list_posts(
+        handle=handle, platform=platform, days=int(days),
+        sort=s, limit=max(1, min(int(limit), 20)),
+    )
+    return {"sort": s, "posts": [_slim_post(p) for p in rows]}
+
+
+_register(Tool(
+    name="get_top_posts",
+    description=(
+        "The brand's own posts ranked by a chosen metric. sort ∈ "
+        "engagement_rate | engagement | outlier (viral) | views | velocity | "
+        "recent. Use to name concrete winners/losers. Read-only."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "sort": {"type": "string", "default": "engagement_rate"},
+            "platform": {"type": "string", "default": ""},
+            "handle": {"type": "string", "default": ""},
+            "days": {"type": "integer", "default": 30},
+            "limit": {"type": "integer", "default": 5},
+        },
+    },
+    fn=_t_get_top_posts,
+))
+
+
+async def _t_get_platform_performance(days: int = 30) -> dict:
+    from .analytics import platform_performance
+    return await platform_performance(days=int(days))
+
+
+_register(Tool(
+    name="get_platform_performance",
+    description=(
+        "Per-platform breakdown across the brand's own posts (post count, "
+        "views, avg/median engagement rate, best post per platform) so you "
+        "can say which CHANNEL is winning. Read-only."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {"days": {"type": "integer", "default": 30}},
+    },
+    fn=_t_get_platform_performance,
+))
+
+
+async def _t_get_accounts_leaderboard(platform: str = "", days: int = 30) -> dict:
+    from .analytics import accounts_leaderboard
+    rows = await accounts_leaderboard(platform=platform, days=int(days))
+    return {"accounts": rows}
+
+
+_register(Tool(
+    name="get_accounts_leaderboard",
+    description=(
+        "Rank the brand's OWN accounts side-by-side (e.g. personal IG vs brand "
+        "IG vs TikTok) by views/engagement. Accounts with zero stats are "
+        "configured-but-unscraped (needs refresh). Read-only."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "platform": {"type": "string", "default": ""},
+            "days": {"type": "integer", "default": 30},
+        },
+    },
+    fn=_t_get_accounts_leaderboard,
+))
+
+
+# ── research / market intel (write — spends API credits) ─────────────
+
+
+async def _t_research_topic(subject: str, focus: str = "") -> dict:
+    from .ingestion import ingest_many
+    from .research import get_research_provider, research_to_events
+    prov = get_research_provider()
+    if prov.name == "stub":
+        return {
+            "error": "No live research provider connected. Set "
+            "RESEARCH_PROVIDER=perplexity and PERPLEXITY_API_KEY."
+        }
+    res = await prov.research(subject, focus or "")
+    if res.is_empty():
+        return {"subject": subject, "summary": "", "findings": [], "sources": []}
+    stored: list[str] = []
+    try:
+        rows = await ingest_many(research_to_events(res))
+        stored = [str(r.id) for r in rows]
+    except Exception:  # noqa: BLE001 — research still returns even if not stored
+        pass
+    return {
+        "subject": subject,
+        "provider": res.provider,
+        "summary": res.summary,
+        "findings": res.findings[:12],
+        "sources": [s.url for s in res.sources][:10],
+        "stored_event_ids": stored,
+    }
+
+
+_register(Tool(
+    name="research_topic",
+    description=(
+        "Live WEB research on any subject (a competitor, a market shift, a "
+        "content angle) via Perplexity. Returns a cited summary + findings and "
+        "saves them to memory so future answers/content can cite them. Spends "
+        "research credits."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "subject": {"type": "string"},
+            "focus": {"type": "string", "default": ""},
+        },
+        "required": ["subject"],
+    },
+    fn=_t_research_topic,
+    writes=True,
+))
+
+
+async def _t_scan_market(
+    topic: str, focus: str = "", platforms: str = "instagram,tiktok,youtube"
+) -> dict:
+    """One-call market context: web research + fresh competitor posts + the
+    brand's curated peer cohort. The entry point for 'analyze the market'."""
+    out: dict = {"topic": topic}
+    out["research"] = await _t_research_topic(topic, focus)
+    try:
+        from .trends import discover_and_ingest
+        pls = [p.strip() for p in platforms.split(",") if p.strip()]
+        disc = await discover_and_ingest(topic, pls, 15)
+        out["fresh_competitor_posts"] = {
+            "found": disc.get("stored") or disc.get("found") or 0,
+            "trends": (disc.get("trends") or [])[:10],
+        }
+    except Exception as e:  # noqa: BLE001
+        out["fresh_competitor_posts"] = {"error": str(e)}
+    try:
+        from .trends import list_cohort_trends
+        coh = await list_cohort_trends(topic, limit=8)
+        out["peer_cohort"] = {
+            "creators": coh.get("creators") or [],
+            "trends": coh.get("trends") or [],
+        }
+    except Exception as e:  # noqa: BLE001
+        out["peer_cohort"] = {"error": str(e)}
+    return out
+
+
+_register(Tool(
+    name="scan_market",
+    description=(
+        "COMPOSITE market scan in one call: live web research + fresh "
+        "competitor/peer posts (scraped by topic) + the brand's curated peer "
+        "cohort — all saved to memory. Start here for 'analyze the market / "
+        "what should we do next'. Spends research + scrape credits, so confirm "
+        "intent for tight-budget contexts."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "topic": {"type": "string"},
+            "focus": {"type": "string", "default": ""},
+            "platforms": {"type": "string", "default": "instagram,tiktok,youtube"},
+        },
+        "required": ["topic"],
+    },
+    fn=_t_scan_market,
+    writes=True,
+))
+
+
+# ── close the loop: reject + track ───────────────────────────────────
+
+
+async def _t_reject_item(item_id: str, reason: str) -> dict:
+    """Reject a queued item WITH a reason — the reason becomes a memory
+    guardrail so the engine stops repeating the mistake (learning loop)."""
+    from .db import acquire
+    from .learning import record_rejection
+    iid = UUID(item_id)
+    async with acquire() as conn:
+        tag = await conn.execute(
+            "UPDATE actions SET status='rejected', "
+            "rejection_reason_code=$2, decided_at=now() WHERE id=$1",
+            iid, reason,
+        )
+    if not tag.endswith(" 1"):
+        return {"error": f"action {item_id} not found"}
+    learned = await record_rejection(iid, reason)
+    return {
+        "ok": True, "id": item_id, "status": "rejected",
+        "learned": bool(learned), "guardrail_id": learned,
+    }
+
+
+_register(Tool(
+    name="reject_item",
+    description=(
+        "Reject a queue item by id WITH a real reason. Unlike approve, this "
+        "TEACHES the content engine: the reason is saved as a guardrail so it "
+        "stops repeating the mistake. Use when the user wants a draft killed "
+        "and the system to learn from it."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "item_id": {"type": "string"},
+            "reason": {"type": "string", "description": "Why it's wrong — this is what the engine learns from."},
+        },
+        "required": ["item_id", "reason"],
+    },
+    fn=_t_reject_item,
+    writes=True,
+))
+
+
+async def _t_get_production(production_id: str) -> dict:
+    from .video_pipeline import get_production
+    r = await get_production(UUID(production_id))
+    if not r:
+        return {"error": "production not found"}
+    return {
+        k: r.get(k)
+        for k in ("id", "status", "mode", "title", "final_url", "error", "completed_at")
+    }
+
+
+_register(Tool(
+    name="get_production",
+    description=(
+        "Check the status of one video production by id (queued | planning | "
+        "rendering_clips | assembling | succeeded | failed) and get its "
+        "final_url when done. Use to answer 'is my video ready?'. Read-only."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {"production_id": {"type": "string"}},
+        "required": ["production_id"],
+    },
+    fn=_t_get_production,
+))
+
+
 # ── run lifecycle ────────────────────────────────────────────────────
 
 
-_SYSTEM_PROMPT = """You are the JAMES OS agent.
+_SYSTEM_PROMPT = """You are the JAMES OS agent — the operator of a brand-content
+system. You take a marketing operator's natural-language command, pick the right
+tools, and START AND FINISH the work. Don't just describe what could be done — do it.
 
-You operate the brand-manager system: you take natural-language commands from a
-marketing operator and run them by calling tools. Every tool maps to a real
-feature the system already has (importing Drive videos, rendering reels,
-refreshing analytics, approving queue items, etc.).
+WHAT YOU CAN DO (map the user's request to these):
 
-Rules:
-  * If the user is asking a FACTUAL question (what / who / when / why /
-    what's our voice rule about hashtags?), call `ask_memory` first.
-  * If the user wants something DONE (render, refresh, add, approve,
-    import), call the matching tool. You may chain — e.g. to render a
-    podcast that's not yet imported, first import_drive_video, then
-    once it's ready (status='ready'), render it.
-  * To CREATE content from a topic: generate_post (on-voice text+image
-    draft → Approval Queue), generate_reel (writes a script + kicks a
-    real video render), run_autopilot (a whole batch). These SPEND
-    credits — for a batch, confirm the count first, then report exactly
-    what you queued and where the user sees it (Approval Queue).
-  * Tools that mutate state or spend money (render_*, refresh_*,
-    import_*, approve_*) — be explicit in your final summary about
-    what you kicked, how much it'll cost roughly, and how the user
-    sees the result (queue page, library, analytics).
-  * If the user's request is ambiguous, ask back IN your final reply
-    instead of guessing. One clarifying question beats a wrong action.
-  * When you're done, write a short plain-English summary of what you
-    did so the user reads one line and knows the state.
+• Answer factual questions about the brand → ask_memory (grounded, cited: voice
+  rules, past decisions, what peers said).
 
-Be terse. Don't narrate every step — just call tools, then summarise."""
+• Analyze the brand's OWN performance:
+  - get_post_performance_summary — DEFAULT: aggregates + top AND bottom posts.
+  - get_top_posts — own posts ranked (engagement_rate | outlier | views | velocity).
+  - get_platform_performance — which CHANNEL wins (IG vs TikTok vs YouTube …).
+  - get_accounts_leaderboard — which of the brand's accounts wins.
+  - analytics_summary — thin legacy summary (prefer get_post_performance_summary).
+  - refresh_brand_analytics — re-scrape recent posts if data looks stale, then re-read.
+
+• Analyze the MARKET / competitors / outside world:
+  - scan_market — ONE call: live web research + fresh competitor posts + peer
+    cohort. Start here for "analyze the market / what should we do".
+  - research_topic — deep live web research on one subject (a named competitor,
+    a market shift), cited + saved to memory.
+  - list_trends — cached peer/competitor posts (free, no scrape).
+
+• Create content (all land in the Approval Queue):
+  - generate_post — on-voice text + image draft.
+  - generate_reel — script + kicks a real avatar/B-roll render (engaging_avatar).
+  - run_autopilot — a whole batch (~50/50 posts+reels); confirm the count first.
+
+• Long-form & media: list_long_sources, render_whole_source, import_drive_video,
+  list_drive_videos.
+
+• Manage the queue: list_pending_approvals, approve_item, reject_item (rejects AND
+  teaches the engine via a memory guardrail — use when killing a weak draft).
+
+• Track + ship: get_production (is a render done?), list_outputs (finished reels),
+  list_brand_accounts / add_brand_account.
+
+HOW TO HANDLE "ANALYZE / WHAT SHOULD I DO" REQUESTS (do REAL work, never one tool):
+  1. OWN baseline → get_post_performance_summary (days=30); add
+     get_platform_performance and/or get_accounts_leaderboard when relevant. If
+     data is thin/stale, refresh_brand_analytics first, then re-read.
+  2. OUTSIDE context → scan_market(topic) for web research + fresh competitor
+     posts + peer cohort in one shot (use research_topic for a deeper single
+     subject). If a research tool reports it's not live-connected (stub), say so
+     and lean on list_trends instead — never present stub text as real research.
+  3. ON-BRAND context → ask_memory for voice rules / pillars so advice stays on-voice.
+  4. COMPARE in NUMBERS → own top vs bottom (what format/hook/pillar/platform
+     works), and own engagement_rate vs peer outlier scores / what's winning now.
+  5. RECOMMEND → 3–6 concrete, ranked actions, each tied to evidence
+     ("TikTok 5.3% ER vs IG 2.1%, peers using narrative hooks → make 3 narrative
+     reels for TikTok").
+  6. FINISH → when the user wants action, actually create it (generate_post /
+     generate_reel / run_autopilot) and report exactly what landed in the queue.
+
+RULES:
+  * Factual question → ask_memory first. Action → call the matching tool; you may
+    chain (e.g. import_drive_video → wait for status='ready' → render_whole_source).
+  * Tools that SPEND money: scan_market / research_topic (research $),
+    refresh_brand_analytics (scrape $), generate_reel / run_autopilot /
+    render_* (render $). For batches/renders, confirm the count, then report
+    roughly what it cost and where the result shows up (Approval Queue / Library).
+  * If truly ambiguous, ask ONE clarifying question in your final reply instead of
+    guessing. Otherwise proceed.
+  * Cite tool outputs; never invent numbers. Be honest about data gaps and stubs.
+  * Finish with a short plain-English summary of what you did and the state.
+
+Be efficient with tool calls (budget is limited). Prefer the bundled tools
+(get_post_performance_summary, scan_market). Then summarise."""
 
 
 def _trim_for_log(obj: Any, max_chars: int = 800) -> Any:

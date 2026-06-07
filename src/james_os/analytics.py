@@ -458,7 +458,43 @@ async def accounts_leaderboard(
     return rows
 
 
+async def platform_performance(
+    *, days: int = 30, tenant_id: UUID | None = None,
+) -> dict:
+    """Per-platform performance breakdown across all the brand's own posts.
+
+    Lets a caller see which CHANNEL is winning ("IG 2.1% ER vs TikTok 5.3%")
+    rather than which individual post. Sorted by post_count desc (stable).
+    """
+    posts = await list_posts(
+        handle="", platform="", days=days, sort="recent",
+        limit=5000, tenant_id=tenant_id,
+    )
+    by: dict[str, list] = defaultdict(list)
+    for p in posts:
+        by[str(p.get("platform") or "")].append(p)
+    out: list[dict] = []
+    for pf, bucket in by.items():
+        if not pf:
+            continue
+        ers = [_engagement_rate(p) for p in bucket]
+        avg_er = sum(ers) / len(ers) if ers else 0.0
+        med_er = sorted(ers)[len(ers) // 2] if ers else 0.0
+        best = max(bucket, key=_engagement_rate, default={})
+        out.append({
+            "platform": pf,
+            "post_count": len(bucket),
+            "total_views": sum(int(p.get("views") or 0) for p in bucket),
+            "total_engagement": sum(_engagement(p) for p in bucket),
+            "avg_engagement_rate": round(avg_er, 4),
+            "median_engagement_rate": round(med_er, 4),
+            "best_post_url": best.get("url") or "",
+        })
+    out.sort(key=lambda r: r["post_count"], reverse=True)
+    return {"days": days, "platforms": out}
+
+
 __all__ = [
     "list_tracked_handles", "handle_summary", "list_posts",
-    "daily_timeline", "accounts_leaderboard",
+    "daily_timeline", "accounts_leaderboard", "platform_performance",
 ]
