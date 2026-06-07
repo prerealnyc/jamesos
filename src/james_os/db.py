@@ -16,8 +16,18 @@ async def init_pool() -> asyncpg.Pool:
         ssl = None if settings.db_ssl == "disable" else settings.db_ssl
         _pool = await asyncpg.create_pool(
             settings.database_url,
-            min_size=1,
+            # Keep a few connections WARM. The hot paths (hybrid search,
+            # system-prompt build) fan out 2+ concurrent queries; with
+            # min_size=1 every extra branch opened a fresh TLS connection to
+            # (cloud) Supabase — ~1s handshake each — which dominated latency
+            # when the backend runs far from the DB (e.g. local dev). Warming
+            # the pool removes that per-request reconnect cost.
+            min_size=4,
             max_size=10,
+            # Don't recycle idle connections aggressively — an interactive,
+            # bursty workload would otherwise pay the reconnect cost again
+            # after every quiet stretch. (default is 300s)
+            max_inactive_connection_lifetime=900.0,
             init=_init_connection,
             ssl=ssl,
             # 0 disables prepared statements — required behind a

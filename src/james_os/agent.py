@@ -687,15 +687,38 @@ async def _finish(
 async def run_agent(run_id: UUID, tenant_id: UUID | None = None) -> None:
     """Execute the tool-use loop for an already-created run. Runs to
     completion; persists state along the way. Catches all exceptions
-    so the run row always ends in a terminal state, never orphaned."""
+    so the run row always ends in a terminal state, never orphaned.
+
+    Provider-aware: dispatches to OpenAI function-calling when
+    LLM_PROVIDER=openai and Anthropic tool-use when LLM_PROVIDER=anthropic —
+    the same provider the rest of the app runs on (see llm.get_llm)."""
+    run = await get_run(run_id, tenant_id)
+    if run is None:
+        return
+    provider = (settings.llm_provider or "").lower()
+    if provider == "openai":
+        await _run_loop_openai(run_id, run, tenant_id)
+    elif provider == "anthropic":
+        await _run_loop_anthropic(run_id, run, tenant_id)
+    else:
+        await _finish(
+            run_id, status="failed",
+            error=(
+                "Agent 'Do' mode needs an OpenAI or Anthropic provider, but "
+                f"LLM_PROVIDER={provider or 'unset'}. Set it in the backend env."
+            ),
+            tenant_id=tenant_id,
+        )
+
+
+async def _run_loop_anthropic(
+    run_id: UUID, run: dict, tenant_id: UUID | None
+) -> None:
+    """Claude tool-use loop (raw Anthropic SDK)."""
     try:
         import anthropic
     except ImportError as e:
         await _finish(run_id, status="failed", error=f"anthropic SDK missing: {e}", tenant_id=tenant_id)
-        return
-
-    run = await get_run(run_id, tenant_id)
-    if run is None:
         return
 
     api_key = (settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY") or "").strip()
@@ -704,7 +727,15 @@ async def run_agent(run_id: UUID, tenant_id: UUID | None = None) -> None:
         return
 
     client = anthropic.AsyncAnthropic(api_key=api_key)
-    model = settings.llm_model or "claude-sonnet-4-5-20250929"
+    # settings.llm_model may be a non-Anthropic model name (e.g. OpenAI
+    # "gpt-4o-mini") when the pipeline runs on another provider; only honor
+    # it when it's actually a Claude model, else use a known Claude default.
+    _DEFAULT_AGENT_MODEL = "claude-sonnet-4-5-20250929"
+    model = (
+        settings.llm_model
+        if settings.llm_model.startswith("claude")
+        else _DEFAULT_AGENT_MODEL
+    )
     messages: list[dict[str, Any]] = [
         {"role": "user", "content": run["prompt"]},
     ]
@@ -721,7 +752,30 @@ async def run_agent(run_id: UUID, tenant_id: UUID | None = None) -> None:
                 messages=messages,
             )
         except Exception as e:  # noqa: BLE001
-            await _finish(run_id, status="failed", error=f"claude call failed: {e}", tenant_id=tenant_id)
+            msg = str(e)
+            low = msg.lower()
+            balance = (
+                "credit balance is too low" in low
+                or "billing" in low
+                or "insufficient" in low
+                or "quota" in low
+            )
+            okey = (settings.openai_api_key or os.getenv("OPENAI_API_KEY") or "").strip()
+            if balance and okey:
+                # Operator request: fall back to OpenAI when Claude is out of
+                # credits. A balance failure happens on the first call before
+                # any tool runs, so restarting fresh on OpenAI from the
+                # original prompt is clean.
+                await _run_loop_openai(run_id, run, tenant_id)
+                return
+            if balance:
+                msg = (
+                    "Anthropic API has no credits and no OpenAI fallback key is "
+                    "set. Add credits at console.anthropic.com, or set "
+                    "OPENAI_API_KEY. "
+                    f"(raw: {msg[:160]})"
+                )
+            await _finish(run_id, status="failed", error=f"agent LLM call failed: {msg}", tenant_id=tenant_id)
             return
 
         # Collect any tool_use blocks; capture text too in case the
@@ -807,7 +861,176 @@ async def run_agent(run_id: UUID, tenant_id: UUID | None = None) -> None:
     )
 
 
+def get_openai_tool_specs() -> list[dict]:
+    """Same tool registry, in OpenAI function-calling shape."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.input_schema,
+            },
+        }
+        for t in _TOOLS.values()
+    ]
+
+
+async def _execute_tool(
+    run_id: UUID,
+    name: str,
+    args: dict,
+    writes_done: list[str],
+    tenant_id: UUID | None,
+) -> tuple[Any, bool]:
+    """Run one tool call, log it to the run row, return (result, ok)."""
+    tool = _TOOLS.get(name)
+    t0 = time.perf_counter()
+    started_at = datetime.now(timezone.utc).isoformat()
+    ok = True
+    error = ""
+    if tool is None:
+        result: Any = {"error": f"unknown tool {name}"}
+        ok = False
+        error = "unknown tool"
+    else:
+        try:
+            clean = {k: v for k, v in (args or {}).items() if v is not None}
+            result = await tool.fn(**clean)
+            if tool.writes:
+                writes_done.append(tool.name)
+        except Exception as e:  # noqa: BLE001
+            result = {"error": f"{type(e).__name__}: {e}"}
+            ok = False
+            error = str(e)
+    await _append_tool_call(
+        run_id,
+        {
+            "name": name,
+            "args": args or {},
+            "result": _trim_for_log(result),
+            "ok": ok,
+            "error": error,
+            "started_at": started_at,
+            "duration_ms": int((time.perf_counter() - t0) * 1000),
+        },
+        tenant_id,
+    )
+    return result, ok
+
+
+async def _run_loop_openai(
+    run_id: UUID, run: dict, tenant_id: UUID | None
+) -> None:
+    """OpenAI function-calling loop — mirrors the Claude loop using the
+    chat.completions tool shape (system message, tools as {type:function},
+    tool outputs as role='tool' messages keyed on tool_call_id)."""
+    try:
+        from openai import AsyncOpenAI
+    except ImportError as e:
+        await _finish(run_id, status="failed", error=f"openai SDK missing: {e}", tenant_id=tenant_id)
+        return
+
+    api_key = (settings.openai_api_key or os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        await _finish(run_id, status="failed", error="OPENAI_API_KEY not set", tenant_id=tenant_id)
+        return
+
+    client = AsyncOpenAI(api_key=api_key)
+    # settings.llm_model is the OpenAI pipeline model (e.g. gpt-4o-mini). If it
+    # somehow points at a Claude model, fall back to a known OpenAI default.
+    model = (
+        settings.llm_model
+        if not settings.llm_model.startswith("claude")
+        else "gpt-4o-mini"
+    )
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": run["prompt"]},
+    ]
+    tools = get_openai_tool_specs()
+    writes_done: list[str] = []
+
+    for _turn in range(MAX_TOOL_TURNS):
+        try:
+            resp = await client.chat.completions.create(
+                model=model,
+                max_tokens=4096,
+                messages=messages,
+                tools=tools,
+            )
+        except Exception as e:  # noqa: BLE001
+            msg = str(e)
+            low = msg.lower()
+            if "quota" in low or "billing" in low or "insufficient" in low:
+                msg = (
+                    "OpenAI API quota/credits exhausted. Add credits at "
+                    "platform.openai.com → Billing. "
+                    f"(raw: {msg[:160]})"
+                )
+            await _finish(run_id, status="failed", error=f"agent LLM call failed: {msg}", tenant_id=tenant_id)
+            return
+
+        m = resp.choices[0].message
+        tool_calls = m.tool_calls or []
+        text = (m.content or "").strip()
+
+        if not tool_calls:
+            summary_line = text if text else "Done."
+            if writes_done:
+                summary_line = (
+                    f"{summary_line}\n\nActions taken: " + ", ".join(writes_done)
+                )
+            await _finish(
+                run_id, status="succeeded",
+                summary=summary_line, answer=text,
+                tenant_id=tenant_id,
+            )
+            return
+
+        # Re-attach the assistant message (with its tool_calls) before the
+        # tool outputs — OpenAI requires every tool_call answered by a
+        # role='tool' message keyed on tool_call_id, in order.
+        messages.append({
+            "role": "assistant",
+            "content": m.content or "",
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments or "{}",
+                    },
+                }
+                for tc in tool_calls
+            ],
+        })
+
+        for tc in tool_calls:
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+                if not isinstance(args, dict):
+                    args = {}
+            except json.JSONDecodeError:
+                args = {}
+            result, _ok = await _execute_tool(
+                run_id, tc.function.name, args, writes_done, tenant_id
+            )
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": json.dumps(result),
+            })
+
+    await _finish(
+        run_id, status="failed",
+        error=f"exceeded {MAX_TOOL_TURNS} tool turns without finishing",
+        tenant_id=tenant_id,
+    )
+
+
 __all__ = [
     "create_run", "list_runs", "get_run", "run_agent",
-    "get_tool_specs", "_TOOLS",
+    "get_tool_specs", "get_openai_tool_specs", "_TOOLS",
 ]

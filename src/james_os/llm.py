@@ -135,6 +135,61 @@ class OpenAILLM(LLM):
         return _extract_json(text, truncated=truncated)
 
 
+def _is_balance_error(e: Exception) -> bool:
+    """True when an LLM call failed because the account is out of credits /
+    over quota (vs. a transient network error or a bad request)."""
+    s = str(e).lower()
+    return any(
+        k in s
+        for k in (
+            "credit balance is too low",
+            "insufficient_quota",
+            "exceeded your current quota",
+            "billing",
+            "quota",
+        )
+    )
+
+
+class FallbackLLM(LLM):
+    """Primary provider with automatic fallback to a secondary ONLY when the
+    primary fails with a billing/credit/quota error.
+
+    Operator request: "use OpenAI when Claude says balance low." So if a
+    Claude call returns 'credit balance is too low', we transparently retry
+    the same call on OpenAI instead of failing. Parse errors and other
+    failures are NOT swallowed — they propagate as before.
+    """
+
+    def __init__(self, primary: LLM, fallback: LLM):
+        self.primary = primary
+        self.fallback = fallback
+        self.model_name = primary.model_name
+
+    async def complete_json(
+        self,
+        system: str,
+        messages: list[dict[str, str]],
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+    ) -> dict[str, Any]:
+        try:
+            self.model_name = self.primary.model_name
+            return await self.primary.complete_json(
+                system, messages, max_tokens, temperature
+            )
+        except LLMParseError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            if not _is_balance_error(e):
+                raise
+            # Primary is out of credits → switch to the fallback provider.
+            self.model_name = self.fallback.model_name
+            return await self.fallback.complete_json(
+                system, messages, max_tokens, temperature
+            )
+
+
 def _extract_json(text: str, truncated: bool = False) -> dict[str, Any]:
     """Best-effort JSON extraction. Handles ```json fences and stray prose.
 
@@ -167,7 +222,16 @@ def make_llm() -> LLM:
     if provider == "stub":
         return StubLLM()
     if provider == "anthropic":
-        return AnthropicLLM(api_key=settings.anthropic_api_key, model=settings.llm_model)
+        primary = AnthropicLLM(api_key=settings.anthropic_api_key, model=settings.llm_model)
+        # Per operator request: when Claude reports a low/zero credit balance,
+        # fall back to OpenAI (when a key is configured) so the app keeps
+        # working instead of failing. settings.llm_model is a Claude name
+        # here, so the fallback uses a sensible OpenAI default.
+        okey = (settings.openai_api_key or "").strip()
+        if okey:
+            ofallback = OpenAILLM(api_key=okey, model="gpt-4o-mini")
+            return FallbackLLM(primary, ofallback)
+        return primary
     if provider == "openai":
         return OpenAILLM(api_key=settings.openai_api_key, model=settings.llm_model)
     raise ValueError(f"Unknown LLM provider: {provider}")

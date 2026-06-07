@@ -5,6 +5,7 @@ call, so there's no chat-window state for an attacker (or a confused user)
 to override the rules with.
 """
 
+import asyncio
 import json
 from typing import Any
 from uuid import UUID
@@ -218,18 +219,28 @@ async def _tenant_label(tenant_id: UUID | None) -> str:
 async def build_content_system_prompt(
     platform: str, fmt: str, tenant_id: UUID | None = None
 ) -> str:
-    rules = await _load_active_guidelines(tenant_id)
+    # The two lookups (guidelines table + tenant row) are independent — run
+    # them concurrently instead of sequentially (each is a remote round-trip).
+    rules, tenant_name = await asyncio.gather(
+        _load_active_guidelines(tenant_id),
+        _tenant_label(tenant_id),
+    )
     base = CONTENT_SYSTEM_PROMPT.format(
-        tenant_name=await _tenant_label(tenant_id),
+        tenant_name=tenant_name,
         platform=platform, fmt=fmt,
     )
     return f"{base}\n\n<rules>\n{rules or '(none configured yet)'}\n</rules>"
 
 
 async def build_system_prompt(tenant_id: UUID | None = None) -> str:
-    guidelines = await _load_active_guidelines(tenant_id)
+    # Independent lookups → fetch concurrently (halves the prompt-build time,
+    # which is otherwise two sequential remote DB round-trips).
+    guidelines, tenant_name = await asyncio.gather(
+        _load_active_guidelines(tenant_id),
+        _tenant_label(tenant_id),
+    )
     return SYSTEM_PROMPT_BASE.format(
-        tenant_name=await _tenant_label(tenant_id),
+        tenant_name=tenant_name,
         guidelines=guidelines or "(none configured yet)",
     )
 
