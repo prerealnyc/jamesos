@@ -66,6 +66,7 @@ const NAV: Group[] = [
     // Voice & brand health — reference material, not daily-driver. Bottom.
     title: "Brand Reference",
     items: [
+      { href: "/voice-studio", label: "Voice Studio", sub: "Feed the voice from Drive (transcribe & learn)", icon: "voice", live: true },
       { href: "/brand", label: "Voice Rules", sub: "Brand voice & guidelines", icon: "voice", live: true },
       { href: "/jp-live", label: "JP Live", sub: "Live brand health", icon: "live", live: true },
     ],

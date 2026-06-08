@@ -62,6 +62,9 @@ const nextConfig = {
       { source: "/integrations/:path*", destination: `${BACKEND}/integrations/:path*` },
       // Social Research roster (weekly influencer scrape).
       { source: "/research/:path*", destination: `${BACKEND}/research/:path*` },
+      // Voice Studio — Drive folder/links → transcribe → voice_corpus.
+      // /voice/* are API paths; the /voice-studio page is a separate Next route.
+      { source: "/voice/:path*", destination: `${BACKEND}/voice/:path*` },
     ];
   },
 };

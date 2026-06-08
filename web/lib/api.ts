@@ -597,6 +597,29 @@ export const api = {
   researchRosterStatus: () =>
     jget<{ last_refresh: string | null; due: boolean }>("/research/roster/status"),
 
+  // ── Voice Studio: drop Drive folder/links → transcribe → voice_corpus ──
+  ingestVoiceDrive: (folderUrl: string, links: string[], category = "voice_corpus") =>
+    jpost<{
+      started: boolean; job_id?: string; total: number;
+      files?: string[]; list_errors?: { source?: string; error: string }[];
+      errors?: { source?: string; error: string }[]; note?: string;
+    }>("/voice/ingest-drive", { folder_url: folderUrl, links, category }),
+  voiceJobs: () =>
+    jget<{
+      jobs: {
+        id: string; source: string; category: string; status: string; stage: string;
+        total: number; processed: number; chunks: number;
+        files: { name: string; chunks: number; type: string }[];
+        errors: { source?: string; error: string }[];
+        created_at: string; completed_at: string | null;
+      }[];
+    }>("/voice/jobs"),
+  voiceCorpus: () =>
+    jget<{
+      total_chunks: number;
+      sources: { filename: string; chunks: number; chars: number }[];
+    }>("/voice/corpus"),
+
   // ── Connected accounts (Meta + PostProxy unified) ──────────────
   listConnections: () =>
     jget<{

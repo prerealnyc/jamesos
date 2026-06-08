@@ -140,6 +140,13 @@ async def lifespan(app: FastAPI):
         await reap_orphaned_sources()
     except Exception:  # noqa: BLE001 — never block startup on a reap failure
         pass
+    # Voice Studio Drive-ingest jobs: same — a restart mid-transcription
+    # must not leave a fake 'running' row (frustration-ledger honesty).
+    from .voice_ingest import reap_orphaned_jobs as _reap_voice
+    try:
+        await _reap_voice()
+    except Exception:  # noqa: BLE001 — never block startup on a reap failure
+        pass
     scheduler = asyncio.create_task(_autopilot_scheduler())
     yield
     scheduler.cancel()
@@ -245,9 +252,11 @@ app.include_router(dashboard_api_router)
 from .autopilot_bulk_api import router as autopilot_bulk_router
 from .analytics_live import router as analytics_live_router
 from .research_roster_api import router as research_roster_router
+from .voice_ingest_api import router as voice_ingest_router
 app.include_router(autopilot_bulk_router)
 app.include_router(analytics_live_router)
 app.include_router(research_roster_router)
+app.include_router(voice_ingest_router)
 
 
 @app.get("/", include_in_schema=False)
