@@ -276,6 +276,48 @@ async def corpus_summary(tenant_id: UUID | None = None) -> dict:
 # ── orchestrator (runs in a background task) ─────────────────────────
 
 
+async def _existing_drive_ids(tenant_id: UUID | None) -> set[str]:
+    """Drive file ids already in the Media Library (so re-runs don't dup)."""
+    from .media import list_media
+
+    try:
+        assets = await list_media(role="james_clip", tenant_id=tenant_id)
+    except Exception:  # noqa: BLE001
+        return set()
+    return {
+        t[len("drive:"):]
+        for a in assets
+        for t in (a.get("tags") or [])
+        if isinstance(t, str) and t.startswith("drive:")
+    }
+
+
+async def _register_video_asset(
+    f: dict, existing_ids: set[str], tenant_id: UUID | None
+) -> bool:
+    """Add a pulled Drive video to the Media Library as a link (no re-upload),
+    so the source footage is browsable + 'View in Drive'. Idempotent."""
+    from .media import create_media
+
+    fid = f.get("id")
+    if not fid or fid in existing_ids:
+        return False
+    try:
+        await create_media(
+            role="james_clip",
+            source_type="url",
+            uri=f"https://drive.google.com/file/d/{fid}/view",
+            title=(f.get("name") or fid)[:200],
+            mime=f.get("mimeType") or "video/mp4",
+            tags=["source:google_drive", "voice_source", f"drive:{fid}"],
+            tenant_id=tenant_id,
+        )
+        existing_ids.add(fid)
+        return True
+    except Exception:  # noqa: BLE001 — the transcript still lands even if this fails
+        return False
+
+
 async def run_ingest(
     job_id: str, files_meta: list[dict], category: str, tenant_id: UUID | None = None
 ) -> None:
@@ -285,6 +327,8 @@ async def run_ingest(
     total_chunks = 0
     done_files: list[dict] = []
     errors: list[dict] = []
+    # Existing Drive-sourced clips, so re-runs don't duplicate the library row.
+    existing_ids = await _existing_drive_ids(tenant_id)
     try:
         for f in files_meta:
             name = f.get("name") or f.get("id") or "file"
@@ -294,6 +338,11 @@ async def run_ingest(
                 processed += 1
                 await _bump(job_id, tenant_id, processed=processed, chunks=total_chunks)
                 continue
+            # Make the VIDEO itself show up in the Media Library as a Drive
+            # link (no re-upload) — independent of whether transcription
+            # succeeds, so the source footage is always browsable.
+            if _is_media(name, mime):
+                await _register_video_asset(f, existing_ids, tenant_id)
             tmp = None
             try:
                 fd, tmp = tempfile.mkstemp(prefix="vdl_")
