@@ -55,29 +55,47 @@ def extract_drive_folder_id(url: str) -> str | None:
     return None
 
 
-def _list_folder_files_sync(folder_id: str, limit: int = 300) -> list[dict]:
+def _list_folder_files_sync(
+    folder_id: str, limit: int = 500, max_depth: int = 6
+) -> list[dict]:
+    """All files under a folder, RECURSING into subfolders (so a folder
+    organised as Module 1 / Module 2 / … still yields every video). Each
+    file's name is prefixed with its subfolder path ('Module 1/Episode 3')
+    so the resulting voice-corpus sources stay identifiable."""
     from .drive import _SHARED_DRIVE_LIST, _service
 
     svc = _service()
-    q = (
-        f"'{folder_id}' in parents and trashed = false "
-        f"and mimeType != '{_GOOGLE_FOLDER}'"
-    )
     files: list[dict] = []
-    page_token = None
-    while True:
-        res = svc.files().list(
-            q=q,
-            fields="nextPageToken, files(id, name, mimeType, size)",
-            pageSize=min(limit, 1000),
-            pageToken=page_token,
-            orderBy="name",
-            **_SHARED_DRIVE_LIST,
-        ).execute()
-        files.extend(res.get("files", []))
-        page_token = res.get("nextPageToken")
-        if not page_token or len(files) >= limit:
-            break
+    seen: set[str] = set()
+    # (folder_id, depth, path_prefix)
+    stack: list[tuple[str, int, str]] = [(folder_id, 0, "")]
+    while stack and len(files) < limit:
+        fid, depth, prefix = stack.pop()
+        if fid in seen:
+            continue
+        seen.add(fid)
+        page_token = None
+        while True:
+            res = svc.files().list(
+                q=f"'{fid}' in parents and trashed = false",
+                fields="nextPageToken, files(id, name, mimeType, size)",
+                pageSize=200,
+                pageToken=page_token,
+                orderBy="folder,name",
+                **_SHARED_DRIVE_LIST,
+            ).execute()
+            for f in res.get("files", []):
+                if f.get("mimeType") == _GOOGLE_FOLDER:
+                    if depth < max_depth:
+                        stack.append((f["id"], depth + 1, f"{prefix}{f.get('name', '')}/"))
+                else:
+                    f["name"] = f"{prefix}{f.get('name', '')}"
+                    files.append(f)
+                    if len(files) >= limit:
+                        break
+            page_token = res.get("nextPageToken")
+            if not page_token or len(files) >= limit:
+                break
     return files[:limit]
 
 
