@@ -127,22 +127,51 @@ async def assemble_memory(
 async def _voice_exemplars(
     tenant_id: UUID | None, limit: int = 4
 ) -> list[RetrievedEvent]:
-    """Random voice-corpus samples — James actually speaking — so the prompt
-    carries real, varied cadence, not just generic-query matches."""
+    """Voice-corpus samples that ANCHOR the prompt on the brand's explicit
+    voice profile, then add real, varied cadence from the rest of the corpus.
+
+    Why not pure random: the corpus mixes a distilled voice-profile spec
+    (the canonical 'how this brand sounds') with long-form material (e.g.
+    academy transcripts). A flat `ORDER BY random()` surfaces the profile
+    only as often as its share of rows, so most drafts get grounded on
+    random mid-paragraphs and drift to generic voice. We always include a
+    few profile chunks as the anchor, then fill with cadence samples.
+    """
     if limit <= 0:
         return []
+    # Heuristic: a doc whose filename marks it as the voice profile/spec.
+    _PROFILE = (
+        "(coalesce(payload->>'filename','') ILIKE '%voice_profile%' "
+        "OR coalesce(payload->>'filename','') ILIKE '%brand_voice%' "
+        "OR coalesce(payload->>'filename','') ILIKE '%voice_spec%')"
+    )
     async with acquire(tenant_id) as conn:
-        rows = await conn.fetch(
+        anchors = await conn.fetch(
+            f"""
+            SELECT id, event_type, raw_content, payload, effective_at
+            FROM events
+            WHERE payload ->> 'category' = 'voice_corpus'
+              AND superseded_by IS NULL
+              AND length(raw_content) > 120
+              AND {_PROFILE}
+            ORDER BY random() LIMIT 3
             """
+        )
+        cadence = await conn.fetch(
+            f"""
             SELECT id, event_type, raw_content, payload, effective_at
             FROM events
             WHERE payload ->> 'category' = 'voice_corpus'
               AND superseded_by IS NULL
               AND length(raw_content) > 200
+              AND NOT {_PROFILE}
             ORDER BY random() LIMIT $1
             """,
             limit,
         )
+    # Anchors first so they win the bucket cap; fall back to all-random
+    # behaviour automatically when no profile doc exists (anchors empty).
+    rows = [*anchors, *cadence] if anchors else list(cadence)
     out: list[RetrievedEvent] = []
     for r in rows:
         payload = r["payload"]
