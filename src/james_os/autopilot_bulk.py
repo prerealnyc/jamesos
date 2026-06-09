@@ -100,6 +100,7 @@ async def _attach_image_to_action(
         topic=topic,
         platform=platform,
         brief=draft_text[:240],
+        tenant_id=tenant_id,
     )
     if not png:
         # No OpenAI key (or a render error) → leave the text action as-is.

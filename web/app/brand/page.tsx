@@ -52,8 +52,11 @@ export default function BrandPage() {
     setBusy(true);
     setDrop({ msg: `Ingesting “${f.name}”…`, tone: "muted" });
     try {
-      const d = await api.uploadDocument(f);
-      setDrop({ msg: `✓ “${d.filename}” → ${d.chunks_created} memory chunk(s).`, tone: "ok" });
+      // This is the Voice Rules section — documents dropped here are brand
+      // guidelines, so tag them 'guideline' (→ voice grounding) rather than
+      // the backend's 'reference' default (which lands in the facts bucket).
+      const d = await api.uploadDocument(f, "guideline");
+      setDrop({ msg: `✓ “${d.filename}” → ${d.chunks_created} guideline chunk(s) added to the brand voice.`, tone: "ok" });
     } catch (e) {
       setDrop({ msg: `✗ ${e instanceof Error ? e.message : "failed"}`, tone: "bad" });
     } finally {

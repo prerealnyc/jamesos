@@ -139,16 +139,46 @@ async def generate_seed_image(prompt: str, aspect: str = "9:16") -> tuple[str | 
     return f"data:image/png;base64,{b64}", ""
 
 
-def _build_post_prompt(topic: str, brief: str, style: str) -> str:
+def _build_post_prompt(
+    topic: str, brief: str, style: str, brand_guidelines: str = ""
+) -> str:
     """Compose the final text prompt for a post hero image. The style
     prefix is the lever — same topic, different prefix = different
     aesthetic. Unknown style falls back to editorial silently rather
-    than crashing the render."""
+    than crashing the render. When brand_guidelines are supplied they are
+    woven in so the image follows the brand's visual rules."""
     prefix = POST_STYLES.get(style.lower(), POST_STYLES[_DEFAULT_STYLE])
     parts = [prefix, f"Subject: {topic.strip()}."]
     if brief.strip():
         parts.append(f"Context: {brief.strip()[:240]}")
-    return " ".join(parts)[:1000]
+    if brand_guidelines.strip():
+        parts.append(
+            "Follow the brand's visual guidelines exactly: "
+            f"{brand_guidelines.strip()[:500]}"
+        )
+    return " ".join(parts)[:1300]
+
+
+async def _brand_visual_directive(tenant_id) -> str:
+    """Pull the brand's visual/style guidelines from memory so generated
+    POST images follow them (colours, imagery, layout, look). Returns ""
+    when no tenant is given (e.g. video B-roll callers, which stay
+    independent of post guidelines) or no guideline material exists.
+    Best-effort — never blocks a render."""
+    if not tenant_id:
+        return ""
+    try:
+        from .retrieval import search
+
+        hits = await search(
+            "brand visual style: colours, typography, logo usage, imagery and "
+            "photography style, layout, what posts should look like",
+            tenant_id=tenant_id,
+        )
+        gl = [h for h in hits if (h.payload or {}).get("category") == "guideline"]
+        return " ".join((h.raw_content or "") for h in gl[:4]).strip()[:700]
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 async def generate_post_image(
@@ -157,6 +187,7 @@ async def generate_post_image(
     brief: str = "",
     aspect: str = "",
     style: str = _DEFAULT_STYLE,
+    tenant_id=None,
 ) -> tuple[bytes | None, dict, str]:
     """Topic → PNG bytes for a shareable post hero image.
 
@@ -183,7 +214,8 @@ async def generate_post_image(
     chosen_style = (style or _DEFAULT_STYLE).lower()
     if chosen_style not in POST_STYLES:
         chosen_style = _DEFAULT_STYLE
-    full_prompt = _build_post_prompt(topic, brief, chosen_style)
+    guidelines = await _brand_visual_directive(tenant_id)
+    full_prompt = _build_post_prompt(topic, brief, chosen_style, guidelines)
     try:
         res = await client.images.generate(
             model=settings.image_model,

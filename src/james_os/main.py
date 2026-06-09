@@ -1396,12 +1396,19 @@ async def images_generate(req: PostImageRequest) -> dict:
     topic = (req.topic or "").strip()
     if not topic:
         raise HTTPException(status_code=400, detail="topic is required")
+    # Resolve the request tenant so the post image follows brand guidelines.
+    from .db import _request_tenant
+    try:
+        _img_tid = _request_tenant.get()
+    except LookupError:
+        _img_tid = None
     png, meta, err = await generate_post_image(
         topic=topic,
         platform=req.platform.strip() or "linkedin",
         brief=req.brief,
         aspect=req.aspect,
         style=req.style,
+        tenant_id=_img_tid or settings.default_tenant_id,
     )
     if not png:
         raise HTTPException(status_code=400, detail=err or "image generation failed")
