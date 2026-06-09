@@ -69,6 +69,79 @@ def rejection_to_event(payload: dict, reason: str) -> EventCreate:
     )
 
 
+APPROVED_EXEMPLAR_SOURCE = "approved_exemplar"
+
+
+def approval_to_event(payload: dict) -> EventCreate | None:
+    """Turn an APPROVED draft into a voice_corpus exemplar — the positive
+    half of the loop. The human blessed this as on-brand, so future drafts
+    should imitate it. Returns None when there's nothing worth learning."""
+    text = str(
+        payload.get("content") or payload.get("caption") or payload.get("draft") or ""
+    ).strip()
+    if len(text) < 60:
+        return None
+    platform = str(payload.get("platform", "") or "")
+    fmt = str(payload.get("format", "") or "")
+    topic = str(payload.get("topic", "") or payload.get("pillar", "") or "")
+    vscore = payload.get("voice_score")
+    digest = hashlib.sha256(f"{fmt}|{text[:120]}".encode()).hexdigest()[:16]
+    return EventCreate(
+        # event_type must be an allowed literal; the approved-exemplar marker
+        # lives in payload.source (which _voice_exemplars keys on).
+        event_type="note",
+        payload={
+            # category=voice_corpus so it flows into the voice bucket that
+            # grounds every text post AND video script.
+            "text": text,
+            "category": "voice_corpus",
+            "source": APPROVED_EXEMPLAR_SOURCE,
+            "approved": True,
+            "platform": platform,
+            "format": fmt,
+            "topic": topic,
+            "voice_score": vscore,
+            "filename": f"approved/{fmt or 'post'}",
+        },
+        raw_content=text,
+        source=EventSource(
+            adapter="approval_feedback",
+            dedupe_key=f"approved-{digest}",
+            raw_metadata={"category": "voice_corpus", "source": APPROVED_EXEMPLAR_SOURCE},
+        ),
+        entities=[
+            "category:voice_corpus",
+            APPROVED_EXEMPLAR_SOURCE,
+            *([f"platform:{platform}"] if platform else []),
+        ],
+        effective_at=datetime.now(UTC),
+        confidence=1.0,  # a human approval is authoritative
+    )
+
+
+async def record_approval(
+    action_id: UUID, tenant_id: UUID | None = None
+) -> str | None:
+    """Positive feedback: promote an approved content draft into voice_corpus
+    as an exemplar so the engine makes MORE like it. Idempotent (dedupe on
+    content). Only learns from content drafts; returns None otherwise."""
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            "SELECT action_type, payload FROM actions WHERE id = $1", action_id
+        )
+    if row is None or (row["action_type"] or "") != "content":
+        return None
+    payload = row["payload"]
+    if isinstance(payload, str):
+        import json
+        payload = json.loads(payload)
+    event = approval_to_event(payload or {})
+    if event is None:
+        return None
+    stored = await ingest_many([event], tenant_id)
+    return str(stored[0].id) if stored else None
+
+
 async def record_rejection(
     action_id: UUID, reason: str, tenant_id: UUID | None = None
 ) -> str | None:

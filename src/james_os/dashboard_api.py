@@ -479,7 +479,16 @@ async def approve_item(item_id: UUID, body: dict = Body(default={})) -> dict:
         )
     if not tag.endswith(" 1"):
         raise HTTPException(status_code=404, detail=f"action {item_id} not found")
-    return {"ok": True, "id": str(item_id), "status": "approved"}
+    # Positive half of the learning loop: an approved draft becomes a
+    # voice_corpus exemplar so the engine makes more like it. Best-effort —
+    # never fail the approval if reinforcement hiccups.
+    learned_id = None
+    try:
+        from .learning import record_approval
+        learned_id = await record_approval(item_id)
+    except Exception:  # noqa: BLE001
+        learned_id = None
+    return {"ok": True, "id": str(item_id), "status": "approved", "reinforced": bool(learned_id)}
 
 
 @router.post("/queue/{item_id}/reject")

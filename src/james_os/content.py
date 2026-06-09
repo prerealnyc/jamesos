@@ -152,6 +152,19 @@ async def _voice_exemplars(
         "OR coalesce(payload->>'filename','') ILIKE '%voice_spec%')"
     )
     async with acquire(tenant_id) as conn:
+        # Approved exemplars — drafts a human blessed (positive feedback loop).
+        # Strongest "make more like this" signal; newest first.
+        approved = await conn.fetch(
+            """
+            SELECT id, event_type, raw_content, payload, effective_at
+            FROM events
+            WHERE payload ->> 'category' = 'voice_corpus'
+              AND superseded_by IS NULL
+              AND payload ->> 'source' = 'approved_exemplar'
+              AND length(raw_content) > 60
+            ORDER BY created_at DESC LIMIT 3
+            """
+        )
         anchors = await conn.fetch(
             f"""
             SELECT id, event_type, raw_content, payload, effective_at
@@ -170,14 +183,15 @@ async def _voice_exemplars(
             WHERE payload ->> 'category' = 'voice_corpus'
               AND superseded_by IS NULL
               AND length(raw_content) > 200
+              AND coalesce(payload ->> 'source','') <> 'approved_exemplar'
               AND NOT {_PROFILE}
             ORDER BY random() LIMIT $1
             """,
             limit,
         )
-    # Anchors first so they win the bucket cap; fall back to all-random
-    # behaviour automatically when no profile doc exists (anchors empty).
-    rows = [*anchors, *cadence] if anchors else list(cadence)
+    # Approved exemplars + profile anchors FIRST so they win the bucket cap;
+    # cadence fills the rest. Falls back to all-random when neither exists.
+    rows = [*approved, *anchors, *cadence]
     out: list[RetrievedEvent] = []
     for r in rows:
         payload = r["payload"]

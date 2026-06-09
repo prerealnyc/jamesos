@@ -434,7 +434,14 @@ async def _t_approve_item(item_id: str, reason: str = "approved by agent") -> di
         )
     if not tag.endswith(" 1"):
         return {"ok": False, "error": "item not found or already decided"}
-    return {"ok": True, "id": item_id, "status": "approved"}
+    # Reinforce: approved drafts become voice_corpus exemplars (positive loop).
+    learned = None
+    try:
+        from .learning import record_approval
+        learned = await record_approval(UUID(item_id))
+    except Exception:  # noqa: BLE001
+        learned = None
+    return {"ok": True, "id": item_id, "status": "approved", "reinforced": bool(learned)}
 
 
 _register(Tool(
