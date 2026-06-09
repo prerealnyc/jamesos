@@ -108,7 +108,13 @@ async def assemble_memory(
     # model sees James's actual cadence — not just near-duplicates of a
     # generic "brand voice" query.
     exemplars = await _voice_exemplars(tenant_id, settings.content_voice_exemplars)
-    for ev in [*exemplars, *voice_hits, *topic_hits]:
+    # Brand guideline docs (e.g. BRAND GUIDELINES.docx) are RULES that must
+    # apply to every draft — text post AND video script — not just when
+    # semantic search happens to surface them. Always anchor them (placed
+    # first so the per-bucket cap never crowds them out), exactly like the
+    # frustration ledger is always included.
+    guides = await _brand_guidelines(tenant_id)
+    for ev in [*guides, *exemplars, *voice_hits, *topic_hits]:
         if ev.event_id in seen:
             continue
         seen.add(ev.event_id)
@@ -183,6 +189,41 @@ async def _voice_exemplars(
                 raw_content=r["raw_content"], payload=payload,
                 effective_at=r["effective_at"], score=1.0,
                 source_signal=["voice_exemplar"],
+            )
+        )
+    return out
+
+
+async def _brand_guidelines(
+    tenant_id: UUID | None, limit: int = 4
+) -> list[RetrievedEvent]:
+    """The brand's uploaded guideline docs (category='guideline'), fetched by
+    recency and ALWAYS included — so every draft (post text AND video script)
+    follows the brand rules, not only when semantic retrieval surfaces them.
+    Mirrors _recent_frustrations: authoritative, not search-dependent."""
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, event_type, raw_content, payload, effective_at
+            FROM events
+            WHERE payload ->> 'category' = 'guideline'
+              AND superseded_by IS NULL
+              AND length(raw_content) > 80
+            ORDER BY created_at DESC LIMIT $1
+            """,
+            limit,
+        )
+    out: list[RetrievedEvent] = []
+    for r in rows:
+        payload = r["payload"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        out.append(
+            RetrievedEvent(
+                event_id=r["id"], event_type=r["event_type"],
+                raw_content=r["raw_content"], payload=payload,
+                effective_at=r["effective_at"], score=1.0,
+                source_signal=["brand_guideline"],
             )
         )
     return out
