@@ -143,28 +143,48 @@ async def build_template_from_media(
     *,
     tenant_id: UUID | None = None,
     file_path: str | None = None,
+    uri: str | None = None,
 ) -> dict | None:
     """Run the Design Inspector on a style_reference asset → refresh its
     Media-Library analysis AND upsert the named style template.
 
-    Returns {"status", "template"|None, "note"} or None when the asset can't
-    be analyzed (missing, or a URL reference without a local file)."""
+    Resolves the asset to a LOCAL file first (downloading from Supabase
+    Storage when the upload doesn't live on local disk). Returns
+    {"status", "template"|None, "note"} or None when the asset can't be
+    analyzed (missing, or a non-downloadable external URL)."""
     # Imported here to avoid a heavy import chain at module load.
+    import shutil
+
     from . import design_inspector as DI
-    from .media import get_media_for_analysis, save_analysis, set_analysis_status
+    from .media import (
+        fetch_media_local,
+        get_media_for_analysis,
+        save_analysis,
+        set_analysis_status,
+    )
 
     tenant = tenant_id or settings.default_tenant_id
-    if file_path is None:
+    if file_path is None or uri is None:
         asset = await get_media_for_analysis(media_id, tenant)
         if asset is None:
             return None
-        if asset.get("source_type") != "upload" or not asset.get("file_path"):
+        if asset.get("source_type") != "upload":
             await set_analysis_status(media_id, "unsupported", tenant)
             return None
-        file_path = asset["file_path"]
+        file_path = file_path or asset.get("file_path")
+        uri = uri if uri is not None else asset.get("uri", "")
 
     await set_analysis_status(media_id, "pending", tenant)
-    result = await DI.inspect_file(file_path)
+    local_path, tmpdir = await fetch_media_local(file_path, uri or "")
+    if not local_path:
+        await set_analysis_status(media_id, "unsupported", tenant)
+        return {"status": "unsupported", "template": None,
+                "note": "could not fetch the video file for analysis"}
+    try:
+        result = await DI.inspect_file(local_path)
+    finally:
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
     status = result.get("status", "failed")
     template = result.get("template") or {}
 

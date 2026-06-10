@@ -222,6 +222,52 @@ async def update_media(
     return _row(r) if r else None
 
 
+async def fetch_media_local(
+    file_path: str | None, uri: str = ""
+) -> tuple[str | None, str | None]:
+    """Resolve a media asset to a LOCAL file path for ffmpeg-based analysis.
+
+    Local-disk uploads already have a readable file_path. Supabase-backed
+    uploads store file_path='supabase://…' (not on disk) — so we stream the
+    public `uri` down to a temp file. Returns (local_path, tempdir_to_clean):
+    the caller must rmtree tempdir when not None. Returns (None, None) when
+    the asset can't be resolved (e.g. a non-downloadable external URL)."""
+    if (
+        file_path
+        and not file_path.startswith("supabase://")
+        and Path(file_path).is_file()
+    ):
+        return file_path, None
+    url = (uri or "").strip()
+    if not url.startswith("http"):
+        return None, None  # external page URL (YouTube etc.) — not a media file
+    import shutil
+    import tempfile
+
+    import httpx
+
+    tmpdir = tempfile.mkdtemp(prefix="media_an_")
+    base = url.split("?", 1)[0]
+    ext = os.path.splitext(base)[1]
+    if not ext or len(ext) > 6:
+        ext = ".mp4"
+    dst = os.path.join(tmpdir, f"ref{ext}")
+    try:
+        async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
+            async with client.stream("GET", url) as r:
+                r.raise_for_status()
+                with open(dst, "wb") as fh:
+                    async for chunk in r.aiter_bytes(1 << 16):
+                        fh.write(chunk)
+    except Exception:  # noqa: BLE001 — surface as unsupported, never fake
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return None, None
+    if not os.path.isfile(dst) or os.path.getsize(dst) == 0:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return None, None
+    return dst, tmpdir
+
+
 async def get_media_for_analysis(
     media_id: UUID, tenant_id: UUID | None = None
 ) -> dict | None:
@@ -301,5 +347,5 @@ async def delete_media(media_id: UUID, tenant_id: UUID | None = None) -> bool:
 __all__ = [
     "ROLES", "storage", "media_root", "create_media", "list_media",
     "update_media", "delete_media", "get_media_for_analysis",
-    "save_analysis", "set_analysis_status",
+    "save_analysis", "set_analysis_status", "fetch_media_local",
 ]

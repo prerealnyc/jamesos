@@ -1908,10 +1908,24 @@ async def _run_media_analysis(media_id: UUID) -> dict | None:
     if asset.get("role") == "style_reference":
         from .templates import build_template_from_media
         return await build_template_from_media(
-            media_id, tenant_id=tenant, file_path=asset["file_path"]
+            media_id, tenant_id=tenant,
+            file_path=asset["file_path"], uri=asset.get("uri", ""),
         )
+    # Perception path (other roles). Resolve to a local file first — Supabase-
+    # backed uploads aren't on local disk, so we download before ffmpeg.
+    import shutil as _shutil
+
+    from .media import fetch_media_local
     await set_analysis_status(media_id, "pending", tenant)
-    result = await analyze_file(asset["file_path"])
+    local_path, tmpdir = await fetch_media_local(asset["file_path"], asset.get("uri", ""))
+    if not local_path:
+        await set_analysis_status(media_id, "unsupported", tenant)
+        return None
+    try:
+        result = await analyze_file(local_path)
+    finally:
+        if tmpdir:
+            _shutil.rmtree(tmpdir, ignore_errors=True)
     return await save_analysis(
         media_id,
         status=result.get("status", "failed"),
