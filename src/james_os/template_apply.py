@@ -122,6 +122,18 @@ def map_template_to_render(template: dict) -> dict:
     structure = _clamp_structure(template.get("segments")) if mode == "mixed" else None
 
     approximations: list[str] = []
+    # If the reference uses a composition the renderer can't reproduce yet
+    # (e.g. split-screen), flag it — it renders in the closest supported mode
+    # meanwhile and is queued on the dashboard for a faithful build.
+    layout = template.get("layout") or {}
+    ltype = str(layout.get("type") or "").strip().lower()
+    from .compositions import is_supported
+    if ltype and not is_supported(ltype):
+        approximations.append(
+            f"this style's '{ltype}' layout isn't a built composition yet — "
+            f"rendering in {mode} for now; the stacked/split layout is queued on "
+            "the dashboard to build and will go live for this template once ready"
+        )
     if music_note:
         approximations.append(music_note)
     if mode in ("engaging_avatar", "avatar_story_mix", "story_audio"):

@@ -967,6 +967,15 @@ export const api = {
   // Style references are inspected automatically on upload; these let
   // the library list them, (re-)inspect on demand, rename, and remove.
   listTemplates: () => jget<{ templates: StyleTemplate[] }>("/templates"),
+  // Render-composition build queue — which reference layouts we can render
+  // today (live) vs are queued to build (e.g. split-screen).
+  listCompositions: () =>
+    jget<{
+      compositions: {
+        layout_type: string; count: number; example: string;
+        description: string; supported: boolean; status: string;
+      }[];
+    }>("/compositions"),
   getTemplate: (id: string) => jget<StyleTemplate>(`/templates/${id}`),
   inspectTemplate: (mediaId: string) =>
     jpost<{ started: boolean; media_id: string; note: string }>(

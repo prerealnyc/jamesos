@@ -16,17 +16,22 @@ import { MediaTabs } from "@/components/media-tabs";
 export default function StyleTemplatesPage() {
   const [templates, setTemplates] = useState<StyleTemplate[]>([]);
   const [refs, setRefs] = useState<MediaAsset[]>([]);
+  const [comps, setComps] = useState<
+    { layout_type: string; count: number; example: string; description: string; supported: boolean; status: string }[]
+  >([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [t, m] = await Promise.all([
+      const [t, m, c] = await Promise.all([
         api.listTemplates(),
         api.listMedia("style_reference"),
+        api.listCompositions(),
       ]);
       setTemplates(t.templates);
       setRefs(m.media);
+      setComps(c.compositions);
       setErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "load failed");
@@ -88,6 +93,39 @@ export default function StyleTemplatesPage() {
           voice) or paste your own.
         </span>
       </div>
+
+      {comps.some((c) => c.status === "queued") && (
+        <Card>
+          <div className="text-[15px] font-semibold">Composition build queue</div>
+          <p className="text-[12px] text-muted-foreground mt-1 mb-2">
+            Layouts the inspector found in your style library. <b className="text-accent">live</b> = we
+            render it today; <b className="text-primary">queued</b> = a composition to build — it
+            renders in the closest mode meanwhile and goes live here once built.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            {comps.map((c) => (
+              <div
+                key={c.layout_type}
+                className="flex items-center justify-between gap-3 border border-border rounded-md px-3 py-2 bg-background text-[12px]"
+              >
+                <div className="min-w-0">
+                  <span className="font-semibold">{c.layout_type.replace(/_/g, " ")}</span>
+                  <span className="text-muted-foreground">
+                    {" · "}{c.count} template{c.count === 1 ? "" : "s"}
+                    {c.example ? ` · e.g. ${c.example}` : ""}
+                  </span>
+                  {c.description && (
+                    <div className="text-[11px] text-muted-foreground truncate">{c.description}</div>
+                  )}
+                </div>
+                <Badge tone={c.supported ? "ok" : "primary"}>
+                  {c.supported ? "live" : "queued to build"}
+                </Badge>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {err && <div className="text-sm text-destructive">{err}</div>}
 

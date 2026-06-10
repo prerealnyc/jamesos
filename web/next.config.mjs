@@ -69,6 +69,8 @@ const nextConfig = {
       // paths; the /style-templates page is a separate Next route, so no clash.
       { source: "/templates", destination: `${BACKEND}/templates` },
       { source: "/templates/:path*", destination: `${BACKEND}/templates/:path*` },
+      // Composition build-queue (which reference layouts render today vs queued).
+      { source: "/compositions", destination: `${BACKEND}/compositions` },
     ];
   },
 };

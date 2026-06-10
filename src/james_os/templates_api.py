@@ -36,6 +36,15 @@ async def templates_list() -> dict:
     return {"templates": await T.list_templates(_tenant())}
 
 
+@router.get("/compositions")
+async def compositions_queue() -> dict:
+    """Render-composition build queue: distinct reference LAYOUTS across the
+    library, each tagged live (renderable today) or queued (a composition to
+    build). Drives the render roadmap from the styles you upload."""
+    from .compositions import composition_queue
+    return {"compositions": await composition_queue(_tenant())}
+
+
 @router.get("/templates/{template_id}")
 async def template_detail(template_id: UUID) -> dict:
     row = await T.get_template(template_id, _tenant())
