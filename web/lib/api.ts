@@ -431,7 +431,7 @@ export type ComposeResult = {
 export type Production = {
   id: string;
   status: "queued" | "planning" | "rendering_clips" | "assembling" | "succeeded" | "failed";
-  mode?: "mixed" | "avatar_only" | "timeline" | "story_audio" | "avatar_story_mix" | "engaging_avatar" | "long_form_reel";
+  mode?: "mixed" | "avatar_only" | "timeline" | "story_audio" | "avatar_story_mix" | "engaging_avatar" | "long_form_reel" | "hero_clone";
   title: string;
   platform: string;
   aspect: string;
@@ -834,6 +834,10 @@ export const api = {
     jpost<{ description: string; photo_count: number; photo_urls: string[]; video_urls: string[] }>(
       "/hero/context/refresh", {},
     ),
+  // Clone the hero into a lip-synced talking video (HeyGen Talking Photo).
+  // Provide a topic (script written in brand voice) OR a finished script.
+  heroTalkingVideo: (body: { script?: string; topic?: string; platform?: string; aspect?: string; title?: string }) =>
+    jpost<Production>("/hero/talking-video", body),
   // ── Long Form Cutter ────────────────────────────────────────────
   listLongSources: () =>
     jget<{ sources: LongSource[] }>("/long-form/sources"),

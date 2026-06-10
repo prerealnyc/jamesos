@@ -15,8 +15,9 @@
  * after uploading more photos.
  */
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { api, mediaUrl, type MediaAsset } from "@/lib/api";
+import { api, mediaUrl, type MediaAsset, type Production } from "@/lib/api";
 import {
   Button, Card, CardTitle, Spinner, PageHeader,
 } from "@/components/ui";
@@ -177,6 +178,8 @@ export default function HeroLibraryPage() {
         )}
       </Card>
 
+      <HeroCloneCard ready={photos.length > 0} />
+
       {photos.length > 0 && (
         <Card>
           <CardTitle>Photos ({photos.length})</CardTitle>
@@ -224,5 +227,96 @@ export default function HeroLibraryPage() {
         </Card>
       )}
     </div>
+  );
+}
+
+function HeroCloneCard({ ready }: { ready: boolean }) {
+  const [mode, setMode] = useState<"topic" | "script">("topic");
+  const [text, setText] = useState("");
+  const [aspect, setAspect] = useState("9:16");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [result, setResult] = useState<Production | null>(null);
+
+  async function go() {
+    if (!text.trim()) {
+      setErr("Add a topic or paste a script.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    setResult(null);
+    try {
+      const body = mode === "topic" ? { topic: text.trim() } : { script: text.trim() };
+      setResult(await api.heroTalkingVideo({ ...body, aspect }));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardTitle>Clone the hero into a talking video</CardTitle>
+      <p className="text-[12px] text-muted-foreground mt-1 mb-3">
+        Builds a hyper-real still of the hero from the photos above, then animates
+        it into a <b>lip-synced talking clip in the brand voice</b> (HeyGen Talking
+        Photo). Give it a topic (script written in your voice) or paste a script.
+        Lands in the <Link href="/queue" className="underline">Approval Queue</Link>.
+      </p>
+      {!ready && (
+        <p className="text-[12px] text-destructive mb-2">
+          Upload hero photos above first — the clone is built from them.
+        </p>
+      )}
+      <div className="flex items-center gap-3 text-[12px] mb-2">
+        <button
+          onClick={() => setMode("topic")}
+          className={mode === "topic" ? "font-semibold text-primary" : "text-muted-foreground hover:text-foreground"}
+        >
+          Topic → auto-script
+        </button>
+        <span className="text-muted-foreground">·</span>
+        <button
+          onClick={() => setMode("script")}
+          className={mode === "script" ? "font-semibold text-primary" : "text-muted-foreground hover:text-foreground"}
+        >
+          Paste a script
+        </button>
+      </div>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={mode === "topic" ? 2 : 5}
+        placeholder={
+          mode === "topic"
+            ? "What should the hero talk about? e.g. 'why now is the moment to buy Staten Island commercial real estate'"
+            : "Paste the exact script the hero should say…"
+        }
+        className="w-full bg-background border border-input rounded-md px-2 py-1.5 text-[13px] resize-y outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      />
+      <div className="flex flex-wrap items-center gap-2 mt-2">
+        <select
+          value={aspect}
+          onChange={(e) => setAspect(e.target.value)}
+          className="bg-background border border-input rounded-md px-2 py-1 text-[12px]"
+        >
+          {["9:16", "1:1", "16:9"].map((a) => (
+            <option key={a} value={a}>{a}</option>
+          ))}
+        </select>
+        <Button onClick={go} disabled={busy || !ready}>
+          {busy ? <span className="flex items-center gap-2"><Spinner /> producing…</span> : "Generate talking clone"}
+        </Button>
+      </div>
+      {err && <p className="text-[12px] mt-2 text-destructive">✗ {err}</p>}
+      {result && (
+        <div className="mt-2 rounded-md border border-border bg-background p-2.5 text-[12px] flex flex-col gap-1">
+          <span className="text-accent font-semibold">✓ Producing “{result.title}” — rendering in the background.</span>
+          <Link href="/library" className="text-primary hover:underline">Watch it in Output Library →</Link>
+        </div>
+      )}
+    </Card>
   );
 }

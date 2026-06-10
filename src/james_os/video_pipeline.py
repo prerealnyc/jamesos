@@ -114,7 +114,7 @@ async def start_production(
     """
     if mode not in (
         "mixed", "avatar_only", "timeline", "story_audio",
-        "avatar_story_mix", "engaging_avatar", "long_form_reel",
+        "avatar_story_mix", "engaging_avatar", "long_form_reel", "hero_clone",
     ):
         mode = "mixed"
     if mode == "timeline":
@@ -203,6 +203,48 @@ async def _render_avatar(
             return None, p.error or "avatar render failed"
         await asyncio.sleep(_POLL_EVERY)
     return None, "avatar render timed out"
+
+
+async def _render_hero_talking_photo(
+    script: str, aspect: str, tenant_id: UUID | None, *, captions: bool = True
+) -> tuple[str | None, str]:
+    """Clone the hero into a talking video: hero photos → a hyper-real
+    front-facing still (image-to-image) → HeyGen Talking Photo (lip-synced in
+    the brand voice). Honest: a strong likeness, not a forensic face-clone."""
+    from .hero_context import get_hero_photo_files
+    from .imagegen import generate_post_image_with_refs
+
+    refs = await get_hero_photo_files(tenant_id)
+    if not refs:
+        return None, "no hero photos — upload photos of the hero on the Hero page first"
+    png, _meta, err = await generate_post_image_with_refs(
+        topic=(
+            "studio portrait of this exact person, front-facing, looking "
+            "straight at camera, head and shoulders, even soft lighting, "
+            "clean neutral background, photorealistic, sharp focus"
+        ),
+        references=refs,
+        style="photoreal",
+        aspect=aspect,
+    )
+    if not png:
+        return None, f"hero portrait still: {err or 'generation failed'}"
+
+    prov = get_avatar_provider()
+    tp_id, up_err = await prov.upload_talking_photo(png, mime="image/png")
+    if not tp_id:
+        return None, up_err or "HeyGen talking-photo upload failed"
+    sub = await prov.submit_talking_photo(tp_id, script, aspect, captions=captions)
+    if sub.status == "failed":
+        return None, sub.error or "HeyGen talking-photo submit failed"
+    for _ in range(_MAX_POLLS):
+        p = await prov.poll(sub.job_id)
+        if p.status == "succeeded":
+            return p.url, ""
+        if p.status == "failed":
+            return None, p.error or "talking-photo render failed"
+        await asyncio.sleep(_POLL_EVERY)
+    return None, "talking-photo render timed out"
 
 
 async def _render_broll(visual_prompt: str, aspect: str) -> tuple[str | None, str]:
@@ -395,6 +437,44 @@ async def _run_avatar_only(row, tenant_id: UUID | None) -> None:
                 "media_url": final_url,
                 "stub": final_url.startswith("stub://"),
                 "mode": "avatar_only",
+            }),
+        )
+        await conn.execute(
+            """UPDATE video_productions SET status='succeeded', final_url=$2,
+               queued_action_id=$3, updated_at=now(), completed_at=now()
+               WHERE id=$1""",
+            pid, final_url, action_id,
+        )
+
+
+async def _run_hero_clone(row, tenant_id: UUID | None) -> None:
+    """Hero-clone mode: a hyper-real still of the hero (from hero photos) →
+    HeyGen Talking Photo, lip-synced in the brand voice. One render, no
+    Creatomate. Lands in the approval queue like every other piece."""
+    pid = row["id"]
+    script = (row["script"] or "").strip()
+    if not script:
+        return await _fail(pid, "hero clone needs a script", tenant_id)
+    async with acquire(tenant_id) as conn:
+        await _set(conn, pid, status="rendering_clips")
+    url, err = await _render_hero_talking_photo(
+        script, row["aspect"], tenant_id, captions=True
+    )
+    if not url:
+        return await _fail(pid, err or "hero clone render failed", tenant_id)
+    durable, _actual = await _persist_clip_to_storage(url, f"hero-clone-{pid}")
+    final_url = durable or url
+    async with acquire(tenant_id) as conn:
+        action_id = await conn.fetchval(
+            """INSERT INTO actions (proposed_by, action_type, payload, status)
+               VALUES ('video_producer','video',$1::jsonb,'pending') RETURNING id""",
+            json.dumps({
+                "platform": row["platform"], "format": "video",
+                "content": row["title"] or script[:120],
+                "caption": row["title"] or "",
+                "media_url": final_url,
+                "stub": final_url.startswith("stub://"),
+                "mode": "hero_clone",
             }),
         )
         await conn.execute(
@@ -1017,6 +1097,8 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
         # script, no per-scene plan, no Creatomate assembly.
         if row["mode"] == "long_form_reel":
             return await _run_long_form_reel(row, tenant_id)
+        if row["mode"] == "hero_clone":
+            return await _run_hero_clone(row, tenant_id)
         if row["mode"] == "engaging_avatar":
             return await _run_engaging_avatar(row, tenant_id)
         if row["mode"] == "avatar_story_mix":

@@ -1256,6 +1256,47 @@ async def hero_context_refresh() -> dict:
     }
 
 
+class _HeroTalkingVideoRequest(BaseModel):
+    script: str = ""
+    topic: str = ""
+    platform: str = "instagram"
+    aspect: str = "9:16"
+    title: str = ""
+
+
+@app.post("/hero/talking-video", status_code=201)
+async def hero_talking_video(
+    req: _HeroTalkingVideoRequest, background: BackgroundTasks
+) -> dict:
+    """Clone the hero into a lip-synced talking video: hero photos → a
+    hyper-real still → HeyGen Talking Photo, spoken in the brand voice.
+    Provide a `script`, or a `topic` (we write one in the brand voice).
+    Lands in the Approval Queue like every other piece. Needs hero photos
+    on the Hero page + a HeyGen key/voice (else it renders an honest stub)."""
+    script = (req.script or "").strip()
+    if not script:
+        topic = (req.topic or "").strip()
+        if not topic:
+            raise HTTPException(status_code=400, detail="provide a script, or a topic to write one from")
+        from .models import ContentBrief
+        draft = await generate_content(
+            ContentBrief(platform=req.platform, format="reel_script", topic=topic),
+        )
+        script = (draft.draft or "").strip()
+        if not script:
+            raise HTTPException(
+                status_code=502,
+                detail=f"couldn't write a script for that topic ({draft.note or draft.status})",
+            )
+    aspect = (req.aspect or "9:16").strip() or "9:16"
+    title = (req.title or "Hero talking clip").strip()[:200]
+    prod = await start_production(
+        script, req.platform, aspect, title, None, "hero_clone",
+    )
+    background.add_task(run_production, UUID(prod["id"]))
+    return prod
+
+
 @app.get("/video/image-styles")
 async def video_image_styles() -> dict:
     """Image style library (the look-and-feel for AI-generated B-roll

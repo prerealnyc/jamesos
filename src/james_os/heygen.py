@@ -54,6 +54,14 @@ class StubAvatarProvider(AvatarProvider):
     async def poll(self, job_id: str) -> AvatarPoll:
         return AvatarPoll(status="succeeded", url=f"stub://avatar/{job_id}")
 
+    async def upload_talking_photo(self, image_bytes: bytes, mime: str = "image/png") -> tuple[str | None, str]:
+        return f"stub-tp-{uuid4()}", ""
+
+    async def submit_talking_photo(
+        self, talking_photo_id: str, text: str, aspect: str, *, captions: bool = False
+    ) -> AvatarSubmit:
+        return AvatarSubmit(job_id=f"stub-avatar-{uuid4()}", status="processing")
+
 
 def _dims(aspect: str) -> dict:
     return {"width": 720, "height": 1280} if aspect == "9:16" else {"width": 1280, "height": 720}
@@ -120,6 +128,57 @@ class HeyGenAvatarProvider(AvatarProvider):
             url = data.get("video_url")
             return AvatarPoll("succeeded", url=url) if url else AvatarPoll("failed", error="no url")
         return AvatarPoll("failed", error=str(data.get("error") or f"status={st}"))
+
+    # ── Talking Photo (clone the hero from a still) ──────────────────
+    # Animate a real PHOTO into a lip-synced talking clip in James's voice.
+    # Upload host differs from the API host; the v2 generate + v1 status
+    # poll above are reused verbatim (talking_photo is just a character type).
+    async def upload_talking_photo(
+        self, image_bytes: bytes, mime: str = "image/png"
+    ) -> tuple[str | None, str]:
+        headers = {"X-Api-Key": self.api_key, "Content-Type": mime}
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=10.0)) as c:
+                r = await c.post(
+                    "https://upload.heygen.com/v1/talking_photo",
+                    headers=headers, content=image_bytes,
+                )
+        except Exception as e:  # noqa: BLE001 — surface honestly
+            return None, f"HeyGen talking-photo upload error: {e}"
+        if r.status_code in (401, 403):
+            return None, f"HeyGen auth failed ({r.status_code})"
+        if r.status_code >= 400:
+            return None, f"HeyGen talking-photo upload HTTP {r.status_code}: {r.text[:160]}"
+        tp = (r.json().get("data") or {}).get("talking_photo_id")
+        return (str(tp), "") if tp else (None, f"no talking_photo_id returned: {r.text[:160]}")
+
+    async def submit_talking_photo(
+        self, talking_photo_id: str, text: str, aspect: str, *, captions: bool = False
+    ) -> AvatarSubmit:
+        if not self.voice_id:
+            return AvatarSubmit(
+                "", "failed",
+                error="HeyGen needs a voice_id (set HEYGEN_VOICE_ID) to speak text",
+            )
+        body = {
+            "video_inputs": [{
+                "character": {"type": "talking_photo", "talking_photo_id": talking_photo_id},
+                "voice": {"type": "text", "input_text": text[:1500], "voice_id": self.voice_id},
+            }],
+            "dimension": _dims(aspect),
+        }
+        if captions:
+            body["caption"] = True
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
+            r = await c.post(f"{_BASE}/v2/video/generate", headers=self._h(), json=body)
+        if r.status_code in (401, 403):
+            return AvatarSubmit("", "failed", error=f"HeyGen auth failed ({r.status_code})")
+        if r.status_code >= 400:
+            return AvatarSubmit("", "failed", error=f"HeyGen HTTP {r.status_code}: {r.text[:160]}")
+        vid = (r.json().get("data") or {}).get("video_id")
+        if not vid:
+            return AvatarSubmit("", "failed", error=f"HeyGen returned no video_id: {r.text[:160]}")
+        return AvatarSubmit(job_id=str(vid), status="processing", raw=r.json())
 
 
 def make_avatar_provider() -> AvatarProvider:
