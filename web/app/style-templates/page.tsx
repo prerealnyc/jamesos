@@ -411,7 +411,10 @@ function ReplicatePanel({ t }: { t: StyleTemplate }) {
   const [contentMode, setContentMode] = useState<"topic" | "script">("topic");
   const [text, setText] = useState("");
   const [platform, setPlatform] = useState("instagram");
-  const [aspect, setAspect] = useState(tpl.aspect_ratio || "9:16");
+  // Output aspect is YOUR publishing choice — default vertical (social reels).
+  // The reference's captured shape (tpl.aspect_ratio) is shown as a hint only,
+  // never auto-selected, so a horizontal reference can't force a horizontal post.
+  const [aspect, setAspect] = useState("9:16");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ReplicateResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -516,7 +519,7 @@ function ReplicatePanel({ t }: { t: StyleTemplate }) {
           className="bg-background border border-input rounded-md px-2 py-1"
         >
           {["9:16", "1:1", "16:9"].map((a) => (
-            <option key={a} value={a}>{a}</option>
+            <option key={a} value={a}>{a}{a === "9:16" ? " (vertical)" : ""}</option>
           ))}
         </select>
         <Button onClick={go} disabled={busy}>
@@ -527,6 +530,12 @@ function ReplicatePanel({ t }: { t: StyleTemplate }) {
           )}
         </Button>
       </div>
+      {tpl.aspect_ratio && tpl.aspect_ratio !== aspect && (
+        <p className="text-[11px] text-muted-foreground">
+          Reference was filmed {tpl.aspect_ratio}; your post will be {aspect}. The
+          style (layout, captions, pacing) is reproduced regardless of shape.
+        </p>
+      )}
 
       {err && <div className="text-destructive">{err}</div>}
 

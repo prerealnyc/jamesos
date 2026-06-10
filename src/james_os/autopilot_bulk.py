@@ -227,7 +227,9 @@ async def _make_video(
         prod = await start_production(
             script=script,
             platform=platform,
-            aspect=m["aspect"] or _VIDEO_ASPECT,
+            # Output is vertical for social reels — the template's captured
+            # aspect describes the reference, not the desired publish format.
+            aspect=_VIDEO_ASPECT,
             title=title,
             mode=m["mode"],
             caption_style=m["caption_style"],
