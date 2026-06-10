@@ -121,7 +121,7 @@ def map_template_to_render(template: dict) -> dict:
     # composition we can now reproduce, override the mode to the split renderer.
     layout = template.get("layout") or {}
     ltype = str(layout.get("type") or "").strip().lower()
-    from .compositions import is_supported
+    from .compositions import is_supported, layout_label_is_suspect
     layout_note: str | None = None
     if ltype == "split_horizontal":
         mode = "split_horizontal"
@@ -138,6 +138,18 @@ def map_template_to_render(template: dict) -> dict:
             f"rendering in {mode} for now; the stacked/split layout is queued on "
             "the dashboard to build and will go live for this template once ready"
         )
+    else:
+        # Flat label (full_frame / none / blank). Mislabel guard: if the
+        # reference's OWN captured features contradict that flat label, warn
+        # loudly rather than silently rendering flat and claiming faithful.
+        suspect = layout_label_is_suspect(template)
+        if suspect:
+            layout_note = (
+                "heads up — this reference is labeled full-frame but "
+                f"{suspect}. If it's actually a split/stacked layout it will "
+                "render flat; re-inspect the reference to confirm its "
+                "composition (it's flagged 'unverified' on the dashboard)"
+            )
 
     caption_style = _norm_caption((template.get("captions") or {}).get("preset_guess"))
     music_mood, music_note = _norm_music(

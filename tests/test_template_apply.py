@@ -115,3 +115,34 @@ def test_unsupported_layout_flags_but_keeps_mode():
     })
     assert m["mode"] == "engaging_avatar"
     assert any("pip" in a.lower() and "queued" in a.lower() for a in m["approximations"])
+
+
+def test_mislabel_guard_text_cue_flags_suspect_full_frame():
+    # Labeled full_frame, but the reference's own features describe a split →
+    # warn loudly instead of silently rendering flat as if faithful.
+    m = map_template_to_render({
+        "production_mode": "engaging_avatar",
+        "layout": {"type": "full_frame"},
+        "distinctive_features": ["bold captions", "split screen, speaker on top"],
+    })
+    assert m["mode"] == "engaging_avatar"
+    assert any("heads up" in a.lower() and "re-inspect" in a.lower()
+               for a in m["approximations"])
+
+
+def test_mislabel_guard_multiregion_structural_cue():
+    m = map_template_to_render({
+        "layout": {"type": "full_frame",
+                   "regions": [{"position": "top"}, {"position": "bottom"}]},
+    })
+    assert any("heads up" in a.lower() for a in m["approximations"])
+
+
+def test_genuine_full_frame_not_flagged():
+    # An ordinary full-frame talking head must NOT trip the guard.
+    m = map_template_to_render({
+        "production_mode": "engaging_avatar",
+        "layout": {"type": "full_frame"},
+        "distinctive_features": ["fast cuts", "bold yellow captions", "dramatic music"],
+    })
+    assert not any("heads up" in a.lower() for a in m["approximations"])
