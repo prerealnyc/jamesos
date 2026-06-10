@@ -83,8 +83,8 @@ class ReplicateRequest(BaseModel):
     script: str = ""        # a finished script (wins if provided)
     topic: str = ""         # else: write a script from this topic, in brand voice
     platform: str = "instagram"
-    aspect: str = ""        # blank → 9:16 (vertical). The reference's own shape
-                            # describes the INPUT and must not dictate output.
+    aspect: str = ""        # blank → match the reference's measured aspect
+                            # (ditto). An explicit value overrides for a recut.
     title: str = ""
 
 
@@ -107,10 +107,10 @@ async def template_replicate(
     from .template_apply import map_template_to_render
 
     m = map_template_to_render(tpl.get("template") or {})
-    # Output aspect is a PUBLISHING choice, not a property of the reference.
-    # Default to vertical (brand social default); the user's explicit pick wins.
-    # The reference's captured aspect (m["aspect"]) is shown as info, not used.
-    aspect = (req.aspect or "9:16").strip() or "9:16"
+    # Ditto replication: match the reference's MEASURED aspect by default
+    # (m["aspect"] now comes from the inspector's pixel/DAR probe, not a guess).
+    # An explicit req.aspect wins so the user can recut to another shape.
+    aspect = (req.aspect or m["aspect"]).strip() or "9:16"
 
     # Content: a pasted script wins; otherwise write one from the topic in the
     # brand voice, steered to match this template's style.
@@ -200,8 +200,8 @@ async def template_broll_reel(
     from .template_apply import map_template_to_render
 
     m = map_template_to_render(tpl.get("template") or {})
-    # B-roll reels are vertical social clips — don't inherit the reference shape.
-    aspect = (getattr(req, "aspect", "") or "9:16").strip() or "9:16"
+    # Match the reference's measured aspect (an explicit req.aspect wins).
+    aspect = (getattr(req, "aspect", "") or m["aspect"] or "9:16").strip() or "9:16"
     seconds = max(5, min(int(req.seconds or 20), 30))
     n = max(2, min(seconds // 5, 6))  # ~5s beats, 2–6 scenes
     structure = [

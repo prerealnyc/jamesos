@@ -29,6 +29,7 @@ Honesty rules (frustration-ledger discipline):
 
 import base64
 import json
+import re
 import tempfile
 from pathlib import Path
 
@@ -60,6 +61,43 @@ async def _probe_duration(src: Path) -> int:
     no output file (it exits non-zero, which we ignore)."""
     _, log = await _run(["ffmpeg", "-i", str(src)])
     return _parse_duration(log)
+
+
+# `Video: ... 1080x1920 [SAR 1:1 DAR 9:16] ...` — grab the pixel resolution and,
+# when present, the display aspect ratio (DAR is authoritative if SAR isn't 1:1).
+_RES_RE = re.compile(r"Video:.*?\b(\d{2,5})x(\d{2,5})\b")
+_DAR_RE = re.compile(r"DAR (\d+):(\d+)")
+
+
+def _aspect_label(w: int, h: int) -> str:
+    """Map a width:height to one of our 3 output buckets."""
+    if w <= 0 or h <= 0:
+        return ""
+    ratio = w / h
+    if ratio < 0.9:
+        return "9:16"   # portrait (9:16=0.5625, 4:5=0.8)
+    if ratio > 1.15:
+        return "16:9"   # landscape (16:9=1.777)
+    return "1:1"        # square-ish
+
+
+async def _probe_aspect(src: Path) -> str:
+    """Read the reference's TRUE display aspect from the container — authoritative,
+    not an LLM guess. Returns '9:16' | '1:1' | '16:9', or '' if unreadable (caller
+    then keeps the model's guess as a last resort). Prefers DAR when the pixels
+    are non-square; otherwise uses the raw WxH resolution."""
+    _, log = await _run(["ffmpeg", "-i", str(src)])
+    flat = log.replace("\n", " ")
+    w = h = 0
+    m = _RES_RE.search(flat)
+    if m:
+        w, h = int(m.group(1)), int(m.group(2))
+    d = _DAR_RE.search(flat)
+    if d and int(d.group(2)) > 0:
+        # Display aspect ratio overrides raw resolution (accounts for non-square
+        # pixels). 'N/A' DARs don't match the regex, so this only fires when real.
+        w, h = int(d.group(1)), int(d.group(2))
+    return _aspect_label(w, h)
 
 
 async def _extract_spread_frames(
@@ -260,6 +298,15 @@ async def inspect_file(path: str) -> dict:
             "transcript": transcript,
             "duration": duration,
         }
+
+    # Authoritative aspect: the model's aspect_ratio is a GUESS from frame
+    # content (a vertical reel letterboxed in a frame can fool it). Override it
+    # with the container's real display aspect so replication is faithful —
+    # a 9:16 reference must never be recorded (and reproduced) as 16:9.
+    measured = await _probe_aspect(src)
+    if measured:
+        template["aspect_ratio"] = measured
+
     return {
         "status": "done",
         "transcript": transcript,
