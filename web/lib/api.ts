@@ -539,6 +539,20 @@ export type AutopilotRun = {
   completed_at: string | null;
 };
 
+export type ChangeItem = {
+  id: string;
+  area: string;
+  diagnosis: string;
+  plain_english: string;
+  kind: "live_config" | "code_change";
+  config_key: string | null;
+  config_value: unknown;
+  confidence: number;
+  status: "applied" | "queued" | "done" | "dismissed";
+  created_at: string;
+  applied_at: string | null;
+};
+
 export const api = {
   health: () => jget<{ status: string }>("/health"),
   getAutopilotConfig: () => jget<AutopilotConfig>("/autopilot/config"),
@@ -984,6 +998,15 @@ export const api = {
   renameTemplate: (id: string, body: { name?: string; tags?: string[]; trending_score?: number }) =>
     jpatch<StyleTemplate>(`/templates/${id}`, body),
   deleteTemplate: (id: string) => jdel<{ deleted: boolean }>(`/templates/${id}`),
+  // Feedback → "What's changing next" board.
+  listChanges: () =>
+    jget<{ applied_live: ChangeItem[]; queued: ChangeItem[]; done: ChangeItem[] }>("/changes"),
+  refreshChanges: () =>
+    jpost<{ processed: number; recorded: number; applied_live: ChangeItem[]; queued: ChangeItem[]; done: ChangeItem[] }>(
+      "/changes/refresh", {},
+    ),
+  markChangeDone: (id: string) => jpost<{ ok: boolean }>(`/changes/${id}/done`, {}),
+  dismissChange: (id: string) => jpost<{ ok: boolean }>(`/changes/${id}/dismiss`, {}),
   // Phase 2 — produce a new brand video in this template's style. Provide a
   // `topic` (script written in brand voice) OR a finished `script`.
   replicateTemplate: (

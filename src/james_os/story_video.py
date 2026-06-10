@@ -687,6 +687,8 @@ async def pick_insert_points(
     hero_description: str = "",
     avoid: str = "",
     cadence_s: float = _INSERT_CADENCE_S,
+    min_dur: float = _INSERT_MIN_DUR,
+    max_dur: float = _INSERT_MAX_DUR,
 ) -> list[Insert]:
     """Word-anchored dense cutaway picker.
 
@@ -702,6 +704,10 @@ async def pick_insert_points(
       * the LLM call fails;
       * every returned insert fails sanity validation.
     """
+    # Live-tunable (feedback loop): shadow the module defaults with the
+    # per-render values so the existing slot-fitting math below uses them.
+    _INSERT_MIN_DUR = min_dur
+    _INSERT_MAX_DUR = max_dur
     if not words or audio_duration <= _INSERT_LEAD_IN_S + _INSERT_MIN_DUR:
         return []
 
@@ -1517,12 +1523,17 @@ async def build_engaging_avatar_assets(
     hero_description = hero_ctx.description if hero_ctx else ""
     hero_refs = await _hero_files() if hero_ctx else []
 
+    # Live-tunable B-roll insert duration (feedback loop → render_tuning).
+    from .render_tuning import get_render_tuning
+    _rt = await get_render_tuning(tenant_id)
     inserts = await pick_insert_points(
         audio_duration=tr.duration,
         words=tr.words,
         brand_context=brand_context,
         hero_description=hero_description,
         avoid=broll_avoid,
+        min_dur=_rt["broll_insert_min_dur"],
+        max_dur=_rt["broll_insert_max_dur"],
     )
 
     if inserts:

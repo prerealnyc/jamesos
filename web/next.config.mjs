@@ -71,6 +71,9 @@ const nextConfig = {
       { source: "/templates/:path*", destination: `${BACKEND}/templates/:path*` },
       // Composition build-queue (which reference layouts render today vs queued).
       { source: "/compositions", destination: `${BACKEND}/compositions` },
+      // Feedback → "What's changing next" board.
+      { source: "/changes", destination: `${BACKEND}/changes` },
+      { source: "/changes/:path*", destination: `${BACKEND}/changes/:path*` },
     ];
   },
 };
