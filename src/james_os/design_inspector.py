@@ -44,9 +44,15 @@ from .perception import (
     _transcribe,
 )
 
-# Spread this many frames across the whole clip (perception only grabs the
-# opening 8). More frames → the model can see how the layout evolves.
-_INSPECT_FRAMES = 14
+# Spread frames across the whole clip (perception only grabs the opening 8).
+# Sampling is ADAPTIVE: ~1 frame every _INSPECT_SECONDS_PER_FRAME so the model
+# sees the video bit-by-bit and catches cuts / transitions / per-beat layout
+# shifts, rather than a coarse fixed handful. Bounded [_INSPECT_FRAMES_MIN,
+# _INSPECT_FRAMES_MAX] to keep vision-token cost in check.
+_INSPECT_FRAMES = 14  # legacy default / fallback
+_INSPECT_FRAMES_MIN = 12
+_INSPECT_FRAMES_MAX = 28
+_INSPECT_SECONDS_PER_FRAME = 1.5
 
 
 async def _probe_duration(src: Path) -> int:
@@ -224,9 +230,17 @@ async def inspect_file(path: str) -> dict:
         tmp = Path(td)
         audio = tmp / "audio.mp3"
         duration = await _probe_duration(src)
+        # Adaptive density: ~1 frame / 1.5s so the model SEES the whole clip
+        # bit-by-bit (cuts, transitions, layout shifts), clamped to bound cost.
+        # Layout is a pixel fact — only dense frames reveal "speaker on top,
+        # text on the bottom"; a transcript alone never can.
+        n_frames = max(
+            _INSPECT_FRAMES_MIN,
+            min(round((duration or 30) / _INSPECT_SECONDS_PER_FRAME), _INSPECT_FRAMES_MAX),
+        )
         have_audio = await _extract_audio(src, audio)
         frames, duration, interval = await _extract_spread_frames(
-            src, tmp, duration, _INSPECT_FRAMES
+            src, tmp, duration, n_frames
         )
         timestamps = [round(i * interval, 1) for i in range(len(frames))]
         transcript = await _transcribe(client, audio) if have_audio else ""
