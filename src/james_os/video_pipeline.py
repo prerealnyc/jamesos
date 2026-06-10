@@ -31,7 +31,7 @@ from .db import acquire
 from .heygen import get_avatar_provider
 from .imagegen import generate_seed_image
 from .media import storage as media_storage
-from .video import get_video_provider
+from .video import get_video_provider, provider_for
 from .video_feedback import video_avoid_block
 from .video_plan import generate_scene_plan
 
@@ -78,6 +78,7 @@ async def start_production(
     logo_position: str = "",
     structure: list[dict] | None = None,
     template_id: UUID | None = None,
+    video_engine: str = "",
     tenant_id: UUID | None = None,
 ) -> dict:
     """Create a production.
@@ -134,13 +135,14 @@ async def start_production(
             """INSERT INTO video_productions
                  (status, title, platform, aspect, script, scenes, mode,
                   caption_style, image_style,
-                  music_mood, logo_position, structure, template_id,
+                  music_mood, logo_position, structure, template_id, video_engine,
                   avatar_provider, broll_provider, assembly_provider)
-               VALUES ('queued',$1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11::jsonb,$12,
-                       $13,$14,$15) RETURNING *""",
+               VALUES ('queued',$1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,
+                       $14,$15,$16) RETURNING *""",
             title, platform, aspect, script, json.dumps(scenes or []), mode,
             caption_style or "", image_style or "",
             music_mood or "", logo_position or "", json.dumps(structure or []), template_id,
+            video_engine or "",
             get_avatar_provider().name, settings.video_provider,
             get_assembly_provider().name,
         )
@@ -247,35 +249,64 @@ async def _render_hero_talking_photo(
     return None, "talking-photo render timed out"
 
 
-async def _render_broll(visual_prompt: str, aspect: str) -> tuple[str | None, str]:
-    """B-roll = text → AI still (OpenAI) → animate (Runway). Both keys needed
-    for a real clip; otherwise an honest stub with the reason."""
+async def _seed_to_public_url(data_uri: str, tenant_id: UUID | None) -> tuple[str | None, str]:
+    """Some engines (Higgsfield) fetch the seed image by URL, not a data: URI.
+    Upload the still to storage and return its public URL. Requires Supabase
+    storage in prod (a local /media-files path isn't fetchable by the engine)."""
+    try:
+        import base64
+        from .media import storage as _media_storage
+        raw = base64.b64decode(data_uri.split(",", 1)[1])
+        tenant = str(tenant_id or settings.default_tenant_id)
+        served_uri, _path = _media_storage().save(tenant, raw, "broll-seed.png")
+    except Exception as e:  # noqa: BLE001
+        return None, f"seed image upload failed: {e}"
+    if not served_uri.startswith("http"):
+        return None, ("seed image isn't publicly fetchable (local storage) — "
+                      "Higgsfield needs Supabase storage configured")
+    return served_uri, ""
+
+
+async def _render_broll(
+    visual_prompt: str, aspect: str, *, engine: str = "", tenant_id: UUID | None = None,
+) -> tuple[str | None, str]:
+    """B-roll = text → AI still (OpenAI) → animate (Runway or, per-render,
+    Higgsfield). Honest stub with a reason when an engine isn't configured."""
     if not visual_prompt:
         return None, "no visual prompt for B-roll"
-    vid = get_video_provider()
+    try:
+        vid = provider_for(engine) if engine else get_video_provider()
+    except Exception as e:  # noqa: BLE001 — missing keys → honest reason
+        return None, f"{engine or 'video'} engine not configured: {e}"
     if vid.name == "stub":
-        return None, "Runway not configured (VIDEO_PROVIDER=stub)"
+        return None, f"{vid.name} video engine not configured (add the key in Settings)"
     # 1) seed image from the idea
     image_uri, img_err = await generate_seed_image(visual_prompt, aspect)
     if not image_uri:
         return None, f"seed image: {img_err}"
+    # Higgsfield fetches the seed by URL — host the data-URI still first.
+    seed = image_uri
+    if vid.name == "higgsfield" and isinstance(seed, str) and seed.startswith("data:"):
+        seed, up_err = await _seed_to_public_url(image_uri, tenant_id)
+        if not seed:
+            return None, up_err
     # 2) animate it (Runway needs >=5s; the assembler trims to the scene length)
     sub = await vid.submit(
-        visual_prompt, image_uri,
+        visual_prompt, seed,
         model=settings.runway_model,
         ratio=_RUNWAY_RATIO.get(aspect, settings.runway_video_ratio),
         duration=5,
     )
     if sub.status == "failed":
-        return None, sub.error or "Runway submit failed"
+        return None, sub.error or f"{vid.name} submit failed"
     for _ in range(_MAX_POLLS):
         p = await vid.poll(sub.provider_job_id)
         if p.status == "succeeded":
             return p.result_url, ""
         if p.status == "failed":
-            return None, p.error or "Runway render failed"
+            return None, p.error or f"{vid.name} render failed"
         await asyncio.sleep(_POLL_EVERY)
-    return None, "Runway render timed out"
+    return None, f"{vid.name} render timed out"
 
 
 async def _persist_clip_to_storage(
@@ -326,7 +357,8 @@ async def _persist_clip_to_storage(
 
 
 async def _render_scene_inplace(
-    s: dict, aspect: str, james_uris: list[str], used_clips: list[str]
+    s: dict, aspect: str, james_uris: list[str], used_clips: list[str],
+    *, engine: str = "", tenant_id: UUID | None = None,
 ) -> dict:
     """Render one scene's clip, mutating s with url/clip_status/note."""
     kind, source = s.get("kind"), s.get("source")
@@ -376,7 +408,9 @@ async def _render_scene_inplace(
             s["clip_status"] = "stub"
             s["note"] = "no James clips in the library — upload some in the Reference Library"
     else:  # broll → seed image → Runway
-        url, err = await _render_broll(s.get("visual_prompt", ""), aspect)
+        url, err = await _render_broll(
+            s.get("visual_prompt", ""), aspect, engine=engine, tenant_id=tenant_id
+        )
         if url:
             durable, actual = await _persist_clip_to_storage(url, f"scene-{idx}-{label}")
             if durable:
@@ -1160,7 +1194,10 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
                 if s.get("source") == "james_clip":
                     used_clips.append(s["url"])
             else:
-                await _render_scene_inplace(s, row["aspect"], james_uris, used_clips)
+                await _render_scene_inplace(
+                    s, row["aspect"], james_uris, used_clips,
+                    engine=(row["video_engine"] or ""), tenant_id=tenant_id,
+                )
             # persist progress per scene in a short-lived connection
             async with acquire(tenant_id) as conn:
                 await _set(conn, pid, scenes=json.dumps(scenes))

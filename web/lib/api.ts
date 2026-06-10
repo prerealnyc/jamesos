@@ -987,6 +987,17 @@ export const api = {
       approximations: string[];
       script_source: "pasted" | "generated";
     }>(`/templates/${id}/replicate`, body),
+  // Produce a short B-roll-ONLY reel in this template's style, animated by
+  // `engine` (higgsfield by default) without changing the global default.
+  brollReel: (
+    id: string,
+    body: { script?: string; topic?: string; platform?: string; seconds?: number; engine?: string },
+  ) =>
+    jpost<{
+      production: Production;
+      applied: Record<string, string | number>;
+      approximations: string[];
+    }>(`/templates/${id}/broll-reel`, body),
   discoverTrends: (topic: string, platforms: string[], limit = 20) =>
     jpost<TrendResult>("/trends/discover", { topic, platforms, limit }),
   listTrends: (platform = "") =>

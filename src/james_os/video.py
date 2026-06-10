@@ -304,6 +304,29 @@ def make_video_provider() -> VideoProvider:
     raise ValueError(f"Unknown video provider: {p}")
 
 
+def provider_for(name: str) -> VideoProvider:
+    """Build a SPECIFIC video provider by name (per-render engine override),
+    independent of the global settings.video_provider. Raises ValueError if
+    the named provider's keys are missing (so the caller can fail honestly)."""
+    n = (name or "").lower().strip()
+    if n in ("", "default"):
+        return get_video_provider()
+    if n == "stub":
+        return StubVideoProvider()
+    if n == "runway":
+        return RunwayVideoProvider(
+            api_key=settings.runway_api_key,
+            api_version=settings.runway_api_version,
+        )
+    if n == "higgsfield":
+        return HiggsfieldVideoProvider(
+            api_key=settings.higgsfield_api_key,
+            api_secret=settings.higgsfield_api_secret,
+            model=settings.higgsfield_model,
+        )
+    raise ValueError(f"Unknown video engine: {name}")
+
+
 _provider: VideoProvider | None = None
 
 

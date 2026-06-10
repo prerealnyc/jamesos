@@ -352,13 +352,14 @@ function Pill({ k, v, tone }: { k: string; v: string; tone?: "primary" }) {
 
 type ReplicateResult = {
   production: Production;
-  applied: Record<string, string>;
+  applied: Record<string, string | number>;
   approximations: string[];
-  script_source: "pasted" | "generated";
+  script_source?: string;
 };
 
 function ReplicatePanel({ t }: { t: StyleTemplate }) {
   const tpl = t.template || {};
+  const [output, setOutput] = useState<"avatar" | "broll">("avatar");
   const [contentMode, setContentMode] = useState<"topic" | "script">("topic");
   const [text, setText] = useState("");
   const [platform, setPlatform] = useState("instagram");
@@ -384,8 +385,11 @@ function ReplicatePanel({ t }: { t: StyleTemplate }) {
     setResult(null);
     try {
       const body = contentMode === "topic" ? { topic: text.trim() } : { script: text.trim() };
-      const r = await api.replicateTemplate(t.id, { ...body, platform, aspect });
-      setResult(r);
+      const r =
+        output === "broll"
+          ? await api.brollReel(t.id, { ...body, platform, seconds: 20, engine: "higgsfield" })
+          : await api.replicateTemplate(t.id, { ...body, platform, aspect });
+      setResult(r as ReplicateResult);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "failed");
     } finally {
@@ -401,6 +405,23 @@ function ReplicatePanel({ t }: { t: StyleTemplate }) {
         <Pill k="captions" v={willApply.captions} />
         <Pill k="music" v={willApply.music} />
         <Pill k="logo" v={willApply.logo} />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="text-muted-foreground">Output:</span>
+        <button
+          onClick={() => setOutput("avatar")}
+          className={output === "avatar" ? "font-semibold text-primary" : "text-muted-foreground hover:text-foreground"}
+        >
+          Avatar replica
+        </button>
+        <span className="text-muted-foreground">·</span>
+        <button
+          onClick={() => setOutput("broll")}
+          className={output === "broll" ? "font-semibold text-primary" : "text-muted-foreground hover:text-foreground"}
+        >
+          B-roll reel · Higgsfield (20s)
+        </button>
       </div>
 
       <div className="flex items-center gap-3">
@@ -464,7 +485,7 @@ function ReplicatePanel({ t }: { t: StyleTemplate }) {
       {result && (
         <div className="rounded-md bg-background border border-border p-2.5 flex flex-col gap-1.5">
           <div className="text-accent font-semibold">
-            ✓ Producing “{result.production.title}” ({result.script_source} script)
+            ✓ Producing “{result.production.title}”{result.script_source ? ` (${result.script_source} script)` : ""}
           </div>
           {result.approximations.length > 0 && (
             <div className="text-[11px] text-muted-foreground">

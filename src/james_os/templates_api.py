@@ -156,6 +156,71 @@ async def template_replicate(
     }
 
 
+class BrollReelRequest(BaseModel):
+    script: str = ""        # a finished script (used as the content seed)
+    topic: str = ""         # else: a topic the planner writes B-roll beats from
+    platform: str = "instagram"
+    seconds: int = 20       # total reel length (capped 5–30); split into ~5s beats
+    engine: str = "higgsfield"  # per-render B-roll engine (higgsfield | runway)
+
+
+@router.post("/templates/{template_id}/broll-reel", status_code=201)
+async def template_broll_reel(
+    template_id: UUID, req: BrollReelRequest, background: BackgroundTasks
+) -> dict:
+    """Produce a short, B-ROLL-ONLY reel in this template's style, animated by
+    the chosen engine (Higgsfield by default). Builds an all-B-roll scene
+    structure (~5s beats up to `seconds`), themes captions/music from the
+    template, and renders B-roll via `engine` without changing the global
+    default. Lands in the Approval Queue."""
+    tenant = _tenant()
+    tpl = await T.get_template(template_id, tenant)
+    if tpl is None:
+        raise HTTPException(status_code=404, detail="template not found")
+    if tpl.get("status") != "ready":
+        raise HTTPException(status_code=400, detail="template is not ready")
+
+    seed = (req.script or req.topic or "").strip()
+    if not seed:
+        raise HTTPException(status_code=400, detail="provide a topic or a script for the reel")
+
+    from .template_apply import map_template_to_render
+
+    m = map_template_to_render(tpl.get("template") or {})
+    aspect = m["aspect"] or "9:16"
+    seconds = max(5, min(int(req.seconds or 20), 30))
+    n = max(2, min(seconds // 5, 6))  # ~5s beats, 2–6 scenes
+    structure = [
+        {"label": f"beat_{i + 1}", "kind": "broll", "source": None, "duration": 5}
+        for i in range(n)
+    ]
+    engine = (req.engine or "higgsfield").strip().lower()
+
+    from .video_pipeline import run_production, start_production
+
+    title = f"{tpl.get('name', 'Style')} — B-roll reel"[:200]
+    prod = await start_production(
+        seed, req.platform, aspect, title,
+        None, "mixed", m["caption_style"], "",
+        music_mood=m["music_mood"], logo_position="",
+        structure=structure, template_id=template_id, video_engine=engine,
+        tenant_id=tenant,
+    )
+    background.add_task(run_production, UUID(prod["id"]), tenant)
+    return {
+        "production": prod,
+        "applied": {
+            "engine": engine,
+            "beats": n,
+            "seconds": n * 5,
+            "caption_style": m["caption_style"] or "(auto)",
+            "music_mood": m["music_mood"] or "(none)",
+            "aspect": aspect,
+        },
+        "approximations": m["approximations"],
+    }
+
+
 class TemplateUpdate(BaseModel):
     name: str | None = None
     tags: list[str] | None = None
