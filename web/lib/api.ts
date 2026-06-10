@@ -961,6 +961,18 @@ export const api = {
   renameTemplate: (id: string, body: { name?: string; tags?: string[]; trending_score?: number }) =>
     jpatch<StyleTemplate>(`/templates/${id}`, body),
   deleteTemplate: (id: string) => jdel<{ deleted: boolean }>(`/templates/${id}`),
+  // Phase 2 — produce a new brand video in this template's style. Provide a
+  // `topic` (script written in brand voice) OR a finished `script`.
+  replicateTemplate: (
+    id: string,
+    body: { script?: string; topic?: string; platform?: string; aspect?: string; title?: string },
+  ) =>
+    jpost<{
+      production: Production;
+      applied: Record<string, string>;
+      approximations: string[];
+      script_source: "pasted" | "generated";
+    }>(`/templates/${id}/replicate`, body),
   discoverTrends: (topic: string, platforms: string[], limit = 20) =>
     jpost<TrendResult>("/trends/discover", { topic, platforms, limit }),
   listTrends: (platform = "") =>

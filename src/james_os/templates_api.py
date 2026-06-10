@@ -70,6 +70,92 @@ async def template_inspect(media_id: UUID, background: BackgroundTasks) -> dict:
     }
 
 
+class ReplicateRequest(BaseModel):
+    script: str = ""        # a finished script (wins if provided)
+    topic: str = ""         # else: write a script from this topic, in brand voice
+    platform: str = "instagram"
+    aspect: str = ""        # blank → use the template's aspect
+    title: str = ""
+
+
+@router.post("/templates/{template_id}/replicate", status_code=201)
+async def template_replicate(
+    template_id: UUID, req: ReplicateRequest, background: BackgroundTasks
+) -> dict:
+    """Phase 2 — produce a NEW brand video in this template's style. Loads the
+    template, maps it to render params (mode, caption preset, music mood, logo,
+    aspect, structure), writes a script from the topic if none is pasted, and
+    kicks off a durable production. Returns the production + what was applied +
+    any honest approximations (e.g. trending-audio substitution)."""
+    tenant = _tenant()
+    tpl = await T.get_template(template_id, tenant)
+    if tpl is None:
+        raise HTTPException(status_code=404, detail="template not found")
+    if tpl.get("status") != "ready":
+        raise HTTPException(status_code=400, detail="template is not ready to replicate")
+
+    from .template_apply import map_template_to_render
+
+    m = map_template_to_render(tpl.get("template") or {})
+    aspect = (req.aspect or m["aspect"]).strip() or "9:16"
+
+    # Content: a pasted script wins; otherwise write one from the topic in the
+    # brand voice, steered to match this template's style.
+    script = (req.script or "").strip()
+    if not script:
+        topic = (req.topic or "").strip()
+        if not topic:
+            raise HTTPException(
+                status_code=400, detail="provide a script, or a topic to write one from"
+            )
+        from .content import generate_content
+        from .models import ContentBrief
+
+        style_hint = (tpl.get("summary") or tpl.get("name") or "").strip()
+        brief = ContentBrief(
+            platform=req.platform, format="reel_script", topic=topic,
+            extra_instructions=(
+                f"Write a short-form video script in this style: {style_hint}."
+                if style_hint else ""
+            ),
+        )
+        draft = await generate_content(brief, tenant_id=tenant)
+        script = (draft.draft or "").strip()
+        if not script:
+            raise HTTPException(
+                status_code=502,
+                detail=f"couldn't write a script for that topic ({draft.note or draft.status})",
+            )
+
+    from .video_pipeline import run_production, start_production
+
+    title = (req.title or f"{tpl.get('name', 'Style')} — replica").strip()[:200]
+    logo_position = m["logo_position"] if m["logo_on"] else ""
+    try:
+        prod = await start_production(
+            script, req.platform, aspect, title,
+            None, m["mode"], m["caption_style"], m["image_style"],
+            music_mood=m["music_mood"], logo_position=logo_position,
+            structure=m["structure"], template_id=template_id,
+            tenant_id=tenant,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    background.add_task(run_production, UUID(prod["id"]), tenant)
+    return {
+        "production": prod,
+        "applied": {
+            "mode": m["mode"],
+            "caption_style": m["caption_style"] or "(auto)",
+            "music_mood": m["music_mood"] or "(none)",
+            "aspect": aspect,
+            "logo": logo_position or "(none)",
+        },
+        "approximations": m["approximations"],
+        "script_source": "pasted" if (req.script or "").strip() else "generated",
+    }
+
+
 class TemplateUpdate(BaseModel):
     name: str | None = None
     tags: list[str] | None = None

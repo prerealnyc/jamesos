@@ -74,6 +74,10 @@ async def start_production(
     scenes: list[dict] | None = None, mode: str = "mixed",
     caption_style: str = "",
     image_style: str = "",
+    music_mood: str = "",
+    logo_position: str = "",
+    structure: list[dict] | None = None,
+    template_id: UUID | None = None,
     tenant_id: UUID | None = None,
 ) -> dict:
     """Create a production.
@@ -130,10 +134,13 @@ async def start_production(
             """INSERT INTO video_productions
                  (status, title, platform, aspect, script, scenes, mode,
                   caption_style, image_style,
+                  music_mood, logo_position, structure, template_id,
                   avatar_provider, broll_provider, assembly_provider)
-               VALUES ('queued',$1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11) RETURNING *""",
+               VALUES ('queued',$1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11::jsonb,$12,
+                       $13,$14,$15) RETURNING *""",
             title, platform, aspect, script, json.dumps(scenes or []), mode,
             caption_style or "", image_style or "",
+            music_mood or "", logo_position or "", json.dumps(structure or []), template_id,
             get_avatar_provider().name, settings.video_provider,
             get_assembly_provider().name,
         )
@@ -491,7 +498,7 @@ async def _run_story_audio(row, tenant_id: UUID | None) -> None:
         beats=beats_to_dict(assets.beats),
         captions=assets.captions,
         aspect=row["aspect"],
-        music_mood="calm",
+        music_mood=(row["music_mood"] or "calm"),
         caption_style=cstyle,
     )
     if res.status == "processing":
@@ -619,7 +626,7 @@ async def _run_avatar_story_mix(row, tenant_id: UUID | None) -> None:
         beats=beats_to_dict(assets.beats),
         captions=assets.captions,
         aspect=row["aspect"],
-        music_mood="calm",
+        music_mood=(row["music_mood"] or "calm"),
         caption_style=cstyle,
     )
     if res.status == "processing":
@@ -752,7 +759,7 @@ async def _run_engaging_avatar(row, tenant_id: UUID | None) -> None:
         inserts=inserts_to_dict(assets.inserts),
         captions=assets.captions,
         aspect=row["aspect"],
-        music_mood="calm",
+        music_mood=(row["music_mood"] or "calm"),
         caption_style=cstyle,
     )
     if res.status == "processing":
@@ -959,7 +966,7 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
         inserts=inserts_to_dict(assets.inserts),
         captions=assets.captions,
         aspect=row["aspect"],
-        music_mood="calm",
+        music_mood=(row["music_mood"] or "calm"),
         caption_style=cstyle,
     )
     if res.status == "processing":
@@ -1029,12 +1036,28 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
         else:
             async with acquire(tenant_id) as conn:
                 await _set(conn, pid, status="planning")
+            # Replication: a style template can supply a clamped scene
+            # structure and template-level music/logo to stamp onto the plan.
+            _struct = row["structure"]
+            if isinstance(_struct, str):
+                _struct = json.loads(_struct)
+            _struct = _struct if (isinstance(_struct, list) and _struct) else None
             plan = await generate_scene_plan(
-                row["script"], row["platform"], row["aspect"], tenant_id=tenant_id
+                row["script"], row["platform"], row["aspect"],
+                structure=_struct, tenant_id=tenant_id,
             )
             scenes = plan.get("scenes") or []
             if not scenes:
                 return await _fail(pid, plan.get("error") or "no scenes planned", tenant_id)
+            _logo_pos = (row["logo_position"] or "").strip()
+            if (row["music_mood"] or "") or _logo_pos:
+                from .template_apply import apply_overrides_to_scenes
+                apply_overrides_to_scenes(
+                    scenes,
+                    music_mood=(row["music_mood"] or ""),
+                    logo_on=bool(_logo_pos),
+                    logo_position=_logo_pos or "bottom-right",
+                )
             final_title = plan.get("title") or row["title"]
             async with acquire(tenant_id) as conn:
                 await _set(conn, pid, status="rendering_clips",

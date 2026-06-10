@@ -1,10 +1,12 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   api,
   mediaUrl,
   type MediaAsset,
+  type Production,
   type StyleTemplate,
   type TemplateSegment,
 } from "@/lib/api";
@@ -79,10 +81,11 @@ export default function StyleTemplatesPage() {
       <div className="rounded-md border border-border bg-secondary/40 px-4 py-3 text-[12px] text-muted-foreground">
         Each template captures <b>where every element sits</b> (speaker,
         captions, on-screen text, logo), the pacing, the transitions, and the
-        sound — in the video engine&apos;s own vocabulary.{" "}
+        sound.{" "}
         <span className="text-foreground">
-          Replication — turning a template + a new script into a matching video
-          — is the next phase.
+          Hit <b>Replicate this style</b> on any template to produce a new brand
+          video in that style — give it a topic (we write the script in your
+          voice) or paste your own.
         </span>
       </div>
 
@@ -193,6 +196,7 @@ function TemplateCard({
   onChange: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [rep, setRep] = useState(false);
   const tpl = t.template || {};
   const caps = tpl.captions || {};
   const logo = tpl.logo || {};
@@ -263,6 +267,20 @@ function TemplateCard({
             {t.production_mode && <Pill k="Best made with" v={t.production_mode} tone="primary" />}
           </div>
 
+          {/* Replicate this style — Phase 2 */}
+          {t.status === "ready" && (
+            <div>
+              <Button onClick={() => setRep((r) => !r)}>
+                {rep ? "Close" : "⚡ Replicate this style"}
+              </Button>
+              {rep && (
+                <div className="mt-2">
+                  <ReplicatePanel t={t} />
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Replication recipe */}
           {tpl.replication_recipe && tpl.replication_recipe.length > 0 && (
             <div className="rounded-md bg-background border border-border p-3 text-[12px]">
@@ -302,6 +320,141 @@ function Pill({ k, v, tone }: { k: string; v: string; tone?: "primary" }) {
     >
       <span className="opacity-60">{k}:</span> {v}
     </span>
+  );
+}
+
+type ReplicateResult = {
+  production: Production;
+  applied: Record<string, string>;
+  approximations: string[];
+  script_source: "pasted" | "generated";
+};
+
+function ReplicatePanel({ t }: { t: StyleTemplate }) {
+  const tpl = t.template || {};
+  const [contentMode, setContentMode] = useState<"topic" | "script">("topic");
+  const [text, setText] = useState("");
+  const [platform, setPlatform] = useState("instagram");
+  const [aspect, setAspect] = useState(tpl.aspect_ratio || "9:16");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<ReplicateResult | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const willApply = {
+    mode: t.production_mode || "engaging_avatar",
+    captions: tpl.captions?.preset_guess || "auto",
+    music: tpl.audio?.music?.type || "none",
+    logo: tpl.logo?.present ? tpl.logo?.position || "yes" : "none",
+  };
+
+  async function go() {
+    if (!text.trim()) {
+      setErr("Add a topic or paste a script.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    setResult(null);
+    try {
+      const body = contentMode === "topic" ? { topic: text.trim() } : { script: text.trim() };
+      const r = await api.replicateTemplate(t.id, { ...body, platform, aspect });
+      setResult(r);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-md border border-primary/30 bg-primary/5 p-3 flex flex-col gap-3 text-[12px]">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-muted-foreground">This style will set:</span>
+        <Pill k="mode" v={willApply.mode} tone="primary" />
+        <Pill k="captions" v={willApply.captions} />
+        <Pill k="music" v={willApply.music} />
+        <Pill k="logo" v={willApply.logo} />
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button
+          onClick={() => setContentMode("topic")}
+          className={contentMode === "topic" ? "font-semibold text-primary" : "text-muted-foreground hover:text-foreground"}
+        >
+          Topic → auto-script
+        </button>
+        <span className="text-muted-foreground">·</span>
+        <button
+          onClick={() => setContentMode("script")}
+          className={contentMode === "script" ? "font-semibold text-primary" : "text-muted-foreground hover:text-foreground"}
+        >
+          Paste a script
+        </button>
+      </div>
+
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={contentMode === "topic" ? 2 : 5}
+        placeholder={
+          contentMode === "topic"
+            ? "What's the video about? e.g. 'why Staten Island waterfront is undervalued right now'"
+            : "Paste the full script — exactly what James says…"
+        }
+        className="w-full bg-background border border-input rounded-md px-2 py-1.5 resize-y outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      />
+
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          value={platform}
+          onChange={(e) => setPlatform(e.target.value)}
+          className="bg-background border border-input rounded-md px-2 py-1"
+        >
+          {["instagram", "tiktok", "youtube", "linkedin"].map((p) => (
+            <option key={p} value={p}>{p}</option>
+          ))}
+        </select>
+        <select
+          value={aspect}
+          onChange={(e) => setAspect(e.target.value)}
+          className="bg-background border border-input rounded-md px-2 py-1"
+        >
+          {["9:16", "1:1", "16:9"].map((a) => (
+            <option key={a} value={a}>{a}</option>
+          ))}
+        </select>
+        <Button onClick={go} disabled={busy}>
+          {busy ? (
+            <span className="flex items-center gap-2"><Spinner /> producing…</span>
+          ) : (
+            "Produce video"
+          )}
+        </Button>
+      </div>
+
+      {err && <div className="text-destructive">{err}</div>}
+
+      {result && (
+        <div className="rounded-md bg-background border border-border p-2.5 flex flex-col gap-1.5">
+          <div className="text-accent font-semibold">
+            ✓ Producing “{result.production.title}” ({result.script_source} script)
+          </div>
+          {result.approximations.length > 0 && (
+            <div className="text-[11px] text-muted-foreground">
+              <b className="text-foreground">What&apos;s approximated:</b>
+              <ul className="list-disc pl-4 mt-0.5">
+                {result.approximations.map((a, i) => (
+                  <li key={i}>{a}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <Link href="/library" className="text-primary hover:underline">
+            Watch it render in Output Library →
+          </Link>
+        </div>
+      )}
+    </div>
   );
 }
 
