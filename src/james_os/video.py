@@ -211,11 +211,15 @@ class HiggsfieldVideoProvider(VideoProvider):
     name = "higgsfield"
 
     def __init__(self, api_key: str, api_secret: str, model: str):
+        # Trim pasted whitespace/newlines — a trailing newline in the key or
+        # secret is a common cause of a spurious 403.
+        api_key = (api_key or "").strip()
+        api_secret = (api_secret or "").strip()
         if not api_key or not api_secret:
             raise ValueError("HF_API_KEY and HF_API_SECRET are both required for Higgsfield video")
         self.api_key = api_key
         self.api_secret = api_secret
-        self.model = model
+        self.model = (model or "").strip()
 
     def _headers(self) -> dict:
         return {
