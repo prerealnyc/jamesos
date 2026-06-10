@@ -8,6 +8,7 @@ live tweak silently degrades every render. The interpreter never renders or
 edits code; it only emits a decision that feedback_changes.record_change acts on.
 """
 
+import json
 from uuid import UUID
 
 from .db import acquire
@@ -22,8 +23,13 @@ _KNOB_RANGE = {
 }
 
 _SYSTEM = (
-    "You convert ONE piece of human feedback on a generated video/caption into "
-    "a structured change decision. You are given the feedback reason, the "
+    "You convert ONE piece of human feedback on a generated video, caption, or "
+    "TEXT POST into a structured change decision. Feedback about WHAT IS SAID "
+    "(tone, structure, wording — e.g. 'too salesy', 'sounds like a numbered "
+    "list, not a story') is a content/voice change → kind=code_change with "
+    "area='voice' (or 'text'); describe the concrete writing change "
+    "(e.g. 'Generate scripts as one flowing story arc, never a numbered list'). "
+    "You are given the feedback reason, the "
     "production context, and a KNOWN_KNOBS catalog — the ONLY render parameters "
     "that can change live without a code deploy (each has key, current value, "
     "range, unit). Decide exactly ONE: (a) live_config — the feedback maps "
@@ -115,30 +121,36 @@ async def interpret_one(reason: str, context: dict, knobs: dict) -> dict | None:
 
 
 async def interpret_recent_feedback(tenant_id: UUID | None = None, limit: int = 40) -> dict:
-    """Read every recent video rejection/approval-with-notes, interpret each,
-    and record the change (applying live knobs, queuing code changes). Idempotent
-    via the feedback_changes dedupe key."""
+    """Read every recent VIDEO rejection (video_productions.review_reason) AND
+    TEXT/post rejection (actions.rejection_reason_code, action_type='content'),
+    interpret each, and record the change (applying live knobs, queuing code/
+    content changes). Idempotent via the feedback_changes dedupe key."""
     knobs = await get_render_tuning(tenant_id)
     async with acquire(tenant_id) as conn:
-        rows = await conn.fetch(
-            "SELECT id, review_reason, review_status, mode, caption_style, title "
-            "FROM video_productions "
-            "WHERE coalesce(review_reason,'') <> '' "
+        vids = await conn.fetch(
+            "SELECT id, review_reason AS reason, review_status AS status, mode, caption_style "
+            "FROM video_productions WHERE coalesce(review_reason,'') <> '' "
             "  AND review_status IN ('rejected','approved_with_notes') "
             "ORDER BY reviewed_at DESC NULLS LAST LIMIT $1",
             limit,
         )
+        txts = await conn.fetch(
+            "SELECT id, rejection_reason_code AS reason, payload "
+            "FROM actions WHERE status='rejected' "
+            "  AND coalesce(rejection_reason_code,'') <> '' AND action_type='content' "
+            "ORDER BY decided_at DESC NULLS LAST LIMIT $1",
+            limit,
+        )
+
     processed = 0
     recorded = 0
-    for r in rows:
+
+    async def _do(reason: str, context: dict, production_id) -> None:
+        nonlocal processed, recorded
         processed += 1
-        decision = await interpret_one(
-            r["review_reason"],
-            {"mode": r["mode"], "caption_style": r["caption_style"], "status": r["review_status"]},
-            knobs,
-        )
+        decision = await interpret_one(reason, context, knobs)
         if not decision:
-            continue
+            return
         item = await record_change(
             area=decision["area"],
             diagnosis=decision["diagnosis"],
@@ -147,11 +159,34 @@ async def interpret_recent_feedback(tenant_id: UUID | None = None, limit: int = 
             config_key=decision["config_key"],
             config_value=decision["config_value"],
             confidence=decision["confidence"],
-            production_id=r["id"],
+            production_id=production_id,
             tenant_id=tenant_id,
         )
         if item:
             recorded += 1
+
+    # Video feedback
+    for r in vids:
+        await _do(
+            r["reason"],
+            {"mode": r["mode"], "caption_style": r["caption_style"], "status": r["status"]},
+            r["id"],
+        )
+    # Text / post feedback
+    for r in txts:
+        payload = r["payload"]
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:  # noqa: BLE001
+                payload = {}
+        ctx = {
+            "mode": f"text post ({(payload or {}).get('format', 'post')})",
+            "caption_style": "",
+            "status": "rejected",
+        }
+        await _do(r["reason"], ctx, None)
+
     return {"processed": processed, "recorded": recorded}
 
 
