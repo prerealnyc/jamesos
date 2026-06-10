@@ -51,6 +51,7 @@ const NAV: Group[] = [
       { href: "/queue", label: "Approval Queue", sub: "Videos + posts split, ready to ship", icon: "queue", live: true },
       { href: "/library", label: "Output Library", sub: "Finished content — download & share", icon: "clips", live: true },
       { href: "/jp-clips", label: "Media Library", sub: "Reference clips & hero footage", icon: "clips", live: true, match: MEDIA_SUBROUTES },
+      { href: "/style-templates", label: "Style Templates", sub: "Trending styles, reverse-engineered to replicate", icon: "pipeline", live: true },
     ],
   },
   {

@@ -253,10 +253,12 @@ from .autopilot_bulk_api import router as autopilot_bulk_router
 from .analytics_live import router as analytics_live_router
 from .research_roster_api import router as research_roster_router
 from .voice_ingest_api import router as voice_ingest_router
+from .templates_api import router as templates_router
 app.include_router(autopilot_bulk_router)
 app.include_router(analytics_live_router)
 app.include_router(research_roster_router)
 app.include_router(voice_ingest_router)
+app.include_router(templates_router)
 
 
 @app.get("/", include_in_schema=False)
@@ -1900,6 +1902,14 @@ async def _run_media_analysis(media_id: UUID) -> dict | None:
     if asset["source_type"] != "upload" or not asset["file_path"]:
         await set_analysis_status(media_id, "unsupported", tenant)
         return None
+    # Style references get the deep Design Inspector → a named, reusable style
+    # template (the "trending video styles" library). It also refreshes the
+    # media card's analysis, so the perception fingerprint stays available.
+    if asset.get("role") == "style_reference":
+        from .templates import build_template_from_media
+        return await build_template_from_media(
+            media_id, tenant_id=tenant, file_path=asset["file_path"]
+        )
     await set_analysis_status(media_id, "pending", tenant)
     result = await analyze_file(asset["file_path"])
     return await save_analysis(

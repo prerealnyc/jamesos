@@ -225,10 +225,10 @@ async def update_media(
 async def get_media_for_analysis(
     media_id: UUID, tenant_id: UUID | None = None
 ) -> dict | None:
-    """Returns {source_type, file_path, uri} for the analyzer, or None."""
+    """Returns {role, source_type, file_path, uri} for the analyzer, or None."""
     async with acquire(tenant_id) as conn:
         r = await conn.fetchrow(
-            "SELECT source_type, file_path, uri FROM media_assets WHERE id = $1",
+            "SELECT role, source_type, file_path, uri FROM media_assets WHERE id = $1",
             media_id,
         )
     return dict(r) if r else None

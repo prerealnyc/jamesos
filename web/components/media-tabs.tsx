@@ -23,6 +23,11 @@ const TABS = [
     label: "Hero Library",
     sub: "Photos + videos of the brand's hero",
   },
+  {
+    href: "/style-templates",
+    label: "Style Templates",
+    sub: "Reference styles, reverse-engineered to replicate",
+  },
 ];
 
 export function MediaTabs() {

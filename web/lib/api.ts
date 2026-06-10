@@ -321,6 +321,61 @@ export type MediaAsset = {
   updated_at: string;
 };
 
+// ── Style Templates (Design Inspector → library of trending styles) ──
+// A reference video, reverse-engineered into a reusable production
+// template: a beat-by-beat map of where every element sits and what the
+// sound is doing, in the assembly engine's own vocabulary.
+export type TemplateSegment = {
+  start?: number;
+  end?: number;
+  role?: string;
+  visual?: string;
+  speaker?: { present?: boolean; position?: string; framing?: string };
+  on_screen_text?: { present?: boolean; example?: string; position?: string; style?: string };
+  logo?: { present?: boolean; position?: string };
+  transition_out?: string;
+};
+
+export type TemplateSpec = {
+  style_name?: string;
+  summary?: string;
+  format_type?: string;
+  aspect_ratio?: string;
+  hook?: string;
+  pacing?: { energy?: string; avg_cut_seconds?: number; notes?: string };
+  segments?: TemplateSegment[];
+  logo?: { present?: boolean; position?: string; persistence?: string };
+  captions?: { present?: boolean; position?: string; look?: string; animation?: string; preset_guess?: string };
+  audio?: {
+    music?: { present?: boolean; type?: string; mood?: string };
+    voiceover?: boolean;
+    sfx?: string;
+    sound_signature?: string;
+  };
+  color_palette?: string;
+  vibe?: string;
+  production_mode?: string;
+  replication_recipe?: string[];
+};
+
+export type StyleTemplate = {
+  id: string;
+  reference_media_id: string | null;
+  name: string;
+  slug: string;
+  summary: string;
+  format_type: string;
+  production_mode: string;
+  duration: number;
+  template: TemplateSpec;
+  transcript: string;
+  status: "pending" | "ready" | "failed";
+  tags: string[];
+  trending_score: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type Scene = {
   index: number;
   label?: string;
@@ -894,6 +949,18 @@ export const api = {
   ) => jpatch<MediaAsset>(`/media/${id}`, fields),
   deleteMedia: (id: string) => jdel<{ ok: boolean }>(`/media/${id}`),
   analyzeMedia: (id: string) => jpost<MediaAsset>(`/media/${id}/analyze`, {}),
+  // ── Style Templates: the "library of trending video styles" ─────
+  // Style references are inspected automatically on upload; these let
+  // the library list them, (re-)inspect on demand, rename, and remove.
+  listTemplates: () => jget<{ templates: StyleTemplate[] }>("/templates"),
+  getTemplate: (id: string) => jget<StyleTemplate>(`/templates/${id}`),
+  inspectTemplate: (mediaId: string) =>
+    jpost<{ started: boolean; media_id: string; note: string }>(
+      `/templates/inspect/${mediaId}`, {},
+    ),
+  renameTemplate: (id: string, body: { name?: string; tags?: string[]; trending_score?: number }) =>
+    jpatch<StyleTemplate>(`/templates/${id}`, body),
+  deleteTemplate: (id: string) => jdel<{ deleted: boolean }>(`/templates/${id}`),
   discoverTrends: (topic: string, platforms: string[], limit = 20) =>
     jpost<TrendResult>("/trends/discover", { topic, platforms, limit }),
   listTrends: (platform = "") =>

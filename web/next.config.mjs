@@ -65,6 +65,10 @@ const nextConfig = {
       // Voice Studio — Drive folder/links → transcribe → voice_corpus.
       // /voice/* are API paths; the /voice-studio page is a separate Next route.
       { source: "/voice/:path*", destination: `${BACKEND}/voice/:path*` },
+      // Style Templates — Design Inspector library. /templates(/*) are API
+      // paths; the /style-templates page is a separate Next route, so no clash.
+      { source: "/templates", destination: `${BACKEND}/templates` },
+      { source: "/templates/:path*", destination: `${BACKEND}/templates/:path*` },
     ];
   },
 };
