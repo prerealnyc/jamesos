@@ -85,14 +85,13 @@ class Settings(BaseSettings):
     runway_api_version: str = "2024-11-06"    # X-Runway-Version header
     runway_video_ratio: str = "1280:720"
     runway_video_duration: int = 5            # seconds (Runway: 5 or 10)
-    # Higgsfield image-to-video (EXPERIMENTAL). Auth/poll pinned to the
-    # official higgsfield-client SDK contract; the image-to-video application
-    # path + arg names are unconfirmed in the public SDK, so the model id is
-    # config-driven — a 404 from submit names this setting as the fix.
+    # Higgsfield image-to-video (DoP). Auth/endpoint/body pinned to the
+    # official higgsfield-client SDK: Authorization: Key key:secret;
+    # POST /v1/image2video/dop {model, prompt, input_images}; poll
+    # /requests/{id}/status → video.url.
     higgsfield_api_key: str = ""              # HF_API_KEY
     higgsfield_api_secret: str = ""           # HF_API_SECRET (joined as key:secret)
-    higgsfield_model: str = ""                # the {application} path for image-to-video
-    higgsfield_video_duration: int = 5        # seconds
+    higgsfield_model: str = "dop-turbo"       # DoP model variant: dop-turbo | dop-lite
 
     # ─── Video productions (script → scene plan → clips → assembled mp4) ───
     # Each stage is provider-abstracted with a stub so the whole pipeline is

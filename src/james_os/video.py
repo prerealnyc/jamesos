@@ -32,6 +32,8 @@ from .db import acquire
 
 _RUNWAY_BASE = "https://api.dev.runwayml.com/v1"
 _HIGGSFIELD_BASE = "https://platform.higgsfield.ai"
+# DoP image-to-video application path (confirmed from the official SDK README).
+_HIGGSFIELD_I2V_APP = "v1/image2video/dop"
 _TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 
 
@@ -224,21 +226,19 @@ class HiggsfieldVideoProvider(VideoProvider):
             return SubmitResult("", "failed", error=(
                 "Higgsfield image-to-video is image-conditioned — supply a "
                 "still URL (text-only video is not wired)."))
-        app = (self.model or model or "").strip()
-        if not app:
-            return SubmitResult("", "failed", error=(
-                "higgsfield_model is unset — set it to the Higgsfield "
-                "image-to-video application id in Settings"))
+        # Documented DoP image-to-video contract (official SDK):
+        # POST /v1/image2video/dop  {model, prompt, input_images:[{type,image_url}]}
+        variant = (self.model or "dop-turbo").strip()
         body = {
-            "image": image_url,
+            "model": variant,
             "prompt": (prompt or "")[:1000],
-            "motion_intensity": 0.7,
-            "duration": settings.higgsfield_video_duration or duration,
+            "input_images": [{"type": "image_url", "image_url": image_url}],
         }
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
                 r = await client.post(
-                    f"{_HIGGSFIELD_BASE}/{app}", headers=self._headers(), json=body
+                    f"{_HIGGSFIELD_BASE}/{_HIGGSFIELD_I2V_APP}",
+                    headers=self._headers(), json=body,
                 )
         except httpx.HTTPError as e:
             return SubmitResult("", "failed", error=f"Higgsfield submit transport error: {e}")
@@ -247,7 +247,7 @@ class HiggsfieldVideoProvider(VideoProvider):
         if r.status_code == 429:
             return SubmitResult("", "failed", error="Higgsfield rate/credit limit (HTTP 429)")
         if r.status_code == 404:
-            return SubmitResult("", "failed", error=f"Higgsfield model path not found (HTTP 404): '{app}' — set higgsfield_model to the verified image-to-video application id")
+            return SubmitResult("", "failed", error=f"Higgsfield endpoint not found (HTTP 404): /{_HIGGSFIELD_I2V_APP} model='{variant}' — verify the DoP image-to-video path/model on your account")
         if r.status_code >= 400:
             return SubmitResult("", "failed", error=f"Higgsfield HTTP {r.status_code}: {r.text[:200]}")
         data = r.json()

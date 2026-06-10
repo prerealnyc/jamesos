@@ -87,7 +87,7 @@ MANAGED_FIELDS: list[ManagedField] = [
     ManagedField("runway_api_key", "Runway API key", "Video & media"),
     ManagedField("higgsfield_api_key", "Higgsfield API key (HF_API_KEY) — experimental", "Video & media"),
     ManagedField("higgsfield_api_secret", "Higgsfield API secret (HF_API_SECRET)", "Video & media"),
-    ManagedField("higgsfield_model", "Higgsfield image-to-video model id (the {application} path)", "Video & media", secret=False),
+    ManagedField("higgsfield_model", "Higgsfield DoP model variant (dop-turbo | dop-lite)", "Video & media", secret=False),
     ManagedField("creatomate_api_key", "Creatomate API key (video assembly)", "Video & media"),
     ManagedField("shotstack_api_key", "Shotstack API key (video assembly)", "Video & media"),
     ManagedField(
