@@ -32,8 +32,11 @@ from .db import acquire
 
 _RUNWAY_BASE = "https://api.dev.runwayml.com/v1"
 _HIGGSFIELD_BASE = "https://platform.higgsfield.ai"
-# DoP image-to-video application path (confirmed from the official SDK README).
-_HIGGSFIELD_I2V_APP = "v1/image2video/dop"
+# Default Higgsfield image-to-video model (official docs.higgsfield.ai). The
+# full model id IS the endpoint path: POST {base}/{model}. Override per-tenant
+# via settings.higgsfield_model (e.g. kling-video/v2.1/pro/image-to-video or
+# bytedance/seedance/v1/pro/image-to-video).
+_HIGGSFIELD_DEFAULT_MODEL = "higgsfield-ai/dop/standard"
 _TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 
 
@@ -195,15 +198,14 @@ def _hf_extract_url(data: dict) -> str | None:
 
 
 class HiggsfieldVideoProvider(VideoProvider):
-    """Higgsfield image-to-video (EXPERIMENTAL).
-
-    Transport/auth/poll are pinned to the official higgsfield-client SDK
-    contract (Authorization: Key {key}:{secret}; POST /{application}; GET
-    /requests/{id}/status). The image-to-video application path + arg names
-    are NOT confirmed in the public SDK, so the model id is config-driven
-    (settings.higgsfield_model) and the result-URL scan is defensive. Like
-    Runway, it's image-conditioned — no still URL → honest refusal, never a
-    fake. A 404 on submit names higgsfield_model as the fix.
+    """Higgsfield image-to-video, pinned to the official REST docs
+    (docs.higgsfield.ai): Authorization: Key {key}:{secret}; the model id IS
+    the path — POST {base}/{model} with {image_url, prompt, duration}; poll
+    GET /requests/{id}/status → completed carries video.url. The model is
+    config-driven (settings.higgsfield_model, default higgsfield-ai/dop/standard;
+    swap to kling/seedance ids freely). Image-conditioned like Runway — no
+    still URL → honest refusal, never a fake. The result-URL scan stays
+    defensive across video/videos/output shapes.
     """
 
     name = "higgsfield"
@@ -219,6 +221,7 @@ class HiggsfieldVideoProvider(VideoProvider):
         return {
             "Authorization": f"Key {self.api_key}:{self.api_secret}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
         }
 
     async def submit(self, prompt, image_url, *, model, ratio, duration) -> SubmitResult:
@@ -226,18 +229,18 @@ class HiggsfieldVideoProvider(VideoProvider):
             return SubmitResult("", "failed", error=(
                 "Higgsfield image-to-video is image-conditioned — supply a "
                 "still URL (text-only video is not wired)."))
-        # Documented DoP image-to-video contract (official SDK):
-        # POST /v1/image2video/dop  {model, prompt, input_images:[{type,image_url}]}
-        variant = (self.model or "dop-turbo").strip()
+        # Official docs.higgsfield.ai contract: the model id is the path, and
+        # the body is {image_url, prompt, duration}.
+        model_path = (self.model or _HIGGSFIELD_DEFAULT_MODEL).strip().strip("/")
         body = {
-            "model": variant,
+            "image_url": image_url,
             "prompt": (prompt or "")[:1000],
-            "input_images": [{"type": "image_url", "image_url": image_url}],
+            "duration": int(duration or 5),
         }
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
                 r = await client.post(
-                    f"{_HIGGSFIELD_BASE}/{_HIGGSFIELD_I2V_APP}",
+                    f"{_HIGGSFIELD_BASE}/{model_path}",
                     headers=self._headers(), json=body,
                 )
         except httpx.HTTPError as e:
@@ -247,7 +250,7 @@ class HiggsfieldVideoProvider(VideoProvider):
         if r.status_code == 429:
             return SubmitResult("", "failed", error="Higgsfield rate/credit limit (HTTP 429)")
         if r.status_code == 404:
-            return SubmitResult("", "failed", error=f"Higgsfield endpoint not found (HTTP 404): /{_HIGGSFIELD_I2V_APP} model='{variant}' — verify the DoP image-to-video path/model on your account")
+            return SubmitResult("", "failed", error=f"Higgsfield model not found (HTTP 404): '{model_path}' — set higgsfield_model to a valid image-to-video model id from cloud.higgsfield.ai/explore")
         if r.status_code >= 400:
             return SubmitResult("", "failed", error=f"Higgsfield HTTP {r.status_code}: {r.text[:200]}")
         data = r.json()
