@@ -64,6 +64,13 @@ class StubAssemblyProvider(AssemblyProvider):
             url=f"stub://assembled/engaging-{len(inserts)}-inserts",
         )
 
+    async def render_split_horizontal(self, **kwargs) -> RenderResult:
+        inserts = kwargs.get("inserts") or []
+        return RenderResult(
+            status="succeeded", render_id="stub-split",
+            url=f"stub://assembled/split-{len(inserts)}-inserts",
+        )
+
     async def poll(self, render_id: str) -> RenderResult:
         return RenderResult(status="succeeded", url=f"stub://assembled/{render_id}")
 
@@ -420,6 +427,150 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             })
 
         return {"output_format": "mp4", "width": w, "height": h, "elements": elements}
+
+    def build_split_horizontal_source(
+        self, *,
+        avatar_video_url: str,
+        audio_duration: float,
+        inserts: list[dict],          # [{start, end, image_url, video_url, …}]
+        captions: list[dict],
+        aspect: str,
+        music_mood: str = "none",
+        caption_style: str | None = None,
+    ) -> dict:
+        """split_horizontal layout — reproduces the "speaker on top, text /
+        visuals on the bottom" reel composition the Design Inspector captures
+        as layout.type == 'split_horizontal'.
+
+        Unlike engaging_avatar (a FULL-FRAME speaker with transient B-roll
+        cutaways), here the two regions are CO-PRESENT for the whole video —
+        the speaker never leaves the top, the bottom is always the content
+        panel. This is the structural difference the audit flagged as the
+        reason replication "gave the same style": engaging_avatar can't emit
+        two stacked regions, this can.
+
+          track 1 — speaker video, constrained to the TOP half (carries audio)
+          track 2 — B-roll image/video, constrained to the BOTTOM half, pinned
+                    to its insert window; muted (speaker is the master audio)
+          track 3 — bold captions pinned LOW (role='broll' → ~75% y) so the
+                    text lives in the bottom panel, never over the face
+          track 4 — optional background music ducked under the voice
+
+        Bottom-region gaps fall back to the composition's dark canvas, reading
+        as a clean text panel — a faithful v1 of the reference's bottom strip.
+        A persistent decorated panel (brand color / UI chrome) is a later pass.
+        """
+        w, h = _dims(aspect)
+        elements: list[dict] = []
+        total = max(audio_duration, inserts[-1]["end"] if inserts else 0.0)
+
+        # Region geometry. Top element pinned by its TOP edge to y=0%; bottom
+        # element pinned by its BOTTOM edge to y=100%. Each is exactly half the
+        # canvas height, full width — the two halves tile the frame with no gap.
+        TOP = {"x": "50%", "y": "0%", "width": "100%", "height": "50%",
+               "x_anchor": "50%", "y_anchor": "0%"}
+        BOTTOM = {"x": "50%", "y": "100%", "width": "100%", "height": "50%",
+                  "x_anchor": "50%", "y_anchor": "100%"}
+
+        # track 1 — speaker pinned to the TOP half, carries the master audio
+        if avatar_video_url and avatar_video_url.startswith("http"):
+            elements.append({
+                "type": "video", "source": avatar_video_url,
+                "track": 1, "time": 0, "duration": total, "fit": "cover",
+                **TOP,
+            })
+
+        # track 2 — B-roll in the BOTTOM half, pinned to each insert window.
+        # Prefer the Runway-animated clip; fall back to the still. Video is
+        # muted because the speaker on track 1 is the master audio.
+        for ins in inserts:
+            video_url = (ins.get("video_url") or "").strip()
+            image_url = (ins.get("image_url") or "").strip()
+            url = video_url if video_url.startswith("http") else image_url
+            if not url or not url.startswith("http"):
+                continue
+            start = float(ins.get("start") or 0.0)
+            end = float(ins.get("end") or start)
+            dur = max(0.4, end - start)
+            common = {
+                "track": 2, "time": start, "duration": dur, "fit": "cover",
+                **BOTTOM,
+                "animations": [
+                    {"time": 0, "duration": 0.15, "type": "fade"},
+                    {"time": max(0, dur - 0.15), "duration": 0.15,
+                     "type": "fade", "reversed": True},
+                ],
+            }
+            if video_url.startswith("http"):
+                elements.append({"type": "video", "source": video_url,
+                                 "volume": 0, **common})
+            else:
+                elements.append({"type": "image", "source": image_url, **common})
+
+        # track 3 — bold captions, forced into the bottom panel (role='broll'
+        # keeps them at the preset's low y, i.e. inside the bottom region).
+        preset = get_preset(caption_style)
+        for c in captions:
+            text = (c.get("text") or "").strip()
+            if not text:
+                continue
+            start = float(c.get("start") or 0.0)
+            end = float(c.get("end") or start)
+            elements.append(caption_element(
+                text=text, start=start, end=end, preset=preset, track=3,
+                role="broll",
+            ))
+
+        # track 4 — optional music heavily ducked under the speaker voice
+        music_url = _music_url_for(music_mood)
+        if music_url and total > 0:
+            elements.append({
+                "type": "audio", "source": music_url,
+                "track": 4, "time": 0, "duration": total,
+                "volume": 12,
+            })
+
+        return {"output_format": "mp4", "width": w, "height": h, "elements": elements}
+
+    async def render_split_horizontal(
+        self, *,
+        avatar_video_url: str,
+        audio_duration: float,
+        inserts: list[dict], captions: list[dict],
+        aspect: str, music_mood: str = "none",
+        caption_style: str | None = None,
+    ) -> RenderResult:
+        """Submit a split_horizontal render. Same submit/poll contract as
+        render_engaging_avatar — only the source composition differs."""
+        if not (avatar_video_url or "").startswith("http"):
+            return RenderResult("failed", error="no avatar video URL")
+        source = self.build_split_horizontal_source(
+            avatar_video_url=avatar_video_url,
+            audio_duration=audio_duration,
+            inserts=inserts, captions=captions,
+            aspect=aspect, music_mood=music_mood,
+            caption_style=caption_style,
+        )
+        body = {"source": source}
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
+            r = await c.post(
+                "https://api.creatomate.com/v1/renders",
+                headers={"Authorization": f"Bearer {self.api_key}",
+                         "Content-Type": "application/json"},
+                json=body,
+            )
+        if r.status_code in (401, 403):
+            return RenderResult("failed", error=f"Creatomate auth failed ({r.status_code})")
+        if r.status_code >= 400:
+            return RenderResult("failed", error=f"Creatomate HTTP {r.status_code}: {r.text[:160]}")
+        data = r.json()
+        item = data[0] if isinstance(data, list) and data else data
+        rid = item.get("id")
+        url = item.get("url")
+        st = str(item.get("status", "")).lower()
+        if st == "succeeded" and url:
+            return RenderResult("succeeded", render_id=str(rid), url=url)
+        return RenderResult("processing", render_id=str(rid))
 
     async def render_engaging_avatar(
         self, *,

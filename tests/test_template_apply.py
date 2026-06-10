@@ -85,3 +85,33 @@ def test_apply_overrides_noop_when_empty():
     scenes = [{"audio_music": "calm", "branding_logo": True, "branding_position": "x"}]
     apply_overrides_to_scenes(scenes)  # no music, no logo
     assert scenes[0]["audio_music"] == "calm"  # untouched
+
+
+def test_split_layout_overrides_full_frame_mode():
+    # The inspector often stores a full-frame production_mode even for a split
+    # reference. The mapper must override to the split renderer, not flatten it.
+    m = map_template_to_render({
+        "production_mode": "engaging_avatar",
+        "layout": {"type": "split_horizontal", "persistent": True},
+    })
+    assert m["mode"] == "split_horizontal"
+    assert any("split" in a.lower() for a in m["approximations"])
+
+
+def test_full_frame_layout_keeps_avatar_mode():
+    m = map_template_to_render({
+        "production_mode": "engaging_avatar",
+        "layout": {"type": "full_frame"},
+    })
+    assert m["mode"] == "engaging_avatar"
+
+
+def test_unsupported_layout_flags_but_keeps_mode():
+    # A composition we can't render yet (e.g. pip) stays in the closest mode
+    # and is flagged as queued — never silently dropped.
+    m = map_template_to_render({
+        "production_mode": "engaging_avatar",
+        "layout": {"type": "pip"},
+    })
+    assert m["mode"] == "engaging_avatar"
+    assert any("pip" in a.lower() and "queued" in a.lower() for a in m["approximations"])

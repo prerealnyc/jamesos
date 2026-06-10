@@ -116,6 +116,7 @@ async def start_production(
     if mode not in (
         "mixed", "avatar_only", "timeline", "story_audio",
         "avatar_story_mix", "engaging_avatar", "long_form_reel", "hero_clone",
+        "split_horizontal", "split_screen",
     ):
         mode = "mixed"
     if mode == "timeline":
@@ -130,6 +131,8 @@ async def start_production(
         raise ValueError("avatar_story_mix mode requires a script (the voiceover text)")
     if mode == "engaging_avatar" and not script.strip():
         raise ValueError("engaging_avatar mode requires a script")
+    if mode in ("split_horizontal", "split_screen") and not script.strip():
+        raise ValueError("split_horizontal mode requires a script")
     async with acquire(tenant_id) as conn:
         row = await conn.fetchrow(
             """INSERT INTO video_productions
@@ -776,9 +779,19 @@ async def _run_avatar_story_mix(row, tenant_id: UUID | None) -> None:
         )
 
 
-async def _run_engaging_avatar(row, tenant_id: UUID | None) -> None:
+async def _run_engaging_avatar(
+    row, tenant_id: UUID | None, composition: str = "engaging_avatar",
+) -> None:
     """engaging_avatar mode — HeyGen avatar plays continuously with
     2-5 cinematic B-roll cutaways overlaid at LLM-picked moments.
+
+    `composition` selects the FINAL Creatomate layout from the SAME assets
+    (avatar render + Whisper word-stamps + LLM-picked B-roll inserts +
+    captions):
+      * 'engaging_avatar'  — full-frame speaker, B-roll as transient cutaways
+      * 'split_horizontal' — speaker pinned top, B-roll+text pinned bottom
+                             (the captured split-screen reel composition)
+    Everything upstream is identical; only the render method differs.
 
     State machine:
       queued → planning  (HeyGen render)
@@ -862,12 +875,16 @@ async def _run_engaging_avatar(row, tenant_id: UUID | None) -> None:
     # assembler still renders the avatar with captions only — degraded
     # but ships.
     asm = get_assembly_provider()
-    if not hasattr(asm, "render_engaging_avatar"):
+    render_method = (
+        "render_split_horizontal" if composition == "split_horizontal"
+        else "render_engaging_avatar"
+    )
+    if not hasattr(asm, render_method):
         return await _fail(
-            pid, "assembly provider does not support engaging_avatar mode",
+            pid, f"assembly provider does not support {composition} mode",
             tenant_id,
         )
-    res = await asm.render_engaging_avatar(
+    res = await getattr(asm, render_method)(
         avatar_video_url=assets.avatar_video_url,
         audio_duration=assets.audio_duration,
         inserts=inserts_to_dict(assets.inserts),
@@ -895,7 +912,7 @@ async def _run_engaging_avatar(row, tenant_id: UUID | None) -> None:
                 "caption": row["title"] or "",
                 "media_url": res.url,
                 "stub": res.url.startswith("stub://"),
-                "mode": "engaging_avatar",
+                "mode": composition,
                 "inserts": len(assets.inserts),
                 "hero_inserts": sum(1 for i in assets.inserts if i.uses_hero),
             }),
@@ -1135,6 +1152,12 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
             return await _run_hero_clone(row, tenant_id)
         if row["mode"] == "engaging_avatar":
             return await _run_engaging_avatar(row, tenant_id)
+        if row["mode"] in ("split_horizontal", "split_screen"):
+            # Same asset pipeline as engaging_avatar, different final layout:
+            # speaker pinned top, B-roll+text pinned bottom.
+            return await _run_engaging_avatar(
+                row, tenant_id, composition="split_horizontal"
+            )
         if row["mode"] == "avatar_story_mix":
             return await _run_avatar_story_mix(row, tenant_id)
         if row["mode"] == "story_audio":

@@ -207,12 +207,25 @@ async def build_template_from_media(
     if status != "done" or not template:
         return {"status": status, "template": None, "note": result.get("note", "")}
 
+    # Reconcile production_mode with the captured layout (honesty fix). The
+    # vision model fills production_mode as an INDEPENDENT free-form slot, so it
+    # routinely returns a full-frame mode ('engaging_avatar') even for a split
+    # reference — which would later flatten the split at render. Derive the mode
+    # from the layout so the stored row (column AND jsonb) never claims a
+    # full-frame mode for a stacked composition we can reproduce as a split.
+    _layout = template.get("layout") or {}
+    _ltype = str(_layout.get("type") or "").strip().lower()
+    prod_mode = str(template.get("production_mode", "")).strip()
+    if _ltype == "split_horizontal":
+        prod_mode = "split_horizontal"
+        template["production_mode"] = "split_horizontal"
+
     row = await _upsert_for_media(
         reference_media_id=media_id,
         name=(template.get("style_name") or "Untitled style").strip()[:120],
         summary=str(template.get("summary", ""))[:500],
         format_type=str(template.get("format_type", "")),
-        production_mode=str(template.get("production_mode", "")),
+        production_mode=prod_mode,
         duration=int(result.get("duration", 0) or 0),
         template=template,
         transcript=result.get("transcript", ""),

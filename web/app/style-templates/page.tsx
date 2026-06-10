@@ -94,13 +94,15 @@ export default function StyleTemplatesPage() {
         </span>
       </div>
 
-      {comps.some((c) => c.status === "queued") && (
+      {comps.some((c) => c.status === "queued" || c.status === "unverified") && (
         <Card>
           <div className="text-[15px] font-semibold">Composition build queue</div>
           <p className="text-[12px] text-muted-foreground mt-1 mb-2">
             Layouts the inspector found in your style library. <b className="text-accent">live</b> = we
-            render it today; <b className="text-primary">queued</b> = a composition to build — it
-            renders in the closest mode meanwhile and goes live here once built.
+            render it today (split-screen is live now); <b className="text-primary">queued</b> = a
+            composition to build — it renders in the closest mode meanwhile and goes live here once
+            built; <b className="text-muted-foreground">unverified</b> = captured before layout
+            analysis — re-inspect it to confirm its composition before replicating.
           </p>
           <div className="flex flex-col gap-1.5">
             {comps.map((c) => (
@@ -118,8 +120,16 @@ export default function StyleTemplatesPage() {
                     <div className="text-[11px] text-muted-foreground truncate">{c.description}</div>
                   )}
                 </div>
-                <Badge tone={c.supported ? "ok" : "primary"}>
-                  {c.supported ? "live" : "queued to build"}
+                <Badge
+                  tone={
+                    c.status === "live" ? "ok"
+                      : c.status === "unverified" ? "muted"
+                        : "primary"
+                  }
+                >
+                  {c.status === "live" ? "live"
+                    : c.status === "unverified" ? "re-inspect to verify"
+                      : "queued to build"}
                 </Badge>
               </div>
             ))}

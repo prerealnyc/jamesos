@@ -20,6 +20,7 @@ from .caption_styles import CAPTION_PRESETS
 _ALLOWED_MODES = {
     "mixed", "avatar_only", "timeline", "story_audio",
     "avatar_story_mix", "engaging_avatar", "long_form_reel",
+    "split_horizontal",
 }
 # Inspector caption enum → real preset key.
 _CAPTION_ALIAS = {"minimal": "subtle_minimal"}
@@ -113,6 +114,31 @@ def map_template_to_render(template: dict) -> dict:
     if mode not in _ALLOWED_MODES:
         mode = "engaging_avatar"  # the talking-head-with-overlays default
 
+    # Layout DRIVES the mode. The inspector's production_mode is a free-form
+    # guess that often says 'engaging_avatar' (full-frame) even for a split
+    # reference — the exact bug the audit found: the split was captured but
+    # flattened at render. So when the reference is a persistent split/stacked
+    # composition we can now reproduce, override the mode to the split renderer.
+    layout = template.get("layout") or {}
+    ltype = str(layout.get("type") or "").strip().lower()
+    from .compositions import is_supported
+    layout_note: str | None = None
+    if ltype == "split_horizontal":
+        mode = "split_horizontal"
+        layout_note = (
+            "split-screen layout reproduced — speaker pinned to the top half, "
+            "B-roll + bold captions in the bottom panel (bottom backdrop is a "
+            "clean dark panel in v1, not the reference's exact UI chrome)"
+        )
+    elif ltype and not is_supported(ltype):
+        # A composition we can't reproduce yet (pip / grid / split_vertical):
+        # render in the closest supported mode, flag it, queue it on the board.
+        layout_note = (
+            f"this style's '{ltype}' layout isn't a built composition yet — "
+            f"rendering in {mode} for now; the stacked/split layout is queued on "
+            "the dashboard to build and will go live for this template once ready"
+        )
+
     caption_style = _norm_caption((template.get("captions") or {}).get("preset_guess"))
     music_mood, music_note = _norm_music(
         ((template.get("audio") or {}).get("music") or {}).get("type")
@@ -122,21 +148,11 @@ def map_template_to_render(template: dict) -> dict:
     structure = _clamp_structure(template.get("segments")) if mode == "mixed" else None
 
     approximations: list[str] = []
-    # If the reference uses a composition the renderer can't reproduce yet
-    # (e.g. split-screen), flag it — it renders in the closest supported mode
-    # meanwhile and is queued on the dashboard for a faithful build.
-    layout = template.get("layout") or {}
-    ltype = str(layout.get("type") or "").strip().lower()
-    from .compositions import is_supported
-    if ltype and not is_supported(ltype):
-        approximations.append(
-            f"this style's '{ltype}' layout isn't a built composition yet — "
-            f"rendering in {mode} for now; the stacked/split layout is queued on "
-            "the dashboard to build and will go live for this template once ready"
-        )
+    if layout_note:
+        approximations.append(layout_note)
     if music_note:
         approximations.append(music_note)
-    if mode in ("engaging_avatar", "avatar_story_mix", "story_audio"):
+    if mode in ("engaging_avatar", "avatar_story_mix", "story_audio", "split_horizontal"):
         approximations.append(
             "cut-rhythm and exact caption sizing are approximated — the caption "
             "preset, position band, music mood and structure are matched, not pixel-cloned"
