@@ -85,6 +85,18 @@ _INSPECT_SYSTEM = (
     "chronological order, with approximate timestamps) plus its transcript. "
     "Reverse-engineer a REUSABLE PRODUCTION TEMPLATE another brand could follow "
     "to make a NEW video in the SAME STYLE — never copying the words.\n\n"
+    "YOUR PRIMARY JOB is to identify what is DISTINCTIVE or NEW about THIS "
+    "style — the specific, copyable techniques that DEFINE it and set it apart "
+    "from a generic talking head. Examples of distinctive techniques: a SPLIT / "
+    "STACKED layout (e.g. the speaker in the TOP half and a screen-recording, "
+    "demo, or text in the BOTTOM half, both on screen AT THE SAME TIME), "
+    "picture-in-picture, kinetic word-by-word captions, a hard/fast cut rhythm, "
+    "an on-screen UI/app demo, meme cutaways, etc. Do NOT flatten the video into "
+    "a plain 'talking head' or into ALTERNATING shots if elements actually share "
+    "the screen simultaneously — describe the real composition. Capture the "
+    "novelty even when it is unusual or outside the enums below; the structured "
+    "fields are for what we can reproduce, but distinctive_features + layout "
+    "must record what the style ACTUALLY is.\n\n"
     "Track WHERE elements sit and HOW they change over time: the speaker's "
     "position and framing, where captions/subtitles are placed, any on-screen "
     "text/titles, where a logo/watermark appears, the layout, the cut "
@@ -96,6 +108,17 @@ _INSPECT_SYSTEM = (
     '  "style_name": "<4-7 word punchy name for THIS style, e.g. '
     "'Fast-cut talking head, bold yellow subs'>\",\n"
     '  "summary": "<one sentence: what makes this style work>",\n'
+    '  "distinctive_features": ["<THE MOST IMPORTANT FIELD: the specific, '
+    'copyable techniques that define THIS style and make it different from a '
+    'plain talking head — e.g. \'speaker in the top half, screen-recording in '
+    'the bottom half\', \'word-by-word captions that pop on the beat\'. List '
+    'what a creator would have to copy to recreate the feel>"],\n'
+    '  "layout": {"type": "full_frame | split_horizontal | split_vertical | '
+    'pip | grid | other", "persistent": <bool: is this composition held for '
+    'most of the video, vs a one-off?>, "description": "<how the frame is '
+    'composed; if split/stacked, what is in each region and roughly where>", '
+    '"regions": [{"position": "top|bottom|left|right|inset|full", "contains": '
+    '"<speaker | screen-recording | text | b-roll | demo | ...>"}]},\n'
     '  "format_type": "talking_head | b_roll_montage | text_overlay | mixed | '
     'interview | skit | tutorial",\n'
     '  "aspect_ratio": "9:16 | 1:1 | 16:9",\n'
@@ -132,8 +155,10 @@ _INSPECT_SYSTEM = (
     '  "replication_recipe": ["<3-6 concrete, voice-agnostic steps to '
     'reproduce this style>"]\n'
     "}\n\n"
-    "Be specific and grounded in what you actually see. If frames are "
-    "uninformative for a field, be honest (set present=false or note "
+    "LEAD with distinctive_features and layout — surfacing what is NEW about "
+    "this style is the whole point of the analysis; everything else is "
+    "secondary. Be specific and grounded in what you actually see. If frames "
+    "are uninformative for a field, be honest (set present=false or note "
     "uncertainty) — never invent detail. Output ONLY the JSON object."
 )
 
@@ -148,14 +173,21 @@ async def _describe_template(
         f"Total duration: ~{duration}s.\n"
         f"Transcript:\n{transcript[:6000] or '(no speech detected)'}\n\n"
         f"{len(frames)} frames follow, in chronological order, at approx "
-        f"timestamps (seconds): {timestamps}."
+        f"timestamps (seconds): {timestamps}.\n"
+        "Look hard at the COMPOSITION of each frame: is it split/stacked "
+        "(e.g. speaker in one half, a screen-recording or text in another) or "
+        "picture-in-picture? If so, that shared-screen layout is the "
+        "distinctive feature — do not report it as alternating shots."
     )
     content: list[dict] = [{"type": "text", "text": head}]
     for f in frames:
         b64 = base64.b64encode(f.read_bytes()).decode()
+        # 'high' detail: layout/composition (splits, PIP) is the whole point
+        # of this analysis, so the extra image tokens are worth it. This is a
+        # one-shot, occasional, high-value pass — not a hot path.
         content.append({
             "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "low"},
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"},
         })
     try:
         res = await client.chat.completions.create(
@@ -164,7 +196,7 @@ async def _describe_template(
                 {"role": "system", "content": _INSPECT_SYSTEM},
                 {"role": "user", "content": content},
             ],
-            max_tokens=2400,
+            max_tokens=3000,
             temperature=0.2,
             response_format={"type": "json_object"},
         )
@@ -232,13 +264,25 @@ def template_to_fingerprint(template: dict) -> dict:
     structure = " → ".join(
         str(s.get("role", "")) for s in segs if s.get("role")
     ) or str(template.get("format_type", ""))
+    layout = template.get("layout") or {}
+    ltype = str(layout.get("type") or "")
+    visual = template.get("vibe", "") or template.get("color_palette", "")
+    if ltype and ltype != "full_frame":
+        visual = f"{ltype} layout — {layout.get('description', '')}".strip(" —") + (
+            f" · {visual}" if visual else ""
+        )
+    feats = template.get("distinctive_features") or []
     return {
         "hook": template.get("hook", ""),
         "structure": structure,
         "pacing": pac.get("notes", "") or pac.get("energy", ""),
         "captions": caps.get("look", "") or caps.get("position", ""),
-        "visual_style": template.get("vibe", "") or template.get("color_palette", ""),
-        "replication_tips": template.get("replication_recipe") or [],
+        "visual_style": visual,
+        # Lead replication tips with what's distinctive, then the recipe.
+        "replication_tips": (
+            [*feats, *(template.get("replication_recipe") or [])]
+            if isinstance(feats, list) else (template.get("replication_recipe") or [])
+        ),
     }
 
 
@@ -252,6 +296,15 @@ def template_to_notes(template: dict) -> str:
         lines.append(f"Style: {template['style_name']}")
     if template.get("summary"):
         lines.append(str(template["summary"]))
+    feats = template.get("distinctive_features") or []
+    if isinstance(feats, list) and feats:
+        lines.append("Distinctive: " + "; ".join(str(f) for f in feats))
+    elif feats:
+        lines.append(f"Distinctive: {feats}")
+    layout = template.get("layout") or {}
+    if layout.get("type") and layout.get("type") != "full_frame":
+        desc = str(layout.get("description") or "")
+        lines.append(f"Layout: {layout['type']}" + (f" — {desc}" if desc else ""))
     caps = template.get("captions") or {}
     if caps.get("present"):
         lines.append(

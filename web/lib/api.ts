@@ -336,9 +336,18 @@ export type TemplateSegment = {
   transition_out?: string;
 };
 
+export type TemplateLayout = {
+  type?: string;                 // full_frame | split_horizontal | split_vertical | pip | grid | other
+  persistent?: boolean;
+  description?: string;
+  regions?: { position?: string; contains?: string }[];
+};
+
 export type TemplateSpec = {
   style_name?: string;
   summary?: string;
+  distinctive_features?: string[];  // the point: what's NEW/copyable about this style
+  layout?: TemplateLayout;          // composition (splits, PIP) captured in open form
   format_type?: string;
   aspect_ratio?: string;
   hook?: string;

@@ -267,6 +267,33 @@ function TemplateCard({
             {t.production_mode && <Pill k="Best made with" v={t.production_mode} tone="primary" />}
           </div>
 
+          {/* What makes this style distinctive — the point of the inspector */}
+          {(Boolean(tpl.distinctive_features?.length) ||
+            Boolean(tpl.layout?.type && tpl.layout.type !== "full_frame")) && (
+            <div className="rounded-md border border-accent/30 bg-accent/5 p-2.5 text-[12px]">
+              {Boolean(tpl.layout?.type && tpl.layout!.type !== "full_frame") && (
+                <div className="mb-1.5 flex items-start gap-2">
+                  <Badge tone="accent">{tpl.layout!.type!.replace(/_/g, " ")}</Badge>
+                  {tpl.layout!.description && (
+                    <span className="text-muted-foreground">{tpl.layout!.description}</span>
+                  )}
+                </div>
+              )}
+              {tpl.distinctive_features && tpl.distinctive_features.length > 0 && (
+                <>
+                  <div className="uppercase tracking-[.4px] text-muted-foreground text-[10px] mb-1">
+                    What makes it distinctive
+                  </div>
+                  <ul className="list-disc pl-4 flex flex-col gap-0.5">
+                    {tpl.distinctive_features.map((f, i) => (
+                      <li key={i}>{f}</li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </div>
+          )}
+
           {/* Replicate this style — Phase 2 */}
           {t.status === "ready" && (
             <div>
