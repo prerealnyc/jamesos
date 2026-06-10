@@ -31,6 +31,7 @@ from .config import settings
 from .db import acquire
 
 _RUNWAY_BASE = "https://api.dev.runwayml.com/v1"
+_HIGGSFIELD_BASE = "https://platform.higgsfield.ai"
 _TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 
 
@@ -171,6 +172,117 @@ class RunwayVideoProvider(VideoProvider):
         )
 
 
+def _hf_extract_url(data: dict) -> str | None:
+    """The completed-result JSON key for the mp4 is unconfirmed in the public
+    SDK, so scan the likely shapes defensively rather than assume one."""
+    for key in ("video", "result", "output"):
+        v = data.get(key)
+        if isinstance(v, dict) and v.get("url"):
+            return v["url"]
+        if isinstance(v, str) and v.startswith("http"):
+            return v
+    for key in ("videos", "images", "results", "assets"):
+        v = data.get(key)
+        if isinstance(v, list) and v:
+            first = v[0]
+            if isinstance(first, dict) and first.get("url"):
+                return first["url"]
+            if isinstance(first, str) and first.startswith("http"):
+                return first
+    return None
+
+
+class HiggsfieldVideoProvider(VideoProvider):
+    """Higgsfield image-to-video (EXPERIMENTAL).
+
+    Transport/auth/poll are pinned to the official higgsfield-client SDK
+    contract (Authorization: Key {key}:{secret}; POST /{application}; GET
+    /requests/{id}/status). The image-to-video application path + arg names
+    are NOT confirmed in the public SDK, so the model id is config-driven
+    (settings.higgsfield_model) and the result-URL scan is defensive. Like
+    Runway, it's image-conditioned — no still URL → honest refusal, never a
+    fake. A 404 on submit names higgsfield_model as the fix.
+    """
+
+    name = "higgsfield"
+
+    def __init__(self, api_key: str, api_secret: str, model: str):
+        if not api_key or not api_secret:
+            raise ValueError("HF_API_KEY and HF_API_SECRET are both required for Higgsfield video")
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.model = model
+
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Key {self.api_key}:{self.api_secret}",
+            "Content-Type": "application/json",
+        }
+
+    async def submit(self, prompt, image_url, *, model, ratio, duration) -> SubmitResult:
+        if not image_url:
+            return SubmitResult("", "failed", error=(
+                "Higgsfield image-to-video is image-conditioned — supply a "
+                "still URL (text-only video is not wired)."))
+        app = (self.model or model or "").strip()
+        if not app:
+            return SubmitResult("", "failed", error=(
+                "higgsfield_model is unset — set it to the Higgsfield "
+                "image-to-video application id in Settings"))
+        body = {
+            "image": image_url,
+            "prompt": (prompt or "")[:1000],
+            "motion_intensity": 0.7,
+            "duration": settings.higgsfield_video_duration or duration,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                r = await client.post(
+                    f"{_HIGGSFIELD_BASE}/{app}", headers=self._headers(), json=body
+                )
+        except httpx.HTTPError as e:
+            return SubmitResult("", "failed", error=f"Higgsfield submit transport error: {e}")
+        if r.status_code in (401, 403):
+            return SubmitResult("", "failed", error=f"Higgsfield auth failed (HTTP {r.status_code}) — check HF_API_KEY/HF_API_SECRET")
+        if r.status_code == 429:
+            return SubmitResult("", "failed", error="Higgsfield rate/credit limit (HTTP 429)")
+        if r.status_code == 404:
+            return SubmitResult("", "failed", error=f"Higgsfield model path not found (HTTP 404): '{app}' — set higgsfield_model to the verified image-to-video application id")
+        if r.status_code >= 400:
+            return SubmitResult("", "failed", error=f"Higgsfield HTTP {r.status_code}: {r.text[:200]}")
+        data = r.json()
+        rid = data.get("request_id") or data.get("id")
+        if not rid:
+            return SubmitResult("", "failed", error=f"Higgsfield returned no request_id: {str(data)[:200]}")
+        return SubmitResult(provider_job_id=str(rid), status="processing", raw=data)
+
+    async def poll(self, provider_job_id) -> PollResult:
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                r = await client.get(
+                    f"{_HIGGSFIELD_BASE}/requests/{provider_job_id}/status",
+                    headers=self._headers(),
+                )
+        except httpx.HTTPError as e:
+            return PollResult("failed", error=f"Higgsfield poll transport error: {e}")
+        if r.status_code >= 400:
+            return PollResult("failed", error=f"Higgsfield poll HTTP {r.status_code}: {r.text[:200]}")
+        data = r.json()
+        st = str(data.get("status", "")).lower()
+        if st in ("queued", "in_progress", "processing"):
+            return PollResult("processing", raw=data)
+        if st == "completed":
+            url = _hf_extract_url(data)
+            if not url:
+                return PollResult("failed", error=f"Higgsfield completed but no asset url in result: {str(data)[:200]}", raw=data)
+            return PollResult("succeeded", result_url=str(url), raw=data)
+        if st == "nsfw":
+            return PollResult("failed", error="Higgsfield flagged the render NSFW", raw=data)
+        if st in ("failed", "canceled", "cancelled"):
+            return PollResult("failed", error=str(data.get("error") or f"Higgsfield status={st}"), raw=data)
+        return PollResult("failed", error=f"Higgsfield unknown status '{st}': {str(data)[:160]}", raw=data)
+
+
 def make_video_provider() -> VideoProvider:
     p = settings.video_provider.lower()
     if p == "stub":
@@ -179,6 +291,12 @@ def make_video_provider() -> VideoProvider:
         return RunwayVideoProvider(
             api_key=settings.runway_api_key,
             api_version=settings.runway_api_version,
+        )
+    if p == "higgsfield":
+        return HiggsfieldVideoProvider(
+            api_key=settings.higgsfield_api_key,
+            api_secret=settings.higgsfield_api_secret,
+            model=settings.higgsfield_model,
         )
     raise ValueError(f"Unknown video provider: {p}")
 

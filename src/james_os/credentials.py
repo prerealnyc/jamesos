@@ -85,6 +85,9 @@ MANAGED_FIELDS: list[ManagedField] = [
     ),
     ManagedField("descript_api_key", "Descript API key", "Video & media"),
     ManagedField("runway_api_key", "Runway API key", "Video & media"),
+    ManagedField("higgsfield_api_key", "Higgsfield API key (HF_API_KEY) — experimental", "Video & media"),
+    ManagedField("higgsfield_api_secret", "Higgsfield API secret (HF_API_SECRET)", "Video & media"),
+    ManagedField("higgsfield_model", "Higgsfield image-to-video model id (the {application} path)", "Video & media", secret=False),
     ManagedField("creatomate_api_key", "Creatomate API key (video assembly)", "Video & media"),
     ManagedField("shotstack_api_key", "Shotstack API key (video assembly)", "Video & media"),
     ManagedField(
@@ -180,6 +183,7 @@ _ENV_BASELINE: dict[str, str] = {
 _PROVIDER_BASELINE: dict[str, str] = {
     "llm_provider": str(getattr(settings, "llm_provider", "") or "").lower(),
     "embedding_provider": str(getattr(settings, "embedding_provider", "") or "").lower(),
+    "video_provider": str(getattr(settings, "video_provider", "") or "").lower(),
 }
 
 
@@ -235,11 +239,20 @@ def _auto_select_providers() -> None:
     settings.avatar_provider = (
         "heygen" if (settings.heygen_api_key or "").strip() else "stub"
     )
-    # B-roll generator: a Runway key flips it live (used as the second half
-    # of the OpenAI image → Runway video chain for broll scenes).
-    settings.video_provider = (
-        "runway" if (settings.runway_api_key or "").strip() else "stub"
-    )
+    # B-roll generator: Runway is the proven engine and wins when its key is
+    # present. Higgsfield (experimental) activates only when it's the ONLY
+    # video credential — so pasting a Runway key keeps Runway, and pasting
+    # only Higgsfield keys switches to it. Explicit VIDEO_PROVIDER in .env
+    # overrides both (lets an operator pin Higgsfield deliberately).
+    video_baseline = _PROVIDER_BASELINE.get("video_provider") or "stub"
+    if video_baseline != "stub":
+        settings.video_provider = video_baseline
+    elif (settings.runway_api_key or "").strip():
+        settings.video_provider = "runway"
+    elif (settings.higgsfield_api_key or "").strip() and (settings.higgsfield_api_secret or "").strip():
+        settings.video_provider = "higgsfield"
+    else:
+        settings.video_provider = "stub"
     # Video assembly: Creatomate preferred, then Shotstack, else stub.
     if (settings.creatomate_api_key or "").strip():
         settings.assembly_provider = "creatomate"

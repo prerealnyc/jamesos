@@ -80,11 +80,19 @@ class Settings(BaseSettings):
     # `runway` once the key is verified. Higgsfield/Descript/MiniMax are
     # intentionally NOT wired — no usable public REST API / no key — and
     # are not faked.
-    video_provider: str = "stub"  # runway | stub
+    video_provider: str = "stub"  # runway | higgsfield | stub
     runway_model: str = "gen4_turbo"          # gen4_turbo | gen3a_turbo
     runway_api_version: str = "2024-11-06"    # X-Runway-Version header
     runway_video_ratio: str = "1280:720"
     runway_video_duration: int = 5            # seconds (Runway: 5 or 10)
+    # Higgsfield image-to-video (EXPERIMENTAL). Auth/poll pinned to the
+    # official higgsfield-client SDK contract; the image-to-video application
+    # path + arg names are unconfirmed in the public SDK, so the model id is
+    # config-driven — a 404 from submit names this setting as the fix.
+    higgsfield_api_key: str = ""              # HF_API_KEY
+    higgsfield_api_secret: str = ""           # HF_API_SECRET (joined as key:secret)
+    higgsfield_model: str = ""                # the {application} path for image-to-video
+    higgsfield_video_duration: int = 5        # seconds
 
     # ─── Video productions (script → scene plan → clips → assembled mp4) ───
     # Each stage is provider-abstracted with a stub so the whole pipeline is
