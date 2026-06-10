@@ -176,6 +176,25 @@ export default function AutopilotPage() {
           <span className="text-[11px] text-muted-foreground self-center">(first platform is used per piece)</span>
         </div>
 
+        <Label>Video styles</Label>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => patch({ use_style_templates: !(cfg.use_style_templates !== false) })}
+            className={`px-3 py-1.5 rounded-md text-sm font-semibold transition-colors ${
+              cfg.use_style_templates !== false
+                ? "bg-primary text-primary-foreground"
+                : "bg-secondary text-muted-foreground"
+            }`}
+          >
+            {cfg.use_style_templates !== false ? "Vary styles: On" : "Vary styles: Off"}
+          </button>
+          <span className="text-[11px] text-muted-foreground">
+            Each reel uses a different style from your{" "}
+            <Link href="/style-templates" className="underline">Style Templates</Link> library
+            (cycles when you have fewer styles than videos). Falls back to the standard look when the library is empty.
+          </span>
+        </div>
+
         <Label>Topic hint (optional)</Label>
         <Input placeholder="e.g. Staten Island commercial real estate, mindset, deals"
           value={cfg.topic_hint} onChange={(e) => patch({ topic_hint: e.target.value })} />

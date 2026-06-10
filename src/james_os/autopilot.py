@@ -36,6 +36,10 @@ DEFAULT_CONFIG = {
     "hour": 9,             # local hour (server time) to run the daily batch
     "topic_hint": "",      # the space to research, e.g. "Staten Island commercial RE"
     "research_focus": "",  # optional override of the virality research angle
+    # When on, each video reel in a bulk batch is produced in a DIFFERENT
+    # style from the Style Template library (cycling). Empty library →
+    # silently falls back to the standard engaging_avatar look.
+    "use_style_templates": True,
     "last_run_date": "",   # YYYY-MM-DD of the last completed run
 }
 

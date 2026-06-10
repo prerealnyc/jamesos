@@ -498,6 +498,7 @@ export type AutopilotConfig = {
   format: string;
   hour: number;
   topic_hint: string;
+  use_style_templates?: boolean;   // video reels cycle distinct library styles
   last_run_date: string;
 };
 

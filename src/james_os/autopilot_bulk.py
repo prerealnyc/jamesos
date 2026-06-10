@@ -46,6 +46,7 @@ import json
 from uuid import UUID
 
 from .autopilot import _gather_intel, generate_ideas, get_config
+from .autopilot_templates import pick_distinct_templates
 from .config import settings
 from .content import generate_content
 from .db import acquire
@@ -189,11 +190,20 @@ async def _make_text_post(
 
 
 async def _make_video(
-    idea: dict, platform: str, tenant_id: UUID | None
+    idea: dict, platform: str, tenant_id: UUID | None,
+    template: dict | None = None,
 ) -> dict:
     """One video reel: write a short on-voice script, then kick a durable
-    engaging_avatar production (rendered fire-and-forget — it queues its
-    own pending action when it finishes)."""
+    production (rendered fire-and-forget — it queues its own pending action
+    when it finishes).
+
+    The CONTENT (script) is identical regardless of style: it comes from the
+    same generate_content call. When a style `template` is assigned, only the
+    STYLE changes — mode, caption preset, music mood, logo, structure, aspect
+    are mapped from the template and the production is tagged with template_id.
+    No template (empty library / flag off) → the unchanged engaging_avatar
+    path, so default behavior is byte-for-byte the same.
+    """
     from .video_pipeline import run_production, start_production
 
     draft = await generate_content(
@@ -210,14 +220,35 @@ async def _make_video(
     if not script:
         raise RuntimeError(draft.note or "no script produced for the reel")
 
-    prod = await start_production(
-        script=script,
-        platform=platform,
-        aspect=_VIDEO_ASPECT,
-        title=(idea.get("title") or "")[:120],
-        mode=_VIDEO_MODE,
-        tenant_id=tenant_id,
-    )
+    title = (idea.get("title") or "")[:120]
+    if template and template.get("template"):
+        from .template_apply import map_template_to_render
+        m = map_template_to_render(template.get("template") or {})
+        prod = await start_production(
+            script=script,
+            platform=platform,
+            aspect=m["aspect"] or _VIDEO_ASPECT,
+            title=title,
+            mode=m["mode"],
+            caption_style=m["caption_style"],
+            image_style=m["image_style"],
+            music_mood=m["music_mood"],
+            logo_position=m["logo_position"] if m["logo_on"] else "",
+            structure=m["structure"],
+            template_id=UUID(template["id"]),
+            tenant_id=tenant_id,
+        )
+        applied_mode = m["mode"]
+    else:
+        prod = await start_production(
+            script=script,
+            platform=platform,
+            aspect=_VIDEO_ASPECT,
+            title=title,
+            mode=_VIDEO_MODE,
+            tenant_id=tenant_id,
+        )
+        applied_mode = _VIDEO_MODE
 
     # Fire-and-forget: renders take minutes. The production row + the
     # pending action it lands are the durable record; we don't await it.
@@ -236,8 +267,10 @@ async def _make_video(
         "title": idea.get("title", ""),
         "platform": platform,
         "production_id": prod["id"],
-        "mode": _VIDEO_MODE,
+        "mode": applied_mode,
         "status": prod.get("status", "queued"),
+        "template_id": template["id"] if template else None,
+        "template_name": template.get("name") if template else None,
     }
 
 
@@ -318,9 +351,18 @@ async def generate_bulk(
             errors.append(f"text {i + 1}/{n_text}: {e}")
 
     # ── Video reels (fire-and-forget renders) ──
+    # Each reel in the batch gets a DISTINCT style from the template library
+    # (cycling when the batch has more videos than styles). Empty library or
+    # flag off → chosen is [] and every reel uses the standard look.
+    use_tpls = bool(cfg.get("use_style_templates", True))
+    chosen = await pick_distinct_templates(n_video, tenant_id) if use_tpls else []
+    video_results: list[dict] = []
     for j in range(n_video):
         try:
-            await _make_video(_idea_at(n_text + j), platform, tenant_id)
+            tpl = chosen[j] if j < len(chosen) else None
+            video_results.append(
+                await _make_video(_idea_at(n_text + j), platform, tenant_id, template=tpl)
+            )
             video_queued += 1
         except Exception as e:  # noqa: BLE001
             errors.append(f"video {j + 1}/{n_video}: {e}")
@@ -329,6 +371,16 @@ async def generate_bulk(
         "requested": requested,
         "text_queued": text_queued,
         "video_queued": video_queued,
+        # Per-video style provenance — which template each reel was produced in.
+        "videos": [
+            {
+                "production_id": v.get("production_id"),
+                "template_id": v.get("template_id"),
+                "template_name": v.get("template_name"),
+                "mode": v.get("mode"),
+            }
+            for v in video_results
+        ],
         "errors": errors,
     }
 
