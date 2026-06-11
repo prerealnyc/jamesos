@@ -250,9 +250,17 @@ class HiggsfieldVideoProvider(VideoProvider):
         except httpx.HTTPError as e:
             return SubmitResult("", "failed", error=f"Higgsfield submit transport error: {e}")
         if r.status_code in (401, 403):
-            return SubmitResult("", "failed", error=f"Higgsfield auth failed (HTTP {r.status_code}) — check HF_API_KEY/HF_API_SECRET")
+            # Surface Higgsfield's actual message — 403 can mean a bad/missing
+            # key/secret OR an account not provisioned for API access; the body
+            # disambiguates "invalid api key" vs "insufficient credits" vs "not
+            # subscribed" so we don't guess (or top up credits for nothing).
+            return SubmitResult("", "failed", error=(
+                f"Higgsfield auth/permission denied (HTTP {r.status_code}): "
+                f"{r.text[:240]} — check HF_API_KEY/HF_API_SECRET and that your "
+                "Higgsfield plan has API access + credits"
+            ))
         if r.status_code == 429:
-            return SubmitResult("", "failed", error="Higgsfield rate/credit limit (HTTP 429)")
+            return SubmitResult("", "failed", error=f"Higgsfield rate/credit limit (HTTP 429): {r.text[:200]}")
         if r.status_code == 404:
             return SubmitResult("", "failed", error=f"Higgsfield model not found (HTTP 404): '{model_path}' — set higgsfield_model to a valid image-to-video model id from cloud.higgsfield.ai/explore")
         if r.status_code >= 400:
