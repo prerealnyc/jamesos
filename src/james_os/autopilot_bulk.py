@@ -201,7 +201,7 @@ async def _make_text_post(
 async def _make_video(
     idea: dict, platform: str, tenant_id: UUID | None,
     template: dict | None = None, broll_engine: str = "",
-    caption_style: str = "",
+    caption_style: str = "", smart_captions: bool = False,
 ) -> dict:
     """One video reel: write a short on-voice script, then kick a durable
     production (rendered fire-and-forget — it queues its own pending action
@@ -242,9 +242,10 @@ async def _make_video(
             aspect=m["aspect"] or _VIDEO_ASPECT,
             title=title,
             mode=m["mode"],
-            # Rotation wins over the template's guessed preset — the whole
-            # point is comparing caption looks on real renders.
-            caption_style=caption_style or m["caption_style"],
+            # Caption precedence: an explicit rotation style wins (the point is
+            # comparing looks); smart mode forces a blank so the pipeline's LLM
+            # picker chooses per-script; otherwise the template's preset stands.
+            caption_style=caption_style or ("" if smart_captions else m["caption_style"]),
             image_style=m["image_style"],
             music_mood=m["music_mood"],
             logo_position=m["logo_position"] if m["logo_on"] else "",
@@ -374,7 +375,9 @@ async def generate_bulk(
     # flag off → chosen is [] and every reel uses the standard look.
     use_tpls = bool(cfg.get("use_style_templates", True))
     broll_engine = str(cfg.get("broll_engine", "") or "").strip().lower()
-    rotate_captions = bool(cfg.get("rotate_captions", True))
+    caption_mode = str(cfg.get("caption_mode", "rotate") or "rotate").strip().lower()
+    rotate_captions = caption_mode == "rotate"
+    smart_captions = caption_mode == "smart"
     rot_offset = int(cfg.get("caption_rotation_offset", 0) or 0)
     chosen = await pick_distinct_templates(n_video, tenant_id) if use_tpls else []
     video_results: list[dict] = []
@@ -389,7 +392,7 @@ async def generate_bulk(
                 await _make_video(
                     _idea_at(n_text + j), platform, tenant_id,
                     template=tpl, broll_engine=broll_engine,
-                    caption_style=cap_style,
+                    caption_style=cap_style, smart_captions=smart_captions,
                 )
             )
             video_queued += 1

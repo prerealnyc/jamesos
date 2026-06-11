@@ -195,23 +195,24 @@ export default function AutopilotPage() {
           </span>
         </div>
 
-        <Label>Caption rotation</Label>
+        <Label>Caption mode</Label>
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => patch({ rotate_captions: !(cfg.rotate_captions !== false) })}
-            className={`px-3 py-1.5 rounded-md text-sm font-semibold transition-colors ${
-              cfg.rotate_captions !== false
-                ? "bg-primary text-primary-foreground"
-                : "bg-secondary text-muted-foreground"
-            }`}
+          <Select
+            value={cfg.caption_mode || "rotate"}
+            onChange={(e) => patch({ caption_mode: e.target.value })}
           >
-            {cfg.rotate_captions !== false ? "Rotate captions: On" : "Rotate captions: Off"}
-          </button>
+            <option value="rotate">Rotate styles (compare)</option>
+            <option value="smart">AI best-fit per video</option>
+            <option value="template">Template default</option>
+          </Select>
           <span className="text-[11px] text-muted-foreground">
-            Each batch reel gets the next caption style (viral hook → magenta blocks →
+            <b>Rotate</b>: each reel gets the next style (viral hook → magenta blocks →
             editorial serif → mint scatter → TikTok yellow → highlight box → karaoke
-            green, continuing across batches) so you can compare looks on real renders
-            and finalise favourites. Off = the template/auto pick decides.
+            green, continuing across batches) — compare on real renders, finalise
+            favourites. <b>AI best-fit</b>: the editor LLM reads each script and picks
+            the style that matches it (how-to hook → viral hook, hot take → magenta
+            blocks, launch → editorial serif…). <b>Template default</b>: the replicated
+            style template&apos;s analysed preset decides.
           </span>
         </div>
 

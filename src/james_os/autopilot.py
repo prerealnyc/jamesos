@@ -44,11 +44,15 @@ DEFAULT_CONFIG = {
     # 'runway', or 'higgsfield' (image→video). Lets daily batches run on a
     # chosen engine without touching the global provider.
     "broll_engine": "",
-    # Rotate caption styles across batch reels (each video gets the next style
-    # in the showcase rotation) so the user can compare looks on real renders
-    # and finalise favourites. The offset persists so rotation continues
-    # across batches instead of restarting at the same style every day.
-    "rotate_captions": True,
+    # How batch reels choose their caption style:
+    #   "rotate" — each video gets the next style in the showcase rotation
+    #              (compare looks on real renders, finalise favourites);
+    #   "smart"  — the LLM picks the best-fitting style PER VIDEO from the
+    #              script (hook-driven → viral_hook, hot take →
+    #              magenta_blocks, launch → editorial_serif, …);
+    #   "template" — the replicated style template's analysed preset wins
+    #              (auto-pick only when the template has none).
+    "caption_mode": "rotate",
     "caption_rotation_offset": 0,
     "last_run_date": "",   # YYYY-MM-DD of the last completed run
 }

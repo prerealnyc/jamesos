@@ -451,12 +451,33 @@ _CAPTION_PICK_SYSTEM = """You are the editor for a short-form social
 video. Given the script and the target platform, pick the caption preset
 that best matches the energy and the audience. Choices and when to use:
 
+  * viral_hook      — the script OPENS with a strong claim, question, or
+                      promise ("how to…", "the truth about…", a warning).
+                      Renders that hook as a huge stacked title (key line
+                      yellow) then drops to small clean captions. Best
+                      default for hook-driven educational reels.
+  * magenta_blocks  — bold declarations, hot takes, contrarian statements
+                      ("X will not replace Y"). Street-interview /
+                      conference energy; statements land as solid color
+                      blocks. Great for opinion + market-call scripts.
+  * editorial_serif — premium announcement or launch ("the first…",
+                      "introducing…"), luxury-listing or magazine tone.
+                      Yellow italic serif title card; elegant, not loud.
+  * gradient_mint   — calm premium-ad voice, aspirational lifestyle copy,
+                      short sentences that breathe ("Sales reps don't
+                      need more tools"). Scattered mint phrases.
   * tiktok_yellow   — high-energy hook, fast-paced, listicle-style,
                       anything that punches in the first 2 seconds.
                       TikTok + Reels first-feed material.
+  * highlight_box   — busy or bright B-roll-heavy reels where legibility
+                      is at risk: text on a solid dark pill reads on ANY
+                      footage. Modern, premium, safe.
+  * karaoke_green   — same energy as tiktok_yellow but for outdoor /
+                      real-estate-exterior footage where yellow washes
+                      out against sunlight or brick.
   * bold_pop        — universal safe choice: Mr Beast / Hormozi look.
                       Use for any reel that doesn't clearly call for
-                      yellow or for minimal. Default when you're unsure.
+                      another style. Default when you're unsure.
   * clean_white     — thoughtful, narrative, story arc. The "decades
                       come off the calendar" type beat. Best for IG
                       Reels with an emotional turn or Substack-cross.
@@ -467,6 +488,10 @@ that best matches the energy and the audience. Choices and when to use:
                       signature; use sparingly, only when the script
                       mentions PreReal or the visual call is for a
                       brand-stamp look.
+
+Pick for THIS script's content and opening line, not by habit — e.g. a
+script opening with "How to…" wants viral_hook; a blunt market take wants
+magenta_blocks; a luxury listing tour wants editorial_serif.
 
 If the payload includes an `avoid` block, it lists caption choices /
 positions a human has already REJECTED on past renders. Treat it as a
