@@ -856,6 +856,7 @@ async def _run_engaging_avatar(
         platform=row["platform"],
         tenant_id=str(tenant_id) if tenant_id else None,
         broll_avoid=broll_avoid,
+        engine=(row["video_engine"] or ""),   # Runway / Higgsfield for B-roll
     )
     if assets.error:
         return await _fail(pid, assets.error, tenant_id)
@@ -1069,6 +1070,7 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
         platform=row["platform"],
         tenant_id=str(tenant_id) if tenant_id else None,
         broll_avoid=broll_avoid,
+        engine=(row["video_engine"] or ""),   # Runway / Higgsfield for B-roll
     )
     if assets.error:
         return await _fail(pid, assets.error, tenant_id)

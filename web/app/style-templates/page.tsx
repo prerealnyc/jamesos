@@ -415,6 +415,9 @@ function ReplicatePanel({ t }: { t: StyleTemplate }) {
   // probes real pixels/DAR now, not a guess). The user can still override to
   // recut to another shape; a hint shows when their pick differs from the source.
   const [aspect, setAspect] = useState(tpl.aspect_ratio || "9:16");
+  // B-roll animator for this render — works on every template. '' = system
+  // default; otherwise force Runway or Higgsfield (image→video).
+  const [brollEngine, setBrollEngine] = useState<"" | "runway" | "higgsfield">("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ReplicateResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -438,8 +441,8 @@ function ReplicatePanel({ t }: { t: StyleTemplate }) {
       const body = contentMode === "topic" ? { topic: text.trim() } : { script: text.trim() };
       const r =
         output === "broll"
-          ? await api.brollReel(t.id, { ...body, platform, seconds: 20, engine: "higgsfield" })
-          : await api.replicateTemplate(t.id, { ...body, platform, aspect });
+          ? await api.brollReel(t.id, { ...body, platform, seconds: 20, engine: brollEngine || "higgsfield" })
+          : await api.replicateTemplate(t.id, { ...body, platform, aspect, video_engine: brollEngine });
       setResult(r as ReplicateResult);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "failed");
@@ -521,6 +524,16 @@ function ReplicatePanel({ t }: { t: StyleTemplate }) {
           {["9:16", "1:1", "16:9"].map((a) => (
             <option key={a} value={a}>{a}{a === "9:16" ? " (vertical)" : ""}</option>
           ))}
+        </select>
+        <select
+          value={brollEngine}
+          onChange={(e) => setBrollEngine(e.target.value as "" | "runway" | "higgsfield")}
+          title="Which engine animates the B-roll cutaways"
+          className="bg-background border border-input rounded-md px-2 py-1"
+        >
+          <option value="">B-roll: default</option>
+          <option value="runway">B-roll: Runway</option>
+          <option value="higgsfield">B-roll: Higgsfield</option>
         </select>
         <Button onClick={go} disabled={busy}>
           {busy ? (

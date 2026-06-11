@@ -1020,7 +1020,7 @@ export const api = {
   // `topic` (script written in brand voice) OR a finished `script`.
   replicateTemplate: (
     id: string,
-    body: { script?: string; topic?: string; platform?: string; aspect?: string; title?: string },
+    body: { script?: string; topic?: string; platform?: string; aspect?: string; title?: string; video_engine?: string },
   ) =>
     jpost<{
       production: Production;

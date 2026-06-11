@@ -843,9 +843,14 @@ async def animate_inserts(
     tenant_id: str,
     *,
     concurrency: int = 2,
+    engine: str = "",
 ) -> None:
-    """Chain each insert's still through Runway image-to-video so the
-    cutaway has real motion instead of just Creatomate's Ken Burns.
+    """Chain each insert's still through image-to-video so the cutaway has
+    real motion instead of just Creatomate's Ken Burns.
+
+    `engine` picks the B-roll animator per render: '' = the global default
+    provider, 'runway' = Runway gen4_turbo, 'higgsfield' = Higgsfield DOP.
+    Every template can therefore choose Runway or Higgsfield for its B-roll.
 
     Mutates each insert in place — fills `video_url` on success, sets
     `video_error` on failure. Honest fallback: when Runway fails or is
@@ -855,7 +860,7 @@ async def animate_inserts(
     aggressively above that for the dev plan. Each call is ~30-60s
     end-to-end (submit + poll), so 5 inserts = ~2-3 min wall-clock.
     """
-    from .video import get_video_provider
+    from .video import get_video_provider, provider_for
 
     targets = [
         i for i in inserts
@@ -864,12 +869,26 @@ async def animate_inserts(
     if not targets:
         return
 
-    provider = get_video_provider()
+    # Per-render engine override (Runway / Higgsfield), falling back to the
+    # global provider when blank. Honest fail if the chosen engine's keys are
+    # missing — the still is kept rather than silently swapped to the other.
+    try:
+        provider = provider_for(engine) if engine else get_video_provider()
+    except ValueError as e:  # keys for the requested engine missing
+        for i in targets:
+            i.video_error = str(e)
+        return
     if provider.name == "stub":
         for i in targets:
-            i.video_error = "Runway not configured (VIDEO_PROVIDER=stub)"
+            i.video_error = "video B-roll engine not configured (stub)"
         return
 
+    # Each provider carries its own model id; Higgsfield ignores ratio (the
+    # seed image fixes the aspect), Runway needs it.
+    model = (
+        settings.higgsfield_model if provider.name == "higgsfield"
+        else settings.runway_model
+    )
     ratio = _RUNWAY_INSERT_RATIO.get(aspect, _RUNWAY_INSERT_RATIO["9:16"])
     sem = asyncio.Semaphore(concurrency)
 
@@ -884,12 +903,12 @@ async def animate_inserts(
             sub = await provider.submit(
                 insert.image_prompt[:900] or insert.text[:200],
                 insert.image_url,
-                model=settings.runway_model,
+                model=model,
                 ratio=ratio,
                 duration=_RUNWAY_INSERT_DURATION,
             )
             if sub.status == "failed":
-                insert.video_error = sub.error or "Runway submit failed"
+                insert.video_error = sub.error or f"{provider.name} submit failed"
                 return
             poll_url = None
             for _ in range(_RUNWAY_MAX_POLLS):
@@ -899,10 +918,10 @@ async def animate_inserts(
                     poll_url = p.result_url
                     break
                 if p.status == "failed":
-                    insert.video_error = p.error or "Runway render failed"
+                    insert.video_error = p.error or f"{provider.name} render failed"
                     return
             if not poll_url:
-                insert.video_error = "Runway poll timed out"
+                insert.video_error = f"{provider.name} poll timed out"
                 return
 
             # Download from Runway's CDN (jwt-signed, expires fast) and
@@ -1459,6 +1478,7 @@ async def build_engaging_avatar_assets(
     platform: str = "instagram",
     tenant_id: str | None = None,
     broll_avoid: str = "",
+    engine: str = "",                  # B-roll animator: ''|runway|higgsfield
 ) -> EngagingAvatarResult:
     """Engaging-avatar pipeline.
 
@@ -1546,7 +1566,7 @@ async def build_engaging_avatar_assets(
         # static image_url and the Creatomate source falls back to a
         # still element. Tracked per-insert via video_error so the UI
         # can show what was actually rendered as motion.
-        await animate_inserts(inserts, aspect, tid)
+        await animate_inserts(inserts, aspect, tid, engine=engine)
 
     captions = caption_lines(tr.words)
     return EngagingAvatarResult(

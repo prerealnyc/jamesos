@@ -134,6 +134,7 @@ class ReplicateRequest(BaseModel):
     aspect: str = ""        # blank → match the reference's measured aspect
                             # (ditto). An explicit value overrides for a recut.
     title: str = ""
+    video_engine: str = ""  # B-roll animator: ''=default | runway | higgsfield
 
 
 @router.post("/templates/{template_id}/replicate", status_code=201)
@@ -198,6 +199,7 @@ async def template_replicate(
             None, m["mode"], m["caption_style"], m["image_style"],
             music_mood=m["music_mood"], logo_position=logo_position,
             structure=m["structure"], template_id=template_id,
+            video_engine=(req.video_engine or "").strip().lower(),
             tenant_id=tenant,
         )
     except ValueError as e:
