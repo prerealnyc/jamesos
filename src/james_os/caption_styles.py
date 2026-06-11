@@ -57,13 +57,13 @@ CAPTION_PRESETS: dict[str, dict] = {
         "label": "Clean white",
         "description": "Minimal white with drop shadow. Editorial / story-driven.",
         "font_family": "Inter",
-        "font_weight": "700",
-        "font_size_vh": 6.0,
+        "font_weight": "800",          # heavier for presence
+        "font_size_vh": 6.8,           # bigger so it carries on a phone
         "fill_color": "#FFFFFF",
-        "stroke_color": "transparent",
-        "stroke_width": "0",
-        "shadow_color": "rgba(0,0,0,0.8)",
-        "shadow_blur": "1.4 vh",
+        "stroke_color": "#0A0A0A",     # thin dark edge → legible on any bg
+        "stroke_width": "0.22 vh",
+        "shadow_color": "rgba(0,0,0,0.85)",
+        "shadow_blur": "1.2 vh",
         "shadow_x": "0",
         "shadow_y": "0.3 vh",
         "background_color": "transparent",
@@ -80,10 +80,10 @@ CAPTION_PRESETS: dict[str, dict] = {
         "description": "White with thick black stroke. Safe, universal Reels look.",
         "font_family": "Archivo Black",
         "font_weight": "900",
-        "font_size_vh": 7.5,
+        "font_size_vh": 8.0,           # bigger, MrBeast-scale
         "fill_color": "#FFFFFF",
         "stroke_color": "#000000",
-        "stroke_width": "0.5 vh",
+        "stroke_width": "0.6 vh",      # thicker outline, more punch
         "shadow_color": "rgba(0,0,0,0.5)",
         "shadow_blur": "0.6 vh",
         "shadow_x": "0",
@@ -124,10 +124,10 @@ CAPTION_PRESETS: dict[str, dict] = {
         "description": "White with PreReal red stroke. Signature brand look.",
         "font_family": "Archivo Black",
         "font_weight": "900",
-        "font_size_vh": 7.0,
+        "font_size_vh": 7.6,
         "fill_color": "#FFFFFF",
         "stroke_color": "#C8102E",
-        "stroke_width": "0.5 vh",
+        "stroke_width": "0.6 vh",
         "shadow_color": "rgba(0,0,0,0.45)",
         "shadow_blur": "0.6 vh",
         "shadow_x": "0",
@@ -137,6 +137,49 @@ CAPTION_PRESETS: dict[str, dict] = {
         "x_alignment": "50%",
         "transform": "uppercase",
         "letter_spacing": "1%",
+    },
+    "karaoke_green": {
+        # Sibling of tiktok_yellow — same condensed punch, electric green.
+        # Pops hard on real-estate / outdoor footage where yellow can wash out.
+        "label": "Karaoke green",
+        "description": "Electric-green Anton with black stroke. TikTok energy, alt to yellow.",
+        "font_family": "Anton",
+        "font_weight": "400",
+        "font_size_vh": 9.0,
+        "fill_color": "#00E676",
+        "stroke_color": "#06210F",
+        "stroke_width": "0.42 vh",
+        "shadow_color": "rgba(0,0,0,0.4)",
+        "shadow_blur": "0.6 vh",
+        "shadow_x": "0.2 vh",
+        "shadow_y": "0.2 vh",
+        "background_color": "transparent",
+        "y_position": "56%",
+        "x_alignment": "50%",
+        "transform": "uppercase",
+        "letter_spacing": "0.5%",
+    },
+    "highlight_box": {
+        # The trending "word box" look — white text on a solid dark pill.
+        # Premium, ultra-legible on ANY background (busy B-roll included)
+        # because the box guarantees contrast. No stroke needed.
+        "label": "Highlight box",
+        "description": "White text on a solid dark box. Clean, premium, reads on any footage.",
+        "font_family": "Archivo Black",
+        "font_weight": "900",
+        "font_size_vh": 6.6,
+        "fill_color": "#FFFFFF",
+        "stroke_color": "transparent",
+        "stroke_width": "0",
+        "shadow_color": "rgba(0,0,0,0.35)",
+        "shadow_blur": "0.8 vh",
+        "shadow_x": "0",
+        "shadow_y": "0.3 vh",
+        "background_color": "rgba(10,10,12,0.82)",  # solid pill behind the text
+        "y_position": "58%",
+        "x_alignment": "50%",
+        "transform": "uppercase",
+        "letter_spacing": "0.5%",
     },
 }
 

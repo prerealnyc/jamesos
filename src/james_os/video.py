@@ -239,7 +239,11 @@ class HiggsfieldVideoProvider(VideoProvider):
         body = {
             "image_url": image_url,
             "prompt": (prompt or "")[:1000],
+            # DOP has no duration param (fixed ~5s clip) — kept harmlessly for
+            # any future model that honors it. enhance_prompt lets Higgsfield
+            # refine the motion description for a cleaner, on-subject animation.
             "duration": int(duration or 5),
+            "enhance_prompt": True,
         }
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:

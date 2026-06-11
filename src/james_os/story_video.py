@@ -894,14 +894,21 @@ async def animate_inserts(
 
     async def _one(insert: Insert) -> None:
         async with sem:
-            # Build a motion-focused prompt. Runway leans on the still
-            # for composition and on the text prompt for what should
-            # MOVE. We pass the image_prompt unchanged because the
-            # cinematic prompts already mention atmospheric details
-            # (dust, smoke, paper in motion, light beams) that Runway
-            # picks up as motion cues.
+            # Motion-focused, TOPIC-grounded prompt. The still already fixes
+            # the content (it was generated from this insert's script-derived
+            # scene), so the prompt's job is to (a) keep the animation ON the
+            # same subject and (b) describe natural cinematic motion. Grounding
+            # the prompt in the scene text is what makes the B-roll match what
+            # is being said at this moment, on Higgsfield and Runway alike.
+            scene = (insert.image_prompt or insert.text or "").strip()
+            motion_prompt = (
+                "Cinematic, subtle, photoreal motion that matches the subject: "
+                "a slow camera push-in or gentle parallax, natural movement "
+                "within the scene, no morphing, no text. "
+                f"Scene: {scene}"
+            )[:950]
             sub = await provider.submit(
-                insert.image_prompt[:900] or insert.text[:200],
+                motion_prompt,
                 insert.image_url,
                 model=model,
                 ratio=ratio,
