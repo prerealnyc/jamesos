@@ -990,6 +990,15 @@ export const api = {
         description: string; supported: boolean; status: string;
       }[];
     }>("/compositions"),
+  // Higgsfield Soul IDs (trained characters / custom-references) on the
+  // connected account, + generate one consistent character image from a Soul ID.
+  listHiggsfieldSouls: () =>
+    jget<{
+      configured: boolean; count: number; error: string | null;
+      souls: { id: string; name: string; status: string; thumbnail: string; created_at: string }[];
+    }>("/higgsfield/souls"),
+  generateSoulImage: (body: { custom_reference_id: string; prompt: string; aspect?: string; strength?: number }) =>
+    jpost<{ status: string; image_url?: string; request_id: string; note?: string }>("/higgsfield/soul-image", body),
   getTemplate: (id: string) => jget<StyleTemplate>(`/templates/${id}`),
   inspectTemplate: (mediaId: string) =>
     jpost<{ started: boolean; media_id: string; note: string }>(

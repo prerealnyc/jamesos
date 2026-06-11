@@ -74,6 +74,8 @@ const nextConfig = {
       // Feedback → "What's changing next" board.
       { source: "/changes", destination: `${BACKEND}/changes` },
       { source: "/changes/:path*", destination: `${BACKEND}/changes/:path*` },
+      // Higgsfield Soul IDs (custom-references) — list + generate-from-soul.
+      { source: "/higgsfield/:path*", destination: `${BACKEND}/higgsfield/:path*` },
     ];
   },
 };

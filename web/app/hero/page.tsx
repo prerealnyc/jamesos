@@ -180,6 +180,8 @@ export default function HeroLibraryPage() {
 
       <HeroCloneCard ready={photos.length > 0} />
 
+      <HiggsfieldSoulsCard />
+
       {photos.length > 0 && (
         <Card>
           <CardTitle>Photos ({photos.length})</CardTitle>
@@ -315,6 +317,95 @@ function HeroCloneCard({ ready }: { ready: boolean }) {
         <div className="mt-2 rounded-md border border-border bg-background p-2.5 text-[12px] flex flex-col gap-1">
           <span className="text-accent font-semibold">✓ Producing “{result.title}” — rendering in the background.</span>
           <Link href="/library" className="text-primary hover:underline">Watch it in Output Library →</Link>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+
+// ── Higgsfield Soul IDs ───────────────────────────────────────────────
+// Lists the trained characters (custom-references) on the connected
+// Higgsfield account, and lets you generate one consistent character image
+// from a Soul ID — the building block for a Soul-driven hero (e.g. James).
+function HiggsfieldSoulsCard() {
+  const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [configured, setConfigured] = useState(true);
+  const [souls, setSouls] = useState<
+    { id: string; name: string; status: string; thumbnail: string; created_at: string }[]
+  >([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+
+  async function load() {
+    setLoading(true);
+    setErr(null);
+    try {
+      const r = await api.listHiggsfieldSouls();
+      setConfigured(r.configured);
+      setSouls(r.souls || []);
+      setErr(r.error || null);
+      setLoaded(true);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "failed to reach Higgsfield");
+      setLoaded(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardTitle>Higgsfield Soul IDs (trained characters)</CardTitle>
+      <p className="text-[12px] text-muted-foreground mt-1 mb-2">
+        Soul IDs are characters you trained on Higgsfield — a reusable, consistent
+        person across every generation. This reads them straight from your connected
+        account. Copy an ID to drive a Soul-based hero render.
+      </p>
+      <Button onClick={load} disabled={loading}>
+        {loading ? <span className="flex items-center gap-2"><Spinner /> checking your account…</span>
+          : (loaded ? "↻ Refresh Soul IDs" : "Find my Soul IDs")}
+      </Button>
+
+      {loaded && !configured && (
+        <p className="text-[12px] mt-2 text-destructive">
+          ✗ Higgsfield API key + secret aren’t set. Add them in Settings → API connections.
+        </p>
+      )}
+      {loaded && configured && err && (
+        <p className="text-[12px] mt-2 text-destructive break-words">✗ {err}</p>
+      )}
+      {loaded && configured && !err && souls.length === 0 && (
+        <p className="text-[12px] mt-2 text-muted-foreground">
+          No Soul IDs found on this account yet. Train one in the Higgsfield app
+          (cloud.higgsfield.ai) and it’ll show up here.
+        </p>
+      )}
+
+      {souls.length > 0 && (
+        <div className="flex flex-col gap-1.5 mt-3">
+          {souls.map((s) => (
+            <div
+              key={s.id}
+              className="flex items-center gap-3 border border-border rounded-md px-3 py-2 bg-background"
+            >
+              {s.thumbnail
+                ? <img src={s.thumbnail} alt={s.name} className="w-10 h-10 rounded object-cover" />
+                : <div className="w-10 h-10 rounded bg-secondary" />}
+              <div className="min-w-0 flex-1">
+                <div className="text-[13px] font-medium truncate">{s.name || "(unnamed)"}</div>
+                <div className="text-[11px] text-muted-foreground font-mono truncate">{s.id}</div>
+                {s.status && <div className="text-[10px] uppercase tracking-wide opacity-60">{s.status}</div>}
+              </div>
+              <button
+                onClick={() => { navigator.clipboard?.writeText(s.id); setCopied(s.id); }}
+                className="text-[11px] text-primary hover:underline shrink-0"
+              >
+                {copied === s.id ? "copied ✓" : "copy ID"}
+              </button>
+            </div>
+          ))}
         </div>
       )}
     </Card>

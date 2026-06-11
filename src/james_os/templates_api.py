@@ -45,6 +45,54 @@ async def compositions_queue() -> dict:
     return {"compositions": await composition_queue(_tenant())}
 
 
+@router.get("/higgsfield/souls")
+async def higgsfield_souls_list() -> dict:
+    """List the Higgsfield Soul IDs (custom-references / trained characters) on
+    the connected account. Uses the in-vault Higgsfield key on the backend —
+    surfaces an honest error if the key is missing or the API rejects it."""
+    from .higgsfield_souls import configured, list_souls
+    if not configured():
+        return {"configured": False, "souls": [], "count": 0,
+                "error": "Higgsfield API key + secret aren't set. Add them in Settings."}
+    return await list_souls()
+
+
+class SoulImageRequest(BaseModel):
+    custom_reference_id: str          # the Soul ID
+    prompt: str
+    aspect: str = "9:16"
+    strength: float = 0.8
+
+
+@router.post("/higgsfield/soul-image")
+async def higgsfield_soul_image(req: SoulImageRequest) -> dict:
+    """Generate a single consistent CHARACTER image from a Soul ID (submit +
+    poll inline). Returns the image URL on success — the building block for a
+    Soul-ID-driven hero like James."""
+    import asyncio
+
+    from .higgsfield_souls import configured, generate_character_image, poll_request
+    if not configured():
+        raise HTTPException(status_code=400, detail="Higgsfield key/secret not set")
+    sub = await generate_character_image(
+        custom_reference_id=req.custom_reference_id.strip(),
+        prompt=req.prompt, aspect_ratio=req.aspect, strength=req.strength,
+    )
+    if sub.get("error") or not sub.get("request_id"):
+        raise HTTPException(status_code=502, detail=sub.get("error") or "submit failed")
+    rid = sub["request_id"]
+    for _ in range(60):
+        res = await poll_request(rid)
+        st = res.get("status")
+        if st in ("completed", "succeeded") and res.get("image_url"):
+            return {"status": "succeeded", "image_url": res["image_url"], "request_id": rid}
+        if st in ("failed", "nsfw", "cancelled"):
+            raise HTTPException(status_code=502, detail=f"generation {st}: {res.get('error') or ''}")
+        await asyncio.sleep(3)
+    return {"status": "processing", "request_id": rid,
+            "note": "still rendering — check Higgsfield dashboard or retry status"}
+
+
 @router.get("/templates/{template_id}")
 async def template_detail(template_id: UUID) -> dict:
     row = await T.get_template(template_id, _tenant())
