@@ -812,7 +812,13 @@ async def _run_engaging_avatar(
     # placement that respects the insert overlays)
     async with acquire(tenant_id) as conn:
         await _set(conn, pid, status="planning")
-    avatar_url, err = await _render_avatar(script, row["aspect"], captions=False)
+    # split_horizontal pins the speaker into a SQUARE-ish top panel. A 9:16
+    # portrait avatar cover-cropped into that panel loses the top of the head
+    # (the face-cut the user flagged) — only the middle vertical band survives.
+    # A 16:9 landscape avatar keeps the FULL face height and only trims the empty
+    # sides, so render the split speaker landscape.
+    avatar_aspect = "16:9" if composition == "split_horizontal" else row["aspect"]
+    avatar_url, err = await _render_avatar(script, avatar_aspect, captions=False)
     if not avatar_url:
         return await _fail(pid, err or "HeyGen render failed", tenant_id)
 

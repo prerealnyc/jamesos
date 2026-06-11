@@ -472,7 +472,10 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         BOTTOM = {"x": "50%", "y": "100%", "width": "100%", "height": "50%",
                   "x_anchor": "50%", "y_anchor": "100%"}
 
-        # track 1 — speaker pinned to the TOP half, carries the master audio
+        # track 1 — speaker pinned to the TOP half, carries the master audio.
+        # 'cover' fills the panel edge-to-edge; the caller renders the split
+        # speaker at 16:9 so cover keeps the FULL face height and only trims the
+        # empty sides (a 9:16 source here would crop the forehead/eyes).
         if avatar_video_url and avatar_video_url.startswith("http"):
             elements.append({
                 "type": "video", "source": avatar_video_url,
