@@ -517,8 +517,9 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             else:
                 elements.append({"type": "image", "source": image_url, **common})
 
-        # track 3 — bold captions, forced into the bottom panel (role='broll'
-        # keeps them at the preset's low y, i.e. inside the bottom region).
+        # track 3 — bold captions in the MIDDLE band, on the seam between the
+        # top speaker and the bottom B-roll. Spec: top 50% speaker, bottom 50%
+        # B-roll, captions across the centre (not buried in the bottom panel).
         preset = get_preset(caption_style)
         for c in captions:
             text = (c.get("text") or "").strip()
@@ -526,10 +527,13 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 continue
             start = float(c.get("start") or 0.0)
             end = float(c.get("end") or start)
-            elements.append(caption_element(
+            elem = caption_element(
                 text=text, start=start, end=end, preset=preset, track=3,
                 role="broll",
-            ))
+            )
+            elem["y"] = "50%"          # centre on the horizontal seam
+            elem["y_anchor"] = "50%"
+            elements.append(elem)
 
         # track 4 — optional music heavily ducked under the speaker voice
         music_url = _music_url_for(music_mood)
