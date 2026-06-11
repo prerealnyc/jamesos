@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from .caption_styles import caption_element, get_preset, viral_hook_elements
+from .caption_styles import caption_element, get_preset, styled_caption_elements
 from .config import settings
 
 _TIMEOUT = httpx.Timeout(45.0, connect=10.0)
@@ -204,11 +204,12 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         # is faceless, so every beat is broll; the role lookup below
         # still runs so the two source builders stay symmetric.
         preset = get_preset(caption_style)
-        if (caption_style or "").strip() == "viral_hook":
-            # Two-phase hook style: a huge stacked 3-line title for the first
-            # ~3s (key line yellow), then small clean white captions. Emitted
-            # whole here; blank the list so the standard loop below no-ops.
-            elements.extend(viral_hook_elements(captions, track=3))
+        _styled = styled_caption_elements(caption_style, captions, track=3)
+        if _styled is not None:
+            # Designer styles (viral_hook, magenta_blocks, editorial_serif,
+            # gradient_mint) emit their complete multi-element track here;
+            # blank the list so the standard loop below no-ops.
+            elements.extend(_styled)
             captions = []
         for c in captions:
             text = (c.get("text") or "").strip()
@@ -309,11 +310,12 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         # avoids the speaker's face on avatar beats. See the SAFE_ZONES
         # table in caption_styles.py for the actual offsets.
         preset = get_preset(caption_style)
-        if (caption_style or "").strip() == "viral_hook":
-            # Two-phase hook style: a huge stacked 3-line title for the first
-            # ~3s (key line yellow), then small clean white captions. Emitted
-            # whole here; blank the list so the standard loop below no-ops.
-            elements.extend(viral_hook_elements(captions, track=3))
+        _styled = styled_caption_elements(caption_style, captions, track=3)
+        if _styled is not None:
+            # Designer styles (viral_hook, magenta_blocks, editorial_serif,
+            # gradient_mint) emit their complete multi-element track here;
+            # blank the list so the standard loop below no-ops.
+            elements.extend(_styled)
             captions = []
         for c in captions:
             text = (c.get("text") or "").strip()
@@ -417,11 +419,12 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         # track 3 — captions with safe-zone awareness. For each flash,
         # treat as broll-zone iff an insert overlays its midpoint.
         preset = get_preset(caption_style)
-        if (caption_style or "").strip() == "viral_hook":
-            # Two-phase hook style: a huge stacked 3-line title for the first
-            # ~3s (key line yellow), then small clean white captions. Emitted
-            # whole here; blank the list so the standard loop below no-ops.
-            elements.extend(viral_hook_elements(captions, track=3))
+        _styled = styled_caption_elements(caption_style, captions, track=3)
+        if _styled is not None:
+            # Designer styles (viral_hook, magenta_blocks, editorial_serif,
+            # gradient_mint) emit their complete multi-element track here;
+            # blank the list so the standard loop below no-ops.
+            elements.extend(_styled)
             captions = []
         for c in captions:
             text = (c.get("text") or "").strip()
@@ -539,11 +542,12 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         # top speaker and the bottom B-roll. Spec: top 50% speaker, bottom 50%
         # B-roll, captions across the centre (not buried in the bottom panel).
         preset = get_preset(caption_style)
-        if (caption_style or "").strip() == "viral_hook":
-            # Two-phase hook style: a huge stacked 3-line title for the first
-            # ~3s (key line yellow), then small clean white captions. Emitted
-            # whole here; blank the list so the standard loop below no-ops.
-            elements.extend(viral_hook_elements(captions, track=3))
+        _styled = styled_caption_elements(caption_style, captions, track=3)
+        if _styled is not None:
+            # Designer styles (viral_hook, magenta_blocks, editorial_serif,
+            # gradient_mint) emit their complete multi-element track here;
+            # blank the list so the standard loop below no-ops.
+            elements.extend(_styled)
             captions = []
         for c in captions:
             text = (c.get("text") or "").strip()
@@ -680,11 +684,12 @@ class CreatomateAssemblyProvider(AssemblyProvider):
 
         # track 3 — captions constrained to the RIGHT column (content side).
         preset = get_preset(caption_style)
-        if (caption_style or "").strip() == "viral_hook":
-            # Two-phase hook style: a huge stacked 3-line title for the first
-            # ~3s (key line yellow), then small clean white captions. Emitted
-            # whole here; blank the list so the standard loop below no-ops.
-            elements.extend(viral_hook_elements(captions, track=3))
+        _styled = styled_caption_elements(caption_style, captions, track=3)
+        if _styled is not None:
+            # Designer styles (viral_hook, magenta_blocks, editorial_serif,
+            # gradient_mint) emit their complete multi-element track here;
+            # blank the list so the standard loop below no-ops.
+            elements.extend(_styled)
             captions = []
         for c in captions:
             text = (c.get("text") or "").strip()

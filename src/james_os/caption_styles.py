@@ -159,6 +159,75 @@ CAPTION_PRESETS: dict[str, dict] = {
         "transform": "uppercase",
         "letter_spacing": "0.5%",
     },
+    "magenta_blocks": {
+        # The Serhant/SXSW street-interview look: statements as solid COLOR
+        # BLOCKS. Hook = white uppercase on a hot-magenta box; running
+        # captions = magenta uppercase on a black box, lower in frame.
+        # Fields below describe the BODY phase (and the fallback rendering).
+        "label": "Magenta blocks",
+        "description": "White-on-magenta box hook, then magenta-on-black box captions. Street-interview pop.",
+        "font_family": "Archivo Black",
+        "font_weight": "900",
+        "font_size_vh": 4.6,
+        "fill_color": "#FF00C8",
+        "stroke_color": "transparent",
+        "stroke_width": "0",
+        "shadow_color": "",
+        "shadow_blur": "0",
+        "shadow_x": "0",
+        "shadow_y": "0",
+        "background_color": "#000000",
+        "y_position": "70%",
+        "x_alignment": "50%",
+        "transform": "uppercase",
+        "letter_spacing": "0",
+    },
+    "editorial_serif": {
+        # Magazine title-card look: a small white uppercase sans kicker
+        # ("WORLD'S FIRST") over huge YELLOW ITALIC SERIF stacked lines
+        # ("Agentic / Video / Editor"). Body captions stay yellow italic
+        # serif at a readable size.
+        "label": "Editorial serif",
+        "description": "Small white kicker + huge yellow italic serif title, then yellow serif captions.",
+        "font_family": "Playfair Display",
+        "font_weight": "700",
+        "font_size_vh": 5.0,
+        "fill_color": "#F2E73B",
+        "stroke_color": "transparent",
+        "stroke_width": "0",
+        "shadow_color": "rgba(0,0,0,0.55)",
+        "shadow_blur": "1.0 vh",
+        "shadow_x": "0",
+        "shadow_y": "0.25 vh",
+        "background_color": "transparent",
+        "y_position": "60%",
+        "x_alignment": "50%",
+        "transform": "none",
+        "letter_spacing": "0",
+    },
+    "gradient_mint": {
+        # The 'Sales reps / don't need / more tools.' ad look: big lowercase
+        # rounded sans in a pale mint, phrases SCATTERED across the frame
+        # (top-left → right → centre, cycling per flash). Mint is a flat
+        # approximation of the reference's white→green gradient.
+        "label": "Mint scatter",
+        "description": "Big lowercase mint phrases scattered around the frame. Premium ad look.",
+        "font_family": "Poppins",
+        "font_weight": "800",
+        "font_size_vh": 6.6,
+        "fill_color": "#BFF2DC",
+        "stroke_color": "transparent",
+        "stroke_width": "0",
+        "shadow_color": "rgba(0,0,0,0.35)",
+        "shadow_blur": "0.8 vh",
+        "shadow_x": "0",
+        "shadow_y": "0.2 vh",
+        "background_color": "transparent",
+        "y_position": "60%",
+        "x_alignment": "50%",
+        "transform": "none",
+        "letter_spacing": "0",
+    },
     "viral_hook": {
         # Two-phase "viral hook" pattern (the 'HOW TO GET / THIS QUALITY /
         # IN YOUR VIDEOS' reel): the FIRST ~3s render as a huge stacked
@@ -453,9 +522,168 @@ def viral_hook_elements(captions: list[dict], track: int = 3) -> list[dict]:
     return out
 
 
+def _hook_body_split(captions: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Shared two-phase split: flashes starting inside HOOK_WINDOW_S form the
+    hook block; the rest are body. Falls back to first-flash-as-hook."""
+    caps = [c for c in (captions or []) if (c.get("text") or "").strip()]
+    if not caps:
+        return [], []
+    hook = [c for c in caps if float(c.get("start") or 0.0) < HOOK_WINDOW_S]
+    if not hook:
+        hook = caps[:1]
+    return hook, [c for c in caps if c not in hook]
+
+
+def magenta_blocks_elements(captions: list[dict], track: int = 3) -> list[dict]:
+    """Serhant/SXSW block style. Hook: white uppercase Archivo Black lines,
+    each on a solid hot-magenta box, stacked mid-frame. Body: magenta
+    uppercase on a solid black box, lower in frame."""
+    hook, body = _hook_body_split(captions)
+    if not hook and not body:
+        return []
+    out: list[dict] = []
+    hook_text = " ".join((c.get("text") or "").strip() for c in hook)
+    hook_start = min(float(c.get("start") or 0.0) for c in hook)
+    hook_end = max(max(float(c.get("end") or 0.0) for c in hook), hook_start + 2.0)
+    lines = _hook_lines(hook_text)
+    line_gap = 9.4
+    base = 50.0 - (len(lines) - 1) * line_gap / 2
+    for i, (line, _y) in enumerate(lines):
+        out.append({
+            "type": "text", "text": line.upper(), "track": track,
+            "time": round(hook_start, 2),
+            "duration": round(max(0.2, hook_end - hook_start), 2),
+            "width": "84%",
+            "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
+            "y": f"{base + i * line_gap:.1f}%", "y_anchor": "50%",
+            "font_family": "Archivo Black", "font_weight": "900",
+            "font_size": "6.6 vh",
+            "fill_color": "#FFFFFF",
+            "background_color": "#FF00C8",
+            "letter_spacing": "0",
+        })
+    preset = CAPTION_PRESETS["magenta_blocks"]
+    for c in body:
+        out.append(caption_element(
+            text=(c.get("text") or "").strip(),
+            start=float(c.get("start") or 0.0), end=float(c.get("end") or 0.0),
+            preset=preset, track=track, role="default",
+        ))
+    return out
+
+
+def editorial_serif_elements(captions: list[dict], track: int = 3) -> list[dict]:
+    """Magazine title-card style. Hook: a small white uppercase sans KICKER
+    (first 1-2 words) over huge yellow ITALIC serif stacked lines (Title
+    Case). Body: yellow italic serif at a readable size."""
+    hook, body = _hook_body_split(captions)
+    if not hook and not body:
+        return []
+    out: list[dict] = []
+    words = " ".join((c.get("text") or "").strip() for c in hook).split()
+    hook_start = min(float(c.get("start") or 0.0) for c in hook)
+    hook_end = max(max(float(c.get("end") or 0.0) for c in hook), hook_start + 2.0)
+    kicker_words = words[:2] if len(words) >= 5 else words[:1] if len(words) >= 3 else []
+    big_words = words[len(kicker_words):] or words
+    # Title Case reads wrong around leftover ALL-CAPS emphasis words — soften
+    # them first so the big serif lines come out as clean editorial casing.
+    lines = _hook_lines(_soften_emphasis(" ".join(big_words)))
+    line_gap = 10.6
+    base = 54.0 - (len(lines) - 1) * line_gap / 2
+    common = {
+        "type": "text", "track": track,
+        "time": round(hook_start, 2),
+        "duration": round(max(0.2, hook_end - hook_start), 2),
+        "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
+        "y_anchor": "50%", "width": "90%",
+        "shadow_color": "rgba(0,0,0,0.5)", "shadow_blur": "1.0 vh",
+        "shadow_x": "0 vh", "shadow_y": "0.25 vh",
+    }
+    if kicker_words:
+        out.append({
+            **common,
+            "text": " ".join(kicker_words).upper(),
+            "y": f"{base - 8.0:.1f}%",
+            "font_family": "Montserrat", "font_weight": "700",
+            "font_size": "3.4 vh", "fill_color": "#FFFFFF",
+            "letter_spacing": "4%",
+        })
+    for i, (line, _y) in enumerate(lines):
+        title = " ".join(w[:1].upper() + w[1:] for w in line.split())
+        out.append({
+            **common,
+            "text": title,
+            "y": f"{base + i * line_gap:.1f}%",
+            "font_family": "Playfair Display", "font_weight": "700",
+            "font_style": "italic",
+            "font_size": "9.6 vh", "fill_color": "#F2E73B",
+        })
+    preset = CAPTION_PRESETS["editorial_serif"]
+    for c in body:
+        elem = caption_element(
+            text=_soften_emphasis((c.get("text") or "").strip()),
+            start=float(c.get("start") or 0.0), end=float(c.get("end") or 0.0),
+            preset=preset, track=track, role="default",
+        )
+        elem["font_style"] = "italic"
+        out.append(elem)
+    return out
+
+
+# Scatter cycle for gradient_mint — (x%, y%) per flash, looping. Mirrors the
+# reference's art direction: top-left → right → centre.
+_MINT_SPOTS: tuple[tuple[float, float], ...] = ((30.0, 24.0), (68.0, 40.0), (50.0, 62.0))
+
+
+def gradient_mint_elements(captions: list[dict], track: int = 3) -> list[dict]:
+    """Premium-ad scatter style: every flash is big lowercase Poppins in pale
+    mint (flat stand-in for the reference's white→green gradient), cycling
+    through scattered frame positions. No hook/body phases."""
+    caps = [c for c in (captions or []) if (c.get("text") or "").strip()]
+    out: list[dict] = []
+    for i, c in enumerate(caps):
+        x, y = _MINT_SPOTS[i % len(_MINT_SPOTS)]
+        out.append({
+            "type": "text",
+            "text": _soften_emphasis((c.get("text") or "").strip()),
+            "track": track,
+            "time": round(float(c.get("start") or 0.0), 2),
+            "duration": round(max(0.2, float(c.get("end") or 0.0) - float(c.get("start") or 0.0)), 2),
+            "width": "58%",
+            "x": f"{x:.0f}%", "x_anchor": "50%", "x_alignment": "50%",
+            "y": f"{y:.0f}%", "y_anchor": "50%",
+            "font_family": "Poppins", "font_weight": "800",
+            "font_size": "6.6 vh", "fill_color": "#BFF2DC",
+            "shadow_color": "rgba(0,0,0,0.35)", "shadow_blur": "0.8 vh",
+            "shadow_x": "0 vh", "shadow_y": "0.2 vh",
+            "letter_spacing": "0",
+        })
+    return out
+
+
+# Designer styles that emit a complete multi-element caption track instead of
+# the builders' one-element-per-flash loop. The assembly builders call
+# styled_caption_elements() first and fall back to the standard loop on None.
+_STYLED_BUILDERS = {
+    "viral_hook": viral_hook_elements,
+    "magenta_blocks": magenta_blocks_elements,
+    "editorial_serif": editorial_serif_elements,
+    "gradient_mint": gradient_mint_elements,
+}
+
+
+def styled_caption_elements(
+    style: str | None, captions: list[dict], track: int = 3,
+) -> list[dict] | None:
+    fn = _STYLED_BUILDERS.get((style or "").strip())
+    return fn(captions, track) if fn else None
+
+
 __all__ = [
     "CAPTION_PRESETS", "DEFAULT_CAPTION_STYLE", "AUTO_PICK_KEY",
     "SAFE_ZONES",
     "get_preset", "list_presets", "caption_element", "caption_y_for_role",
-    "viral_hook_elements",
+    "viral_hook_elements", "magenta_blocks_elements",
+    "editorial_serif_elements", "gradient_mint_elements",
+    "styled_caption_elements",
 ]
