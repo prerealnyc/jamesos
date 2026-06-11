@@ -47,6 +47,7 @@ const CAPTION_LABEL: Record<string, { label: string; tone: "muted" | "accent" | 
   branded_red: { label: "Branded red", tone: "destructive" },
   karaoke_green: { label: "Karaoke green", tone: "ok" },
   highlight_box: { label: "Highlight box", tone: "accent" },
+  viral_hook: { label: "Viral hook", tone: "accent" },
 };
 
 function fmtDate(iso: string | null): string {

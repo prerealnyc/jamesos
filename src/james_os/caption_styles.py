@@ -159,6 +159,33 @@ CAPTION_PRESETS: dict[str, dict] = {
         "transform": "uppercase",
         "letter_spacing": "0.5%",
     },
+    "viral_hook": {
+        # Two-phase "viral hook" pattern (the 'HOW TO GET / THIS QUALITY /
+        # IN YOUR VIDEOS' reel): the FIRST ~3s render as a huge stacked
+        # 3-line title — white / YELLOW key line (bigger) / white, heavy
+        # Montserrat, centered mid-frame — then captions drop to this small,
+        # clean, mixed-case white body style for the rest of the video.
+        # The stacked hook itself is built by viral_hook_elements(); the
+        # fields below describe the BODY phase (and act as a sane fallback
+        # anywhere that renders this preset as a plain caption).
+        "label": "Viral hook",
+        "description": "Huge stacked hook title first (~3s, key line yellow), then small clean white captions.",
+        "font_family": "Montserrat",
+        "font_weight": "600",
+        "font_size_vh": 4.8,
+        "fill_color": "#FFFFFF",
+        "stroke_color": "transparent",
+        "stroke_width": "0",
+        "shadow_color": "rgba(0,0,0,0.75)",
+        "shadow_blur": "1.1 vh",
+        "shadow_x": "0",
+        "shadow_y": "0.25 vh",
+        "background_color": "transparent",
+        "y_position": "57%",            # mid-frame, chest height (reference)
+        "x_alignment": "50%",
+        "transform": "none",            # body is mixed-case ("that good")
+        "letter_spacing": "0",
+    },
     "highlight_box": {
         # The trending "word box" look — white text on a solid dark pill.
         # Premium, ultra-legible on ANY background (busy B-roll included)
@@ -321,8 +348,114 @@ def caption_element(
     return elem
 
 
+# ── viral_hook: two-phase captions ───────────────────────────────────
+#
+# Reference pattern: the first ~3 seconds show the hook as a HUGE stacked
+# 3-line title — white / YELLOW key line (slightly bigger) / white, heavy
+# Montserrat, uppercase, centered mid-frame, soft drop shadow, no stroke —
+# then captions drop to a small clean mixed-case white style for the rest.
+
+HOOK_WINDOW_S = 3.2      # flashes starting inside this window form the title
+HOOK_MAX_WORDS = 12      # keep the stacked block readable
+_HOOK_YELLOW = "#FFDD33"
+
+
+def _hook_lines(text: str) -> list[tuple[str, bool]]:
+    """Split the hook into 1-3 visually balanced lines; returns
+    [(line, is_yellow)]. 3 lines → middle yellow (the reference look);
+    2 lines → second yellow; 1 line → all yellow."""
+    words = [w for w in (text or "").split() if w][:HOOK_MAX_WORDS]
+    if not words:
+        return []
+    n = 3 if len(words) >= 6 else (2 if len(words) >= 4 else 1)
+    total = sum(len(w) for w in words) + len(words) - 1
+    target = total / n
+    lines: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+    for w in words:
+        add = len(w) + (1 if cur else 0)
+        if cur and cur_len + add > target * 1.15 and len(lines) < n - 1:
+            lines.append(" ".join(cur))
+            cur, cur_len = [w], len(w)
+        else:
+            cur.append(w)
+            cur_len += add
+    if cur:
+        lines.append(" ".join(cur))
+    yellow = {1: 0, 2: 1, 3: 1}.get(len(lines), 1)
+    return [(ln, i == yellow) for i, ln in enumerate(lines)]
+
+
+def _soften_emphasis(text: str) -> str:
+    """Body captions in this style are plain mixed-case ('that good') —
+    undo the ALL-CAPS emphasis word the flash builder injects. Short
+    acronyms (NYC) are left alone."""
+    return " ".join(
+        w.lower() if (w.isalpha() and w.isupper() and len(w) > 3) else w
+        for w in (text or "").split()
+    )
+
+
+def viral_hook_elements(captions: list[dict], track: int = 3) -> list[dict]:
+    """Build the full two-phase caption track for the 'viral_hook' style.
+
+    Phase 1 — every flash starting inside HOOK_WINDOW_S is merged into one
+    stacked title block (separate text elements per line so the key line can
+    be yellow and bigger). Phase 2 — the remaining flashes render small,
+    clean, mixed-case white via the preset's body fields."""
+    caps = [c for c in (captions or []) if (c.get("text") or "").strip()]
+    if not caps:
+        return []
+    hook = [c for c in caps if float(c.get("start") or 0.0) < HOOK_WINDOW_S]
+    if not hook:
+        hook = caps[:1]
+    body = [c for c in caps if c not in hook]
+
+    hook_text = " ".join((c.get("text") or "").strip() for c in hook)
+    hook_start = min(float(c.get("start") or 0.0) for c in hook)
+    hook_end = max(float(c.get("end") or 0.0) for c in hook)
+    hook_end = max(hook_end, hook_start + 2.0)   # never flash shorter than 2s
+
+    out: list[dict] = []
+    lines = _hook_lines(hook_text)
+    line_gap = 8.6                                # vh between line centres
+    base = 52.0 - (len(lines) - 1) * line_gap / 2  # block centred ~52%
+    for i, (line, is_yellow) in enumerate(lines):
+        out.append({
+            "type": "text",
+            "text": line.upper(),
+            "track": track,
+            "time": round(hook_start, 2),
+            "duration": round(max(0.2, hook_end - hook_start), 2),
+            "width": "92%",
+            "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
+            "y": f"{base + i * line_gap:.1f}%", "y_anchor": "50%",
+            "font_family": "Montserrat",
+            "font_weight": "800",
+            "font_size": f"{8.4 if is_yellow else 7.0} vh",
+            "fill_color": _HOOK_YELLOW if is_yellow else "#FFFFFF",
+            "shadow_color": "rgba(0,0,0,0.65)",
+            "shadow_blur": "1.3 vh",
+            "shadow_x": "0 vh",
+            "shadow_y": "0.35 vh",
+            "letter_spacing": "0.5%",
+        })
+
+    preset = CAPTION_PRESETS["viral_hook"]
+    for c in body:
+        out.append(caption_element(
+            text=_soften_emphasis((c.get("text") or "").strip()),
+            start=float(c.get("start") or 0.0),
+            end=float(c.get("end") or 0.0),
+            preset=preset, track=track, role="default",
+        ))
+    return out
+
+
 __all__ = [
     "CAPTION_PRESETS", "DEFAULT_CAPTION_STYLE", "AUTO_PICK_KEY",
     "SAFE_ZONES",
     "get_preset", "list_presets", "caption_element", "caption_y_for_role",
+    "viral_hook_elements",
 ]
