@@ -116,7 +116,7 @@ async def start_production(
     if mode not in (
         "mixed", "avatar_only", "timeline", "story_audio",
         "avatar_story_mix", "engaging_avatar", "long_form_reel", "hero_clone",
-        "split_horizontal", "split_screen",
+        "split_horizontal", "split_screen", "split_vertical",
     ):
         mode = "mixed"
     if mode == "timeline":
@@ -131,8 +131,8 @@ async def start_production(
         raise ValueError("avatar_story_mix mode requires a script (the voiceover text)")
     if mode == "engaging_avatar" and not script.strip():
         raise ValueError("engaging_avatar mode requires a script")
-    if mode in ("split_horizontal", "split_screen") and not script.strip():
-        raise ValueError("split_horizontal mode requires a script")
+    if mode in ("split_horizontal", "split_screen", "split_vertical") and not script.strip():
+        raise ValueError("split-screen modes require a script")
     async with acquire(tenant_id) as conn:
         row = await conn.fetchrow(
             """INSERT INTO video_productions
@@ -882,10 +882,10 @@ async def _run_engaging_avatar(
     # assembler still renders the avatar with captions only — degraded
     # but ships.
     asm = get_assembly_provider()
-    render_method = (
-        "render_split_horizontal" if composition == "split_horizontal"
-        else "render_engaging_avatar"
-    )
+    render_method = {
+        "split_horizontal": "render_split_horizontal",
+        "split_vertical": "render_split_vertical",
+    }.get(composition, "render_engaging_avatar")
     if not hasattr(asm, render_method):
         return await _fail(
             pid, f"assembly provider does not support {composition} mode",
@@ -1165,6 +1165,11 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
             # speaker pinned top, B-roll+text pinned bottom.
             return await _run_engaging_avatar(
                 row, tenant_id, composition="split_horizontal"
+            )
+        if row["mode"] == "split_vertical":
+            # Same asset pipeline, speaker pinned LEFT, B-roll+text pinned RIGHT.
+            return await _run_engaging_avatar(
+                row, tenant_id, composition="split_vertical"
             )
         if row["mode"] == "avatar_story_mix":
             return await _run_avatar_story_mix(row, tenant_id)

@@ -27,7 +27,9 @@ from .db import acquire
 # standard single-frame modes (avatar / mixed / story). As new compositions
 # are built (e.g. a real split-screen render), add their layout key here and
 # the dashboard flips them from "queued" → "live" with no other change.
-SUPPORTED_LAYOUTS: set[str] = {"", "full_frame", "none", "split_horizontal"}
+SUPPORTED_LAYOUTS: set[str] = {
+    "", "full_frame", "none", "split_horizontal", "split_vertical",
+}
 
 # Layout labels that mean "nothing special / single frame". A multi-region
 # composition mistakenly given one of these is the dangerous silent case.

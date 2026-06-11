@@ -71,6 +71,13 @@ class StubAssemblyProvider(AssemblyProvider):
             url=f"stub://assembled/split-{len(inserts)}-inserts",
         )
 
+    async def render_split_vertical(self, **kwargs) -> RenderResult:
+        inserts = kwargs.get("inserts") or []
+        return RenderResult(
+            status="succeeded", render_id="stub-split-v",
+            url=f"stub://assembled/splitv-{len(inserts)}-inserts",
+        )
+
     async def poll(self, render_id: str) -> RenderResult:
         return RenderResult(status="succeeded", url=f"stub://assembled/{render_id}")
 
@@ -548,6 +555,143 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         if not (avatar_video_url or "").startswith("http"):
             return RenderResult("failed", error="no avatar video URL")
         source = self.build_split_horizontal_source(
+            avatar_video_url=avatar_video_url,
+            audio_duration=audio_duration,
+            inserts=inserts, captions=captions,
+            aspect=aspect, music_mood=music_mood,
+            caption_style=caption_style,
+        )
+        body = {"source": source}
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
+            r = await c.post(
+                "https://api.creatomate.com/v1/renders",
+                headers={"Authorization": f"Bearer {self.api_key}",
+                         "Content-Type": "application/json"},
+                json=body,
+            )
+        if r.status_code in (401, 403):
+            return RenderResult("failed", error=f"Creatomate auth failed ({r.status_code})")
+        if r.status_code >= 400:
+            return RenderResult("failed", error=f"Creatomate HTTP {r.status_code}: {r.text[:160]}")
+        data = r.json()
+        item = data[0] if isinstance(data, list) and data else data
+        rid = item.get("id")
+        url = item.get("url")
+        st = str(item.get("status", "")).lower()
+        if st == "succeeded" and url:
+            return RenderResult("succeeded", render_id=str(rid), url=url)
+        return RenderResult("processing", render_id=str(rid))
+
+    def build_split_vertical_source(
+        self, *,
+        avatar_video_url: str,
+        audio_duration: float,
+        inserts: list[dict],
+        captions: list[dict],
+        aspect: str,
+        music_mood: str = "none",
+        caption_style: str | None = None,
+    ) -> dict:
+        """split_vertical layout — speaker on the LEFT half, B-roll + bold text
+        on the RIGHT half (divided by a VERTICAL line). Mirror of
+        build_split_horizontal_source but left|right instead of top|bottom.
+
+          track 1 — speaker video, constrained to the LEFT half (carries audio).
+                    A 9:16 source cover-cropped into the tall-narrow column keeps
+                    the full face height and trims the sides.
+          track 2 — B-roll image/video, constrained to the RIGHT half, pinned to
+                    its insert window; muted (speaker is the master audio).
+          track 3 — bold captions constrained to the RIGHT column (the content
+                    side), so they read as the panel text, clear of the speaker.
+          track 4 — optional background music ducked under the voice.
+        """
+        w, h = _dims(aspect)
+        elements: list[dict] = []
+        total = max(audio_duration, inserts[-1]["end"] if inserts else 0.0)
+
+        # Left element pinned by its LEFT edge to x=0%; right element by its
+        # RIGHT edge to x=100%. Each is half-width, full-height — they tile the
+        # frame with a vertical seam down the middle.
+        LEFT = {"x": "0%", "y": "50%", "width": "50%", "height": "100%",
+                "x_anchor": "0%", "y_anchor": "50%"}
+        RIGHT = {"x": "100%", "y": "50%", "width": "50%", "height": "100%",
+                 "x_anchor": "100%", "y_anchor": "50%"}
+
+        # track 1 — speaker pinned to the LEFT half, carries the master audio.
+        if avatar_video_url and avatar_video_url.startswith("http"):
+            elements.append({
+                "type": "video", "source": avatar_video_url,
+                "track": 1, "time": 0, "duration": total, "fit": "cover",
+                **LEFT,
+            })
+
+        # track 2 — B-roll in the RIGHT half, pinned to each insert window.
+        for ins in inserts:
+            video_url = (ins.get("video_url") or "").strip()
+            image_url = (ins.get("image_url") or "").strip()
+            url = video_url if video_url.startswith("http") else image_url
+            if not url or not url.startswith("http"):
+                continue
+            start = float(ins.get("start") or 0.0)
+            end = float(ins.get("end") or start)
+            dur = max(0.4, end - start)
+            common = {
+                "track": 2, "time": start, "duration": dur, "fit": "cover",
+                **RIGHT,
+                "animations": [
+                    {"time": 0, "duration": 0.15, "type": "fade"},
+                    {"time": max(0, dur - 0.15), "duration": 0.15,
+                     "type": "fade", "reversed": True},
+                ],
+            }
+            if video_url.startswith("http"):
+                elements.append({"type": "video", "source": video_url,
+                                 "volume": 0, **common})
+            else:
+                elements.append({"type": "image", "source": image_url, **common})
+
+        # track 3 — captions constrained to the RIGHT column (content side).
+        preset = get_preset(caption_style)
+        for c in captions:
+            text = (c.get("text") or "").strip()
+            if not text:
+                continue
+            start = float(c.get("start") or 0.0)
+            end = float(c.get("end") or start)
+            elem = caption_element(
+                text=text, start=start, end=end, preset=preset, track=3,
+                role="broll",
+            )
+            # Pull the caption into the right half: centre on the right column,
+            # narrow the box so it stays clear of the speaker on the left.
+            elem["x"] = "75%"
+            elem["width"] = "44%"
+            elements.append(elem)
+
+        # track 4 — optional music ducked under the speaker voice
+        music_url = _music_url_for(music_mood)
+        if music_url and total > 0:
+            elements.append({
+                "type": "audio", "source": music_url,
+                "track": 4, "time": 0, "duration": total,
+                "volume": 12,
+            })
+
+        return {"output_format": "mp4", "width": w, "height": h, "elements": elements}
+
+    async def render_split_vertical(
+        self, *,
+        avatar_video_url: str,
+        audio_duration: float,
+        inserts: list[dict], captions: list[dict],
+        aspect: str, music_mood: str = "none",
+        caption_style: str | None = None,
+    ) -> RenderResult:
+        """Submit a split_vertical render. Same submit/poll contract as
+        render_split_horizontal — only the source composition differs."""
+        if not (avatar_video_url or "").startswith("http"):
+            return RenderResult("failed", error="no avatar video URL")
+        source = self.build_split_vertical_source(
             avatar_video_url=avatar_video_url,
             audio_duration=audio_duration,
             inserts=inserts, captions=captions,

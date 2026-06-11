@@ -20,7 +20,7 @@ from .caption_styles import CAPTION_PRESETS
 _ALLOWED_MODES = {
     "mixed", "avatar_only", "timeline", "story_audio",
     "avatar_story_mix", "engaging_avatar", "long_form_reel",
-    "split_horizontal",
+    "split_horizontal", "split_vertical",
 }
 # Inspector caption enum → real preset key.
 _CAPTION_ALIAS = {"minimal": "subtle_minimal"}
@@ -130,6 +130,12 @@ def map_template_to_render(template: dict) -> dict:
             "B-roll + bold captions in the bottom panel (bottom backdrop is a "
             "clean dark panel in v1, not the reference's exact UI chrome)"
         )
+    elif ltype == "split_vertical":
+        mode = "split_vertical"
+        layout_note = (
+            "vertical split-screen reproduced — speaker pinned to the LEFT half, "
+            "B-roll + bold captions in the RIGHT panel"
+        )
     elif ltype and not is_supported(ltype):
         # A composition we can't reproduce yet (pip / grid / split_vertical):
         # render in the closest supported mode, flag it, queue it on the board.
@@ -164,7 +170,7 @@ def map_template_to_render(template: dict) -> dict:
         approximations.append(layout_note)
     if music_note:
         approximations.append(music_note)
-    if mode in ("engaging_avatar", "avatar_story_mix", "story_audio", "split_horizontal"):
+    if mode in ("engaging_avatar", "avatar_story_mix", "story_audio", "split_horizontal", "split_vertical"):
         approximations.append(
             "cut-rhythm and exact caption sizing are approximated — the caption "
             "preset, position band, music mood and structure are matched, not pixel-cloned"
