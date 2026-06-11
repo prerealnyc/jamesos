@@ -509,6 +509,7 @@ export type AutopilotConfig = {
   topic_hint: string;
   use_style_templates?: boolean;   // video reels cycle distinct library styles
   broll_engine?: string;           // '' | 'runway' | 'higgsfield' for B-roll
+  rotate_captions?: boolean;       // cycle caption styles across batch reels
   last_run_date: string;
 };
 

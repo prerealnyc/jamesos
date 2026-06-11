@@ -195,6 +195,26 @@ export default function AutopilotPage() {
           </span>
         </div>
 
+        <Label>Caption rotation</Label>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => patch({ rotate_captions: !(cfg.rotate_captions !== false) })}
+            className={`px-3 py-1.5 rounded-md text-sm font-semibold transition-colors ${
+              cfg.rotate_captions !== false
+                ? "bg-primary text-primary-foreground"
+                : "bg-secondary text-muted-foreground"
+            }`}
+          >
+            {cfg.rotate_captions !== false ? "Rotate captions: On" : "Rotate captions: Off"}
+          </button>
+          <span className="text-[11px] text-muted-foreground">
+            Each batch reel gets the next caption style (viral hook → magenta blocks →
+            editorial serif → mint scatter → TikTok yellow → highlight box → karaoke
+            green, continuing across batches) so you can compare looks on real renders
+            and finalise favourites. Off = the template/auto pick decides.
+          </span>
+        </div>
+
         <Label>B-roll engine</Label>
         <div className="flex items-center gap-3">
           <Select value={cfg.broll_engine || ""} onChange={(e) => patch({ broll_engine: e.target.value })}>

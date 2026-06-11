@@ -45,7 +45,7 @@ import asyncio
 import json
 from uuid import UUID
 
-from .autopilot import _gather_intel, generate_ideas, get_config
+from .autopilot import _gather_intel, generate_ideas, get_config, set_config
 from .autopilot_templates import pick_distinct_templates
 from .config import settings
 from .content import generate_content
@@ -57,6 +57,15 @@ from .models import ContentBrief
 # It runs to completion on stubs and activates real providers from their
 # keys — same honesty contract as the rest of the pipeline.
 _VIDEO_MODE = "engaging_avatar"
+
+# Caption-style rotation for batch reels — the finalise-candidates showcase.
+# When cfg['rotate_captions'] is on, video j in a batch gets
+# rotation[(offset + j) % len], and the offset persists across batches so
+# every style gets seen on real renders, not just the first daily_count.
+_CAPTION_ROTATION = (
+    "viral_hook", "magenta_blocks", "editorial_serif", "gradient_mint",
+    "tiktok_yellow", "highlight_box", "karaoke_green",
+)
 _VIDEO_ASPECT = "9:16"
 
 # Short, punchy steer for the video script writer. Reels want a spoken
@@ -192,6 +201,7 @@ async def _make_text_post(
 async def _make_video(
     idea: dict, platform: str, tenant_id: UUID | None,
     template: dict | None = None, broll_engine: str = "",
+    caption_style: str = "",
 ) -> dict:
     """One video reel: write a short on-voice script, then kick a durable
     production (rendered fire-and-forget — it queues its own pending action
@@ -232,7 +242,9 @@ async def _make_video(
             aspect=m["aspect"] or _VIDEO_ASPECT,
             title=title,
             mode=m["mode"],
-            caption_style=m["caption_style"],
+            # Rotation wins over the template's guessed preset — the whole
+            # point is comparing caption looks on real renders.
+            caption_style=caption_style or m["caption_style"],
             image_style=m["image_style"],
             music_mood=m["music_mood"],
             logo_position=m["logo_position"] if m["logo_on"] else "",
@@ -249,6 +261,7 @@ async def _make_video(
             aspect=_VIDEO_ASPECT,
             title=title,
             mode=_VIDEO_MODE,
+            caption_style=caption_style,
             video_engine=broll_engine,
             tenant_id=tenant_id,
         )
@@ -275,6 +288,7 @@ async def _make_video(
         "status": prod.get("status", "queued"),
         "template_id": template["id"] if template else None,
         "template_name": template.get("name") if template else None,
+        "caption_style": caption_style or "(auto)",
     }
 
 
@@ -360,20 +374,38 @@ async def generate_bulk(
     # flag off → chosen is [] and every reel uses the standard look.
     use_tpls = bool(cfg.get("use_style_templates", True))
     broll_engine = str(cfg.get("broll_engine", "") or "").strip().lower()
+    rotate_captions = bool(cfg.get("rotate_captions", True))
+    rot_offset = int(cfg.get("caption_rotation_offset", 0) or 0)
     chosen = await pick_distinct_templates(n_video, tenant_id) if use_tpls else []
     video_results: list[dict] = []
     for j in range(n_video):
         try:
             tpl = chosen[j] if j < len(chosen) else None
+            cap_style = (
+                _CAPTION_ROTATION[(rot_offset + j) % len(_CAPTION_ROTATION)]
+                if rotate_captions else ""
+            )
             video_results.append(
                 await _make_video(
                     _idea_at(n_text + j), platform, tenant_id,
                     template=tpl, broll_engine=broll_engine,
+                    caption_style=cap_style,
                 )
             )
             video_queued += 1
         except Exception as e:  # noqa: BLE001
             errors.append(f"video {j + 1}/{n_video}: {e}")
+
+    # Advance the rotation so the NEXT batch continues where this one stopped
+    # (otherwise every batch would re-show the same first daily_count styles).
+    if rotate_captions and n_video:
+        try:
+            await set_config(
+                {"caption_rotation_offset": (rot_offset + n_video) % len(_CAPTION_ROTATION)},
+                tenant_id,
+            )
+        except Exception:  # noqa: BLE001 — provenance only, never fail the batch
+            pass
 
     return {
         "requested": requested,
@@ -386,6 +418,7 @@ async def generate_bulk(
                 "template_id": v.get("template_id"),
                 "template_name": v.get("template_name"),
                 "mode": v.get("mode"),
+                "caption_style": v.get("caption_style"),
             }
             for v in video_results
         ],

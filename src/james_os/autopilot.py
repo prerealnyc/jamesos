@@ -44,6 +44,12 @@ DEFAULT_CONFIG = {
     # 'runway', or 'higgsfield' (image→video). Lets daily batches run on a
     # chosen engine without touching the global provider.
     "broll_engine": "",
+    # Rotate caption styles across batch reels (each video gets the next style
+    # in the showcase rotation) so the user can compare looks on real renders
+    # and finalise favourites. The offset persists so rotation continues
+    # across batches instead of restarting at the same style every day.
+    "rotate_captions": True,
+    "caption_rotation_offset": 0,
     "last_run_date": "",   # YYYY-MM-DD of the last completed run
 }
 
