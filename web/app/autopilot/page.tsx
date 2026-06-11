@@ -195,6 +195,20 @@ export default function AutopilotPage() {
           </span>
         </div>
 
+        <Label>B-roll engine</Label>
+        <div className="flex items-center gap-3">
+          <Select value={cfg.broll_engine || ""} onChange={(e) => patch({ broll_engine: e.target.value })}>
+            <option value="">System default</option>
+            <option value="runway">Runway</option>
+            <option value="higgsfield">Higgsfield</option>
+          </Select>
+          <span className="text-[11px] text-muted-foreground">
+            Which engine animates the B-roll cutaways in every batch reel. If the
+            chosen engine&apos;s key/credits are missing, that insert keeps its
+            still image (the render never fails).
+          </span>
+        </div>
+
         <Label>Topic hint (optional)</Label>
         <Input placeholder="e.g. Staten Island commercial real estate, mindset, deals"
           value={cfg.topic_hint} onChange={(e) => patch({ topic_hint: e.target.value })} />

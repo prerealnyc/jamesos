@@ -191,7 +191,7 @@ async def _make_text_post(
 
 async def _make_video(
     idea: dict, platform: str, tenant_id: UUID | None,
-    template: dict | None = None,
+    template: dict | None = None, broll_engine: str = "",
 ) -> dict:
     """One video reel: write a short on-voice script, then kick a durable
     production (rendered fire-and-forget — it queues its own pending action
@@ -238,6 +238,7 @@ async def _make_video(
             logo_position=m["logo_position"] if m["logo_on"] else "",
             structure=m["structure"],
             template_id=UUID(template["id"]),
+            video_engine=broll_engine,
             tenant_id=tenant_id,
         )
         applied_mode = m["mode"]
@@ -248,6 +249,7 @@ async def _make_video(
             aspect=_VIDEO_ASPECT,
             title=title,
             mode=_VIDEO_MODE,
+            video_engine=broll_engine,
             tenant_id=tenant_id,
         )
         applied_mode = _VIDEO_MODE
@@ -357,13 +359,17 @@ async def generate_bulk(
     # (cycling when the batch has more videos than styles). Empty library or
     # flag off → chosen is [] and every reel uses the standard look.
     use_tpls = bool(cfg.get("use_style_templates", True))
+    broll_engine = str(cfg.get("broll_engine", "") or "").strip().lower()
     chosen = await pick_distinct_templates(n_video, tenant_id) if use_tpls else []
     video_results: list[dict] = []
     for j in range(n_video):
         try:
             tpl = chosen[j] if j < len(chosen) else None
             video_results.append(
-                await _make_video(_idea_at(n_text + j), platform, tenant_id, template=tpl)
+                await _make_video(
+                    _idea_at(n_text + j), platform, tenant_id,
+                    template=tpl, broll_engine=broll_engine,
+                )
             )
             video_queued += 1
         except Exception as e:  # noqa: BLE001

@@ -508,6 +508,7 @@ export type AutopilotConfig = {
   hour: number;
   topic_hint: string;
   use_style_templates?: boolean;   // video reels cycle distinct library styles
+  broll_engine?: string;           // '' | 'runway' | 'higgsfield' for B-roll
   last_run_date: string;
 };
 
