@@ -418,11 +418,26 @@ async def signup_user(
                 "SELECT set_config('app.current_tenant', $1, true)",
                 str(tenant_id),
             )
-            await conn.execute(
-                "INSERT INTO tenants (id, name, slug, config) "
-                "VALUES ($1, $2, $3, '{}'::jsonb)",
-                tenant_id, display_name or email.split("@")[0], slug,
-            )
+            # The slug pre-check above only sees rows the current tenant
+            # context exposes under RLS, so the unique index is the real
+            # guard — retry with a random suffix on collision.
+            for attempt in range(3):
+                try:
+                    # Nested transaction = savepoint, so a collision
+                    # doesn't poison the outer transaction.
+                    async with conn.transaction():
+                        await conn.execute(
+                            "INSERT INTO tenants (id, name, slug, config) "
+                            "VALUES ($1, $2, $3, '{}'::jsonb)",
+                            tenant_id, display_name or email.split("@")[0], slug,
+                        )
+                    break
+                except asyncpg.UniqueViolationError:
+                    if attempt == 2:
+                        raise HTTPException(
+                            status_code=500, detail="could not allocate tenant slug"
+                        ) from None
+                    slug = f"{slug_base}-{secrets.token_hex(3)}"
             tenant_was_claimed = False
 
         ph = hash_password(password)
@@ -477,12 +492,11 @@ async def login_user(
         )
 
     async with acquire(_DEFAULT_TENANT_UUID()) as conn:
+        # SECURITY DEFINER lookup (035): a plain SELECT on users under the
+        # default-tenant context can't see other tenants' users once the
+        # connecting role is subject to RLS — their logins would 401.
         row = await conn.fetchrow(
-            """SELECT id, tenant_id, email, display_name, role,
-                      password_hash, disabled, failed_login_count,
-                      lockout_until
-                 FROM users WHERE lower(email) = $1""",
-            email,
+            "SELECT * FROM auth_lookup_user_by_email($1)", email,
         )
 
     # Constant-time-ish: hash a dummy when no row exists so the response
