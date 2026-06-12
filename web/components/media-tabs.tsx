@@ -24,6 +24,11 @@ const TABS = [
     sub: "Photos + videos of the brand's hero",
   },
   {
+    href: "/broll",
+    label: "B-roll Library",
+    sub: "Reusable cutaway clips — generated (Runway/Higgsfield) + uploads",
+  },
+  {
     href: "/style-templates",
     label: "Style Templates",
     sub: "Reference styles, reverse-engineered to replicate",

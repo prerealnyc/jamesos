@@ -926,6 +926,17 @@ async def animate_inserts(
             # the prompt in the scene text is what makes the B-roll match what
             # is being said at this moment, on Higgsfield and Runway alike.
             scene = (insert.image_prompt or insert.text or "").strip()
+
+            # B-roll library reuse — a strongly matching clip we already paid
+            # to render (or the user uploaded) is reused instead of spending
+            # Runway/Higgsfield credits again. Conservative matcher; a miss
+            # just falls through to generation.
+            from .broll_library import find_reusable_clip, mark_reused
+            reused = await find_reusable_clip(scene, aspect, tenant_id)
+            if reused:
+                insert.video_url = reused["url"]
+                await mark_reused(reused["media_id"], tenant_id)
+                return
             motion_prompt = (
                 "Cinematic, subtle, photoreal motion that matches the subject: "
                 "a slow camera push-in or gentle parallax, natural movement "
@@ -978,6 +989,15 @@ async def animate_inserts(
                 insert.video_url = url
             except Exception as e:  # noqa: BLE001
                 insert.video_error = f"storage save failed: {e}"
+                return
+
+            # File the freshly paid-for clip into the B-roll library so future
+            # renders (and the timeline editor) can reuse it for free.
+            from .broll_library import register_generated_clip
+            await register_generated_clip(
+                url=url, prompt=scene, engine=provider.name, aspect=aspect,
+                tenant_id=tenant_id,
+            )
 
     await asyncio.gather(*(_one(i) for i in targets))
 

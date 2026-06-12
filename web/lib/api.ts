@@ -305,7 +305,7 @@ export type MediaAsset = {
   role: MediaRole;
   title: string;
   platform: string;
-  source_type: "upload" | "url";
+  source_type: "upload" | "url" | "generated";
   uri: string;
   mime: string;
   duration: number;
