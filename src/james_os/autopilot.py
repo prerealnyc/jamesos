@@ -57,6 +57,12 @@ DEFAULT_CONFIG = {
     "last_run_date": "",   # YYYY-MM-DD of the last completed run
 }
 
+# Server-maintained bookkeeping. Only the batch runners write these; a
+# settings save from the UI must never overwrite them — echoing back a stale
+# last_run_date would make the scheduler re-fire today's batch, and a stale
+# caption_rotation_offset would restart the caption rotation.
+_BOOKKEEPING_KEYS = frozenset({"last_run_date", "caption_rotation_offset"})
+
 # Autopilot is virality-first: it researches what's working RIGHT NOW before
 # inventing anything. This is the default angle of that research.
 _VIRALITY_FOCUS = (
@@ -80,18 +86,34 @@ async def get_config(tenant_id: UUID | None = None) -> dict:
     return {**DEFAULT_CONFIG, **ap}
 
 
-async def set_config(updates: dict, tenant_id: UUID | None = None) -> dict:
-    cur = await get_config(tenant_id)
-    allowed = set(DEFAULT_CONFIG)
-    merged = {**cur, **{k: v for k, v in updates.items() if k in allowed}}
+async def set_config(
+    updates: dict, tenant_id: UUID | None = None, *, internal: bool = False
+) -> dict:
+    """Patch the autopilot config with only the submitted keys.
+
+    Public saves (internal=False, the API route) silently drop the
+    bookkeeping keys so a stale UI snapshot can never rewind last_run_date
+    (duplicate daily batch) or reset caption_rotation_offset. The batch
+    runners pass internal=True to advance them.
+
+    The merge happens in SQL (`||` onto the existing autopilot object), so
+    concurrent writers — scheduler, bulk batch, UI — only touch the keys
+    they submit instead of clobbering each other with full stale copies.
+    """
+    allowed = set(DEFAULT_CONFIG) if internal else set(DEFAULT_CONFIG) - _BOOKKEEPING_KEYS
+    patch = {k: v for k, v in updates.items() if k in allowed}
     async with acquire(tenant_id) as conn:
-        await conn.execute(
+        merged = await conn.fetchval(
             "UPDATE tenants SET config = jsonb_set("
-            "coalesce(config,'{}'::jsonb), '{autopilot}', $1::jsonb) "
-            "WHERE id = current_setting('app.current_tenant', true)::uuid",
-            json.dumps(merged),
+            "coalesce(config,'{}'::jsonb), '{autopilot}', "
+            "coalesce(config->'autopilot','{}'::jsonb) || $1::jsonb) "
+            "WHERE id = current_setting('app.current_tenant', true)::uuid "
+            "RETURNING config->'autopilot'",
+            json.dumps(patch),
         )
-    return merged
+    if isinstance(merged, str):
+        merged = json.loads(merged)
+    return {**DEFAULT_CONFIG, **(merged or {})}
 
 
 # ─────────────────────────────────────────────────────────── ideation ──
@@ -388,7 +410,9 @@ async def run_batch(
                 run_id, generated, queued, json.dumps(ideas), json.dumps(results),
             )
         # mark today's date so the scheduler won't double-run
-        await set_config({"last_run_date": date.today().isoformat()}, tenant_id)
+        await set_config(
+            {"last_run_date": date.today().isoformat()}, tenant_id, internal=True
+        )
         return await get_run(run_id, tenant_id)
 
     except Exception as e:  # noqa: BLE001

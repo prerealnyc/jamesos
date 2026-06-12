@@ -405,7 +405,7 @@ async def generate_bulk(
         try:
             await set_config(
                 {"caption_rotation_offset": (rot_offset + n_video) % len(_CAPTION_ROTATION)},
-                tenant_id,
+                tenant_id, internal=True,
             )
         except Exception:  # noqa: BLE001 — provenance only, never fail the batch
             pass

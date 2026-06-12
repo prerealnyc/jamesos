@@ -58,7 +58,12 @@ export default function AutopilotPage() {
 
   async function save() {
     setSaving(true); setMsg("");
-    try { setCfg(await api.setAutopilotConfig(cfg!)); setMsg("saved"); }
+    // Send only the user-editable fields. last_run_date (and the caption
+    // rotation offset) are server bookkeeping — echoing back the stale
+    // page-load copy would re-fire today's batch / reset the rotation.
+    // The backend drops them too; this keeps the payload honest.
+    const { last_run_date: _lrd, ...editable } = cfg!;
+    try { setCfg(await api.setAutopilotConfig(editable)); setMsg("saved"); }
     finally { setSaving(false); setTimeout(() => setMsg(""), 1500); }
   }
   async function runNow() {
