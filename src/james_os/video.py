@@ -134,12 +134,15 @@ class RunwayVideoProvider(VideoProvider):
             "ratio": ratio,
             "duration": duration,
         }
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            r = await client.post(
-                f"{_RUNWAY_BASE}/image_to_video",
-                headers=self._headers(),
-                json=body,
-            )
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                r = await client.post(
+                    f"{_RUNWAY_BASE}/image_to_video",
+                    headers=self._headers(),
+                    json=body,
+                )
+        except httpx.HTTPError as e:
+            return SubmitResult("", "failed", error=f"Runway submit transport error: {e}")
         if r.status_code in (401, 403):
             return SubmitResult("", "failed", error=f"Runway auth failed (HTTP {r.status_code})")
         if r.status_code == 429:
@@ -153,11 +156,14 @@ class RunwayVideoProvider(VideoProvider):
         return SubmitResult(provider_job_id=str(jid), status="processing", raw=data)
 
     async def poll(self, provider_job_id: str) -> PollResult:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            r = await client.get(
-                f"{_RUNWAY_BASE}/tasks/{provider_job_id}",
-                headers=self._headers(),
-            )
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                r = await client.get(
+                    f"{_RUNWAY_BASE}/tasks/{provider_job_id}",
+                    headers=self._headers(),
+                )
+        except httpx.HTTPError as e:
+            return PollResult("failed", error=f"Runway poll transport error: {e}")
         if r.status_code >= 400:
             return PollResult("failed", error=f"Runway poll HTTP {r.status_code}: {r.text[:200]}")
         data = r.json()
@@ -175,6 +181,16 @@ class RunwayVideoProvider(VideoProvider):
             error=str(data.get("failure") or data.get("failureCode") or "Runway task failed"),
             raw=data,
         )
+
+
+def is_transient_poll_error(err: str | None) -> bool:
+    """A poll failure worth retrying: network/transport blips, provider 5xx,
+    and rate limits. Definitive provider verdicts (task failed, NSFW, auth)
+    are NOT transient. Poll loops run dozens of HTTP calls over 3-5 minutes —
+    tolerating a few consecutive hiccups keeps one blip from crashing a
+    production the provider finishes (and bills for) anyway."""
+    e = (err or "").lower()
+    return "transport error" in e or "http 429" in e or "http 5" in e
 
 
 def _hf_extract_url(data: dict) -> str | None:
@@ -392,12 +408,17 @@ async def submit_video_job(
             }),
         )
 
-    res = await provider.submit(
-        prompt, image_url,
-        model=settings.runway_model,
-        ratio=settings.runway_video_ratio,
-        duration=settings.runway_video_duration,
-    )
+    # Guard the provider call — an unexpected exception here would otherwise
+    # leave the row permanently stuck in 'queued' (no reaper covers it).
+    try:
+        res = await provider.submit(
+            prompt, image_url,
+            model=settings.runway_model,
+            ratio=settings.runway_video_ratio,
+            duration=settings.runway_video_duration,
+        )
+    except Exception as e:  # noqa: BLE001 — mark the row failed, honestly
+        res = SubmitResult("", "failed", error=f"{provider.name} submit error: {e}")
     status = "failed" if res.status == "failed" else "submitted"
     async with acquire(tenant_id) as conn:
         await conn.execute(
@@ -427,6 +448,12 @@ async def refresh_video_job(job_id: UUID, tenant_id: UUID | None = None) -> dict
 
     provider = get_video_provider()
     poll = await provider.poll(job["provider_job_id"])
+
+    # A network blip / provider 5xx on one poll must not condemn the job —
+    # the provider is still rendering (and billing). Treat it as processing;
+    # the next refresh gets a fresh verdict.
+    if poll.status == "failed" and is_transient_poll_error(poll.error):
+        poll = PollResult("processing", raw=poll.raw)
 
     if poll.status == "processing":
         async with acquire(tenant_id) as conn:
@@ -486,5 +513,5 @@ async def list_video_jobs(tenant_id: UUID | None = None) -> list[dict]:
 
 __all__ = [
     "submit_video_job", "refresh_video_job", "list_video_jobs",
-    "get_video_provider",
+    "get_video_provider", "is_transient_poll_error",
 ]

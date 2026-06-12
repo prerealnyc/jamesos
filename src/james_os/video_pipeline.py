@@ -31,12 +31,20 @@ from .db import acquire
 from .heygen import get_avatar_provider
 from .imagegen import generate_seed_image
 from .media import storage as media_storage
-from .video import get_video_provider, provider_for
+from .video import get_video_provider, is_transient_poll_error, provider_for
 from .video_feedback import video_avoid_block
 from .video_plan import generate_scene_plan
 
 _POLL_EVERY = 5.0
-_MAX_POLLS = 60  # ~5 min ceiling per async stage
+_MAX_POLLS = 60  # ~5 min ceiling per async stage (Runway B-roll, Creatomate)
+# HeyGen routinely takes longer than 5 minutes on 1-2 minute avatar scripts;
+# giving up early throws away a render HeyGen finishes (and bills for) anyway.
+# The avatar/talking-photo stages get their own generous ceiling.
+_AVATAR_MAX_POLLS = 240  # ~20 min ceiling for HeyGen avatar renders
+# Poll loops make dozens of HTTP calls over minutes — tolerate a few
+# consecutive transient failures (network blip, provider 5xx/429) before
+# declaring the render dead.
+_MAX_TRANSIENT_POLL_ERRORS = 3
 
 # Runway gen4_turbo accepts a fixed set of ratios; map our aspect to one.
 _RUNWAY_RATIO = {"9:16": "720:1280", "16:9": "1280:720", "1:1": "960:960"}
@@ -193,25 +201,63 @@ def _public(uri: str) -> str:
     return uri
 
 
+async def _persist_provider_job(
+    pid: UUID | None, key: str, job_id: str, provider: str,
+    tenant_id: UUID | None,
+) -> None:
+    """Record the provider's job id on the production row (plan jsonb) at
+    submit time, so a timed-out or restart-interrupted render is recoverable
+    (the provider finishes — and bills — regardless). Best-effort:
+    bookkeeping must never break a render."""
+    if pid is None or not job_id:
+        return
+    try:
+        async with acquire(tenant_id) as conn:
+            await conn.execute(
+                """UPDATE video_productions
+                   SET plan = COALESCE(plan, '{}'::jsonb) || $2::jsonb,
+                       updated_at=now()
+                   WHERE id=$1""",
+                pid, json.dumps({key: job_id, f"{key}_provider": provider}),
+            )
+    except Exception:  # noqa: BLE001 — never fail a render over bookkeeping
+        pass
+
+
 async def _render_avatar(
-    text: str, aspect: str, *, captions: bool = False
+    text: str, aspect: str, *, captions: bool = False,
+    pid: UUID | None = None, tenant_id: UUID | None = None,
 ) -> tuple[str | None, str]:
     prov = get_avatar_provider()
     sub = await prov.submit(text, aspect, captions=captions)
     if sub.status == "failed":
         return None, sub.error or "avatar submit failed"
-    for _ in range(_MAX_POLLS):
+    await _persist_provider_job(pid, "avatar_job_id", sub.job_id, prov.name, tenant_id)
+    transient = 0
+    for _ in range(_AVATAR_MAX_POLLS):
         p = await prov.poll(sub.job_id)
         if p.status == "succeeded":
             return p.url, ""
         if p.status == "failed":
-            return None, p.error or "avatar render failed"
+            # Tolerate a few consecutive blips — one timeout over a multi-
+            # minute poll loop must not crash a render HeyGen finishes anyway.
+            if is_transient_poll_error(p.error) and transient < _MAX_TRANSIENT_POLL_ERRORS:
+                transient += 1
+            else:
+                return None, p.error or "avatar render failed"
+        else:
+            transient = 0
         await asyncio.sleep(_POLL_EVERY)
-    return None, "avatar render timed out"
+    return None, (
+        f"avatar render timed out after ~{int(_AVATAR_MAX_POLLS * _POLL_EVERY / 60)} min "
+        f"({prov.name} video id {sub.job_id} saved on the production — it may "
+        "still finish on the provider side)"
+    )
 
 
 async def _render_hero_talking_photo(
-    script: str, aspect: str, tenant_id: UUID | None, *, captions: bool = True
+    script: str, aspect: str, tenant_id: UUID | None, *,
+    captions: bool = True, pid: UUID | None = None,
 ) -> tuple[str | None, str]:
     """Clone the hero into a talking video: hero photos → a hyper-real
     front-facing still (image-to-image) → HeyGen Talking Photo (lip-synced in
@@ -242,14 +288,25 @@ async def _render_hero_talking_photo(
     sub = await prov.submit_talking_photo(tp_id, script, aspect, captions=captions)
     if sub.status == "failed":
         return None, sub.error or "HeyGen talking-photo submit failed"
-    for _ in range(_MAX_POLLS):
+    await _persist_provider_job(pid, "avatar_job_id", sub.job_id, prov.name, tenant_id)
+    transient = 0
+    for _ in range(_AVATAR_MAX_POLLS):
         p = await prov.poll(sub.job_id)
         if p.status == "succeeded":
             return p.url, ""
         if p.status == "failed":
-            return None, p.error or "talking-photo render failed"
+            if is_transient_poll_error(p.error) and transient < _MAX_TRANSIENT_POLL_ERRORS:
+                transient += 1
+            else:
+                return None, p.error or "talking-photo render failed"
+        else:
+            transient = 0
         await asyncio.sleep(_POLL_EVERY)
-    return None, "talking-photo render timed out"
+    return None, (
+        f"talking-photo render timed out after ~{int(_AVATAR_MAX_POLLS * _POLL_EVERY / 60)} min "
+        f"({prov.name} video id {sub.job_id} saved on the production — it may "
+        "still finish on the provider side)"
+    )
 
 
 async def _seed_to_public_url(data_uri: str, tenant_id: UUID | None) -> tuple[str | None, str]:
@@ -261,7 +318,9 @@ async def _seed_to_public_url(data_uri: str, tenant_id: UUID | None) -> tuple[st
         from .media import storage as _media_storage
         raw = base64.b64decode(data_uri.split(",", 1)[1])
         tenant = str(tenant_id or settings.default_tenant_id)
-        served_uri, _path = _media_storage().save(tenant, raw, "broll-seed.png")
+        served_uri, _path = await asyncio.to_thread(
+            _media_storage().save, tenant, raw, "broll-seed.png",
+        )
     except Exception as e:  # noqa: BLE001
         return None, f"seed image upload failed: {e}"
     if not served_uri.startswith("http"):
@@ -302,12 +361,18 @@ async def _render_broll(
     )
     if sub.status == "failed":
         return None, sub.error or f"{vid.name} submit failed"
+    transient = 0
     for _ in range(_MAX_POLLS):
         p = await vid.poll(sub.provider_job_id)
         if p.status == "succeeded":
             return p.result_url, ""
         if p.status == "failed":
-            return None, p.error or f"{vid.name} render failed"
+            if is_transient_poll_error(p.error) and transient < _MAX_TRANSIENT_POLL_ERRORS:
+                transient += 1
+            else:
+                return None, p.error or f"{vid.name} render failed"
+        else:
+            transient = 0
         await asyncio.sleep(_POLL_EVERY)
     return None, f"{vid.name} render timed out"
 
@@ -458,7 +523,9 @@ async def _run_avatar_only(row, tenant_id: UUID | None) -> None:
         await _set(conn, pid, status="rendering_clips")
     # In avatar-only mode we want HeyGen to burn in spoken-word subtitles
     # (no scene titles, no B-roll — only the avatar + captions of what it says).
-    url, err = await _render_avatar(script, row["aspect"], captions=True)
+    url, err = await _render_avatar(
+        script, row["aspect"], captions=True, pid=pid, tenant_id=tenant_id,
+    )
     if not url:
         return await _fail(pid, err or "HeyGen render failed", tenant_id)
     durable, _actual = await _persist_clip_to_storage(url, f"avatar-only-{pid}")
@@ -495,7 +562,7 @@ async def _run_hero_clone(row, tenant_id: UUID | None) -> None:
     async with acquire(tenant_id) as conn:
         await _set(conn, pid, status="rendering_clips")
     url, err = await _render_hero_talking_photo(
-        script, row["aspect"], tenant_id, captions=True
+        script, row["aspect"], tenant_id, captions=True, pid=pid,
     )
     if not url:
         return await _fail(pid, err or "hero clone render failed", tenant_id)
@@ -545,7 +612,9 @@ async def _run_story_audio(row, tenant_id: UUID | None) -> None:
     # 1) HeyGen → voice (the avatar video is a means to an end here).
     async with acquire(tenant_id) as conn:
         await _set(conn, pid, status="planning")
-    avatar_url, err = await _render_avatar(script, row["aspect"], captions=False)
+    avatar_url, err = await _render_avatar(
+        script, row["aspect"], captions=False, pid=pid, tenant_id=tenant_id,
+    )
     if not avatar_url:
         return await _fail(pid, err or "HeyGen render failed", tenant_id)
 
@@ -679,7 +748,9 @@ async def _run_avatar_story_mix(row, tenant_id: UUID | None) -> None:
 
     async with acquire(tenant_id) as conn:
         await _set(conn, pid, status="planning")
-    avatar_url, err = await _render_avatar(script, row["aspect"], captions=False)
+    avatar_url, err = await _render_avatar(
+        script, row["aspect"], captions=False, pid=pid, tenant_id=tenant_id,
+    )
     if not avatar_url:
         return await _fail(pid, err or "HeyGen render failed", tenant_id)
 
@@ -818,7 +889,9 @@ async def _run_engaging_avatar(
     # A 16:9 landscape avatar keeps the FULL face height and only trims the empty
     # sides, so render the split speaker landscape.
     avatar_aspect = "16:9" if composition == "split_horizontal" else row["aspect"]
-    avatar_url, err = await _render_avatar(script, avatar_aspect, captions=False)
+    avatar_url, err = await _render_avatar(
+        script, avatar_aspect, captions=False, pid=pid, tenant_id=tenant_id,
+    )
     if not avatar_url:
         return await _fail(pid, err or "HeyGen render failed", tenant_id)
 
@@ -1089,8 +1162,16 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
     except (KeyError, TypeError):
         cstyle = ""
     if not cstyle:
+        # The picker matches a preset to the SPOKEN WORDS — reconstruct the
+        # transcript from the Whisper caption flashes (long-form has no
+        # script field; assets.audio_url is just an mp3 URL, useless to an
+        # LLM). Mirrors the engaging_avatar path, which passes the script.
+        transcript = " ".join(
+            (c.get("raw_text") or c.get("text") or "")
+            for c in (assets.captions or [])
+        ).strip()
         cstyle, _why = await pick_caption_style(
-            assets.audio_url, row["platform"], brand_context, avoid=cap_avoid,
+            transcript, row["platform"], brand_context, avoid=cap_avoid,
         )
 
     asm = get_assembly_provider()

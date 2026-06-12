@@ -860,6 +860,10 @@ _RUNWAY_INSERT_DURATION = 5
 # mixed-mode broll renderer in video_pipeline.py.
 _RUNWAY_POLL_EVERY = 5.0
 _RUNWAY_MAX_POLLS = 36                  # 3 minutes per insert ceiling
+# Tolerate a few consecutive transient poll failures (network blip, provider
+# 5xx/429) before declaring an insert's render dead — same policy as the
+# poll loops in video_pipeline.py.
+_MAX_TRANSIENT_POLL_ERRORS = 3
 
 
 async def animate_inserts(
@@ -885,7 +889,7 @@ async def animate_inserts(
     aggressively above that for the dev plan. Each call is ~30-60s
     end-to-end (submit + poll), so 5 inserts = ~2-3 min wall-clock.
     """
-    from .video import get_video_provider, provider_for
+    from .video import get_video_provider, is_transient_poll_error, provider_for
 
     targets = [
         i for i in inserts
@@ -954,6 +958,7 @@ async def animate_inserts(
                 insert.video_error = sub.error or f"{provider.name} submit failed"
                 return
             poll_url = None
+            transient = 0
             for _ in range(_RUNWAY_MAX_POLLS):
                 await asyncio.sleep(_RUNWAY_POLL_EVERY)
                 p = await provider.poll(sub.provider_job_id)
@@ -961,8 +966,16 @@ async def animate_inserts(
                     poll_url = p.result_url
                     break
                 if p.status == "failed":
+                    # Tolerate a few consecutive transient blips (network
+                    # timeout, provider 5xx/429) — one hiccup over a multi-
+                    # minute poll loop must not drop a clip the provider
+                    # finishes (and bills for) anyway.
+                    if is_transient_poll_error(p.error) and transient < _MAX_TRANSIENT_POLL_ERRORS:
+                        transient += 1
+                        continue
                     insert.video_error = p.error or f"{provider.name} render failed"
                     return
+                transient = 0
             if not poll_url:
                 insert.video_error = f"{provider.name} poll timed out"
                 return
@@ -999,7 +1012,16 @@ async def animate_inserts(
                 tenant_id=tenant_id,
             )
 
-    await asyncio.gather(*(_one(i) for i in targets))
+    # return_exceptions=True restores the documented contract: ONE insert
+    # failing (e.g. a B-roll library lookup or register call raising) must
+    # not abort the whole assembly — the failed insert falls back to its
+    # still, the rest keep their animations.
+    results = await asyncio.gather(
+        *(_one(i) for i in targets), return_exceptions=True,
+    )
+    for insert, res in zip(targets, results, strict=True):
+        if isinstance(res, Exception) and not insert.video_url:
+            insert.video_error = insert.video_error or f"B-roll animation failed: {res}"
 
 
 async def gen_insert_images(

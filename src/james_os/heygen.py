@@ -103,8 +103,11 @@ class HeyGenAvatarProvider(AvatarProvider):
         # Creatomate's per-scene captions stay the only overlay.
         if captions:
             body["caption"] = True
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
-            r = await c.post(f"{_BASE}/v2/video/generate", headers=self._h(), json=body)
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
+                r = await c.post(f"{_BASE}/v2/video/generate", headers=self._h(), json=body)
+        except httpx.HTTPError as e:
+            return AvatarSubmit("", "failed", error=f"HeyGen submit transport error: {e}")
         if r.status_code in (401, 403):
             return AvatarSubmit("", "failed", error=f"HeyGen auth failed ({r.status_code})")
         if r.status_code >= 400:
@@ -115,9 +118,12 @@ class HeyGenAvatarProvider(AvatarProvider):
         return AvatarSubmit(job_id=str(vid), status="processing", raw=r.json())
 
     async def poll(self, job_id: str) -> AvatarPoll:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
-            r = await c.get(f"{_BASE}/v1/video_status.get",
-                            headers=self._h(), params={"video_id": job_id})
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
+                r = await c.get(f"{_BASE}/v1/video_status.get",
+                                headers=self._h(), params={"video_id": job_id})
+        except httpx.HTTPError as e:
+            return AvatarPoll("failed", error=f"HeyGen poll transport error: {e}")
         if r.status_code >= 400:
             return AvatarPoll("failed", error=f"HeyGen poll HTTP {r.status_code}")
         data = r.json().get("data") or {}
@@ -169,8 +175,11 @@ class HeyGenAvatarProvider(AvatarProvider):
         }
         if captions:
             body["caption"] = True
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
-            r = await c.post(f"{_BASE}/v2/video/generate", headers=self._h(), json=body)
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
+                r = await c.post(f"{_BASE}/v2/video/generate", headers=self._h(), json=body)
+        except httpx.HTTPError as e:
+            return AvatarSubmit("", "failed", error=f"HeyGen submit transport error: {e}")
         if r.status_code in (401, 403):
             return AvatarSubmit("", "failed", error=f"HeyGen auth failed ({r.status_code})")
         if r.status_code >= 400:
