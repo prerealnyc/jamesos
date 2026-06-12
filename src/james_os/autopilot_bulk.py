@@ -81,9 +81,17 @@ _TEXT_STEER = (
 )
 
 
-def _split(count: int) -> tuple[int, int]:
-    """N → (n_text, n_video). Text gets the odd one (cheaper to produce)."""
-    n = max(0, int(count))
+def _split(count: int, mix: str = "mixed") -> tuple[int, int]:
+    """N → (n_text, n_video) for the requested mix.
+
+    mix="video" → all video, mix="text" → all text+image, anything else
+    → half and half with text getting the odd one (cheaper to produce).
+    """
+    n = max(0, count)
+    if mix == "video":
+        return 0, n
+    if mix == "text":
+        return n, 0
     n_video = n // 2
     n_text = n - n_video  # == n//2 + n%2
     return n_text, n_video
@@ -298,10 +306,14 @@ _BACKGROUND_RENDERS: set[asyncio.Task] = set()
 
 
 async def generate_bulk(
-    count: int, days: int = 0, tenant_id: UUID | None = None
+    count: int, days: int = 0, tenant_id: UUID | None = None,
+    mix: str = "mixed",
 ) -> dict:
-    """Generate `count` pieces of content in one shot, split 50/50 between
-    text+image posts and video reels (text gets the odd one).
+    """Generate `count` pieces of content in one shot.
+
+    `mix` controls the content type: "video" → all video reels, "text" →
+    all text+image posts, "mixed" (default) → 50/50 with text getting the
+    odd one.
 
     `days` is accepted for API symmetry (the caller may think in "N days of
     content") but the unit of work is pieces — N pieces total. When `days`
@@ -316,7 +328,8 @@ async def generate_bulk(
     is recorded in `errors` and never aborts the batch.
     """
     requested = int(count) if count else int(days)
-    n_text, n_video = _split(requested)
+    mix = (mix or "mixed").strip().lower()
+    n_text, n_video = _split(requested, mix)
     errors: list[str] = []
 
     if requested <= 0:

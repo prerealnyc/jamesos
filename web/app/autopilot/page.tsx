@@ -11,6 +11,18 @@ const PLATFORMS = ["instagram", "linkedin", "facebook", "tiktok", "x"];
 const FORMATS = ["reel_script", "post", "caption", "thread"];
 const BULK_SIZES = [5, 7, 10, 14, 30];
 
+type Mix = "video" | "text" | "mixed";
+const MIXES: { value: Mix; label: string; desc: string }[] = [
+  { value: "video", label: "🎬 Videos", desc: "Reels with voice, captions & B-roll" },
+  { value: "text", label: "📝 Text posts", desc: "Written posts with an AI image" },
+  { value: "mixed", label: "⚡ Mix", desc: "Half videos, half text posts" },
+];
+function generateLabel(mix: Mix, n: number) {
+  if (mix === "video") return `Generate ${n} video${n === 1 ? "" : "s"}`;
+  if (mix === "text") return `Generate ${n} post${n === 1 ? "" : "s"}`;
+  return `Generate ${n} pieces (mix)`;
+}
+
 function runTone(s: string): "muted" | "accent" | "ok" | "destructive" {
   if (s === "succeeded") return "ok";
   if (s === "failed") return "destructive";
@@ -24,6 +36,7 @@ export default function AutopilotPage() {
   const [running, setRunning] = useState(false);
   const [msg, setMsg] = useState("");
   const [bulkCount, setBulkCount] = useState(10);
+  const [bulkMix, setBulkMix] = useState<Mix>("video");
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkNotice, setBulkNotice] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -75,11 +88,11 @@ export default function AutopilotPage() {
     } finally { setRunning(false); }
   }
   async function bulkGenerate() {
-    const n = Math.max(1, Math.min(60, Math.round(bulkCount) || 1));
+    const n = Math.max(1, Math.min(50, Math.round(bulkCount) || 1));
     setBulkBusy(true); setBulkNotice(null);
     try {
-      await api.bulkGenerate(n);
-      setBulkNotice(`Started — ${n} pieces generating in the background. They'll appear in the Approval Queue as they finish.`);
+      const res = await api.bulkGenerate(n, bulkMix);
+      setBulkNotice(res.note || `Started — ${n} pieces generating in the background. They'll appear in the Approval Queue as they finish.`);
       setTimeout(() => api.listAutopilotRuns().then(setRuns).catch(() => {}), 800);
     } finally { setBulkBusy(false); }
   }
@@ -93,15 +106,31 @@ export default function AutopilotPage() {
 
       <Card className="border-primary/40 bg-primary/5">
         <div className="flex items-center justify-between">
-          <CardTitle>Bulk create</CardTitle>
+          <CardTitle>Create now</CardTitle>
           <Badge tone="primary">one click</Badge>
         </div>
-        <p className="text-[12px] text-muted-foreground mt-1">
-          Half become text+image posts, half become video reels — all land in the{" "}
-          <Link href="/queue" className="underline">Approval Queue</Link> for review.
-        </p>
 
-        <Label>Batch size</Label>
+        <Label>1 · What do you want to create?</Label>
+        <div className="grid grid-cols-3 gap-2">
+          {MIXES.map((m) => (
+            <button
+              key={m.value}
+              onClick={() => setBulkMix(m.value)}
+              className={`rounded-md border p-3 text-left transition-colors ${
+                bulkMix === m.value
+                  ? "border-primary bg-primary/15"
+                  : "border-border hover:bg-secondary"
+              }`}
+            >
+              <span className={`block text-[13px] font-semibold ${bulkMix === m.value ? "text-foreground" : "text-muted-foreground"}`}>
+                {m.label}
+              </span>
+              <span className="block text-[11px] text-muted-foreground mt-0.5">{m.desc}</span>
+            </button>
+          ))}
+        </div>
+
+        <Label>2 · How many?</Label>
         <div className="flex flex-wrap items-center gap-2">
           {BULK_SIZES.map((n) => (
             <button
@@ -118,18 +147,21 @@ export default function AutopilotPage() {
           ))}
           <div className="w-24">
             <Input
-              type="number" min={1} max={60} value={bulkCount}
+              type="number" min={1} max={50} value={bulkCount}
               aria-label="Custom batch size"
-              onChange={(e) => setBulkCount(Math.max(1, Math.min(60, +e.target.value || 1)))}
+              onChange={(e) => setBulkCount(Math.max(1, Math.min(50, +e.target.value || 1)))}
             />
           </div>
-          <span className="text-[11px] text-muted-foreground self-center">pieces (~N days of content)</span>
+          <span className="text-[11px] text-muted-foreground self-center">≈ that many days of content</span>
         </div>
 
         <div className="mt-4 flex items-center gap-3">
           <Button onClick={bulkGenerate} disabled={bulkBusy}>
-            {bulkBusy ? <Spinner /> : `Generate ${Math.max(1, Math.min(60, Math.round(bulkCount) || 1))} pieces`}
+            {bulkBusy ? <Spinner /> : generateLabel(bulkMix, Math.max(1, Math.min(50, Math.round(bulkCount) || 1)))}
           </Button>
+          <span className="text-[11px] text-muted-foreground">
+            Everything lands in the <Link href="/queue" className="underline">Approval Queue</Link> — nothing publishes itself.
+          </span>
         </div>
         {bulkNotice && (
           <div className="mt-3 rounded-md border border-primary/40 bg-primary/10 p-3 text-[12px] text-foreground">
@@ -137,11 +169,22 @@ export default function AutopilotPage() {
             <Link href="/queue" className="text-primary underline font-medium">Open the Approval Queue →</Link>
           </div>
         )}
+
+        <p className="text-[11px] text-muted-foreground mt-3 pt-3 border-t border-border">
+          Need <b>one specific video</b> with full control (your own footage, a script, an
+          avatar…)? That lives in the{" "}
+          <Link href="/video" className="text-primary underline font-medium">Video Studio →</Link>
+        </p>
       </Card>
 
       <Card>
         <div className="flex items-center justify-between">
-          <CardTitle>Settings</CardTitle>
+          <div>
+            <CardTitle>Daily schedule</CardTitle>
+            <p className="text-[12px] text-muted-foreground mt-0.5">
+              Runs by itself once a day — separate from the “Create now” button above.
+            </p>
+          </div>
           <button
             onClick={() => patch({ enabled: !cfg.enabled })}
             className={`px-3 py-1.5 rounded-md text-sm font-semibold transition-colors ${
@@ -165,10 +208,31 @@ export default function AutopilotPage() {
           </div>
         </div>
 
-        <Label>Format</Label>
+        <Label>Format of the daily pieces</Label>
         <Select value={cfg.format} onChange={(e) => patch({ format: e.target.value })}>
           {FORMATS.map((f) => <option key={f}>{f}</option>)}
         </Select>
+
+        <div className="mt-4 flex items-center gap-3">
+          <Button onClick={save} disabled={saving}>{saving ? <Spinner /> : "Save"}</Button>
+          <Button variant="secondary" onClick={runNow} disabled={running}>
+            {running ? <Spinner /> : "Run a scheduled batch now"}
+          </Button>
+          {msg && <span className="text-[12px] text-primary">{msg}</span>}
+        </div>
+        <p className="text-[11px] text-muted-foreground mt-3">
+          {cfg.enabled
+            ? `Scheduled: ~${cfg.daily_count} piece(s)/day after ${cfg.hour}:00 server time. Last run: ${cfg.last_run_date || "never"}.`
+            : "The daily schedule is off — nothing runs by itself until enabled. The “Create now” button above always works."}
+          {" "}Honest note: the scheduler runs in-process, so scheduled runs only fire while the server is up.
+        </p>
+      </Card>
+
+      <Card>
+        <CardTitle>Content defaults</CardTitle>
+        <p className="text-[12px] text-muted-foreground mt-0.5">
+          Applies to every batch — “Create now” and the daily schedule alike.
+        </p>
 
         <Label>Platforms</Label>
         <div className="flex flex-wrap gap-2">
@@ -240,25 +304,16 @@ export default function AutopilotPage() {
           value={cfg.topic_hint} onChange={(e) => patch({ topic_hint: e.target.value })} />
 
         <div className="mt-4 flex items-center gap-3">
-          <Button onClick={save} disabled={saving}>{saving ? <Spinner /> : "Save settings"}</Button>
-          <Button variant="secondary" onClick={runNow} disabled={running}>
-            {running ? <Spinner /> : "Run a batch now"}
-          </Button>
+          <Button onClick={save} disabled={saving}>{saving ? <Spinner /> : "Save"}</Button>
           {msg && <span className="text-[12px] text-primary">{msg}</span>}
         </div>
-        <p className="text-[11px] text-muted-foreground mt-3">
-          {cfg.enabled
-            ? `Scheduled: ~${cfg.daily_count} piece(s)/day after ${cfg.hour}:00 server time. Last run: ${cfg.last_run_date || "never"}.`
-            : "Autopilot is off — it won't run on a schedule until enabled. You can still 'Run a batch now'."}
-          {" "}Honest note: the scheduler runs in-process, so scheduled runs only fire while the server is up.
-        </p>
       </Card>
 
       <Card>
         <CardTitle>Recent runs</CardTitle>
         {runs.length === 0 && (
           <p className="text-muted-foreground text-sm mt-2">
-            No batches run yet. Click <strong>Run a batch now</strong> above to test your configured settings, or enable the daily schedule. The autopilot will then propose drafts to the <Link href="/queue" className="underline">Approval Queue</Link> every day.
+            No batches run yet. Pick a content type and click <strong>Generate</strong> in the “Create now” card above — everything lands in the <Link href="/queue" className="underline">Approval Queue</Link> for review.
           </p>
         )}
         <div className="flex flex-col gap-3 mt-3">

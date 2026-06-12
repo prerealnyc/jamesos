@@ -659,10 +659,11 @@ export const api = {
     ),
 
   // ── Autopilot bulk generation ───────────────────────────────────
-  // One click → N pieces, 50/50 text+image / video, into the queue.
-  bulkGenerate: (count: number, days = 0) =>
-    jpost<{ started: boolean; requested: number; note?: string }>(
-      "/autopilot/bulk", { count, days },
+  // One click → N pieces into the queue. mix: "video" = all reels,
+  // "text" = all text+image posts, "mixed" = half and half.
+  bulkGenerate: (count: number, mix: "mixed" | "video" | "text" = "mixed") =>
+    jpost<{ started: boolean; requested: number; mix?: string; note?: string }>(
+      "/autopilot/bulk", { count, mix },
     ),
 
   // ── Live analytics (aggregated across connected accounts) ───────
