@@ -13,10 +13,14 @@ Defaults keep the name plate working before anything is configured.
 """
 
 import json
+import logging
 from uuid import UUID
 
-from .config import settings
+import asyncpg
+
 from .db import acquire
+
+logger = logging.getLogger("james_os.brand_kit")
 
 DEFAULT_BRAND_KIT = {
     "display_name": "James Prendamano",
@@ -28,13 +32,15 @@ DEFAULT_BRAND_KIT = {
 _KEYS = set(DEFAULT_BRAND_KIT)
 
 
-def _tenant(tenant_id) -> UUID:
-    if isinstance(tenant_id, UUID):
+def _tenant(tenant_id) -> UUID | None:
+    """Normalize to a UUID, or None so acquire() resolves the tenant itself
+    (request contextvar → settings.default_tenant_id)."""
+    if tenant_id is None or isinstance(tenant_id, UUID):
         return tenant_id
     try:
-        return UUID(str(tenant_id)) if tenant_id else UUID(settings.default_tenant_id)
+        return UUID(str(tenant_id))
     except (ValueError, TypeError):
-        return UUID(settings.default_tenant_id)
+        return None
 
 
 async def get_brand_kit(tenant_id=None) -> dict:
@@ -44,7 +50,9 @@ async def get_brand_kit(tenant_id=None) -> dict:
                 "SELECT config->'brand_kit' FROM tenants WHERE id = "
                 "current_setting('app.current_tenant', true)::uuid"
             )
-    except Exception:  # noqa: BLE001 — renders must never break on brand kit
+    except (asyncpg.PostgresError, OSError) as exc:
+        # Renders must never break on brand kit — but the failure must be loud.
+        logger.warning("brand kit read failed, falling back to defaults: %s", exc)
         return dict(DEFAULT_BRAND_KIT)
     stored = raw if isinstance(raw, dict) else (json.loads(raw) if raw else {})
     return {**DEFAULT_BRAND_KIT, **{k: v for k, v in (stored or {}).items() if k in _KEYS}}

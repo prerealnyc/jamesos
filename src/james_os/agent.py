@@ -178,8 +178,7 @@ async def _t_render_whole_source(
         create_whole_source_candidate, get_source_with_candidates,
         link_candidate_to_production,
     )
-    from .video_pipeline import run_production
-    from .video import start_production
+    from .video_pipeline import run_production, start_production
     src_uuid = UUID(source_id)
     cand = await create_whole_source_candidate(src_uuid)
     if cand is None:

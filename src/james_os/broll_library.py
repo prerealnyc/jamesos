@@ -36,6 +36,10 @@ _STOP = frozenset(
 
 _WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z'-]{2,}")
 
+# Genuine aspect-ratio tags only ('9:16', '16:9', '1:1') — NOT every tag with
+# a colon, which would misread dedup tags like 'sha256:…' as aspect declarations.
+_ASPECT_TAG_RE = re.compile(r"\d{1,2}:\d{1,2}")
+
 _REUSE_OVERLAP = 0.6     # shared / min(len(a), len(b))
 _REUSE_MIN_SHARED = 4    # at least this many shared content words
 _MAX_CANDIDATES = 400    # newest-first cap on the comparison set
@@ -112,7 +116,7 @@ async def find_reusable_clip(
     for r in rows:
         tags = list(r["tags"] or [])
         # Aspect gate only when BOTH sides declare one (uploads usually don't).
-        clip_aspects = [t for t in tags if ":" in t or t in ("9:16", "1:1", "16:9")]
+        clip_aspects = [t for t in tags if _ASPECT_TAG_RE.fullmatch(t)]
         if aspect and clip_aspects and aspect not in clip_aspects:
             continue
         have = _content_words(f"{r['notes'] or ''} {r['title'] or ''}")
