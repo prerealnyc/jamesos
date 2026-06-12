@@ -884,7 +884,56 @@ async def pick_insert_points(
             uses_hero=bool(entry.get("uses_hero")),
         ))
         last_end = end
+    _enforce_shot_rotation(inserts)
     return inserts
+
+
+# ── Shot-size rotation, enforced in code ─────────────────────────────
+# The picker prompt asks for tight/mid/wide rotation, but an LLM can
+# ignore a list-wide constraint on any one item — and then two
+# consecutive inserts silently share the same framing. Guarantee it
+# here: keep the LLM's choice when it's declared and differs from its
+# neighbour; otherwise strip any leading shot phrase and prepend the
+# next size from the rotation. Image models weight leading tokens
+# heavily, so the prefix wins.
+_SHOT_ROTATION = ("wide establishing shot", "medium shot", "extreme close-up")
+_SHOT_MARKERS: dict[str, tuple[str, ...]] = {
+    "wide establishing shot": (
+        "wide shot", "wide-angle", "wide angle", "wide view",
+        "establishing", "aerial", "panoram",
+    ),
+    "medium shot": ("medium shot", "mid shot", "medium-shot", "waist-up"),
+    "extreme close-up": ("close-up", "closeup", "close up", "macro"),
+}
+_LEADING_SHOT_RE = re.compile(
+    r"^(?:an?\s+)?(?:extreme\s+|tight\s+)?"
+    r"(?:wide(?:[- ]angle)?|establishing|medium|mid|close[- ]?up|macro)\s*"
+    r"(?:establishing\s+)?(?:shot|view|frame)?\s*(?:of|on|:)?\s*",
+    re.I,
+)
+
+
+def _detect_shot(prompt: str) -> str | None:
+    low = prompt.lower()
+    for size, markers in _SHOT_MARKERS.items():
+        if any(m in low for m in markers):
+            return size
+    return None
+
+
+def _enforce_shot_rotation(inserts: list[Insert]) -> None:
+    """Mutates insert prompts so no two consecutive inserts share a
+    shot size and every prompt declares one."""
+    prev: str | None = None
+    for i, ins in enumerate(inserts):
+        size = _detect_shot(ins.image_prompt)
+        if size is None or size == prev:
+            size = _SHOT_ROTATION[i % len(_SHOT_ROTATION)]
+            if size == prev:
+                size = _SHOT_ROTATION[(i + 1) % len(_SHOT_ROTATION)]
+            body = _LEADING_SHOT_RE.sub("", ins.image_prompt).strip() or ins.image_prompt
+            ins.image_prompt = f"{size[0].upper()}{size[1:]} of {body}"
+        prev = size
 
 
 # Runway gen4_turbo only supports a fixed ratio set; map our aspect.
