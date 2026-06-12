@@ -144,20 +144,27 @@ def _ken_burns(duration: float, kind: str = "in") -> list[dict]:
              "start_scale": "100%", "end_scale": "106%"}]
 
 
-def _zoom_punches(total: float, period: float = 7.0, hold: float = 2.6) -> list[dict]:
+def _zoom_punch_props(total: float, period: float = 7.0, hold: float = 2.6) -> dict:
     """Retention punch-ins on the speaker: a quick 100→107% zoom every ~period
-    seconds that snaps back after `hold` — reads as a pro jump-cut edit."""
-    anims: list[dict] = []
+    seconds that snaps back after `hold` — reads as a pro jump-cut edit.
+
+    Returns x_scale/y_scale property KEYFRAMES to merge into the element.
+    Do NOT express this through the `animations` list — Creatomate has no
+    'scale' animation with start_scale/end_scale, and the invalid animation
+    made it render the element BLACK for its entire duration while its
+    audio kept playing (verified with live renders). Property keyframes
+    render correctly."""
+    kfs: list[dict] = [{"time": 0, "value": "100%"}]
     t = period * 0.6
     while t + hold + 0.4 < total:
-        anims.append({"time": round(t, 2), "duration": 0.18, "type": "scale",
-                      "scope": "element", "easing": "quadratic-out",
-                      "start_scale": "100%", "end_scale": "107%"})
-        anims.append({"time": round(t + hold, 2), "duration": 0.14, "type": "scale",
-                      "scope": "element", "easing": "quadratic-in",
-                      "start_scale": "107%", "end_scale": "100%"})
+        kfs.append({"time": round(t, 2), "value": "100%"})
+        kfs.append({"time": round(t + 0.18, 2), "value": "107%"})
+        kfs.append({"time": round(t + hold, 2), "value": "107%"})
+        kfs.append({"time": round(t + hold + 0.14, 2), "value": "100%"})
         t += period
-    return anims
+    if len(kfs) == 1:
+        return {}
+    return {"x_scale": kfs, "y_scale": kfs}
 
 
 def _watermark_element(logo_url: str, total: float, track: int = 8) -> list[dict]:
@@ -578,7 +585,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             elements.append({
                 "type": "video", "source": avatar_video_url,
                 "track": 1, "time": 0, "duration": total, "fit": "cover",
-                "animations": _zoom_punches(total),
+                **_zoom_punch_props(total),
             })
 
         # track 2 — insert overlays with short fade in/out. Prefer the
@@ -726,7 +733,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             elements.append({
                 "type": "video", "source": avatar_video_url,
                 "track": 1, "time": 0, "duration": total, "fit": "cover",
-                "animations": _zoom_punches(total),
+                **_zoom_punch_props(total),
                 **TOP,
             })
 
@@ -900,7 +907,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             elements.append({
                 "type": "video", "source": avatar_video_url,
                 "track": 1, "time": 0, "duration": total, "fit": "cover",
-                "animations": _zoom_punches(total),
+                **_zoom_punch_props(total),
                 **LEFT,
             })
 
