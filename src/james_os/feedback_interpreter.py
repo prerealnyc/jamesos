@@ -190,4 +190,21 @@ async def interpret_recent_feedback(tenant_id: UUID | None = None, limit: int = 
     return {"processed": processed, "recorded": recorded}
 
 
-__all__ = ["interpret_one", "interpret_recent_feedback"]
+_BG_TASKS: set = set()
+
+
+def kick_interpret_background(tenant_id=None) -> None:
+    """Fire-and-forget board refresh after new feedback lands. Keeps the
+    "What's changing next" board continuously current instead of waiting for
+    a manual Refresh click. Idempotent (record_change dedupes on content);
+    failures are swallowed — the board is advisory, never in a request path."""
+    import asyncio
+    try:
+        task = asyncio.create_task(interpret_recent_feedback(tenant_id))
+        _BG_TASKS.add(task)
+        task.add_done_callback(_BG_TASKS.discard)
+    except RuntimeError:
+        pass  # no running loop — the next manual refresh covers it
+
+
+__all__ = ["interpret_one", "interpret_recent_feedback", "kick_interpret_background"]

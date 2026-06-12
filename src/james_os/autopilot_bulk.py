@@ -410,6 +410,12 @@ async def generate_bulk(
         except Exception:  # noqa: BLE001 — provenance only, never fail the batch
             pass
 
+    # Backstop: re-interpret any feedback given since the last batch so the
+    # "What's changing next" board is at-least-daily current even if no
+    # reject hook fired (e.g. feedback left in an older client).
+    from .feedback_interpreter import kick_interpret_background
+    kick_interpret_background(tenant_id)
+
     return {
         "requested": requested,
         "text_queued": text_queued,

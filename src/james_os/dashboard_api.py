@@ -508,6 +508,9 @@ async def reject_item(item_id: UUID, body: dict = Body(default={})) -> dict:
     from .learning import record_rejection
 
     learned_id = await record_rejection(item_id, reason)
+    # Auto-refresh the "What's changing next" board with this feedback.
+    from .feedback_interpreter import kick_interpret_background
+    kick_interpret_background()
     return {
         "ok": True,
         "id": str(item_id),

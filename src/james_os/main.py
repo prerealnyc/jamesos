@@ -839,6 +839,9 @@ async def video_reject(
     learned_id = await record_video_feedback(
         production_id, reason, status="rejected",
     )
+    # Auto-refresh the "What's changing next" board with this feedback.
+    from .feedback_interpreter import kick_interpret_background
+    kick_interpret_background()
     return {
         "ok": True, "id": str(production_id), "status": "rejected",
         "learned_id": learned_id,
