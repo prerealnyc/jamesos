@@ -72,9 +72,13 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 ALTER TABLE video_productions
   DROP CONSTRAINT IF EXISTS video_productions_mode_check;
 
+-- NOT VALID below: this list is historical — a later migration (030)
+-- re-adds the final, validated list. Re-running this file against a DB
+-- whose rows already use newer modes must not fail (migrate.py re-runs
+-- every file).
 ALTER TABLE video_productions
   ADD CONSTRAINT video_productions_mode_check
     CHECK (mode IN (
       'mixed','avatar_only','timeline','story_audio',
       'avatar_story_mix','engaging_avatar','long_form_reel'
-    ));
+    )) NOT VALID;
