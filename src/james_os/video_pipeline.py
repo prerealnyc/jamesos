@@ -91,6 +91,7 @@ async def start_production(
     structure: list[dict] | None = None,
     template_id: UUID | None = None,
     video_engine: str = "",
+    broll_pacing: str = "",
     tenant_id: UUID | None = None,
 ) -> dict:
     """Create a production.
@@ -151,13 +152,15 @@ async def start_production(
                  (status, title, platform, aspect, script, scenes, mode,
                   caption_style, image_style,
                   music_mood, logo_position, structure, template_id, video_engine,
+                  broll_pacing,
                   avatar_provider, broll_provider, assembly_provider)
                VALUES ('queued',$1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,
-                       $14,$15,$16) RETURNING *""",
+                       $14,$15,$16,$17) RETURNING *""",
             title, platform, aspect, script, json.dumps(scenes or []), mode,
             caption_style or "", image_style or "",
             music_mood or "", logo_position or "", json.dumps(structure or []), template_id,
             video_engine or "",
+            broll_pacing or "",
             get_avatar_provider().name, settings.video_provider,
             get_assembly_provider().name,
         )
@@ -934,6 +937,7 @@ async def _run_engaging_avatar(
         tenant_id=str(tenant_id) if tenant_id else None,
         broll_avoid=broll_avoid,
         engine=(row["video_engine"] or ""),   # Runway / Higgsfield for B-roll
+        broll_pacing=(row.get("broll_pacing") or ""),
     )
     if assets.error:
         return await _fail(pid, assets.error, tenant_id)
@@ -1148,6 +1152,7 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
         tenant_id=str(tenant_id) if tenant_id else None,
         broll_avoid=broll_avoid,
         engine=(row["video_engine"] or ""),   # Runway / Higgsfield for B-roll
+        broll_pacing=(row.get("broll_pacing") or ""),
     )
     if assets.error:
         return await _fail(pid, assets.error, tenant_id)

@@ -641,29 +641,43 @@ def inserts_to_dict(inserts: list[Insert]) -> list[dict[str, Any]]:
     ]
 
 
-_INSERT_PICK_SYSTEM = """You are the editor for a short-form video.
+def _insert_pick_system(min_dur: float, max_dur: float) -> str:
+    """Build the insert-picker system prompt for the active pacing.
+
+    Durations are injected (not hardcoded) so pacing presets — punchy
+    flashes vs longer illustrative holds — steer the LLM's window
+    choices, and the prompt also enforces shot-size rotation so
+    consecutive inserts don't all share the same framing.
+    """
+    typical = round((min_dur + max_dur) / 2, 1)
+    return f"""You are the editor for a short-form video.
 The hero is on camera the whole time, talking. Your job is to drop
 one cinematic B-roll cutaway in EVERY slot you're given — no skipping
-slots, no extras. Each insert lasts 1.5-2.0 seconds and the image
-must visualize the SPECIFIC PHRASE spoken in that 1.5-2.0s window.
+slots, no extras. Each insert lasts {min_dur:g}-{max_dur:g} seconds and the image
+must visualize the SPECIFIC PHRASE spoken in that window.
 
 You'll receive a list of slots. Each slot has:
-  * slot_start, slot_end  — the 5s window you're editing inside
+  * slot_start, slot_end  — the window you're editing inside
   * words[]               — the words spoken in this slot with their
-                            individual {t: float, w: str} timestamps
+                            individual {{t: float, w: str}} timestamps
 
 For each slot, return ONE insert:
   * Pick start INSIDE the slot, between (slot_start + 0.4) and
-    (slot_end - 1.8). Land it on a word that names a place / object /
+    (slot_end - {min_dur:g}). Land it on a word that names a place / object /
     number / dramatic concept when one exists in the slot; otherwise
     pick the most CONCRETE word in the slot (a verb of action, a
     proper noun, anything visualisable). Avoid pure connector words
     ('and', 'so', 'but') as the anchor.
-  * end = start + 1.7 typically. Always within the slot bounds.
+  * end = start + {typical:g} typically. Always within the slot bounds.
   * prompt: ONE concrete cinematic image prompt, 18-30 words, that
     paints WHAT THE ANCHOR WORD/PHRASE describes — not the script as
     a whole. Single symbolic subject, dramatic directional light, deep
     shadows, atmospheric detail. NEVER text/captions in the image.
+  * SHOT VARIETY (the rule of three): rotate framing across the video —
+    wide establishing shot, then medium shot, then close-up detail, and
+    repeat. State the shot size explicitly in each prompt (e.g. "wide
+    establishing shot of...", "extreme close-up of..."). Two consecutive
+    inserts must NEVER share the same shot size.
   * uses_hero: true ONLY when the anchor word/phrase is about the
     brand hero himself (e.g. "I watched my mentor" = uses_hero,
     because the hero IS the mentor figure; "the calendar" = no).
@@ -680,11 +694,31 @@ uncanny close-ups, wrong vibe). Treat every line as a hard rule — your
 inserts must NOT repeat any of those mistakes.
 
 Return STRICT JSON:
-{"inserts": [{"slot": int, "start": float, "end": float,
-              "text": str, "prompt": str, "uses_hero": bool}, ...]}
+{{"inserts": [{{"slot": int, "start": float, "end": float,
+              "text": str, "prompt": str, "uses_hero": bool}}, ...]}}
 The slot field is the 0-indexed slot the insert is for. Same order
 as the slots in the payload.
 """
+
+
+# B-roll pacing presets — editing-craft guidance for overlay cutaways
+# (the hero keeps talking underneath; only the visual is covered):
+#   * punchy        — montage-style quick flashes; the original recipe.
+#   * illustrative  — the talking-head-overlay standard (B-roll that
+#     illustrates speech should hold ~4-10s); DEFAULT for engaging /
+#     long-form renders. Cadence sized to keep ~70% hero / 30% B-roll.
+#   * reflective    — slow thoughtful holds (6-8s); needs 10s source
+#     clips, requested per-insert in animate_inserts.
+BROLL_PACING: dict[str, dict] = {
+    "punchy":       {"cadence": 5.0,  "min_dur": 1.5, "max_dur": 2.5},
+    "illustrative": {"cadence": 14.0, "min_dur": 4.0, "max_dur": 5.0},
+    "reflective":   {"cadence": 18.0, "min_dur": 6.0, "max_dur": 8.0},
+}
+DEFAULT_BROLL_PACING = "illustrative"
+
+# Slot-width multipliers cycled across the video so A-roll gaps vary
+# (the "every N seconds like a metronome" rhythm reads as mechanical).
+_SLOT_JITTER = (1.0, 0.75, 1.25)
 
 # Cadence in seconds — one cutaway per slot of this size. 5s means a
 # 30s reel gets ~5 inserts (one per slot). User-configurable later via
@@ -743,9 +777,13 @@ async def pick_insert_points(
     slots: list[dict] = []
     t = _INSERT_LEAD_IN_S
     slot_idx = 0
+    step_idx = 0
     latest_end = audio_duration - _INSERT_TAIL_S
     while t + _INSERT_MIN_DUR <= latest_end:
-        slot_end = min(t + cadence_s, latest_end)
+        # Vary the slot width (±25%) so the A-roll gaps between cutaways
+        # breathe instead of ticking like a metronome.
+        width = cadence_s * _SLOT_JITTER[step_idx % len(_SLOT_JITTER)]
+        slot_end = min(t + width, latest_end)
         slot_words = [
             {"t": round(w.start, 2), "w": w.word}
             for w in words
@@ -761,7 +799,8 @@ async def pick_insert_points(
                 "words": slot_words,
             })
             slot_idx += 1
-        t += cadence_s
+        t += width
+        step_idx += 1
 
     if not slots:
         return []
@@ -775,7 +814,7 @@ async def pick_insert_points(
     }
     try:
         out = await get_llm().complete_json(
-            system=_INSERT_PICK_SYSTEM,
+            system=_insert_pick_system(_INSERT_MIN_DUR, _INSERT_MAX_DUR),
             messages=[{"role": "user", "content": json.dumps(payload)}],
             # Bump the ceiling — denser cadence = more inserts =
             # more prompt text returned.
@@ -950,13 +989,27 @@ async def animate_inserts(
                 "within the scene, no morphing, no text. "
                 f"Scene: {scene}"
             )[:950]
+            # Long holds (reflective pacing, 6-8s windows) need a 10s
+            # source clip — both Runway (gen4: 5|10) and Higgsfield-routed
+            # models accept 10. If the provider rejects 10, retry at 5 and
+            # let assembly freeze the last frame for the remainder.
+            window = max(0.0, insert.end - insert.start)
+            duration = 10 if window > float(_RUNWAY_INSERT_DURATION) else _RUNWAY_INSERT_DURATION
             sub = await provider.submit(
                 motion_prompt,
                 insert.image_url,
                 model=model,
                 ratio=ratio,
-                duration=_RUNWAY_INSERT_DURATION,
+                duration=duration,
             )
+            if sub.status == "failed" and duration != _RUNWAY_INSERT_DURATION:
+                sub = await provider.submit(
+                    motion_prompt,
+                    insert.image_url,
+                    model=model,
+                    ratio=ratio,
+                    duration=_RUNWAY_INSERT_DURATION,
+                )
             if sub.status == "failed":
                 insert.video_error = sub.error or f"{provider.name} submit failed"
                 return
@@ -1556,6 +1609,7 @@ async def build_engaging_avatar_assets(
     tenant_id: str | None = None,
     broll_avoid: str = "",
     engine: str = "",                  # B-roll animator: ''|runway|higgsfield
+    broll_pacing: str = "",            # ''|punchy|illustrative|reflective
 ) -> EngagingAvatarResult:
     """Engaging-avatar pipeline.
 
@@ -1620,17 +1674,31 @@ async def build_engaging_avatar_assets(
     hero_description = hero_ctx.description if hero_ctx else ""
     hero_refs = await _hero_files() if hero_ctx else []
 
-    # Live-tunable B-roll insert duration (feedback loop → render_tuning).
+    # Pacing resolution, most-specific wins:
+    #   1. explicit per-render preset (broll_pacing param)
+    #   2. feedback-loop knobs, when a human changed them from defaults
+    #   3. the illustrative default (talking-head overlay standard)
     from .render_tuning import get_render_tuning
     _rt = await get_render_tuning(tenant_id)
+    knobs_changed = (
+        _rt["broll_insert_min_dur"] != 1.5 or _rt["broll_insert_max_dur"] != 2.0
+    )
+    preset = BROLL_PACING.get((broll_pacing or "").strip().lower())
+    if preset is None and not knobs_changed:
+        preset = BROLL_PACING[DEFAULT_BROLL_PACING]
+    if preset:
+        cadence, min_dur, max_dur = preset["cadence"], preset["min_dur"], preset["max_dur"]
+    else:
+        cadence, min_dur, max_dur = _INSERT_CADENCE_S, _rt["broll_insert_min_dur"], _rt["broll_insert_max_dur"]
     inserts = await pick_insert_points(
         audio_duration=tr.duration,
         words=tr.words,
         brand_context=brand_context,
         hero_description=hero_description,
         avoid=broll_avoid,
-        min_dur=_rt["broll_insert_min_dur"],
-        max_dur=_rt["broll_insert_max_dur"],
+        cadence_s=cadence,
+        min_dur=min_dur,
+        max_dur=max_dur,
     )
 
     if inserts:

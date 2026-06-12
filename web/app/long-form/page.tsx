@@ -93,6 +93,8 @@ export default function LongFormPage() {
   // the engine with keys configured today; if the chosen engine's keys
   // are missing, inserts keep their stills (the render never fails).
   const [brollEngine, setBrollEngine] = useState("runway");
+  // B-roll pacing — how long cutaways hold while James keeps talking.
+  const [brollPacing, setBrollPacing] = useState("illustrative");
   const [toast, setToast] = useState<{ message: string; href?: string; hrefLabel?: string } | null>(null);
   // Tick counter that re-renders every second while a selected source is
   // mid-flight, so the "last update Ns ago" indicator next to the status
@@ -252,6 +254,7 @@ export default function LongFormPage() {
       const prod = await api.renderLongCandidate(c.id, {
         caption_style: captionStyle,
         video_engine: brollEngine,
+        broll_pacing: brollPacing,
       });
       // Optimistically link production_id locally
       if (selected) {
@@ -285,6 +288,7 @@ export default function LongFormPage() {
       await api.renderLongSourceWhole(selected.id, {
         caption_style: captionStyle,
         video_engine: brollEngine,
+        broll_pacing: brollPacing,
       });
       // Production goes straight to the queue; user can poll there.
       await loadSelected(selected.id);
@@ -581,6 +585,19 @@ export default function LongFormPage() {
                 <option value="runway">Runway</option>
                 <option value="higgsfield">Higgsfield</option>
                 <option value="">System default</option>
+              </select>
+              <span className="text-[12px] text-muted-foreground ml-2">
+                Pacing
+              </span>
+              <select
+                value={brollPacing}
+                onChange={(e) => setBrollPacing(e.target.value)}
+                className="text-[12px] px-2 py-1 rounded border border-border bg-background"
+                title="How long each B-roll cutaway holds while James keeps talking. Illustrative (4-5s holds, varied gaps) is the talking-head standard; Punchy is rapid 1.5-2.5s flashes; Reflective is slow 6-8s holds."
+              >
+                <option value="illustrative">Illustrative (4-5s holds)</option>
+                <option value="punchy">Punchy (1.5-2.5s flashes)</option>
+                <option value="reflective">Reflective (6-8s holds)</option>
               </select>
               <Button
                 onClick={renderWholeSource}

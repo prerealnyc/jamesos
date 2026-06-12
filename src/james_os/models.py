@@ -241,6 +241,7 @@ class VideoProduceRequest(BaseModel):
     mode: str = "mixed"  # mixed | avatar_only | timeline | story_audio | avatar_story_mix | engaging_avatar
     caption_style: str = ""              # blank → AI picks (see caption_styles.py)
     image_style: str = ""                # blank → cinematic for story modes
+    broll_pacing: str = ""               # ''|punchy|illustrative|reflective
 
 
 class MultiGenerateRequest(BaseModel):
