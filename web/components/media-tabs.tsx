@@ -29,6 +29,11 @@ const TABS = [
     sub: "Reusable cutaway clips — generated (Runway/Higgsfield) + uploads",
   },
   {
+    href: "/audio",
+    label: "Audio Library",
+    sub: "Music beds by mood + SFX (whooshes) for transitions",
+  },
+  {
     href: "/style-templates",
     label: "Style Templates",
     sub: "Reference styles, reverse-engineered to replicate",

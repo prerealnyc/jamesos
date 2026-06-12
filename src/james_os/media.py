@@ -36,6 +36,11 @@ ROLES = (
     # for hero clips. See get_hero_context() in story_video.py.
     "hero_photo",
     "hero_video",
+    # Audio library — background music (tagged by mood: upbeat/calm/dramatic/
+    # tension) and SFX (tagged by kind: whoosh/hit/riser/pop). Renders resolve
+    # audio from these before falling back to the static settings URLs.
+    "music",
+    "sfx",
 )
 
 # Local store lives beside the repo; served read-only at /media-files.

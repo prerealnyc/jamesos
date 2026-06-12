@@ -283,7 +283,9 @@ export type MediaRole =
   | "broll"
   | "post_image"
   | "hero_photo"
-  | "hero_video";
+  | "hero_video"
+  | "music"
+  | "sfx";
 
 /** Aesthetic preset for /images/generate. Each maps to a distinct
  *  prompt prefix on the backend (see imagegen.POST_STYLES). Same topic

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import httpx
 
 from .caption_styles import caption_element, get_preset, styled_caption_elements
+from .audio_library import resolve_music_url, resolve_sfx_url
 from .config import settings
 
 _TIMEOUT = httpx.Timeout(45.0, connect=10.0)
@@ -159,6 +160,8 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         aspect: str,
         music_mood: str = "none",
         caption_style: str | None = None,
+        music_track_url: str | None = None,   # library override (audio_library)
+        sfx_url: str = "",                     # whoosh at cutaway starts; '' = no layer
     ) -> dict:
         """Build a Creatomate source for the story_audio mode.
 
@@ -231,7 +234,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             ))
 
         # 4) optional music
-        music_url = _music_url_for(music_mood)
+        music_url = music_track_url or _music_url_for(music_mood)
         if music_url and total > 0:
             elements.append({
                 "type": "audio", "source": music_url,
@@ -250,6 +253,8 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         aspect: str,
         music_mood: str = "none",
         caption_style: str | None = None,
+        music_track_url: str | None = None,   # library override (audio_library)
+        sfx_url: str = "",                     # whoosh at cutaway starts; '' = no layer
     ) -> dict:
         """Mixed avatar-on-camera + AI-still source.
 
@@ -338,7 +343,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
 
         # track 4 — optional background music (ducked further than story
         # because the master voice is louder/more present in this mode)
-        music_url = _music_url_for(music_mood)
+        music_url = music_track_url or _music_url_for(music_mood)
         if music_url and total > 0:
             elements.append({
                 "type": "audio", "source": music_url,
@@ -357,6 +362,8 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         aspect: str,
         music_mood: str = "none",
         caption_style: str | None = None,
+        music_track_url: str | None = None,   # library override (audio_library)
+        sfx_url: str = "",                     # whoosh at cutaway starts; '' = no layer
     ) -> dict:
         """engaging_avatar layout. The avatar video carries its own
         audio across the whole timeline; B-roll images overlay on top
@@ -445,8 +452,21 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 role=role,
             ))
 
+        # track 5 — transition whoosh at each cutaway start (only when the
+        # audio library has one; '' skips the layer, never a broken element).
+        if sfx_url.startswith("http"):
+            for ins in inserts:
+                if not ((ins.get("video_url") or ins.get("image_url") or "").strip().startswith("http")):
+                    continue
+                _t = float(ins.get("start") or 0.0)
+                elements.append({
+                    "type": "audio", "source": sfx_url,
+                    "track": 5, "time": round(max(0.0, _t - 0.15), 2),
+                    "duration": 0.7, "volume": 60,
+                })
+
         # track 4 — optional music heavily ducked under avatar voice
-        music_url = _music_url_for(music_mood)
+        music_url = music_track_url or _music_url_for(music_mood)
         if music_url and total > 0:
             elements.append({
                 "type": "audio", "source": music_url,
@@ -465,6 +485,8 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         aspect: str,
         music_mood: str = "none",
         caption_style: str | None = None,
+        music_track_url: str | None = None,   # library override (audio_library)
+        sfx_url: str = "",                     # whoosh at cutaway starts; '' = no layer
     ) -> dict:
         """split_horizontal layout — reproduces the "speaker on top, text /
         visuals on the bottom" reel composition the Design Inspector captures
@@ -563,8 +585,21 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             elem["y_anchor"] = "50%"
             elements.append(elem)
 
+        # track 5 — transition whoosh at each cutaway start (only when the
+        # audio library has one; '' skips the layer, never a broken element).
+        if sfx_url.startswith("http"):
+            for ins in inserts:
+                if not ((ins.get("video_url") or ins.get("image_url") or "").strip().startswith("http")):
+                    continue
+                _t = float(ins.get("start") or 0.0)
+                elements.append({
+                    "type": "audio", "source": sfx_url,
+                    "track": 5, "time": round(max(0.0, _t - 0.15), 2),
+                    "duration": 0.7, "volume": 60,
+                })
+
         # track 4 — optional music heavily ducked under the speaker voice
-        music_url = _music_url_for(music_mood)
+        music_url = music_track_url or _music_url_for(music_mood)
         if music_url and total > 0:
             elements.append({
                 "type": "audio", "source": music_url,
@@ -592,6 +627,8 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             inserts=inserts, captions=captions,
             aspect=aspect, music_mood=music_mood,
             caption_style=caption_style,
+            music_track_url=await resolve_music_url(music_mood),
+            sfx_url=await resolve_sfx_url("whoosh"),
         )
         body = {"source": source}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
@@ -623,6 +660,8 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         aspect: str,
         music_mood: str = "none",
         caption_style: str | None = None,
+        music_track_url: str | None = None,   # library override (audio_library)
+        sfx_url: str = "",                     # whoosh at cutaway starts; '' = no layer
     ) -> dict:
         """split_vertical layout — speaker on the LEFT half, B-roll + bold text
         on the RIGHT half (divided by a VERTICAL line). Mirror of
@@ -707,8 +746,21 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             elem["width"] = "44%"
             elements.append(elem)
 
+        # track 5 — transition whoosh at each cutaway start (only when the
+        # audio library has one; '' skips the layer, never a broken element).
+        if sfx_url.startswith("http"):
+            for ins in inserts:
+                if not ((ins.get("video_url") or ins.get("image_url") or "").strip().startswith("http")):
+                    continue
+                _t = float(ins.get("start") or 0.0)
+                elements.append({
+                    "type": "audio", "source": sfx_url,
+                    "track": 5, "time": round(max(0.0, _t - 0.15), 2),
+                    "duration": 0.7, "volume": 60,
+                })
+
         # track 4 — optional music ducked under the speaker voice
-        music_url = _music_url_for(music_mood)
+        music_url = music_track_url or _music_url_for(music_mood)
         if music_url and total > 0:
             elements.append({
                 "type": "audio", "source": music_url,
@@ -736,6 +788,8 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             inserts=inserts, captions=captions,
             aspect=aspect, music_mood=music_mood,
             caption_style=caption_style,
+            music_track_url=await resolve_music_url(music_mood),
+            sfx_url=await resolve_sfx_url("whoosh"),
         )
         body = {"source": source}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
@@ -775,6 +829,8 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             inserts=inserts, captions=captions,
             aspect=aspect, music_mood=music_mood,
             caption_style=caption_style,
+            music_track_url=await resolve_music_url(music_mood),
+            sfx_url=await resolve_sfx_url("whoosh"),
         )
         body = {"source": source}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
@@ -818,6 +874,8 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             beats=beats, captions=captions,
             aspect=aspect, music_mood=music_mood,
             caption_style=caption_style,
+            music_track_url=await resolve_music_url(music_mood),
+            sfx_url=await resolve_sfx_url("whoosh"),
         )
         body = {"source": source}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
@@ -857,6 +915,8 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             beats=beats, captions=captions,
             aspect=aspect, music_mood=music_mood,
             caption_style=caption_style,
+            music_track_url=await resolve_music_url(music_mood),
+            sfx_url=await resolve_sfx_url("whoosh"),
         )
         body = {"source": source}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:

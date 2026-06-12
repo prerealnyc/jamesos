@@ -25,7 +25,7 @@ const VIDEO_SUBROUTES = [
   "/video", "/long-form", "/engaging-video", "/story-mix",
   "/heygen-video", "/story-video", "/pipeline", "/editor",
 ];
-const MEDIA_SUBROUTES = ["/jp-clips", "/hero", "/broll"];
+const MEDIA_SUBROUTES = ["/jp-clips", "/hero", "/broll", "/audio"];
 
 const NAV: Group[] = [
   {
