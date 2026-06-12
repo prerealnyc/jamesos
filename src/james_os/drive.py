@@ -55,9 +55,13 @@ def _service():
 
     info: dict | None = None
     if raw.startswith("{"):
-        # Inline JSON.
+        # Inline JSON. strict=False tolerates raw control characters
+        # inside strings — pasting the key into a dashboard env field
+        # commonly leaves real newlines inside the private_key value,
+        # which strict JSON rejects (and silently failed every Drive
+        # fetch until diagnosed).
         try:
-            info = _json.loads(raw)
+            info = _json.loads(raw, strict=False)
         except _json.JSONDecodeError as e:
             raise DriveNotConfigured(
                 f"GOOGLE_SERVICE_ACCOUNT_JSON looks like JSON but didn't parse: {e}"
