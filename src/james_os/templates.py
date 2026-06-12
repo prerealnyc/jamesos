@@ -138,6 +138,77 @@ async def _upsert_for_media(
     return _row(r)
 
 
+
+
+# ── style-similarity cross-check ─────────────────────────────────────
+# After a new reference is inspected, compare its template against the
+# existing READY library so a same-style upload is LABELED rather than
+# silently piling up near-duplicates. Weighted field agreement + a word
+# overlap on name/summary; >= _SIMILAR_THRESHOLD → tagged "similar to: X".
+
+_SIMILAR_THRESHOLD = 0.8
+
+
+def _style_similarity(a: dict, b: dict) -> float:
+    """0..1 — how alike two inspector templates are, by the fields that
+    actually drive a render (layout, mode, captions, music, format) plus
+    a name/summary word overlap."""
+    def norm(x):
+        return str(x or "").strip().lower()
+
+    def eq(x, y):
+        return norm(x) != "" and norm(x) == norm(y)
+
+    score = 0.0
+    la = norm((a.get("layout") or {}).get("type")) or "full_frame"
+    lb = norm((b.get("layout") or {}).get("type")) or "full_frame"
+    score += 2.0 if la == lb else 0.0
+    score += 1.5 if eq(a.get("production_mode"), b.get("production_mode")) else 0.0
+    score += 1.0 if eq((a.get("captions") or {}).get("preset_guess"),
+                       (b.get("captions") or {}).get("preset_guess")) else 0.0
+    score += 1.0 if eq(((a.get("audio") or {}).get("music") or {}).get("type"),
+                       ((b.get("audio") or {}).get("music") or {}).get("type")) else 0.0
+    score += 1.0 if eq(a.get("format_type"), b.get("format_type")) else 0.0
+    wa = {w for w in (norm(a.get("style_name")) + " " + norm(a.get("summary"))).split() if len(w) > 3}
+    wb = {w for w in (norm(b.get("style_name")) + " " + norm(b.get("summary"))).split() if len(w) > 3}
+    overlap = len(wa & wb) / max(1, min(len(wa), len(wb))) if wa and wb else 0.0
+    score += 1.5 * overlap
+    return score / 8.0
+
+
+async def _mark_similar(row: dict, template: dict, tenant_id=None) -> str:
+    """Compare the freshly built template against the rest of the ready
+    library; tag the new row 'similar to: <name>' when one matches. Returns
+    the matched name ('' = genuinely new). Best-effort."""
+    try:
+        async with acquire(tenant_id) as conn:
+            others = await conn.fetch(
+                "SELECT id, name, template FROM style_templates "
+                "WHERE status = 'ready' AND id <> $1",
+                UUID(str(row["id"])),
+            )
+        best_name, best = "", 0.0
+        for o in others:
+            tpl = o["template"]
+            if isinstance(tpl, str):
+                tpl = json.loads(tpl)
+            sim = _style_similarity(template, tpl or {})
+            if sim > best:
+                best_name, best = o["name"] or "", sim
+        if best >= _SIMILAR_THRESHOLD and best_name:
+            async with acquire(tenant_id) as conn:
+                await conn.execute(
+                    "UPDATE style_templates SET tags = array_append("
+                    "  array(SELECT t FROM unnest(tags) AS t WHERE t NOT LIKE 'similar to:%'), "
+                    "  $2), updated_at = now() WHERE id = $1",
+                    UUID(str(row["id"])), f"similar to: {best_name}"[:120],
+                )
+            return best_name
+    except Exception:  # noqa: BLE001 — labeling only, never fail the build
+        pass
+    return ""
+
+
 async def build_template_from_media(
     media_id: UUID,
     *,
@@ -232,7 +303,10 @@ async def build_template_from_media(
         status="ready",
         tenant_id=tenant,
     )
-    return {"status": "done", "template": row}
+    similar = await _mark_similar(row, template, tenant)
+    if similar:
+        row["tags"] = [t for t in (row.get("tags") or []) if not str(t).startswith("similar to:")] + [f"similar to: {similar}"]
+    return {"status": "done", "template": row, "similar_to": similar or None}
 
 
 __all__ = [

@@ -268,7 +268,7 @@ function MediaTile({ item, onChange }: { item: MediaAsset; onChange: () => void 
           className="w-full bg-background border border-input rounded-md px-2 py-1.5 text-[12px] resize-y min-h-[52px] outline-none focus-visible:ring-1 focus-visible:ring-ring"
         />
         <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-          <span>{savedAt ? "notes saved" : item.tags.join(" · ")}</span>
+          <span>{savedAt ? "notes saved" : item.tags.filter((t) => !t.startsWith("sha256:")).join(" · ")}</span>
           <div className="flex items-center gap-3">
             {item.role === "james_clip" && (
               <button

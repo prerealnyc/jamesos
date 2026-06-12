@@ -2020,6 +2020,25 @@ async def media_upload(
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="empty file")
+
+    # Exact-duplicate cross-check: every upload is content-hashed; re-uploading
+    # a byte-identical file into the same role is refused with a pointer to the
+    # existing asset — for style references this also means the Design
+    # Inspector never burns a second analysis on the same video.
+    import hashlib as _hashlib
+    _hash_tag = f"sha256:{_hashlib.sha256(data).hexdigest()[:32]}"
+    async with acquire() as conn:
+        _dup = await conn.fetchrow(
+            "SELECT id, title FROM media_assets WHERE role = $1 AND $2 = ANY(tags) LIMIT 1",
+            role, _hash_tag,
+        )
+    if _dup:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"this exact file is already in the library as "
+                    f"'{_dup['title'] or _dup['id']}' — not re-analyzing it"),
+        )
+
     tenant = str(settings.default_tenant_id)
     served_uri, file_path = media_storage().save(tenant, data, file.filename or "upload.mp4")
     created = await create_media(
@@ -2030,7 +2049,7 @@ async def media_upload(
         title=title or (file.filename or ""),
         platform=platform,
         mime=file.content_type or "",
-        tags=[t.strip() for t in tags.split(",") if t.strip()],
+        tags=[t.strip() for t in tags.split(",") if t.strip()] + [_hash_tag],
         notes=notes,
     )
     background.add_task(_run_media_analysis, UUID(created["id"]))
