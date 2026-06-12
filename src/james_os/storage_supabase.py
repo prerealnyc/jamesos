@@ -282,11 +282,17 @@ class SupabaseMediaStorage:
 
 def derive_supabase_url_from_db(database_url: str) -> str:
     """If SUPABASE_URL isn't set explicitly, derive it from the project ref
-    in the database connection (postgres.<ref>@... or db.<ref>.supabase.co).
-    Returns '' if we can't infer one — caller then refuses to enable the
-    backend (no silent guessing)."""
-    m = re.search(r"postgres\.([a-z0-9]{8,})", database_url or "") or \
-        re.search(r"db\.([a-z0-9]{8,})\.supabase\.co", database_url or "")
+    in the database connection. The pooler username is <role>.<ref> for ANY
+    role — not just postgres (the app connects as a dedicated non-BYPASSRLS
+    role since the RLS hardening, and the postgres-only pattern silently
+    knocked media storage down to local disk). Returns '' if we can't infer
+    one — caller then refuses to enable the backend (no silent guessing)."""
+    url = database_url or ""
+    m = (
+        re.search(r"://[A-Za-z0-9_-]+\.([a-z0-9]{8,}):[^@]*@[^/]*supabase\.(?:co|com)", url)
+        or re.search(r"postgres\.([a-z0-9]{8,})", url)
+        or re.search(r"db\.([a-z0-9]{8,})\.supabase\.co", url)
+    )
     return f"https://{m.group(1)}.supabase.co" if m else ""
 
 
