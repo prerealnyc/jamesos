@@ -859,7 +859,10 @@ _RUNWAY_INSERT_DURATION = 5
 # Polling parameters per Runway task — same defaults as the older
 # mixed-mode broll renderer in video_pipeline.py.
 _RUNWAY_POLL_EVERY = 5.0
-_RUNWAY_MAX_POLLS = 36                  # 3 minutes per insert ceiling
+_RUNWAY_MAX_POLLS = 180                 # ~15 min per insert — Higgsfield
+                                        # (dop/standard) takes 5-7 min per 5s
+                                        # clip (measured); Runway finishes in
+                                        # <3 min and exits the loop on success.
 # Tolerate a few consecutive transient poll failures (network blip, provider
 # 5xx/429) before declaring an insert's render dead — same policy as the
 # poll loops in video_pipeline.py.

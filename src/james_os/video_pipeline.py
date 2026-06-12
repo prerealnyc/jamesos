@@ -36,7 +36,11 @@ from .video_feedback import video_avoid_block
 from .video_plan import generate_scene_plan
 
 _POLL_EVERY = 5.0
-_MAX_POLLS = 60  # ~5 min ceiling per async stage (Runway B-roll, Creatomate)
+_MAX_POLLS = 60  # ~5 min ceiling for Creatomate assembly polls
+# B-roll engines vary a lot: Runway finishes a 5s clip in <3 min, Higgsfield
+# (dop/standard) takes 5-7 min (measured). The loop exits on success, so the
+# generous ceiling only binds when the provider is genuinely slow.
+_BROLL_MAX_POLLS = 180  # ~15 min ceiling per B-roll clip
 # HeyGen routinely takes longer than 5 minutes on 1-2 minute avatar scripts;
 # giving up early throws away a render HeyGen finishes (and bills for) anyway.
 # The avatar/talking-photo stages get their own generous ceiling.
@@ -362,7 +366,7 @@ async def _render_broll(
     if sub.status == "failed":
         return None, sub.error or f"{vid.name} submit failed"
     transient = 0
-    for _ in range(_MAX_POLLS):
+    for _ in range(_BROLL_MAX_POLLS):
         p = await vid.poll(sub.provider_job_id)
         if p.status == "succeeded":
             return p.result_url, ""
