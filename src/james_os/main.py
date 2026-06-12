@@ -1197,6 +1197,7 @@ async def long_form_candidate_render(
     candidate_id: UUID, background: BackgroundTasks,
     platform: str = Form("instagram"), aspect: str = Form("9:16"),
     image_style: str = Form(""), caption_style: str = Form(""),
+    video_engine: str = Form(""),
 ) -> dict:
     """Take a candidate window and produce a Reel — kicks a
     long_form_reel production. Returns the production row so the
@@ -1234,6 +1235,7 @@ async def long_form_candidate_render(
             cand["summary"][:120] or "Reel from long-form",
             payload, "long_form_reel",
             caption_style, image_style,
+            video_engine=video_engine,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -1258,6 +1260,7 @@ async def long_form_render_whole(
     source_id: UUID, background: BackgroundTasks,
     platform: str = Form("instagram"), aspect: str = Form("9:16"),
     image_style: str = Form(""), caption_style: str = Form(""),
+    video_engine: str = Form(""),
 ) -> dict:
     """Render the ENTIRE source as a single reel — for short talking
     clips (1-2 min) where the whole clip already IS the reel and we
@@ -1298,6 +1301,7 @@ async def long_form_render_whole(
             (cand["summary"] or src["title"] or "Reel")[:120],
             payload, "long_form_reel",
             caption_style, image_style,
+            video_engine=video_engine,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

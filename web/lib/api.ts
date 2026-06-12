@@ -912,12 +912,14 @@ export const api = {
   async renderLongCandidate(candidateId: string, opts: {
     platform?: string; aspect?: string;
     image_style?: string; caption_style?: string;
+    video_engine?: string;
   } = {}) {
     const fd = new FormData();
     fd.append("platform", opts.platform || "instagram");
     fd.append("aspect", opts.aspect || "9:16");
     fd.append("image_style", opts.image_style || "");
     fd.append("caption_style", opts.caption_style || "");
+    fd.append("video_engine", opts.video_engine || "");
     const r = await fetch(
       u(`/long-form/candidates/${candidateId}/render`),
       { method: "POST", body: fd },
@@ -933,12 +935,14 @@ export const api = {
   async renderLongSourceWhole(sourceId: string, opts: {
     platform?: string; aspect?: string;
     image_style?: string; caption_style?: string;
+    video_engine?: string;
   } = {}) {
     const fd = new FormData();
     fd.append("platform", opts.platform || "instagram");
     fd.append("aspect", opts.aspect || "9:16");
     fd.append("image_style", opts.image_style || "");
     fd.append("caption_style", opts.caption_style || "");
+    fd.append("video_engine", opts.video_engine || "");
     const r = await fetch(
       u(`/long-form/${sourceId}/render-whole`),
       { method: "POST", body: fd },

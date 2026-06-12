@@ -89,6 +89,10 @@ export default function LongFormPage() {
     { name: string; label: string; description: string }[]
   >([]);
   const [renderingWhole, setRenderingWhole] = useState(false);
+  // B-roll engine for the next render — '' = system default. Runway is
+  // the engine with keys configured today; if the chosen engine's keys
+  // are missing, inserts keep their stills (the render never fails).
+  const [brollEngine, setBrollEngine] = useState("runway");
   const [toast, setToast] = useState<{ message: string; href?: string; hrefLabel?: string } | null>(null);
   // Tick counter that re-renders every second while a selected source is
   // mid-flight, so the "last update Ns ago" indicator next to the status
@@ -247,6 +251,7 @@ export default function LongFormPage() {
     try {
       const prod = await api.renderLongCandidate(c.id, {
         caption_style: captionStyle,
+        video_engine: brollEngine,
       });
       // Optimistically link production_id locally
       if (selected) {
@@ -279,6 +284,7 @@ export default function LongFormPage() {
     try {
       await api.renderLongSourceWhole(selected.id, {
         caption_style: captionStyle,
+        video_engine: brollEngine,
       });
       // Production goes straight to the queue; user can poll there.
       await loadSelected(selected.id);
@@ -563,6 +569,19 @@ export default function LongFormPage() {
                   — {captionStyles.find((p) => p.name === captionStyle)?.description}
                 </span>
               )}
+              <span className="text-[12px] text-muted-foreground ml-2">
+                B-roll engine
+              </span>
+              <select
+                value={brollEngine}
+                onChange={(e) => setBrollEngine(e.target.value)}
+                className="text-[12px] px-2 py-1 rounded border border-border bg-background"
+                title="Which engine animates the B-roll cutaways. If the chosen engine's keys/credits are missing, those inserts keep their still image — the render never fails."
+              >
+                <option value="runway">Runway</option>
+                <option value="higgsfield">Higgsfield</option>
+                <option value="">System default</option>
+              </select>
               <Button
                 onClick={renderWholeSource}
                 disabled={renderingWhole}
