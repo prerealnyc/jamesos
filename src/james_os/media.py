@@ -41,6 +41,8 @@ ROLES = (
     # audio from these before falling back to the static settings URLs.
     "music",
     "sfx",
+    # Brand kit logo — watermark + end-card mark (see brand_kit.py).
+    "brand_logo",
 )
 
 # Local store lives beside the repo; served read-only at /media-files.

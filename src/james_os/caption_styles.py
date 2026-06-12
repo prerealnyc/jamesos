@@ -68,6 +68,7 @@ CAPTION_PRESETS: dict[str, dict] = {
         "shadow_y": "0.3 vh",
         "background_color": "transparent",
         "y_position": "75%",            # lower-third
+        "pop_in": False,
         "x_alignment": "50%",
         "transform": "none",            # mixed-case for narrative feel
         "letter_spacing": "0",
@@ -112,6 +113,7 @@ CAPTION_PRESETS: dict[str, dict] = {
         "shadow_y": "0.2 vh",
         "background_color": "transparent",
         "y_position": "85%",            # bottom band — out of the way
+        "pop_in": False,
         "x_alignment": "50%",
         "transform": "none",
         "letter_spacing": "0",
@@ -204,6 +206,7 @@ CAPTION_PRESETS: dict[str, dict] = {
         "x_alignment": "50%",
         "transform": "none",
         "letter_spacing": "0",
+        "pop_in": False,
     },
     "gradient_mint": {
         # The 'Sales reps / don't need / more tools.' ad look: big lowercase
@@ -414,6 +417,15 @@ def caption_element(
         elem["text_transform"] = "uppercase"
     if preset.get("letter_spacing") and preset["letter_spacing"] != "0":
         elem["letter_spacing"] = preset["letter_spacing"]
+    if preset.get("pop_in", True):
+        # The word-punch: captions scale 82→100% in 0.16s as they appear.
+        # Elegant presets (clean_white / subtle_minimal / editorial_serif)
+        # opt out via pop_in=False.
+        elem["animations"] = [{
+            "time": 0, "duration": 0.16, "type": "scale",
+            "scope": "element", "easing": "quadratic-out",
+            "start_scale": "82%", "end_scale": "100%",
+        }]
     return elem
 
 

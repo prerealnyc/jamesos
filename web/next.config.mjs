@@ -76,6 +76,8 @@ const nextConfig = {
       { source: "/changes/:path*", destination: `${BACKEND}/changes/:path*` },
       // Higgsfield Soul IDs (custom-references) — list + generate-from-soul.
       { source: "/higgsfield/:path*", destination: `${BACKEND}/higgsfield/:path*` },
+      // Brand kit (name plate / watermark / end card identity).
+      { source: "/brand-kit", destination: `${BACKEND}/brand-kit` },
     ];
   },
 };

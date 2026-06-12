@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { api, type PlugIn } from "@/lib/api";
+import { api, mediaUrl, type PlugIn } from "@/lib/api";
 import { Button, Card, CardTitle, Input, Textarea, Select, Label, Badge, Spinner } from "@/components/ui";
 
 const SLOTS = [
@@ -76,6 +76,8 @@ export default function BrandPage() {
           overridden by a prompt. This is how the brand&apos;s tone and strict guidelines are enforced.
         </p>
       </header>
+
+      <BrandKitCard />
 
       <Card>
         <CardTitle>Add a voice rule</CardTitle>
@@ -153,5 +155,101 @@ export default function BrandPage() {
         )}
       </Card>
     </div>
+  );
+}
+
+
+// ── Brand kit ─────────────────────────────────────────────────────────
+// The identity every RENDER carries: lower-third name plate (first ~3s),
+// top-right logo watermark, and the "FOLLOW FOR MORE + handle + logo"
+// end card. Saved per-tenant; renders read it automatically.
+function BrandKitCard() {
+  const [kit, setKit] = useState<{ display_name: string; tagline: string; handle: string; logo_url: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const logoRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    api.getBrandKit().then(setKit).catch((e) => setErr(e instanceof Error ? e.message : "load failed"));
+  }, []);
+
+  async function save() {
+    if (!kit) return;
+    setBusy(true);
+    setErr(null);
+    setMsg(null);
+    try {
+      setKit(await api.putBrandKit(kit));
+      setMsg("saved — every new render now carries this");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "save failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onLogo(files: FileList | null) {
+    if (!files || files.length === 0 || !kit) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const m = await api.uploadMedia(files[0], "brand_logo", { title: files[0].name });
+      const updated = await api.putBrandKit({ logo_url: m.uri });
+      setKit(updated);
+      setMsg("logo uploaded — watermark + end card will use it");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "logo upload failed");
+    } finally {
+      setBusy(false);
+      if (logoRef.current) logoRef.current.value = "";
+    }
+  }
+
+  if (!kit) return null;
+  return (
+    <Card>
+      <CardTitle>Brand kit — what every video carries</CardTitle>
+      <p className="text-[12px] text-muted-foreground mt-1 mb-2">
+        Name plate (first 3s, lower third) · logo watermark (top-right, whole video) ·
+        end card (&quot;FOLLOW FOR MORE&quot; + handle + logo, last 2.6s). Renders pick these up
+        automatically — leave a field empty to skip that element.
+      </p>
+      <div className="grid md:grid-cols-3 gap-3">
+        <div>
+          <Label>Display name (name plate)</Label>
+          <Input value={kit.display_name} onChange={(e) => setKit({ ...kit, display_name: e.target.value })} placeholder="James Prendamano" />
+        </div>
+        <div>
+          <Label>Tagline</Label>
+          <Input value={kit.tagline} onChange={(e) => setKit({ ...kit, tagline: e.target.value })} placeholder="PreReal · Staten Island" />
+        </div>
+        <div>
+          <Label>Handle (end card)</Label>
+          <Input value={kit.handle} onChange={(e) => setKit({ ...kit, handle: e.target.value })} placeholder="@jamesprendamano" />
+        </div>
+      </div>
+      <div className="flex items-center gap-4 mt-3 flex-wrap">
+        <div className="flex items-center gap-3">
+          {kit.logo_url ? (
+            <img src={mediaUrl(kit.logo_url)} alt="brand logo" className="h-10 w-auto rounded bg-secondary p-1" />
+          ) : (
+            <span className="text-[11px] text-muted-foreground">no logo yet — watermark + end-card logo are skipped</span>
+          )}
+          <input
+            ref={logoRef}
+            type="file"
+            accept="image/png,image/webp,image/svg+xml,image/jpeg"
+            onChange={(e) => onLogo(e.target.files)}
+            className="text-[12px] text-muted-foreground file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-primary file:text-primary-foreground file:cursor-pointer"
+          />
+        </div>
+        <Button onClick={save} disabled={busy}>
+          {busy ? <span className="flex items-center gap-2"><Spinner /> saving…</span> : "Save brand kit"}
+        </Button>
+        {msg && <span className="text-[12px] text-accent">✓ {msg}</span>}
+        {err && <span className="text-[12px] text-destructive">✗ {err}</span>}
+      </div>
+    </Card>
   );
 }

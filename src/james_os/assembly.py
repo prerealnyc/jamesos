@@ -14,6 +14,7 @@ import httpx
 
 from .caption_styles import caption_element, get_preset, styled_caption_elements
 from .audio_library import resolve_music_url, resolve_sfx_url
+from .brand_kit import get_brand_kit
 from .config import settings
 
 _TIMEOUT = httpx.Timeout(45.0, connect=10.0)
@@ -143,6 +144,142 @@ def _ken_burns(duration: float, kind: str = "in") -> list[dict]:
              "start_scale": "100%", "end_scale": "106%"}]
 
 
+def _zoom_punches(total: float, period: float = 7.0, hold: float = 2.6) -> list[dict]:
+    """Retention punch-ins on the speaker: a quick 100→107% zoom every ~period
+    seconds that snaps back after `hold` — reads as a pro jump-cut edit."""
+    anims: list[dict] = []
+    t = period * 0.6
+    while t + hold + 0.4 < total:
+        anims.append({"time": round(t, 2), "duration": 0.18, "type": "scale",
+                      "scope": "element", "easing": "quadratic-out",
+                      "start_scale": "100%", "end_scale": "107%"})
+        anims.append({"time": round(t + hold, 2), "duration": 0.14, "type": "scale",
+                      "scope": "element", "easing": "quadratic-in",
+                      "start_scale": "107%", "end_scale": "100%"})
+        t += period
+    return anims
+
+
+def _watermark_element(logo_url: str, total: float, track: int = 8) -> list[dict]:
+    """Small brand logo pinned top-right for the whole video."""
+    if not (logo_url or "").startswith("http"):
+        return []
+    return [{
+        "type": "image", "source": logo_url,
+        "track": track, "time": 0, "duration": total,
+        "width": "12%", "x": "calc(100% - 4%)", "y": "4%",
+        "x_anchor": "100%", "y_anchor": "0%", "fit": "contain",
+    }]
+
+
+def _nameplate_elements(name: str, tagline: str) -> list[dict]:
+    """Lower-third identity plate for the first ~3s."""
+    if not (name or "").strip():
+        return []
+    fade = [{"time": 0, "duration": 0.35, "type": "fade"}]
+    shadow = {"shadow_color": "rgba(0,0,0,0.7)", "shadow_blur": "1.0 vh",
+              "shadow_x": "0 vh", "shadow_y": "0.25 vh"}
+    out = [{
+        "type": "text", "text": name.strip().upper(),
+        "track": 6, "time": 0.7, "duration": 3.0,
+        "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
+        "y": "80%", "y_anchor": "50%", "width": "86%",
+        "font_family": "Montserrat", "font_weight": "800",
+        "font_size": "3.6 vh", "fill_color": "#FFFFFF",
+        "letter_spacing": "2%", "animations": fade, **shadow,
+    }]
+    if (tagline or "").strip():
+        out.append({
+            "type": "text", "text": tagline.strip(),
+            "track": 7, "time": 0.7, "duration": 3.0,
+            "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
+            "y": "84.5%", "y_anchor": "50%", "width": "86%",
+            "font_family": "Montserrat", "font_weight": "600",
+            "font_size": "2.4 vh", "fill_color": "#E8E8E8",
+            "animations": fade, **shadow,
+        })
+    return out
+
+
+def _endcard_elements(handle: str, logo_url: str, total: float) -> list[dict]:
+    """Last ~2.6s: FOLLOW FOR MORE + handle + logo over the footage."""
+    if total < 8:
+        return []
+    start = round(max(0.0, total - 2.6), 2)
+    dur = round(total - start, 2)
+    fade = [{"time": 0, "duration": 0.3, "type": "fade"}]
+    shadow = {"shadow_color": "rgba(0,0,0,0.75)", "shadow_blur": "1.2 vh",
+              "shadow_x": "0 vh", "shadow_y": "0.3 vh"}
+    out = [{
+        "type": "text", "text": "FOLLOW FOR MORE",
+        "track": 6, "time": start, "duration": dur,
+        "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
+        "y": "40%", "y_anchor": "50%", "width": "88%",
+        "font_family": "Archivo Black", "font_weight": "900",
+        "font_size": "6.2 vh", "fill_color": "#FFFFFF",
+        "animations": fade, **shadow,
+    }]
+    if (handle or "").strip():
+        out.append({
+            "type": "text", "text": handle.strip(),
+            "track": 7, "time": start, "duration": dur,
+            "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
+            "y": "49%", "y_anchor": "50%", "width": "88%",
+            "font_family": "Montserrat", "font_weight": "700",
+            "font_size": "4.2 vh", "fill_color": "#FFE600",
+            "animations": fade, **shadow,
+        })
+    if (logo_url or "").startswith("http"):
+        out.append({
+            "type": "image", "source": logo_url,
+            "track": 9, "time": start, "duration": dur,
+            "width": "20%", "x": "50%", "y": "61%",
+            "x_anchor": "50%", "y_anchor": "50%", "fit": "contain",
+            "animations": fade,
+        })
+    return out
+
+
+def _progress_bar_element(total: float, color: str = "#C8102E") -> list[dict]:
+    """Thin top progress bar — background-only text element whose width is
+    keyframed 0→100% across the video (Creatomate keyframe-array form)."""
+    if total <= 0:
+        return []
+    return [{
+        "type": "text", "text": " ",
+        "track": 10, "time": 0, "duration": total,
+        "x": "0%", "x_anchor": "0%", "y": "0%", "y_anchor": "0%",
+        "width": [
+            {"time": 0, "value": "0%"},
+            {"time": round(total, 2), "value": "100%"},
+        ],
+        "font_size": "0.7 vh",
+        "background_color": color,
+    }]
+
+
+def _polish_elements(
+    brand: dict | None, total: float,
+    sfx_hit_url: str = "", sfx_riser_url: str = "",
+) -> list[dict]:
+    """The shared brand + retention layer appended by every builder."""
+    b = brand or {}
+    out: list[dict] = []
+    out += _nameplate_elements(b.get("display_name", ""), b.get("tagline", ""))
+    out += _watermark_element(b.get("logo_url", ""), total)
+    out += _endcard_elements(b.get("handle", ""), b.get("logo_url", ""), total)
+    out += _progress_bar_element(total)
+    if (sfx_hit_url or "").startswith("http"):
+        out.append({"type": "audio", "source": sfx_hit_url, "track": 11,
+                    "time": 0.1, "duration": 1.0, "volume": 65})
+    if (sfx_riser_url or "").startswith("http") and total > 10:
+        out.append({"type": "audio", "source": sfx_riser_url, "track": 11,
+                    "time": round(max(0.0, total - 3.4), 2), "duration": 3.0,
+                    "volume": 55})
+    return out
+
+
+
 class CreatomateAssemblyProvider(AssemblyProvider):
     name = "creatomate"
 
@@ -162,6 +299,9 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         caption_style: str | None = None,
         music_track_url: str | None = None,   # library override (audio_library)
         sfx_url: str = "",                     # whoosh at cutaway starts; '' = no layer
+        brand: dict | None = None,             # brand kit (nameplate/watermark/endcard)
+        sfx_hit_url: str = "",
+        sfx_riser_url: str = "",
     ) -> dict:
         """Build a Creatomate source for the story_audio mode.
 
@@ -242,6 +382,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 "volume": 18,
             })
 
+        elements += _polish_elements(brand, total, sfx_hit_url, sfx_riser_url)
         return {"output_format": "mp4", "width": w, "height": h, "elements": elements}
 
     def build_avatar_story_mix_source(
@@ -255,6 +396,9 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         caption_style: str | None = None,
         music_track_url: str | None = None,   # library override (audio_library)
         sfx_url: str = "",                     # whoosh at cutaway starts; '' = no layer
+        brand: dict | None = None,             # brand kit (nameplate/watermark/endcard)
+        sfx_hit_url: str = "",
+        sfx_riser_url: str = "",
     ) -> dict:
         """Mixed avatar-on-camera + AI-still source.
 
@@ -351,6 +495,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 "volume": 15,
             })
 
+        elements += _polish_elements(brand, total, sfx_hit_url, sfx_riser_url)
         return {"output_format": "mp4", "width": w, "height": h, "elements": elements}
 
     def build_engaging_avatar_source(
@@ -364,6 +509,9 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         caption_style: str | None = None,
         music_track_url: str | None = None,   # library override (audio_library)
         sfx_url: str = "",                     # whoosh at cutaway starts; '' = no layer
+        brand: dict | None = None,             # brand kit (nameplate/watermark/endcard)
+        sfx_hit_url: str = "",
+        sfx_riser_url: str = "",
     ) -> dict:
         """engaging_avatar layout. The avatar video carries its own
         audio across the whole timeline; B-roll images overlay on top
@@ -387,6 +535,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             elements.append({
                 "type": "video", "source": avatar_video_url,
                 "track": 1, "time": 0, "duration": total, "fit": "cover",
+                "animations": _zoom_punches(total),
             })
 
         # track 2 — insert overlays with short fade in/out. Prefer the
@@ -474,6 +623,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 "volume": 12,
             })
 
+        elements += _polish_elements(brand, total, sfx_hit_url, sfx_riser_url)
         return {"output_format": "mp4", "width": w, "height": h, "elements": elements}
 
     def build_split_horizontal_source(
@@ -487,6 +637,9 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         caption_style: str | None = None,
         music_track_url: str | None = None,   # library override (audio_library)
         sfx_url: str = "",                     # whoosh at cutaway starts; '' = no layer
+        brand: dict | None = None,             # brand kit (nameplate/watermark/endcard)
+        sfx_hit_url: str = "",
+        sfx_riser_url: str = "",
     ) -> dict:
         """split_horizontal layout — reproduces the "speaker on top, text /
         visuals on the bottom" reel composition the Design Inspector captures
@@ -530,6 +683,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             elements.append({
                 "type": "video", "source": avatar_video_url,
                 "track": 1, "time": 0, "duration": total, "fit": "cover",
+                "animations": _zoom_punches(total),
                 **TOP,
             })
 
@@ -607,6 +761,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 "volume": 12,
             })
 
+        elements += _polish_elements(brand, total, sfx_hit_url, sfx_riser_url)
         return {"output_format": "mp4", "width": w, "height": h, "elements": elements}
 
     async def render_split_horizontal(
@@ -629,6 +784,9 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             caption_style=caption_style,
             music_track_url=await resolve_music_url(music_mood),
             sfx_url=await resolve_sfx_url("whoosh"),
+            brand=await get_brand_kit(),
+            sfx_hit_url=await resolve_sfx_url("hit"),
+            sfx_riser_url=await resolve_sfx_url("riser"),
         )
         body = {"source": source}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
@@ -662,6 +820,9 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         caption_style: str | None = None,
         music_track_url: str | None = None,   # library override (audio_library)
         sfx_url: str = "",                     # whoosh at cutaway starts; '' = no layer
+        brand: dict | None = None,             # brand kit (nameplate/watermark/endcard)
+        sfx_hit_url: str = "",
+        sfx_riser_url: str = "",
     ) -> dict:
         """split_vertical layout — speaker on the LEFT half, B-roll + bold text
         on the RIGHT half (divided by a VERTICAL line). Mirror of
@@ -693,6 +854,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             elements.append({
                 "type": "video", "source": avatar_video_url,
                 "track": 1, "time": 0, "duration": total, "fit": "cover",
+                "animations": _zoom_punches(total),
                 **LEFT,
             })
 
@@ -768,6 +930,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 "volume": 12,
             })
 
+        elements += _polish_elements(brand, total, sfx_hit_url, sfx_riser_url)
         return {"output_format": "mp4", "width": w, "height": h, "elements": elements}
 
     async def render_split_vertical(
@@ -790,6 +953,9 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             caption_style=caption_style,
             music_track_url=await resolve_music_url(music_mood),
             sfx_url=await resolve_sfx_url("whoosh"),
+            brand=await get_brand_kit(),
+            sfx_hit_url=await resolve_sfx_url("hit"),
+            sfx_riser_url=await resolve_sfx_url("riser"),
         )
         body = {"source": source}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
@@ -831,6 +997,9 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             caption_style=caption_style,
             music_track_url=await resolve_music_url(music_mood),
             sfx_url=await resolve_sfx_url("whoosh"),
+            brand=await get_brand_kit(),
+            sfx_hit_url=await resolve_sfx_url("hit"),
+            sfx_riser_url=await resolve_sfx_url("riser"),
         )
         body = {"source": source}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
@@ -876,6 +1045,9 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             caption_style=caption_style,
             music_track_url=await resolve_music_url(music_mood),
             sfx_url=await resolve_sfx_url("whoosh"),
+            brand=await get_brand_kit(),
+            sfx_hit_url=await resolve_sfx_url("hit"),
+            sfx_riser_url=await resolve_sfx_url("riser"),
         )
         body = {"source": source}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
@@ -917,6 +1089,9 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             caption_style=caption_style,
             music_track_url=await resolve_music_url(music_mood),
             sfx_url=await resolve_sfx_url("whoosh"),
+            brand=await get_brand_kit(),
+            sfx_hit_url=await resolve_sfx_url("hit"),
+            sfx_riser_url=await resolve_sfx_url("riser"),
         )
         body = {"source": source}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:

@@ -73,6 +73,21 @@ async function jpatch<T>(path: string, body: unknown): Promise<T> {
   return r.json();
 }
 
+async function jput<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(u(path), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    ...FETCH_OPTS,
+  });
+  if (r.status === 401) { _handle401(path); throw new Error("Not authenticated"); }
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
 async function jget<T>(path: string): Promise<T> {
   const r = await fetch(u(path), { cache: "no-store", ...FETCH_OPTS });
   if (r.status === 401) { _handle401(path); throw new Error("Not authenticated"); }
@@ -285,7 +300,8 @@ export type MediaRole =
   | "hero_photo"
   | "hero_video"
   | "music"
-  | "sfx";
+  | "sfx"
+  | "brand_logo";
 
 /** Aesthetic preset for /images/generate. Each maps to a distinct
  *  prompt prefix on the backend (see imagegen.POST_STYLES). Same topic
@@ -1003,6 +1019,11 @@ export const api = {
     }>("/higgsfield/souls"),
   generateSoulImage: (body: { custom_reference_id: string; prompt: string; aspect?: string; strength?: number }) =>
     jpost<{ status: string; image_url?: string; request_id: string; note?: string }>("/higgsfield/soul-image", body),
+  // Brand kit — nameplate / watermark / end-card identity on every render.
+  getBrandKit: () =>
+    jget<{ display_name: string; tagline: string; handle: string; logo_url: string }>("/brand-kit"),
+  putBrandKit: (body: { display_name?: string; tagline?: string; handle?: string; logo_url?: string }) =>
+    jput<{ display_name: string; tagline: string; handle: string; logo_url: string }>("/brand-kit", body),
   getTemplate: (id: string) => jget<StyleTemplate>(`/templates/${id}`),
   inspectTemplate: (mediaId: string) =>
     jpost<{ started: boolean; media_id: string; note: string }>(
