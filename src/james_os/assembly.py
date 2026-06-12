@@ -258,6 +258,49 @@ def _progress_bar_element(total: float, color: str = "#C8102E") -> list[dict]:
     }]
 
 
+def _pct(value, default: float = 50.0) -> float:
+    """Parse a Creatomate 'NN%' value → float. Robust to whitespace."""
+    try:
+        return float(str(value).strip().rstrip("%"))
+    except (TypeError, ValueError):
+        return default
+
+
+def _constrain_styled_to_split(styled: list[dict], layout: str) -> None:
+    """Remap designer-style caption elements to a split composition.
+
+    The styled builders in caption_styles.py emit FULL-FRAME geometry
+    (hooks centred mid-frame at ~50% width), which on the split layouts
+    lands across the seam and over the speaker panel. Mirror the
+    per-element overrides the standard caption loops apply:
+
+      * horizontal — recentre each simultaneous block on the y=50% seam.
+        Multi-line hook stacks keep their line spacing and shift as one
+        block so the lines don't collapse onto each other.
+      * vertical — pull every text element into the RIGHT column and
+        narrow it so it stays clear of the speaker on the left.
+
+    Mutates the elements in place (they're built fresh per render).
+    """
+    texts = [e for e in styled if e.get("type") == "text"]
+    if layout == "vertical":
+        for e in texts:
+            e["x"] = "75%"
+            e["x_anchor"] = "50%"
+            e["width"] = "44%"
+        return
+    # horizontal — group by start time so stacked hook lines move together.
+    groups: dict[float, list[dict]] = {}
+    for e in texts:
+        groups.setdefault(round(float(e.get("time") or 0.0), 2), []).append(e)
+    for group in groups.values():
+        ys = [_pct(e.get("y")) for e in group]
+        shift = 50.0 - sum(ys) / len(ys)
+        for e, y in zip(group, ys, strict=True):
+            e["y"] = f"{y + shift:.1f}%"
+            e["y_anchor"] = "50%"
+
+
 def _polish_elements(
     brand: dict | None, total: float,
     sfx_hit_url: str = "", sfx_riser_url: str = "",
@@ -721,8 +764,11 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         _styled = styled_caption_elements(caption_style, captions, track=3)
         if _styled is not None:
             # Designer styles (viral_hook, magenta_blocks, editorial_serif,
-            # gradient_mint) emit their complete multi-element track here;
-            # blank the list so the standard loop below no-ops.
+            # gradient_mint) emit their complete multi-element track here —
+            # remap their full-frame geometry onto the seam (same constraint
+            # the standard loop below applies), then blank the list so the
+            # standard loop no-ops.
+            _constrain_styled_to_split(_styled, "horizontal")
             elements.extend(_styled)
             captions = []
         for c in captions:
@@ -888,8 +934,11 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         _styled = styled_caption_elements(caption_style, captions, track=3)
         if _styled is not None:
             # Designer styles (viral_hook, magenta_blocks, editorial_serif,
-            # gradient_mint) emit their complete multi-element track here;
-            # blank the list so the standard loop below no-ops.
+            # gradient_mint) emit their complete multi-element track here —
+            # pull their full-frame geometry into the right column (same
+            # constraint the standard loop below applies), then blank the
+            # list so the standard loop no-ops.
+            _constrain_styled_to_split(_styled, "vertical")
             elements.extend(_styled)
             captions = []
         for c in captions:

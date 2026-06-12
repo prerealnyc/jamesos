@@ -440,6 +440,13 @@ HOOK_WINDOW_S = 3.2      # flashes starting inside this window form the title
 HOOK_MAX_WORDS = 12      # keep the stacked block readable
 _HOOK_YELLOW = "#FFDD33"
 
+# Creatomate renders at most ONE element per track per instant — stacked
+# hook lines that share a track silently drop all but the last. Each
+# simultaneous hook line therefore gets its own track, offset well above
+# the builders' caption track AND the polish layer (tracks 6-11) so the
+# lines never collide with either.
+_HOOK_TRACK_OFFSET = 10
+
 
 def _hook_lines(text: str) -> list[tuple[str, bool]]:
     """Split the hook into 1-3 visually balanced lines; returns
@@ -478,6 +485,19 @@ def _soften_emphasis(text: str) -> str:
     )
 
 
+def _hook_window(hook: list[dict], body: list[dict]) -> tuple[float, float]:
+    """Start/end of the stacked hook title block. Held at least 2s for
+    readability, but clamped to the first body flash so the block never
+    overlaps the body captions that follow on the caption track."""
+    hook_start = min(float(c.get("start") or 0.0) for c in hook)
+    hook_end = max(max(float(c.get("end") or 0.0) for c in hook), hook_start + 2.0)
+    if body:
+        first_body = min(float(c.get("start") or 0.0) for c in body)
+        if first_body > hook_start:
+            hook_end = min(hook_end, first_body)
+    return hook_start, hook_end
+
+
 def viral_hook_elements(captions: list[dict], track: int = 3) -> list[dict]:
     """Build the full two-phase caption track for the 'viral_hook' style.
 
@@ -494,9 +514,7 @@ def viral_hook_elements(captions: list[dict], track: int = 3) -> list[dict]:
     body = [c for c in caps if c not in hook]
 
     hook_text = " ".join((c.get("text") or "").strip() for c in hook)
-    hook_start = min(float(c.get("start") or 0.0) for c in hook)
-    hook_end = max(float(c.get("end") or 0.0) for c in hook)
-    hook_end = max(hook_end, hook_start + 2.0)   # never flash shorter than 2s
+    hook_start, hook_end = _hook_window(hook, body)
 
     out: list[dict] = []
     lines = _hook_lines(hook_text)
@@ -506,7 +524,8 @@ def viral_hook_elements(captions: list[dict], track: int = 3) -> list[dict]:
         out.append({
             "type": "text",
             "text": line.upper(),
-            "track": track,
+            # One track per simultaneous line — see _HOOK_TRACK_OFFSET.
+            "track": track + _HOOK_TRACK_OFFSET + i,
             "time": round(hook_start, 2),
             "duration": round(max(0.2, hook_end - hook_start), 2),
             "width": "92%",
@@ -555,14 +574,15 @@ def magenta_blocks_elements(captions: list[dict], track: int = 3) -> list[dict]:
         return []
     out: list[dict] = []
     hook_text = " ".join((c.get("text") or "").strip() for c in hook)
-    hook_start = min(float(c.get("start") or 0.0) for c in hook)
-    hook_end = max(max(float(c.get("end") or 0.0) for c in hook), hook_start + 2.0)
+    hook_start, hook_end = _hook_window(hook, body)
     lines = _hook_lines(hook_text)
     line_gap = 9.4
     base = 50.0 - (len(lines) - 1) * line_gap / 2
     for i, (line, _y) in enumerate(lines):
         out.append({
-            "type": "text", "text": line.upper(), "track": track,
+            # One track per simultaneous line — see _HOOK_TRACK_OFFSET.
+            "type": "text", "text": line.upper(),
+            "track": track + _HOOK_TRACK_OFFSET + i,
             "time": round(hook_start, 2),
             "duration": round(max(0.2, hook_end - hook_start), 2),
             "width": "84%",
@@ -593,8 +613,7 @@ def editorial_serif_elements(captions: list[dict], track: int = 3) -> list[dict]
         return []
     out: list[dict] = []
     words = " ".join((c.get("text") or "").strip() for c in hook).split()
-    hook_start = min(float(c.get("start") or 0.0) for c in hook)
-    hook_end = max(max(float(c.get("end") or 0.0) for c in hook), hook_start + 2.0)
+    hook_start, hook_end = _hook_window(hook, body)
     kicker_words = words[:2] if len(words) >= 5 else words[:1] if len(words) >= 3 else []
     big_words = words[len(kicker_words):] or words
     # Title Case reads wrong around leftover ALL-CAPS emphasis words — soften
@@ -615,6 +634,8 @@ def editorial_serif_elements(captions: list[dict], track: int = 3) -> list[dict]
         out.append({
             **common,
             "text": " ".join(kicker_words).upper(),
+            # Kicker + title lines all show at once — one track each.
+            "track": track + _HOOK_TRACK_OFFSET,
             "y": f"{base - 8.0:.1f}%",
             "font_family": "Montserrat", "font_weight": "700",
             "font_size": "3.4 vh", "fill_color": "#FFFFFF",
@@ -625,6 +646,7 @@ def editorial_serif_elements(captions: list[dict], track: int = 3) -> list[dict]
         out.append({
             **common,
             "text": title,
+            "track": track + _HOOK_TRACK_OFFSET + 1 + i,
             "y": f"{base + i * line_gap:.1f}%",
             "font_family": "Playfair Display", "font_weight": "700",
             "font_style": "italic",
