@@ -651,8 +651,10 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 role=role,
             ))
 
-        # track 5 — transition whoosh at each cutaway start (only when the
-        # audio library has one; '' skips the layer, never a broken element).
+        # track 5 — ONE transition whoosh at the first cutaway only (only
+        # when the audio library has one; '' skips the layer). A whoosh on
+        # every cutaway reads as a tic — human feedback: "multiple times
+        # is irritating".
         if sfx_url.startswith("http"):
             for ins in inserts:
                 if not ((ins.get("video_url") or ins.get("image_url") or "").strip().startswith("http")):
@@ -663,6 +665,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                     "track": 5, "time": round(max(0.0, _t - 0.15), 2),
                     "duration": 0.7, "volume": 60,
                 })
+                break
 
         # track 4 — optional music heavily ducked under avatar voice
         music_url = music_track_url or _music_url_for(music_mood)
@@ -792,8 +795,10 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             elem["y_anchor"] = "50%"
             elements.append(elem)
 
-        # track 5 — transition whoosh at each cutaway start (only when the
-        # audio library has one; '' skips the layer, never a broken element).
+        # track 5 — ONE transition whoosh at the first cutaway only (only
+        # when the audio library has one; '' skips the layer). A whoosh on
+        # every cutaway reads as a tic — human feedback: "multiple times
+        # is irritating".
         if sfx_url.startswith("http"):
             for ins in inserts:
                 if not ((ins.get("video_url") or ins.get("image_url") or "").strip().startswith("http")):
@@ -804,6 +809,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                     "track": 5, "time": round(max(0.0, _t - 0.15), 2),
                     "duration": 0.7, "volume": 60,
                 })
+                break
 
         # track 4 — optional music heavily ducked under the speaker voice
         music_url = music_track_url or _music_url_for(music_mood)
@@ -964,8 +970,10 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             elem["width"] = "44%"
             elements.append(elem)
 
-        # track 5 — transition whoosh at each cutaway start (only when the
-        # audio library has one; '' skips the layer, never a broken element).
+        # track 5 — ONE transition whoosh at the first cutaway only (only
+        # when the audio library has one; '' skips the layer). A whoosh on
+        # every cutaway reads as a tic — human feedback: "multiple times
+        # is irritating".
         if sfx_url.startswith("http"):
             for ins in inserts:
                 if not ((ins.get("video_url") or ins.get("image_url") or "").strip().startswith("http")):
@@ -976,6 +984,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                     "track": 5, "time": round(max(0.0, _t - 0.15), 2),
                     "duration": 0.7, "volume": 60,
                 })
+                break
 
         # track 4 — optional music ducked under the speaker voice
         music_url = music_track_url or _music_url_for(music_mood)
