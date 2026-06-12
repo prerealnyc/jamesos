@@ -116,37 +116,113 @@ async def _autopilot_scheduler() -> None:
         await asyncio.sleep(1800)  # check every 30 minutes
 
 
+async def _reap_orphaned_productions(tenant_id: UUID | None = None) -> int:
+    """Flip in-flight video_productions rows to 'failed' on process
+    restart. A render spans 5-30 minutes; if the server redeploys or
+    crashes mid-way the in-process task dies but the row stays at
+    'queued'/'planning'/'rendering_clips'/'assembling' forever — the
+    pipeline page polls a spinner that never moves. Same pattern as
+    long_form.reap_orphaned_sources (count the RETURNING rows)."""
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            """UPDATE video_productions
+                  SET status = 'failed',
+                      error  = 'interrupted — server restarted mid-render',
+                      updated_at = now(),
+                      completed_at = now()
+                WHERE status IN ('queued', 'planning',
+                                 'rendering_clips', 'assembling')
+                RETURNING id"""
+        )
+    return len(rows)
+
+
+async def _reap_all_orphans() -> None:
+    """Run every startup orphan reaper, once per tenant. With RLS
+    enforced (migration 034) each connection only sees the tenant bound
+    to it, so a single default-tenant pass would leave every other
+    tenant's interrupted rows spinning forever."""
+    from .autopilot import reap_orphaned_runs
+    from .long_form import reap_orphaned_sources
+    from .voice_ingest import reap_orphaned_jobs
+
+    try:
+        async with acquire() as conn:
+            tenant_ids = [
+                r["id"] for r in await conn.fetch("SELECT id FROM tenants")
+            ]
+    except Exception:  # noqa: BLE001
+        tenant_ids = []
+    for tid in tenant_ids or [settings.default_tenant_id]:
+        for reaper in (
+            reap_orphaned_runs,        # autopilot batches
+            reap_orphaned_sources,     # long-form ingests
+            reap_orphaned_jobs,        # voice-studio ingests
+            _reap_orphaned_productions,  # video renders
+        ):
+            try:
+                await reaper(tid)
+            except Exception:  # noqa: BLE001 — never block startup on a reap failure
+                pass
+
+
+async def _check_rls_enforced() -> None:
+    """Startup tripwire for the tenant boundary. RLS policies are the
+    ONLY thing keeping tenants apart (application SQL deliberately
+    carries no tenant predicates) — and they are silently inert when
+    the connected role is a superuser, has BYPASSRLS, or owns tables
+    that lack FORCE ROW LEVEL SECURITY. Warn loudly by default; set
+    JOS_REQUIRE_RLS=1 in production to refuse to boot in that state."""
+    problems: list[str] = []
+    try:
+        async with acquire() as conn:
+            role = await conn.fetchrow(
+                "SELECT rolsuper, rolbypassrls FROM pg_roles "
+                "WHERE rolname = current_user"
+            )
+            forced = await conn.fetchval(
+                "SELECT relforcerowsecurity FROM pg_class "
+                "WHERE relname = 'events' AND relkind = 'r'"
+            )
+    except Exception:  # noqa: BLE001 — the probe must never break startup
+        return
+    if role and role["rolsuper"]:
+        problems.append("connected role is a SUPERUSER (RLS never applies)")
+    if role and role["rolbypassrls"]:
+        problems.append("connected role has BYPASSRLS")
+    if not forced:
+        problems.append(
+            "tables lack FORCE ROW LEVEL SECURITY "
+            "(run `python migrate.py` to apply 034_rls_enforcement.sql)"
+        )
+    if problems:
+        msg = (
+            "[startup] RLS IS NOT ENFORCED — tenant isolation is OFF: "
+            + "; ".join(problems)
+        )
+        if (os.environ.get("JOS_REQUIRE_RLS", "") or "").strip().lower() in (
+            "1", "true", "yes",
+        ):
+            raise RuntimeError(msg)
+        print(msg)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import asyncio
 
     await init_pool()
+    # Refuse-to-boot (or at least shout) when tenant isolation is off.
+    await _check_rls_enforced()
     # Overlay any tenant-saved API keys from the DB onto the .env baseline
     # so UI-entered credentials are live from the first request.
     from .credentials import load_into_settings
 
     await load_into_settings()
-    # Reap any autopilot runs that were 'running' when the process died.
-    from .autopilot import reap_orphaned_runs
-    try:
-        await reap_orphaned_runs()
-    except Exception:  # noqa: BLE001 — never block startup on a reap failure
-        pass
-    # Same idea for Long Form Cutter ingests — a 1.4 GB Drive download
-    # spans 20+ min, far longer than uvicorn's typical reload cycle, so
-    # the row will end up orphaned on every dev-restart without this.
-    from .long_form import reap_orphaned_sources
-    try:
-        await reap_orphaned_sources()
-    except Exception:  # noqa: BLE001 — never block startup on a reap failure
-        pass
-    # Voice Studio Drive-ingest jobs: same — a restart mid-transcription
-    # must not leave a fake 'running' row (frustration-ledger honesty).
-    from .voice_ingest import reap_orphaned_jobs as _reap_voice
-    try:
-        await _reap_voice()
-    except Exception:  # noqa: BLE001 — never block startup on a reap failure
-        pass
+    # Reap rows stranded mid-flight by the previous process: autopilot
+    # batches, long-form ingests, voice ingests, video renders. A restart
+    # must never leave a fake 'running' row spinning forever.
+    await _reap_all_orphans()
     scheduler = asyncio.create_task(_autopilot_scheduler())
     yield
     scheduler.cancel()
@@ -433,6 +509,9 @@ class _SignupRequest(BaseModel):
     email: str
     password: str
     display_name: str = ""
+    # Required for every signup after the bootstrap user — must match
+    # SIGNUP_INVITE_CODE (signups are closed when that env is unset).
+    invite_code: str = ""
 
 
 class _LoginRequest(BaseModel):
@@ -462,6 +541,7 @@ async def auth_signup(req: _SignupRequest, request: Request, response: Response)
         display_name=req.display_name,
         user_agent=request.headers.get("user-agent", "")[:300],
         ip=_ip_of(request),
+        invite_code=req.invite_code,
     )
     set_session_cookie(response, token)
     set_csrf_cookie(response)
@@ -896,7 +976,12 @@ async def long_form_upload(
             detail="long_form/upload requires a video file (mp4/mov/webm)",
         )
     tenant = str(settings.default_tenant_id)
-    served_uri, _ = media_storage().save(tenant, data, file.filename or "long.mp4")
+    # to_thread: the Supabase storage client is sync HTTP — calling it
+    # inline would block the event loop for the whole (multi-minute,
+    # chunked TUS) upload and stall every other request, /health included.
+    served_uri, _ = await asyncio.to_thread(
+        media_storage().save, tenant, data, file.filename or "long.mp4"
+    )
     src = await create_source(
         title=title or (file.filename or ""), source_url=served_uri,
     )
@@ -1471,7 +1556,10 @@ async def images_generate(req: PostImageRequest) -> dict:
         f"post-{meta['platform']}-{meta['style']}-"
         f"{meta['aspect'].replace(':','x')}.png"
     )
-    served_uri, file_path = media_storage().save(tenant, png, filename)
+    # to_thread: sync HTTP under the hood — never block the event loop.
+    served_uri, file_path = await asyncio.to_thread(
+        media_storage().save, tenant, png, filename
+    )
 
     # Prepend a style tag so the library can render it as a chip without
     # parsing the prompt. User-supplied tags are preserved after.
@@ -2030,9 +2118,14 @@ async def media_upload(
     # Inspector never burns a second analysis on the same video.
     import hashlib as _hashlib
     _hash_tag = f"sha256:{_hashlib.sha256(data).hexdigest()[:32]}"
+    # Explicit tenant predicate as defense-in-depth: RLS scopes this
+    # already (migration 034), but a 409 here echoes the matched asset's
+    # title back to the caller — never let that cross a tenant boundary
+    # even if the connected role bypasses RLS.
     async with acquire() as conn:
         _dup = await conn.fetchrow(
-            "SELECT id, title FROM media_assets WHERE role = $1 AND $2 = ANY(tags) LIMIT 1",
+            "SELECT id, title FROM media_assets WHERE role = $1 AND $2 = ANY(tags) "
+            "AND tenant_id = current_setting('app.current_tenant', true)::uuid LIMIT 1",
             role, _hash_tag,
         )
     if _dup:
@@ -2043,7 +2136,11 @@ async def media_upload(
         )
 
     tenant = str(settings.default_tenant_id)
-    served_uri, file_path = media_storage().save(tenant, data, file.filename or "upload.mp4")
+    # to_thread: the Supabase storage client is sync HTTP — a big upload
+    # pushed inline would freeze the whole server for its duration.
+    served_uri, file_path = await asyncio.to_thread(
+        media_storage().save, tenant, data, file.filename or "upload.mp4"
+    )
     created = await create_media(
         role=role,
         source_type="upload",

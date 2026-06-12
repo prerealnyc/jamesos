@@ -135,6 +135,14 @@ class Settings(BaseSettings):
     google_service_account_json: str = ""   # absolute path to JSON key file
     google_drive_folder_id: str = ""        # the Drive folder that holds clips
 
+    # ─── Signup gating ───
+    # POST /auth/signup is default-CLOSED: the very first signup (which
+    # claims the legacy default tenant) is always allowed, but every
+    # signup after that mints a brand-new tenant and is refused unless
+    # SIGNUP_INVITE_CODE is set and the request carries the matching
+    # invite_code. Leaving this empty keeps the install single-tenant.
+    signup_invite_code: str = ""
+
     log_level: str = "INFO"
 
     # Retrieval tuning

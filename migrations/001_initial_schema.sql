@@ -192,13 +192,9 @@ BEGIN
   END LOOP;
 END $$;
 
--- Local Docker dev uses a 'james_os' role that bypasses RLS for
--- convenience. On Supabase the connecting role is 'postgres' (or the
--- service role), which already bypasses RLS, and ALTER ROLE is not
--- permitted — so only run this if the role exists.
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'james_os') THEN
-    ALTER ROLE james_os WITH BYPASSRLS;
-  END IF;
-END $$;
+-- NOTE: this file used to grant the local 'james_os' role BYPASSRLS
+-- "for convenience". That was the same hole as production (a connecting
+-- role exempt from RLS makes every policy above decorative).
+-- 034_rls_enforcement.sql revokes the bypass and adds FORCE ROW LEVEL
+-- SECURITY so the policies bind the table owner too. Do not re-add
+-- BYPASSRLS here.

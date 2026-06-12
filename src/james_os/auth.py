@@ -44,8 +44,9 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
+import asyncpg
 import bcrypt
 import jwt
 from fastapi import Cookie, Depends, HTTPException, Request, Response
@@ -251,28 +252,39 @@ async def get_session(token: str) -> Optional[dict]:
         return None
     th = _hash_token(token)
     async with acquire(_DEFAULT_TENANT_UUID()) as conn:
-        row = await conn.fetchrow(
-            """SELECT s.id  AS session_id, s.user_id, s.tenant_id,
-                      s.expires_at, s.revoked_at,
-                      u.email, u.display_name, u.role, u.disabled
-                 FROM sessions s
-                 JOIN users u ON u.id = s.user_id
-                WHERE s.token_hash = $1""",
+        # Two-step on purpose: sessions carries no RLS (it must be
+        # readable before a tenant context exists), so look the session
+        # up first, then re-bind app.current_tenant to ITS tenant before
+        # touching users — users has an RLS tenant policy, and a join
+        # under the default-tenant context would silently drop every
+        # non-default-tenant user once RLS is enforced.
+        sess = await conn.fetchrow(
+            """SELECT id AS session_id, user_id, tenant_id,
+                      expires_at, revoked_at
+                 FROM sessions WHERE token_hash = $1""",
             th,
         )
-        if row is None:
+        if sess is None:
             return None
-        if row["revoked_at"] is not None:
+        if sess["revoked_at"] is not None:
             return None
-        if row["expires_at"] < datetime.now(timezone.utc):
+        if sess["expires_at"] < datetime.now(timezone.utc):
             return None
-        if row["disabled"]:
+        await conn.execute(
+            "SELECT set_config('app.current_tenant', $1, true)",
+            str(sess["tenant_id"]),
+        )
+        u = await conn.fetchrow(
+            "SELECT email, display_name, role, disabled FROM users WHERE id = $1",
+            sess["user_id"],
+        )
+        if u is None or u["disabled"]:
             return None
         await conn.execute(
             "UPDATE sessions SET last_seen_at = now() WHERE id = $1",
-            row["session_id"],
+            sess["session_id"],
         )
-    return dict(row)
+    return {**dict(sess), **dict(u)}
 
 
 # ── FastAPI dependency ──────────────────────────────────────────────
@@ -336,12 +348,18 @@ async def maybe_user(
 
 async def signup_user(
     *, email: str, password: str, display_name: str = "",
-    user_agent: str = "", ip: str = "",
+    user_agent: str = "", ip: str = "", invite_code: str = "",
 ) -> tuple[CurrentUser, str]:
     """Create a new user + their own tenant (or claim the default tenant
     if it's still unowned) + a fresh session. Returns (user, token).
     The first signup ever claims the legacy default tenant so existing
-    data stays accessible."""
+    data stays accessible.
+
+    Signups are default-CLOSED past the bootstrap user: a public
+    /auth/signup that mints a fresh tenant per stranger was the front
+    door to the whole database. After the default tenant is claimed,
+    new signups require SIGNUP_INVITE_CODE to be configured and the
+    request to carry the matching invite_code."""
     email = normalize_email(email)
     if not valid_email(email):
         raise HTTPException(status_code=400, detail="invalid email")
@@ -368,6 +386,18 @@ async def signup_user(
             tenant_id = default_tid
             tenant_was_claimed = True
         else:
+            # Past the bootstrap user, signup is invite-only (and closed
+            # entirely when no invite code is configured). Never leak
+            # whether a code is configured vs merely wrong.
+            configured = (settings.signup_invite_code or "").strip()
+            supplied = (invite_code or "").strip()
+            if not configured or not secrets.compare_digest(
+                supplied.encode(), configured.encode()
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="signups are closed (invite required)",
+                )
             # Create a brand new tenant for this signup.
             slug_base = re.sub(r"[^a-z0-9]+", "-", email.split("@")[0]).strip("-") or "user"
             slug = slug_base
@@ -377,20 +407,39 @@ async def signup_user(
             ):
                 i += 1
                 slug = f"{slug_base}-{i}"
-            tenant_id = await conn.fetchval(
-                "INSERT INTO tenants (name, slug, config) "
-                "VALUES ($1, $2, '{}'::jsonb) RETURNING id",
-                display_name or email.split("@")[0], slug,
+            # Generate the id app-side and re-bind app.current_tenant to
+            # it BEFORE the inserts: with FORCE ROW LEVEL SECURITY the
+            # tenants/users policies act as WITH CHECK on writes, so a
+            # cross-tenant insert under the default-tenant context would
+            # be rejected. Binding the new id makes signup work whether
+            # or not the connecting role is subject to RLS.
+            tenant_id = uuid4()
+            await conn.execute(
+                "SELECT set_config('app.current_tenant', $1, true)",
+                str(tenant_id),
+            )
+            await conn.execute(
+                "INSERT INTO tenants (id, name, slug, config) "
+                "VALUES ($1, $2, $3, '{}'::jsonb)",
+                tenant_id, display_name or email.split("@")[0], slug,
             )
             tenant_was_claimed = False
 
         ph = hash_password(password)
-        user_id = await conn.fetchval(
-            """INSERT INTO users
-                 (tenant_id, email, password_hash, display_name, role)
-               VALUES ($1, $2, $3, $4, 'owner') RETURNING id""",
-            tenant_id, email, ph, display_name,
-        )
+        try:
+            user_id = await conn.fetchval(
+                """INSERT INTO users
+                     (tenant_id, email, password_hash, display_name, role)
+                   VALUES ($1, $2, $3, $4, 'owner') RETURNING id""",
+                tenant_id, email, ph, display_name,
+            )
+        except asyncpg.UniqueViolationError:
+            # The SELECT-based pre-check above only sees rows the current
+            # tenant context exposes once RLS is enforced — the unique
+            # index on users.email is the real cross-tenant guard.
+            raise HTTPException(
+                status_code=400, detail="email already registered"
+            ) from None
         # Mark the tenant as owned by the new user.
         await conn.execute(
             "UPDATE tenants SET owner_user_id = $2 WHERE id = $1",
@@ -453,8 +502,9 @@ async def login_user(
 
     ok = verify_password(password, row["password_hash"] or "")
     if not ok:
-        # Bump fail count; lock if threshold exceeded.
-        async with acquire(_DEFAULT_TENANT_UUID()) as conn:
+        # Bump fail count; lock if threshold exceeded. Bind the user's
+        # own tenant so the UPDATE survives RLS enforcement.
+        async with acquire(row["tenant_id"]) as conn:
             new_count = row["failed_login_count"] + 1
             lockout = (
                 datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_MINUTES)
@@ -468,8 +518,9 @@ async def login_user(
         await _record_login_attempt(ip, email, False)
         raise HTTPException(status_code=401, detail="invalid email or password")
 
-    # Success — reset counters, mint session.
-    async with acquire(_DEFAULT_TENANT_UUID()) as conn:
+    # Success — reset counters, mint session. (User's own tenant, so
+    # the UPDATE survives RLS enforcement.)
+    async with acquire(row["tenant_id"]) as conn:
         await conn.execute(
             "UPDATE users SET failed_login_count = 0, lockout_until = NULL, "
             "last_login_at = now() WHERE id = $1",
