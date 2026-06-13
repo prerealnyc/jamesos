@@ -339,13 +339,18 @@ settings, an interesting angle when natural. Continuity matters: the
 prompts should feel like the same world / same documentary, not 12
 random stock photos.
 
+The payload includes `industry` (the brand's real world) and
+`color_grade` (a look to apply). Pull every image from THAT world —
+real, literal scenes the viewer would recognise — and END each prompt
+with the exact color_grade so all stills share one look.
+
 Hard rules:
   * Single clear focal point. Uncluttered. Plenty of negative space.
   * No text, no captions, no logos in the image (we burn captions over
     the top later).
   * No close-up faces unless the beat absolutely demands one.
   * Don't repeat the beat's spoken text — describe what the viewer SEES.
-  * Each prompt is one sentence, 12-30 words.
+  * Each prompt is one sentence, 12-30 words, ending with the grade.
 
 Return STRICT JSON:
 {"beats": [{"index": int, "prompt": str}, ...]}
@@ -428,9 +433,19 @@ grading (deep blues, muted browns, occasional warm rim), same lighting
 vocabulary (hard directional spot / side / top-down / window beam),
 same scale (close-ups and mid-shots, never wide aerial / drone).
 
+— THE BRAND'S WORLD —
+
+The payload carries `industry` (the brand's real domain) and
+`color_grade`. Ground the reel in THAT world: prefer real, literal
+scenes from it (actual properties, streets, job sites, signings,
+skylines, the work itself) over generic abstract symbols. Reach for a
+pure symbol only when a line is genuinely abstract and no real scene
+fits. END every prompt with the exact `color_grade` so all stills share
+one cohesive look.
+
 — HARD RULES —
 
-  * One symbolic subject per beat, hero/close-up/mid framed.
+  * One subject per beat, hero/close-up/mid framed — real before symbolic.
   * ALWAYS name the lighting direction and quality.
   * ALWAYS name the mood (gravitas, weight, stillness, foreboding).
   * Atmospheric detail (dust, smoke, beams, condensation, paper in
@@ -438,7 +453,7 @@ same scale (close-ups and mid-shots, never wide aerial / drone).
   * NO text/logos/captions in the image — we burn captions over later.
   * NO close-up faces unless the beat is about a person's face.
   * When you place a hero shot, reference the hero description.
-  * 22-40 words per prompt — these are dense, not generic.
+  * 22-40 words per prompt, ending with the grade — dense, not generic.
 
 Return STRICT JSON:
 {"beats": [{"index": int, "prompt": str, "uses_hero": bool}, ...]}
@@ -641,63 +656,91 @@ def inserts_to_dict(inserts: list[Insert]) -> list[dict[str, Any]]:
     ]
 
 
-def _insert_pick_system(min_dur: float, max_dur: float) -> str:
+def _insert_pick_system(
+    min_dur: float, max_dur: float,
+    industry: str = "", color_grade: str = "",
+    content_aware: bool = True,
+) -> str:
     """Build the insert-picker system prompt for the active pacing.
 
-    Durations are injected (not hardcoded) so pacing presets — punchy
-    flashes vs longer illustrative holds — steer the LLM's window
-    choices, and the prompt also enforces shot-size rotation so
-    consecutive inserts don't all share the same framing.
+    Durations are injected so pacing presets steer window length. Two
+    editor skills also fold in here:
+      * industry/color_grade → B-roll is LITERAL to the brand's real
+        world and consistently graded (not generic abstract symbols).
+      * content_aware → the editor may LEAVE a strong line on the
+        speaker's face instead of cutting away, so the rhythm follows
+        meaning rather than a metronome.
     """
     typical = round((min_dur + max_dur) / 2, 1)
+    world = (
+        f"\n\nTHE BRAND'S WORLD: {industry.strip()}.\n"
+        "Pull B-roll from THIS world FIRST — real, literal scenes the "
+        "viewer would recognise: actual properties, streets, job sites, "
+        "signings, handshakes, listing signs, blueprints, skylines, "
+        "the work itself. Reach for an abstract symbol (a key, a ledger, "
+        "an Edison bulb) ONLY when a line is genuinely abstract and no "
+        "literal scene fits. Concrete-and-real beats clever-and-symbolic."
+        if industry.strip() else ""
+    )
+    grade = (
+        f"\n  * COLOR: every prompt ends with this exact grade so the "
+        f"footage is cohesive — \"{color_grade.strip()}\"."
+        if color_grade.strip() else ""
+    )
+    if content_aware:
+        density = (
+            "PACING IS CONTENT-DRIVEN, not one-per-slot. Cut away to "
+            "B-roll on slots that NAME something visual (a place, object, "
+            "number, action). But LEAVE the 2-3 most powerful lines — the "
+            "punchline, the bold claim, the emotional turn — ON THE "
+            "SPEAKER'S FACE with no cutaway, so they land. Aim to fill "
+            "~70% of slots; deliberately skip the rest. Returning fewer "
+            "inserts than slots is CORRECT and expected."
+        )
+        density_rule = (
+            "Skip a slot by simply OMITTING its entry. Never invent extra "
+            "slots. Quality of placement over coverage."
+        )
+    else:
+        density = "Drop one cutaway in EVERY slot — no skipping, no extras."
+        density_rule = "Every slot gets exactly one insert."
     return f"""You are the editor for a short-form video.
-The hero is on camera the whole time, talking. Your job is to drop
-one cinematic B-roll cutaway in EVERY slot you're given — no skipping
-slots, no extras. Each insert lasts {min_dur:g}-{max_dur:g} seconds and the image
-must visualize the SPECIFIC PHRASE spoken in that window.
+The hero is on camera the whole time, talking. {density}
+Each insert lasts {min_dur:g}-{max_dur:g} seconds and the image must
+visualize the SPECIFIC PHRASE spoken in that window.{world}
 
 You'll receive a list of slots. Each slot has:
   * slot_start, slot_end  — the window you're editing inside
   * words[]               — the words spoken in this slot with their
                             individual {{t: float, w: str}} timestamps
 
-For each slot, return ONE insert:
+For each slot you choose to cut on, return ONE insert:
   * Pick start INSIDE the slot, between (slot_start + 0.4) and
     (slot_end - {min_dur:g}). Land it on a word that names a place / object /
-    number / dramatic concept when one exists in the slot; otherwise
-    pick the most CONCRETE word in the slot (a verb of action, a
-    proper noun, anything visualisable). Avoid pure connector words
-    ('and', 'so', 'but') as the anchor.
+    number / action when one exists; otherwise the most CONCRETE word.
+    Avoid connector words ('and', 'so', 'but') as the anchor.
   * end = start + {typical:g} typically. Always within the slot bounds.
-  * prompt: ONE concrete cinematic image prompt, 18-30 words, that
-    paints WHAT THE ANCHOR WORD/PHRASE describes — not the script as
-    a whole. Single symbolic subject, dramatic directional light, deep
-    shadows, atmospheric detail. NEVER text/captions in the image.
-  * SHOT VARIETY (the rule of three): rotate framing across the video —
-    wide establishing shot, then medium shot, then close-up detail, and
-    repeat. State the shot size explicitly in each prompt (e.g. "wide
-    establishing shot of...", "extreme close-up of..."). Two consecutive
-    inserts must NEVER share the same shot size.
-  * uses_hero: true ONLY when the anchor word/phrase is about the
-    brand hero himself (e.g. "I watched my mentor" = uses_hero,
-    because the hero IS the mentor figure; "the calendar" = no).
+  * prompt: ONE concrete image prompt, 18-30 words, that paints WHAT
+    THE ANCHOR PHRASE describes — a real scene from the brand's world.
+    NEVER text/captions/logos in the image.{grade}
+  * SHOT VARIETY (the rule of three): rotate framing — wide establishing
+    shot, then medium shot, then close-up detail, and repeat. State the
+    shot size explicitly (e.g. "wide establishing shot of..."). Two
+    consecutive inserts must NEVER share the same shot size.
+  * uses_hero: true ONLY when the anchor phrase is about the brand hero
+    himself (e.g. "I watched my mentor" = uses_hero; "the calendar" = no).
   * text: short label of the anchor word(s), max 4 words.
 
-CRITICAL: Every slot gets exactly one insert. Even an "abstract" slot
-("conviction is not loud") needs ONE — pick a metaphorical image like
-"a single Edison bulb glowing alone in a dark room". Never return
-fewer entries than slots.
+{density_rule}
 
 If the payload includes an `avoid` block, it lists B-roll behaviours a
-human has already REJECTED on past renders (e.g. inserts too short,
-uncanny close-ups, wrong vibe). Treat every line as a hard rule — your
-inserts must NOT repeat any of those mistakes.
+human has already REJECTED on past renders. Treat every line as a hard
+rule — your inserts must NOT repeat any of those mistakes.
 
 Return STRICT JSON:
 {{"inserts": [{{"slot": int, "start": float, "end": float,
               "text": str, "prompt": str, "uses_hero": bool}}, ...]}}
-The slot field is the 0-indexed slot the insert is for. Same order
-as the slots in the payload.
+The slot field is the 0-indexed slot the insert is for.
 """
 
 
@@ -748,6 +791,9 @@ async def pick_insert_points(
     cadence_s: float = _INSERT_CADENCE_S,
     min_dur: float = _INSERT_MIN_DUR,
     max_dur: float = _INSERT_MAX_DUR,
+    industry: str = "",
+    color_grade: str = "",
+    content_aware: bool = True,
 ) -> list[Insert]:
     """Word-anchored dense cutaway picker.
 
@@ -814,7 +860,11 @@ async def pick_insert_points(
     }
     try:
         out = await get_llm().complete_json(
-            system=_insert_pick_system(_INSERT_MIN_DUR, _INSERT_MAX_DUR),
+            system=_insert_pick_system(
+                _INSERT_MIN_DUR, _INSERT_MAX_DUR,
+                industry=industry, color_grade=color_grade,
+                content_aware=content_aware,
+            ),
             messages=[{"role": "user", "content": json.dumps(payload)}],
             # Bump the ceiling — denser cadence = more inserts =
             # more prompt text returned.
@@ -1276,6 +1326,11 @@ async def write_image_prompts(
     payload = {
         "brand_context": brand_context[:600],
         "style_note": POST_STYLES.get(style, POST_STYLES["editorial"])[:240],
+        # Industry + consistent grade so the stills are LITERAL to the
+        # brand's world and share one look (the same two editor skills the
+        # insert picker uses).
+        "industry": settings.brand_industry,
+        "color_grade": settings.broll_color_grade,
         "hero_description": hero_description[:600] if hero_description else "",
         "beats": [
             {"index": b.index, "text": b.text} for b in beats
@@ -1748,6 +1803,9 @@ async def build_engaging_avatar_assets(
         cadence_s=cadence,
         min_dur=min_dur,
         max_dur=max_dur,
+        industry=settings.brand_industry,
+        color_grade=settings.broll_color_grade,
+        content_aware=(broll_pacing or "").strip().lower() != "punchy",
     )
 
     if inserts:

@@ -432,7 +432,11 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             elements.append({
                 "type": "audio", "source": music_url,
                 "track": 4, "time": 0, "duration": total,
-                "volume": 18,
+                # Ducked bed: low constant level under the voice (Creatomate
+                # can't sidechain), eased with fades so it never
+                # clips on at full.
+                "volume": 14,
+                "audio_fade_in": 0.8, "audio_fade_out": 1.2,
             })
 
         elements += _polish_elements(brand, total, sfx_hit_url, sfx_riser_url)
@@ -545,7 +549,11 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             elements.append({
                 "type": "audio", "source": music_url,
                 "track": 4, "time": 0, "duration": total,
-                "volume": 15,
+                # Ducked bed: low constant level under the voice (Creatomate
+                # can't sidechain), eased with fades so it never
+                # clips on at full.
+                "volume": 14,
+                "audio_fade_in": 0.8, "audio_fade_out": 1.2,
             })
 
         elements += _polish_elements(brand, total, sfx_hit_url, sfx_riser_url)
@@ -676,7 +684,11 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             elements.append({
                 "type": "audio", "source": music_url,
                 "track": 4, "time": 0, "duration": total,
-                "volume": 12,
+                # Ducked bed: low constant level under the voice (Creatomate
+                # can't sidechain), eased with fades so it never
+                # clips on at full.
+                "volume": 14,
+                "audio_fade_in": 0.8, "audio_fade_out": 1.2,
             })
 
         elements += _polish_elements(brand, total, sfx_hit_url, sfx_riser_url)
@@ -820,7 +832,11 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             elements.append({
                 "type": "audio", "source": music_url,
                 "track": 4, "time": 0, "duration": total,
-                "volume": 12,
+                # Ducked bed: low constant level under the voice (Creatomate
+                # can't sidechain), eased with fades so it never
+                # clips on at full.
+                "volume": 14,
+                "audio_fade_in": 0.8, "audio_fade_out": 1.2,
             })
 
         elements += _polish_elements(brand, total, sfx_hit_url, sfx_riser_url)
@@ -995,7 +1011,11 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             elements.append({
                 "type": "audio", "source": music_url,
                 "track": 4, "time": 0, "duration": total,
-                "volume": 12,
+                # Ducked bed: low constant level under the voice (Creatomate
+                # can't sidechain), eased with fades so it never
+                # clips on at full.
+                "volume": 14,
+                "audio_fade_in": 0.8, "audio_fade_out": 1.2,
             })
 
         elements += _polish_elements(brand, total, sfx_hit_url, sfx_riser_url)

@@ -123,6 +123,19 @@ class Settings(BaseSettings):
     music_url_calm: str = ""
     music_url_dramatic: str = ""
     music_url_tension: str = ""
+    # Brand industry / visual world — steers B-roll toward the brand's REAL
+    # domain (literal properties, neighborhoods, signings) instead of generic
+    # abstract symbols. Empty → the picker grounds itself from brand_context.
+    brand_industry: str = (
+        "commercial and residential real estate — property investment, "
+        "development, and brokerage (Staten Island & NYC metro)"
+    )
+    # Consistent cinematic color grade baked into every generated B-roll
+    # prompt so the AI footage is cohesive with itself and with the speaker.
+    broll_color_grade: str = (
+        "warm cinematic color grade, soft teal shadows, gentle film contrast, "
+        "natural golden-hour key light"
+    )
 
     # ─── Media storage backend ───
     # Auto-flips to 'supabase' when SUPABASE_SERVICE_KEY is set; else 'local'.
