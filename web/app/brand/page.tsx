@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, mediaUrl, type PlugIn } from "@/lib/api";
 import { Button, Card, CardTitle, Input, Textarea, Select, Label, Badge, Spinner } from "@/components/ui";
+import { HelpButton } from "@/components/help-drawer";
 
 const SLOTS = [
   { v: "identity", d: "identity — who/what the brand is, the voice" },
@@ -69,12 +70,17 @@ export default function BrandPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <header>
-        <h1 className="text-2xl font-semibold">Brand voice &amp; rules</h1>
-        <p className="text-muted-foreground text-sm mt-1">
-          Everything here is loaded into the model on <b>every</b> answer and cannot be
-          overridden by a prompt. This is how the brand&apos;s tone and strict guidelines are enforced.
-        </p>
+      <header className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold">Brand voice &amp; rules</h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            Everything here is loaded into the model on <b>every</b> answer and cannot be
+            overridden by a prompt. This is how the brand&apos;s tone and strict guidelines are enforced.
+          </p>
+        </div>
+        <div className="shrink-0 pt-1">
+          <HelpButton />
+        </div>
       </header>
 
       <BrandKitCard />

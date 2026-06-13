@@ -1,4 +1,5 @@
 import * as React from "react";
+import { HelpButton } from "@/components/help-drawer";
 
 function cx(...c: (string | false | undefined)[]) {
   return c.filter(Boolean).join(" ");
@@ -108,9 +109,16 @@ export function Spinner() {
 
 export function PageHeader({ title, sub }: { title: string; sub: string }) {
   return (
-    <header>
-      <h1 className="text-2xl font-semibold">{title}</h1>
-      <p className="text-muted-foreground text-sm mt-1">{sub}</p>
+    <header className="flex items-start justify-between gap-4">
+      <div>
+        <h1 className="text-2xl font-semibold">{title}</h1>
+        <p className="text-muted-foreground text-sm mt-1">{sub}</p>
+      </div>
+      {/* Auto-shows a "How it works" tutorial for any route present in
+          lib/tutorials.ts; renders nothing otherwise. */}
+      <div className="shrink-0 pt-1">
+        <HelpButton />
+      </div>
     </header>
   );
 }
