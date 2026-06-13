@@ -165,27 +165,31 @@ async def slice_video(
 
 async def slice_video_compact(
     in_path: str, out_path: str, start_s: float, end_s: float,
-    max_height: int = 1080,
+    max_height: int = 1920,
 ) -> bool:
-    """Same as slice_video but tuned to fit comfortably under typical
-    storage size caps (Supabase Storage service tier rejects big files
-    with HTTP 413).
+    """Same as slice_video but kept reasonably compact for storage.
 
-    Talking-head footage compresses well: CRF 26 + mono 96k audio +
-    height cap = roughly 1.2 Mbit/s. A 12-min source comes out around
-    100 MB; a 2-min cut around 17 MB. Visual quality is fine for the
-    working artifact — Creatomate re-encodes the final reel anyway.
+    IMPORTANT: max_height is 1920, NOT 1080. A vertical 9:16 phone clip
+    is 1080w x 1920h; an 1080 height cap silently DOWNSCALED it to
+    608x1080 (~44% of the pixels), then Creatomate re-encoded on top —
+    delivered reels looked soft. 1920 preserves full vertical res; the
+    scale filter only kicks in for genuinely taller-than-1920 sources.
+
+    CRF 20 (was 26) keeps the talking-head crisp. A 2-min 1080x1920 cut
+    lands around 40-60 MB — well within the TUS upload path's headroom.
     """
     dur = max(0.05, end_s - start_s)
     # -2 in scale keeps even pixel dimensions (libx264 requires that).
+    # Only downscale when the source is TALLER than max_height; never
+    # upscale (min()).
     cmd = [
         "ffmpeg", "-y",
         "-ss", f"{start_s:.3f}",
         "-i", in_path,
         "-t", f"{dur:.3f}",
         "-vf", f"scale=-2:'min({max_height},ih)'",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
-        "-c:a", "aac", "-b:a", "96k", "-ac", "1",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-c:a", "aac", "-b:a", "128k", "-ac", "1",
         "-movflags", "+faststart",
         out_path,
     ]

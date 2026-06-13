@@ -850,7 +850,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             sfx_hit_url=await resolve_sfx_url("hit"),
             sfx_riser_url=await resolve_sfx_url("riser"),
         )
-        body = {"source": source}
+        body = {"source": source, "render_scale": 1}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
             r = await c.post(
                 "https://api.creatomate.com/v1/renders",
@@ -1025,7 +1025,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             sfx_hit_url=await resolve_sfx_url("hit"),
             sfx_riser_url=await resolve_sfx_url("riser"),
         )
-        body = {"source": source}
+        body = {"source": source, "render_scale": 1}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
             r = await c.post(
                 "https://api.creatomate.com/v1/renders",
@@ -1069,7 +1069,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             sfx_hit_url=await resolve_sfx_url("hit"),
             sfx_riser_url=await resolve_sfx_url("riser"),
         )
-        body = {"source": source}
+        body = {"source": source, "render_scale": 1}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
             r = await c.post(
                 "https://api.creatomate.com/v1/renders",
@@ -1117,7 +1117,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             sfx_hit_url=await resolve_sfx_url("hit"),
             sfx_riser_url=await resolve_sfx_url("riser"),
         )
-        body = {"source": source}
+        body = {"source": source, "render_scale": 1}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
             r = await c.post(
                 "https://api.creatomate.com/v1/renders",
@@ -1161,7 +1161,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             sfx_hit_url=await resolve_sfx_url("hit"),
             sfx_riser_url=await resolve_sfx_url("riser"),
         )
-        body = {"source": source}
+        body = {"source": source, "render_scale": 1}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
             r = await c.post(
                 "https://api.creatomate.com/v1/renders",
@@ -1262,7 +1262,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         playable = [s for s in scenes if (s.get("url") or "").startswith("http")]
         if not playable:
             return RenderResult("failed", error="no real clip URLs to assemble (all stub)")
-        body = {"source": self._build_source(scenes, aspect)}
+        body = {"source": self._build_source(scenes, aspect), "render_scale": 1}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
             r = await c.post("https://api.creatomate.com/v1/renders",
                              headers={"Authorization": f"Bearer {self.api_key}",
