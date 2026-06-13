@@ -101,17 +101,20 @@ def _entry_animation(kind: str | None) -> list[dict]:
 
 
 def _logo_position(pos: str | None) -> dict:
-    """Plan's branding_position → x/y/anchor for a Creatomate image element."""
+    """Plan's branding_position → x/y/anchor for a Creatomate image element.
+    Margins keep a 14%-wide logo inside the platform safe zone (x 12-88,
+    y 12-86): 12% horizontal + 14% vertical clear the side rails and the
+    top/bottom UI bands."""
     p = (pos or "").lower()
-    margin = "6%"
+    mx, my = "12%", "14%"
     if p == "bottom-right":
-        return {"x": f"calc(100% - {margin})", "y": f"calc(100% - {margin})",
+        return {"x": f"calc(100% - {mx})", "y": f"calc(100% - {my})",
                 "x_anchor": "100%", "y_anchor": "100%"}
     if p == "bottom-center":
-        return {"x": "50%", "y": f"calc(100% - {margin})",
+        return {"x": "50%", "y": f"calc(100% - {my})",
                 "x_anchor": "50%", "y_anchor": "100%"}
     if p == "top-right":
-        return {"x": f"calc(100% - {margin})", "y": margin,
+        return {"x": f"calc(100% - {mx})", "y": my,
                 "x_anchor": "100%", "y_anchor": "0%"}
     return {}  # 'none' or unknown — caller will skip
 
@@ -174,7 +177,7 @@ def _watermark_element(logo_url: str, total: float, track: int = 8) -> list[dict
     return [{
         "type": "image", "source": logo_url,
         "track": track, "time": 0, "duration": total,
-        "width": "12%", "x": "calc(100% - 4%)", "y": "4%",
+        "width": "12%", "x": "88%", "y": "12%",
         "x_anchor": "100%", "y_anchor": "0%", "fit": "contain",
     }]
 
@@ -190,7 +193,7 @@ def _nameplate_elements(name: str, tagline: str) -> list[dict]:
         "type": "text", "text": name.strip().upper(),
         "track": 6, "time": 0.7, "duration": 3.0,
         "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
-        "y": "80%", "y_anchor": "50%", "width": "86%",
+        "y": "76%", "y_anchor": "50%", "width": "76%",
         "font_family": "Montserrat", "font_weight": "800",
         "font_size": "3.6 vh", "fill_color": "#FFFFFF",
         "letter_spacing": "2%", "animations": fade, **shadow,
@@ -200,7 +203,7 @@ def _nameplate_elements(name: str, tagline: str) -> list[dict]:
             "type": "text", "text": tagline.strip(),
             "track": 7, "time": 0.7, "duration": 3.0,
             "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
-            "y": "84.5%", "y_anchor": "50%", "width": "86%",
+            "y": "80.5%", "y_anchor": "50%", "width": "76%",
             "font_family": "Montserrat", "font_weight": "600",
             "font_size": "2.4 vh", "fill_color": "#E8E8E8",
             "animations": fade, **shadow,
@@ -221,7 +224,7 @@ def _endcard_elements(handle: str, logo_url: str, total: float) -> list[dict]:
         "type": "text", "text": "FOLLOW FOR MORE",
         "track": 6, "time": start, "duration": dur,
         "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
-        "y": "40%", "y_anchor": "50%", "width": "88%",
+        "y": "40%", "y_anchor": "50%", "width": "76%",
         "font_family": "Archivo Black", "font_weight": "900",
         "font_size": "6.2 vh", "fill_color": "#FFFFFF",
         "animations": fade, **shadow,
@@ -231,7 +234,7 @@ def _endcard_elements(handle: str, logo_url: str, total: float) -> list[dict]:
             "type": "text", "text": handle.strip(),
             "track": 7, "time": start, "duration": dur,
             "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
-            "y": "49%", "y_anchor": "50%", "width": "88%",
+            "y": "49%", "y_anchor": "50%", "width": "76%",
             "font_family": "Montserrat", "font_weight": "700",
             "font_size": "4.2 vh", "fill_color": "#FFE600",
             "animations": fade, **shadow,
@@ -255,10 +258,10 @@ def _progress_bar_element(total: float, color: str = "#C8102E") -> list[dict]:
     return [{
         "type": "text", "text": " ",
         "track": 10, "time": 0, "duration": total,
-        "x": "0%", "x_anchor": "0%", "y": "0%", "y_anchor": "0%",
+        "x": "12%", "x_anchor": "0%", "y": "86%", "y_anchor": "100%",
         "width": [
             {"time": 0, "value": "0%"},
-            {"time": round(total, 2), "value": "100%"},
+            {"time": round(total, 2), "value": "76%"},
         ],
         "font_size": "0.7 vh",
         "background_color": color,
@@ -292,9 +295,9 @@ def _constrain_styled_to_split(styled: list[dict], layout: str) -> None:
     texts = [e for e in styled if e.get("type") == "text"]
     if layout == "vertical":
         for e in texts:
-            e["x"] = "75%"
+            e["x"] = "72%"
             e["x_anchor"] = "50%"
-            e["width"] = "44%"
+            e["width"] = "32%"
         return
     # horizontal — group by start time so stacked hook lines move together.
     groups: dict[float, list[dict]] = {}
@@ -966,8 +969,8 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             )
             # Pull the caption into the right half: centre on the right column,
             # narrow the box so it stays clear of the speaker on the left.
-            elem["x"] = "75%"
-            elem["width"] = "44%"
+            elem["x"] = "72%"
+            elem["width"] = "32%"
             elements.append(elem)
 
         # track 5 — ONE transition whoosh at the first cutaway only (only
@@ -1214,7 +1217,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             if cap:
                 elements.append({
                     "type": "text", "text": cap, "track": 2, "time": t,
-                    "duration": dur, "y": "82%", "width": "86%",
+                    "duration": dur, "y": "55%", "width": "76%",
                     "font_family": "Montserrat", "font_weight": "700",
                     "font_size": "6.5 vh", "fill_color": "#ffffff",
                     "background_color": "rgba(0,0,0,0.55)", "x_alignment": "50%",

@@ -112,7 +112,7 @@ CAPTION_PRESETS: dict[str, dict] = {
         "shadow_x": "0",
         "shadow_y": "0.2 vh",
         "background_color": "transparent",
-        "y_position": "85%",            # bottom band — out of the way
+        "y_position": "78%",            # low band — inside the safe zone
         "pop_in": False,
         "x_alignment": "50%",
         "transform": "none",
@@ -286,6 +286,20 @@ DEFAULT_CAPTION_STYLE = "clean_white"
 AUTO_PICK_KEY = "auto"      # frontend sentinel meaning "let the LLM pick"
 
 
+# ── platform safe zone (creator guidance, 2026-06-13) ────────────────
+# Instagram / TikTok UI covers the very top, very bottom, and the side
+# rails. Usable band: y 12-86%, x 12-88%. Rules from the reference:
+#   * title / hook → TOP of the safe zone, bigger font
+#   * subtitle     → near the CHIN (~55%) so viewers watch the face
+#   * never park text in the old bottom band (84-92%) — that's inside
+#     the platform UI no-zone and gets covered or cut.
+SAFE_TOP_PCT = 12.0
+SAFE_BOTTOM_PCT = 86.0
+CAPTION_MAX_WIDTH = "76%"   # centered → spans x 12-88
+HOOK_BLOCK_CENTER = 22.0    # hook/title block centre (top of safe zone)
+SUBTITLE_Y = "55%"          # near-chin subtitle band
+
+
 # ── safe-zone layout ──────────────────────────────────────────────────
 #
 # Every visible element (caption, logo, badge) declares the vertical band
@@ -306,23 +320,22 @@ AUTO_PICK_KEY = "auto"      # frontend sentinel meaning "let the LLM pick"
 
 SAFE_ZONES: dict[str, list[tuple[str, float]]] = {
     "avatar": [
-        # Bottom band — below body, above the platform UI safe area
-        # (TikTok / Reels usually overlay UI bottom 8%).
-        ("88%", 11.0),
-        # Top band — above James's head, useful for HOOK-style large
-        # captions when the avatar is framed lower.
-        ("8%",  9.0),
+        # Near-chin band — the creator-guidance position: text under the
+        # face keeps eyes on the speaker. (The old 88% bottom band sat
+        # inside the platform UI no-zone and got covered.)
+        ("55%", 12.0),
+        # Chest band — fallback for tall caption blocks.
+        ("78%", 10.0),
     ],
     "broll": [
-        # Lower-third — classic editorial position, works against most
-        # photoreal compositions where the subject is mid-screen.
-        ("72%", 18.0),
+        # Lower-third INSIDE the safe zone.
+        ("66%", 14.0),
         # Mid-screen — fallback when the still has empty middle (rare).
         ("55%", 12.0),
     ],
     "default": [
-        ("75%", 18.0),
-        ("60%", 12.0),
+        ("62%", 14.0),
+        ("55%", 12.0),
     ],
 }
 
@@ -336,23 +349,20 @@ def caption_y_for_role(preset: dict, role: str) -> str:
     band. B-roll beats trust the preset's preferred y because photoreal
     stills are composed differently.
     """
-    preferred = preset.get("y_position", "75%")
+    preferred = preset.get("y_position", "62%")
     # Parse "NN%" → int. Robust to whitespace.
     try:
         pref_pct = int(str(preferred).strip().rstrip("%"))
     except (TypeError, ValueError):
-        pref_pct = 75
-    if role == "avatar":
-        # James's visual band — refuse to overlap.
-        AVATAR_NO_GO = (25, 78)
-        # Caption height ~7vh for our presets, so we check the centre.
-        centre = pref_pct + 3
-        if AVATAR_NO_GO[0] <= centre <= AVATAR_NO_GO[1]:
-            # Take the first safe band the preset can fit in (it always
-            # fits in 11vh; preset font sizes are 4.5-9 vh).
-            return SAFE_ZONES["avatar"][0][0]
-    # Default / broll: trust the preset.
-    return preferred
+        pref_pct = 62
+    # Clamp every caption into the platform safe zone (y 12-86; keep a
+    # few vh of headroom for the text block itself).
+    pref_pct = max(int(SAFE_TOP_PCT) + 4, min(80, pref_pct))
+    if role == "avatar" and pref_pct < 48:
+        # On-camera beats: don't sit on the FACE (roughly 20-46%); the
+        # guidance position is just under the chin.
+        return SAFE_ZONES["avatar"][0][0]
+    return f"{pref_pct}%"
 
 
 def get_preset(name: str | None) -> dict:
@@ -395,7 +405,7 @@ def caption_element(
         "track": track,
         "time": start,
         "duration": max(0.2, end - start),
-        "width": "86%",
+        "width": CAPTION_MAX_WIDTH,
         "y": caption_y_for_role(preset, role),
         "x_alignment": preset["x_alignment"],
         "font_family": preset["font_family"],
@@ -446,6 +456,27 @@ _HOOK_YELLOW = "#FFDD33"
 # the builders' caption track AND the polish layer (tracks 6-11) so the
 # lines never collide with either.
 _HOOK_TRACK_OFFSET = 10
+
+
+def _fit_hook_vh(lines: list[str], base_vh: float, em: float = 0.74,
+                 width_pct: float = 72.0) -> float:
+    """Shrink a stacked-hook font so the LONGEST line fits its box width
+    WITHOUT wrapping.
+
+    Creatomate WRAPS overflow onto a second row inside the same element —
+    and with one solid-box element per line, the wrapped row hides BEHIND
+    the next line's box (observed on a real render: 'You CAN'T lower'
+    showed as 'YOU CAN'T' with 'lower' swallowed, and the magenta boxes
+    overlapped). So the cost of overflow is catastrophic — bias SMALL.
+
+    em is the average glyph advance as a fraction of font px. Archivo
+    Black / heavy display faces run ~0.72-0.78 (much wider than a text
+    font); 0.74 + a 0.9 safety factor + the inner box width (72% not 76)
+    guarantees no wrap. Canvas 9:16 → 1 vh = (1080/56.25)=19.2 px wide.
+    """
+    longest = max((len(ln) for ln in lines), default=1)
+    fit = (width_pct / 100.0 * 1080.0) / (max(1, longest) * em) / 19.2 * 0.9
+    return round(min(base_vh, max(3.2, fit)), 1)
 
 
 def _hook_lines(text: str) -> list[tuple[str, bool]]:
@@ -519,7 +550,7 @@ def viral_hook_elements(captions: list[dict], track: int = 3) -> list[dict]:
     out: list[dict] = []
     lines = _hook_lines(hook_text)
     line_gap = 8.6                                # vh between line centres
-    base = 52.0 - (len(lines) - 1) * line_gap / 2  # block centred ~52%
+    base = SAFE_TOP_PCT + 6.5  # first line center; block stacks DOWN inside the zone
     for i, (line, is_yellow) in enumerate(lines):
         out.append({
             "type": "text",
@@ -528,12 +559,12 @@ def viral_hook_elements(captions: list[dict], track: int = 3) -> list[dict]:
             "track": track + _HOOK_TRACK_OFFSET + i,
             "time": round(hook_start, 2),
             "duration": round(max(0.2, hook_end - hook_start), 2),
-            "width": "92%",
+            "width": "76%",
             "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
             "y": f"{base + i * line_gap:.1f}%", "y_anchor": "50%",
             "font_family": "Montserrat",
             "font_weight": "800",
-            "font_size": f"{8.4 if is_yellow else 7.0} vh",
+            "font_size": f"{_fit_hook_vh([l for l, _ in lines], 8.4 if is_yellow else 7.0)} vh",
             "fill_color": _HOOK_YELLOW if is_yellow else "#FFFFFF",
             "shadow_color": "rgba(0,0,0,0.65)",
             "shadow_blur": "1.3 vh",
@@ -577,7 +608,7 @@ def magenta_blocks_elements(captions: list[dict], track: int = 3) -> list[dict]:
     hook_start, hook_end = _hook_window(hook, body)
     lines = _hook_lines(hook_text)
     line_gap = 9.4
-    base = 50.0 - (len(lines) - 1) * line_gap / 2
+    base = SAFE_TOP_PCT + 6.5  # first line center; block stacks DOWN inside the zone
     for i, (line, _y) in enumerate(lines):
         out.append({
             # One track per simultaneous line — see _HOOK_TRACK_OFFSET.
@@ -585,11 +616,11 @@ def magenta_blocks_elements(captions: list[dict], track: int = 3) -> list[dict]:
             "track": track + _HOOK_TRACK_OFFSET + i,
             "time": round(hook_start, 2),
             "duration": round(max(0.2, hook_end - hook_start), 2),
-            "width": "84%",
+            "width": "76%",
             "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
             "y": f"{base + i * line_gap:.1f}%", "y_anchor": "50%",
             "font_family": "Archivo Black", "font_weight": "900",
-            "font_size": "6.6 vh",
+            "font_size": f"{_fit_hook_vh([l for l, _ in lines], 6.6)} vh",
             "fill_color": "#FFFFFF",
             "background_color": "#FF00C8",
             "letter_spacing": "0",
@@ -620,13 +651,13 @@ def editorial_serif_elements(captions: list[dict], track: int = 3) -> list[dict]
     # them first so the big serif lines come out as clean editorial casing.
     lines = _hook_lines(_soften_emphasis(" ".join(big_words)))
     line_gap = 10.6
-    base = 54.0 - (len(lines) - 1) * line_gap / 2
+    base = SAFE_TOP_PCT + 10.5  # title stacks DOWN below the kicker
     common = {
         "type": "text", "track": track,
         "time": round(hook_start, 2),
         "duration": round(max(0.2, hook_end - hook_start), 2),
         "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
-        "y_anchor": "50%", "width": "90%",
+        "y_anchor": "50%", "width": "76%",
         "shadow_color": "rgba(0,0,0,0.5)", "shadow_blur": "1.0 vh",
         "shadow_x": "0 vh", "shadow_y": "0.25 vh",
     }
@@ -636,7 +667,7 @@ def editorial_serif_elements(captions: list[dict], track: int = 3) -> list[dict]
             "text": " ".join(kicker_words).upper(),
             # Kicker + title lines all show at once — one track each.
             "track": track + _HOOK_TRACK_OFFSET,
-            "y": f"{base - 8.0:.1f}%",
+            "y": f"{SAFE_TOP_PCT + 3.5:.1f}%",
             "font_family": "Montserrat", "font_weight": "700",
             "font_size": "3.4 vh", "fill_color": "#FFFFFF",
             "letter_spacing": "4%",
@@ -650,7 +681,7 @@ def editorial_serif_elements(captions: list[dict], track: int = 3) -> list[dict]
             "y": f"{base + i * line_gap:.1f}%",
             "font_family": "Playfair Display", "font_weight": "700",
             "font_style": "italic",
-            "font_size": "9.6 vh", "fill_color": "#F2E73B",
+            "font_size": f"{_fit_hook_vh([l for l, _ in lines], 9.6, em=0.5)} vh", "fill_color": "#F2E73B",
         })
     preset = CAPTION_PRESETS["editorial_serif"]
     for c in body:
@@ -666,7 +697,7 @@ def editorial_serif_elements(captions: list[dict], track: int = 3) -> list[dict]
 
 # Scatter cycle for gradient_mint — (x%, y%) per flash, looping. Mirrors the
 # reference's art direction: top-left → right → centre.
-_MINT_SPOTS: tuple[tuple[float, float], ...] = ((30.0, 24.0), (68.0, 40.0), (50.0, 62.0))
+_MINT_SPOTS: tuple[tuple[float, float], ...] = ((34.0, 24.0), (64.0, 42.0), (50.0, 60.0))
 
 
 def gradient_mint_elements(captions: list[dict], track: int = 3) -> list[dict]:
@@ -683,7 +714,7 @@ def gradient_mint_elements(captions: list[dict], track: int = 3) -> list[dict]:
             "track": track,
             "time": round(float(c.get("start") or 0.0), 2),
             "duration": round(max(0.2, float(c.get("end") or 0.0) - float(c.get("start") or 0.0)), 2),
-            "width": "58%",
+            "width": "44%",
             "x": f"{x:.0f}%", "x_anchor": "50%", "x_alignment": "50%",
             "y": f"{y:.0f}%", "y_anchor": "50%",
             "font_family": "Poppins", "font_weight": "800",
