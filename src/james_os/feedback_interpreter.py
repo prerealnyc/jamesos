@@ -145,7 +145,7 @@ async def interpret_recent_feedback(tenant_id: UUID | None = None, limit: int = 
     processed = 0
     recorded = 0
 
-    async def _do(reason: str, context: dict, production_id) -> None:
+    async def _do(reason: str, context: dict, production_id, source_event_id=None) -> None:
         nonlocal processed, recorded
         processed += 1
         decision = await interpret_one(reason, context, knobs)
@@ -160,19 +160,20 @@ async def interpret_recent_feedback(tenant_id: UUID | None = None, limit: int = 
             config_value=decision["config_value"],
             confidence=decision["confidence"],
             production_id=production_id,
+            source_event_id=source_event_id,
             tenant_id=tenant_id,
         )
         if item:
             recorded += 1
 
-    # Video feedback
+    # Video feedback — traced to its production.
     for r in vids:
         await _do(
             r["reason"],
             {"mode": r["mode"], "caption_style": r["caption_style"], "status": r["status"]},
             r["id"],
         )
-    # Text / post feedback
+    # Text / post feedback — now traced to the rejected action (was None).
     for r in txts:
         payload = r["payload"]
         if isinstance(payload, str):
@@ -185,7 +186,7 @@ async def interpret_recent_feedback(tenant_id: UUID | None = None, limit: int = 
             "caption_style": "",
             "status": "rejected",
         }
-        await _do(r["reason"], ctx, None)
+        await _do(r["reason"], ctx, None, source_event_id=r["id"])
 
     return {"processed": processed, "recorded": recorded}
 

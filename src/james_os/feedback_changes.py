@@ -20,6 +20,48 @@ from .render_tuning import set_render_tuning
 
 _MIN_CONFIDENCE = 0.75
 
+# Already-shipped code fixes — the "what's been built" ledger. When new
+# feedback maps to a fix that's ALREADY in the codebase, we record it as
+# 'done' (with the ship note) instead of re-queuing it, so the same work
+# is never requested twice. Add an entry the moment a code change ships.
+# Match = same `area` AND any keyword present in the plain-English summary.
+SHIPPED_FIXES: list[dict] = [
+    {
+        "area": "captions",
+        "keywords": [
+            "placement", "position", "white space", "whitespace", "centered",
+            "centre", "safe zone", "safe-zone", "overlap", "cut off", "edge",
+            "too high", "too low", "on the side", "top", "bottom",
+        ],
+        "note": "shipped 2026-06-14: platform safe-zone caption placement (title top, "
+                "subtitle at chin, off the side rails) + auto-fit so hooks never wrap.",
+    },
+    {
+        "area": "voice",
+        "keywords": [
+            "story arc", "story-arc", "numbered list", "listicle", "flowing",
+            "single narrative", "continuous narrative", "n tips", "bullet",
+        ],
+        "note": "shipped 2026-05: single-arc story scripts with a concrete insight "
+                "(no listicles / numbered lists).",
+    },
+    {
+        "area": "broll",
+        "keywords": ["too short", "duration", "longer", "2s", "3s", "flash", "uncanny", "motion"],
+        "note": "shipped 2026-06-13: B-roll pacing presets (illustrative 4-5s holds default) "
+                "+ raised insert duration.",
+    },
+]
+
+
+def _already_shipped(area: str, plain_english: str) -> str | None:
+    """Return the ship-note if this feedback matches an already-built fix."""
+    text = (plain_english or "").lower()
+    for fix in SHIPPED_FIXES:
+        if fix["area"] == area and any(k in text for k in fix["keywords"]):
+            return fix["note"]
+    return None
+
 
 def _dedupe(area: str, config_key: str, plain_english: str) -> str:
     return hashlib.sha256(
@@ -61,6 +103,12 @@ async def record_change(
     passes the gate, apply the knob now and mark it 'applied'."""
     dedupe = _dedupe(area, config_key or "", plain_english)
     status = "queued"
+    # Already built? Resolve to 'done' with the ship note instead of asking
+    # for the same work again. (Skipped for live_config, which self-applies.)
+    shipped_note = _already_shipped(area, plain_english)
+    if shipped_note and kind != "live_config":
+        status = "done"
+        diagnosis = f"{diagnosis}  ✓ Already shipped — {shipped_note}".strip()
     if (
         kind == "live_config"
         and config_key

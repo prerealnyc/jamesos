@@ -35,6 +35,22 @@ export default function UpdatesPage() {
     load();
   }, [load]);
 
+  // Keep the board live without a manual click: re-fetch every 15s, and
+  // immediately when the tab regains focus (e.g. after rejecting a piece
+  // in another tab). The backend writes change rows the instant feedback
+  // lands; this is the frontend pull that surfaces them in real time.
+  useEffect(() => {
+    const t = setInterval(load, 15000);
+    const onFocus = () => load();
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [load]);
+
   async function refresh() {
     setRefreshing(true);
     setErr(null);
@@ -145,6 +161,11 @@ function Row({
           <Badge tone="muted">{c.area}</Badge>
           {c.diagnosis && <span>· from: “{c.diagnosis}”</span>}
           {note && <span>· {note}</span>}
+          {(c.production_id || c.source_event_id) && (
+            <a href="/queue?status=rejected" className="text-primary hover:underline" title="See the rejected item this came from">
+              · ↳ from a rejected {c.production_id ? "video" : "post"}
+            </a>
+          )}
         </div>
       </div>
       {actions && <div className="flex items-center gap-3 text-[11px] shrink-0">{actions}</div>}

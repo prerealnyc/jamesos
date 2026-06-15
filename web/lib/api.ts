@@ -587,6 +587,8 @@ export type ChangeItem = {
   status: "applied" | "queued" | "done" | "dismissed";
   created_at: string;
   applied_at: string | null;
+  production_id?: string | null;   // traced to a rejected video
+  source_event_id?: string | null; // traced to a rejected post
 };
 
 export const api = {
