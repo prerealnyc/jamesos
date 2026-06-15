@@ -1,0 +1,129 @@
+name: Autonomous feedback → PR
+
+# Hourly: pick ONE concrete, approved code-change from the What's Next board,
+# have Claude Code implement it, and open a PR for human approval. It NEVER
+# pushes to main — you review and merge. Config-knob feedback is applied live
+# by the app itself and never reaches here.
+on:
+  schedule:
+    - cron: "17 * * * *" # hourly at :17
+  workflow_dispatch: {} # manual trigger for testing
+
+# One run at a time — never overlap two agent sessions on the same repo.
+concurrency:
+  group: autonomous-feedback
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install script deps
+        run: pip install "asyncpg>=0.30"
+
+      - name: Find the next approved change
+        id: next
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/agent_next_feedback.py
+
+      - name: Stop if nothing to do
+        if: steps.next.outputs.has_item != 'true'
+        run: echo "No actionable queued code-change — exiting."
+
+      - name: Install Claude Code
+        if: steps.next.outputs.has_item == 'true'
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Implement the change
+        if: steps.next.outputs.has_item == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AREA: ${{ steps.next.outputs.area }}
+          TITLE: ${{ steps.next.outputs.title }}
+          DETAIL: ${{ steps.next.outputs.detail }}
+        run: |
+          PROMPT="You are implementing ONE piece of human-approved user feedback in this repository (a FastAPI backend in src/james_os and a Next.js app in web/).
+
+          Feedback area: ${AREA}
+          What to do: ${TITLE}
+          Detail / diagnosis: ${DETAIL}
+
+          Rules:
+          - Make the MINIMAL change that implements this. Touch only the relevant module(s).
+          - Do NOT refactor unrelated code, rename things, or reformat files you aren't changing.
+          - Match the surrounding code style and comment density.
+          - After editing, VERIFY: run 'python -m py_compile' on any changed Python file; if you changed anything under web/, run 'cd web && npx tsc --noEmit'. Fix what you broke.
+          - If the feedback is already satisfied by existing code, make NO changes and say so.
+          - Do not edit the test suite except to add one focused test for your change.
+          When finished, stop."
+          claude -p "$PROMPT" --dangerously-skip-permissions || true
+
+      - name: Verify changed Python compiles
+        id: verify
+        if: steps.next.outputs.has_item == 'true'
+        run: |
+          CHANGED=$(git diff --name-only -- '*.py' || true)
+          if [ -n "$CHANGED" ]; then
+            python -m py_compile $CHANGED && echo "compile=ok" >> "$GITHUB_OUTPUT" || echo "compile=FAILED" >> "$GITHUB_OUTPUT"
+          else
+            echo "compile=n/a" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open a PR if there are changes
+        id: pr
+        if: steps.next.outputs.has_item == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHANGE_ID: ${{ steps.next.outputs.change_id }}
+          AREA: ${{ steps.next.outputs.area }}
+          TITLE: ${{ steps.next.outputs.title }}
+          COMPILE: ${{ steps.verify.outputs.compile }}
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Agent made no changes (likely already satisfied). Nothing to propose."
+            echo "made_pr=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BRANCH="agent/feedback-${CHANGE_ID:0:8}"
+          git config user.name "jamesos-agent"
+          git config user.email "agent@prerealinvestments.com"
+          git checkout -b "$BRANCH"
+          git add -A
+          git commit -m "Auto: ${TITLE}
+
+          Implemented by the autonomous feedback agent from an approved
+          What's Next item (${AREA}). Compile check: ${COMPILE}.
+
+          ⚠️ Auto-generated — review before merging. Merging this is what
+          ships the change; nothing is live until you approve."
+          git push -u origin "$BRANCH"
+          URL=$(gh pr create --title "Auto: ${TITLE}" \
+            --body "**Autonomous feedback fix** — area: \`${AREA}\` · change id: \`${CHANGE_ID}\` · py compile: \`${COMPILE}\`
+
+          This PR was written by the hourly feedback agent from an item you approved on the *What's Next* board. **Review the diff before merging** — merging is the deploy gate; nothing changes in production until you do.
+
+          What it was asked to implement: ${TITLE}" \
+            --base main --head "$BRANCH")
+          echo "pr_url=$URL" >> "$GITHUB_OUTPUT"
+          echo "made_pr=true" >> "$GITHUB_OUTPUT"
+          echo "Opened $URL"
+
+      - name: Mark the change 'proposed'
+        if: steps.pr.outputs.made_pr == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/agent_mark_proposed.py "${{ steps.next.outputs.change_id }}" "${{ steps.pr.outputs.pr_url }}"

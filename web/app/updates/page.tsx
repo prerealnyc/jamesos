@@ -13,10 +13,10 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { api, type ChangeItem } from "@/lib/api";
 import { PageHeader, Card, Button, Badge, Spinner } from "@/components/ui";
 
-type Board = { applied_live: ChangeItem[]; queued: ChangeItem[]; done: ChangeItem[] };
+type Board = { applied_live: ChangeItem[]; queued: ChangeItem[]; proposed: ChangeItem[]; done: ChangeItem[] };
 
 export default function UpdatesPage() {
-  const [board, setBoard] = useState<Board>({ applied_live: [], queued: [], done: [] });
+  const [board, setBoard] = useState<Board>({ applied_live: [], queued: [], proposed: [], done: [] });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -56,7 +56,7 @@ export default function UpdatesPage() {
     setErr(null);
     try {
       const r = await api.refreshChanges();
-      setBoard({ applied_live: r.applied_live, queued: r.queued, done: r.done });
+      setBoard({ applied_live: r.applied_live, queued: r.queued, proposed: r.proposed, done: r.done });
     } catch (e) {
       setErr(e instanceof Error ? e.message : "failed");
     } finally {
@@ -117,6 +117,29 @@ export default function UpdatesPage() {
               />
             ))}
           </Section>
+
+          {board.proposed.length > 0 && (
+            <Section
+              title="◇ Proposed — PR ready for your review"
+              count={board.proposed.length}
+              empty=""
+            >
+              {board.proposed.map((c) => (
+                <Row
+                  key={c.id}
+                  c={c}
+                  note="the agent wrote a fix — review & merge to ship"
+                  actions={
+                    c.pr_url ? (
+                      <a href={c.pr_url} target="_blank" rel="noopener noreferrer" className="text-primary font-medium hover:underline">
+                        Review PR →
+                      </a>
+                    ) : null
+                  }
+                />
+              ))}
+            </Section>
+          )}
 
           {board.done.length > 0 && (
             <Section title="✓ Shipped" count={board.done.length} empty="">

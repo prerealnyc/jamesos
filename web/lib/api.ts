@@ -584,11 +584,12 @@ export type ChangeItem = {
   config_key: string | null;
   config_value: unknown;
   confidence: number;
-  status: "applied" | "queued" | "done" | "dismissed";
+  status: "applied" | "queued" | "proposed" | "done" | "dismissed";
   created_at: string;
   applied_at: string | null;
   production_id?: string | null;   // traced to a rejected video
   source_event_id?: string | null; // traced to a rejected post
+  pr_url?: string | null;          // PR opened by the autonomous agent
 };
 
 export const api = {
@@ -1114,9 +1115,9 @@ export const api = {
   deleteTemplate: (id: string) => jdel<{ deleted: boolean }>(`/templates/${id}`),
   // Feedback → "What's changing next" board.
   listChanges: () =>
-    jget<{ applied_live: ChangeItem[]; queued: ChangeItem[]; done: ChangeItem[] }>("/changes"),
+    jget<{ applied_live: ChangeItem[]; queued: ChangeItem[]; proposed: ChangeItem[]; done: ChangeItem[] }>("/changes"),
   refreshChanges: () =>
-    jpost<{ processed: number; recorded: number; applied_live: ChangeItem[]; queued: ChangeItem[]; done: ChangeItem[] }>(
+    jpost<{ processed: number; recorded: number; applied_live: ChangeItem[]; queued: ChangeItem[]; proposed: ChangeItem[]; done: ChangeItem[] }>(
       "/changes/refresh", {},
     ),
   markChangeDone: (id: string) => jpost<{ ok: boolean }>(`/changes/${id}/done`, {}),

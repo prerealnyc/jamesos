@@ -30,6 +30,7 @@ def _split(items: list[dict]) -> dict:
     return {
         "applied_live": [i for i in items if i["status"] == "applied"],
         "queued": [i for i in items if i["status"] == "queued"],
+        "proposed": [i for i in items if i["status"] == "proposed"],
         "done": [i for i in items if i["status"] == "done"],
     }
 
