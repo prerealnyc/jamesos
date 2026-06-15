@@ -72,6 +72,7 @@ MANAGED_FIELDS: list[ManagedField] = [
         secret=False,
     ),
     ManagedField("apify_api_key", "Apify API token (trend scraping)", "Market research"),
+    ManagedField("xpoz_api_key", "Xpoz API key (social data — X / Instagram / TikTok / Reddit)", "Market research"),
     ManagedField(
         "youtube_api_key", "YouTube Data API key (trend discovery)", "Market research"
     ),

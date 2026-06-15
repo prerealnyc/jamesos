@@ -191,6 +191,7 @@ const PROBE_FOR: Record<string, string> = {
   cohere_api_key: "cohere",
   openai_api_key: "openai",
   perplexity_api_key: "perplexity",
+  xpoz_api_key: "xpoz",
   google_search_api_key: "google_search",
   heygen_api_key: "heygen",
   runway_api_key: "runway",

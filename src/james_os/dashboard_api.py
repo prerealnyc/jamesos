@@ -146,6 +146,7 @@ async def integrations() -> dict:
             "openai": cfg(settings.openai_api_key),
             "elevenlabs": cfg(settings.elevenlabs_api_key),
             "heygen": cfg(settings.heygen_api_key),
+            "xpoz": cfg(settings.xpoz_api_key),
             "runway": cfg(settings.runway_api_key),
             "minimax": cfg(settings.minimax_api_key),
             "postproxy": cfg(settings.postproxy_api_key),

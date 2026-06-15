@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str = ""   # voice synthesis / cloning
     heygen_api_key: str = ""       # avatar video
     heygen_avatar_id: str = ""     # default avatar for renders
+    xpoz_api_key: str = ""         # Xpoz social data API (X/IG/TikTok/Reddit)
     runway_api_key: str = ""       # video generation
     minimax_api_key: str = ""      # video generation
     postproxy_api_key: str = ""    # multi-platform publishing

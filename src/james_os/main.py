@@ -332,6 +332,7 @@ from .voice_ingest_api import router as voice_ingest_router
 from .templates_api import router as templates_router
 from .feedback_changes_api import router as feedback_changes_router
 from .brand_kit_api import router as brand_kit_router
+from .xpoz_api import router as xpoz_router
 app.include_router(autopilot_bulk_router)
 app.include_router(analytics_live_router)
 app.include_router(research_roster_router)
@@ -339,6 +340,7 @@ app.include_router(voice_ingest_router)
 app.include_router(templates_router)
 app.include_router(feedback_changes_router)
 app.include_router(brand_kit_router)
+app.include_router(xpoz_router)
 
 
 @app.get("/", include_in_schema=False)
