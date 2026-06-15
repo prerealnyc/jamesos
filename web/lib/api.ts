@@ -666,6 +666,26 @@ export const api = {
       "/autopilot/bulk", { count, mix },
     ),
 
+  // ── Xpoz social listening (X / Instagram / TikTok / Reddit) ─────
+  xpozAccount: () =>
+    jget<{
+      configured: boolean;
+      plan?: string; usage?: string; billing?: string; error?: string;
+    }>("/research/social/account"),
+  xpozSearch: (query: string, platforms: string[] | null, limit = 10) =>
+    jpost<{
+      query?: string;
+      results?: {
+        platform: string; id: string; text: string; author: string | null;
+        likes: number | null; comments: number | null; shares?: number | null;
+        views?: number | null; subreddit?: string | null;
+        created: string; url: string | null;
+      }[];
+      count?: number;
+      errors?: Record<string, string>;
+      error?: string;
+    }>("/research/social/search", { query, platforms, limit }),
+
   // ── Live analytics (aggregated across connected accounts) ───────
   analyticsLiveSummary: () =>
     jget<{

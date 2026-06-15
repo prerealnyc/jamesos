@@ -59,6 +59,7 @@ const NAV: Group[] = [
     title: "Intelligence",
     items: [
       { href: "/analytics", label: "Analytics", sub: "Your brand-account performance", icon: "social", live: true },
+      { href: "/social-listening", label: "Social Listening", sub: "Brand mentions across X/IG/TikTok/Reddit (Xpoz)", icon: "market", live: true },
       // Social Companion folded in here — peer/competitor research is
       // part of "Social Research" alongside the trend radar.
       { href: "/market-research", label: "Social Research", sub: "Influencers, trends & peer intel", icon: "market", live: true, match: ["/market-research", "/social-companion"] },

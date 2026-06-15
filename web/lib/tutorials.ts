@@ -400,6 +400,24 @@ export const TUTORIALS: Record<string, Tutorial> = {
       "Make script only works on posts the system has saved (you'll see an error like 'this trend isn't saved to memory yet' otherwise) — refreshing the feed first is what saves them.",
     ],
   },
+  "/social-listening": {
+    title: "Social Listening",
+    what: "Searches what people are posting about any topic, competitor, or your own brand across X, Instagram, TikTok, and Reddit \u2014 and shows you who's talking and how much engagement it's getting.",
+    when: "Use this to monitor brand mentions and competitor buzz in real time across all four platforms at once; use Analytics for your own connected accounts' numbers, and Social Research for tracking specific influencers over time.",
+    steps: [
+      "Check the Xpoz account card at the top \u2014 it shows your plan and how many credits you have left this month.",
+      "Type what you want to monitor in the search box: a topic, your brand name, or a competitor.",
+      "Pick which platforms to include (X, Instagram, TikTok, Reddit) and how many results per platform, then click Search.",
+      "Read the summary cards \u2014 total mentions, total engagement, and which platform is loudest \u2014 plus the by-platform bars and the single top mention.",
+      "Scroll the Mentions list to see each post with its author, likes, comments, and a link to the original.",
+    ],
+    tips: [
+      "Each search spends Xpoz credits, so the result count you pick (5/10/20 per platform) draws from your monthly quota \u2014 watch the credits-left number on the account card.",
+      "Results are sorted by engagement (most likes first), so the posts that matter most are at the top.",
+      "Keyword search is broad \u2014 a generic term pulls in loosely-related posts; use a specific brand name or phrase for tighter results.",
+      "If a platform shows an error in the Mentions header, the others still return \u2014 one platform failing never blocks the rest.",
+    ],
+  },
   "/story-mix": {
     title: "Story Reel (Mix)",
     what: "It turns a short script into a single edited reel that cuts between James talking on camera and AI-made photo stills, all under one continuous voiceover.",
