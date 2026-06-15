@@ -43,6 +43,8 @@ export default function QueuePage() {
   const [editText, setEditText] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchBusy, setBatchBusy] = useState(false);
+  const [scheduling, setScheduling] = useState<string | null>(null);
+  const [scheduleVal, setScheduleVal] = useState("");
 
   async function load() {
     try {
@@ -138,6 +140,19 @@ export default function QueuePage() {
       }
     } catch (e) {
       setToast({ message: e instanceof Error ? e.message : "Save failed" });
+    } finally { setActing(null); }
+  }
+
+  async function saveSchedule(id: string) {
+    setActing(id);
+    try {
+      await api.scheduleQueueItem(id, scheduleVal);
+      setItems((list) => list.map((x) => (x.id === id ? { ...x, scheduledFor: scheduleVal } : x)));
+      setScheduling(null);
+      setScheduleVal("");
+      setToast({ message: scheduleVal ? "Scheduled." : "Schedule cleared." });
+    } catch (e) {
+      setToast({ message: e instanceof Error ? e.message : "Schedule failed" });
     } finally { setActing(null); }
   }
 
@@ -412,6 +427,14 @@ export default function QueuePage() {
                 )}
                 {it.status === "approved" && (
                   <span className="ml-auto flex gap-3 items-center">
+                    {it.scheduledFor ? (
+                      <span className="text-[12px] text-foreground" title={it.scheduledFor}>
+                        📅 {new Date(it.scheduledFor).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+                        <button onClick={() => { setScheduling(it.id); setScheduleVal(""); }} className="ml-1 text-muted-foreground hover:text-foreground underline">edit</button>
+                      </span>
+                    ) : (
+                      <button onClick={() => { setScheduling(it.id); setScheduleVal(""); }} className="text-[12px] text-muted-foreground hover:text-foreground">📅 Schedule</button>
+                    )}
                     {video && it.mediaUrl && (
                       <a
                         href={it.mediaUrl}
@@ -486,6 +509,26 @@ export default function QueuePage() {
                   </span>
                 )}
               </div>
+
+              {scheduling === it.id && (
+                <div className="mt-3 pt-3 border-t border-border flex flex-wrap items-center gap-2">
+                  <label className="text-[12px] text-muted-foreground">Publish at:</label>
+                  <input
+                    type="datetime-local"
+                    value={scheduleVal}
+                    onChange={(e) => setScheduleVal(e.target.value)}
+                    className="bg-background border border-input rounded-md px-2 py-1 text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  />
+                  <span className="text-[11px] text-muted-foreground">records the time — actual auto-posting needs a connected account</span>
+                  <span className="ml-auto flex gap-2">
+                    <Button variant="ghost" onClick={() => { setScheduling(null); setScheduleVal(""); }}>Cancel</Button>
+                    {it.scheduledFor && <Button variant="ghost" onClick={() => { setScheduleVal(""); saveSchedule(it.id); }}>Clear</Button>}
+                    <Button variant="secondary" onClick={() => saveSchedule(it.id)} disabled={acting === it.id || !scheduleVal}>
+                      {acting === it.id ? <Spinner /> : "Save schedule"}
+                    </Button>
+                  </span>
+                </div>
+              )}
 
               {rejecting === it.id && (
                 <div className="mt-3 pt-3 border-t border-border flex flex-col gap-2">
