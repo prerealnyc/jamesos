@@ -137,18 +137,29 @@ async def search_social(
     platforms: list[str] | None = None,
     limit: int = 10,
     start_date: str | None = None,
+    min_likes: int = 10000,
 ) -> dict:
     """Normalized cross-platform post search. Per-platform failures are
-    collected in `errors` and never abort the whole query."""
+    collected in `errors` and never abort the whole query.
+
+    Quality floor: `min_likes` (default 10,000) drops low-engagement posts.
+    Because 10k+ likes is genuinely rare, we fetch a LARGER pool per
+    platform and keep only the qualifiers — so the result is "proven viral",
+    not just recent. `filtered_out` reports how many were below the bar.
+    """
     if not configured():
         return {"error": "No Xpoz API key configured. Add it under Settings → API connections."}
     plats = [p for p in (platforms or list(PLATFORMS)) if p in PLATFORMS]
     if not query.strip() or not plats:
-        return {"query": query, "results": [], "count": 0, "errors": {}}
+        return {"query": query, "results": [], "count": 0, "errors": {}, "min_likes": min_likes}
     try:
         import xpoz
     except ImportError:
         return {"error": "The `xpoz` package isn't installed on the server."}
+
+    # When a quality floor is on, pull a deeper pool so enough posts clear
+    # the bar; capped to keep credit spend bounded.
+    fetch_n = min(50, max(limit * 4, 30)) if min_likes > 0 else limit
 
     out: list[dict] = []
     errors: dict[str, str] = {}
@@ -161,13 +172,13 @@ async def search_social(
             async def _one(plat: str) -> tuple[str, list[dict], str | None]:
                 try:
                     ns = getattr(c, plat)
-                    kwargs: dict[str, Any] = {"fields": _FIELDS[plat], "limit": limit}
+                    kwargs: dict[str, Any] = {"fields": _FIELDS[plat], "limit": fetch_n}
                     if start_date:
                         kwargs["start_date"] = start_date
                     # Per-platform ceiling so one slow network can't blow the
                     # whole request past the edge timeout.
                     res = await asyncio.wait_for(ns.search_posts(query, **kwargs), timeout=24)
-                    items = await _page_items(res, limit)
+                    items = await _page_items(res, fetch_n)
                     return plat, [_normalize(plat, p) for p in items], None
                 except asyncio.TimeoutError:
                     return plat, [], "timed out"
@@ -183,8 +194,16 @@ async def search_social(
                     errors[plat] = err
     except Exception as e:  # noqa: BLE001 — connect/auth failure
         return {"error": f"{type(e).__name__}: {e}"}
+
+    pool = len(out)
+    if min_likes > 0:
+        out = [r for r in out if (r.get("likes") or 0) >= min_likes]
     out.sort(key=lambda r: (r.get("likes") or 0), reverse=True)
-    return {"query": query, "results": out, "count": len(out), "errors": errors}
+    out = out[:limit]
+    return {
+        "query": query, "results": out, "count": len(out), "errors": errors,
+        "min_likes": min_likes, "filtered_out": max(0, pool - len(out)),
+    }
 
 
 async def trending_in_niche(
@@ -192,14 +211,17 @@ async def trending_in_niche(
     platforms: list[str] | None = None,
     limit: int = 8,
     days: int = 7,
+    min_likes: int = 10000,
 ) -> dict:
     """Top recent posts in a niche, ranked by engagement — 'what's working
     right now' for content ideation. Thin wrapper over search_social with a
-    recency window; returns the same normalized shape."""
+    recency window + the 10k-likes quality floor."""
     from datetime import date, timedelta
 
     start = (date.today() - timedelta(days=max(1, days))).isoformat()
-    return await search_social(niche, platforms=platforms, limit=limit, start_date=start)
+    return await search_social(
+        niche, platforms=platforms, limit=limit, start_date=start, min_likes=min_likes
+    )
 
 
 def trending_lines(posts: list[dict], cap: int = 10) -> list[str]:

@@ -46,6 +46,7 @@ class SocialSearchRequest(BaseModel):
     platforms: list[str] | None = None        # subset of x/instagram/tiktok/reddit
     limit: int = Field(default=10, ge=1, le=50)
     start_date: str | None = None             # "YYYY-MM-DD"
+    min_likes: int = Field(default=10000, ge=0, le=10_000_000)
 
 
 class TrendingRequest(BaseModel):
@@ -53,6 +54,7 @@ class TrendingRequest(BaseModel):
     platforms: list[str] | None = None
     limit: int = Field(default=8, ge=1, le=30)
     days: int = Field(default=7, ge=1, le=90)
+    min_likes: int = Field(default=10000, ge=0, le=10_000_000)
 
 
 class DraftFromPostRequest(BaseModel):
@@ -75,7 +77,8 @@ async def xpoz_account() -> dict:
 async def xpoz_search(req: SocialSearchRequest) -> dict:
     """Normalized brand-listening search across X / Instagram / TikTok / Reddit."""
     return await xpoz_intel.search_social(
-        req.query, platforms=req.platforms, limit=req.limit, start_date=req.start_date
+        req.query, platforms=req.platforms, limit=req.limit,
+        start_date=req.start_date, min_likes=req.min_likes,
     )
 
 
@@ -83,7 +86,8 @@ async def xpoz_search(req: SocialSearchRequest) -> dict:
 async def xpoz_trending(req: TrendingRequest) -> dict:
     """Top recent posts in a niche, ranked by engagement — content fuel."""
     return await xpoz_intel.trending_in_niche(
-        req.niche, platforms=req.platforms, limit=req.limit, days=req.days
+        req.niche, platforms=req.platforms, limit=req.limit,
+        days=req.days, min_likes=req.min_likes,
     )
 
 

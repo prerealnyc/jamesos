@@ -165,7 +165,7 @@ async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
     xpoz_posts: list[dict] = []
     if xpoz_intel.configured():
         try:
-            tr = await xpoz_intel.trending_in_niche(subject, limit=6, days=7)
+            tr = await xpoz_intel.trending_in_niche(subject, limit=6, days=7, min_likes=10000)
             xpoz_posts = tr.get("results") or []
         except Exception:  # noqa: BLE001 — a research feed must never break a batch
             xpoz_posts = []

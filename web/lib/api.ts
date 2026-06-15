@@ -691,7 +691,7 @@ export const api = {
       billing_period?: string | null; next_renewal?: string | null;
       error?: string;
     }>("/research/social/account"),
-  xpozSearch: (query: string, platforms: string[] | null, limit = 10) =>
+  xpozSearch: (query: string, platforms: string[] | null, limit = 10, minLikes = 10000) =>
     jpost<{
       query?: string;
       results?: {
@@ -703,7 +703,9 @@ export const api = {
       count?: number;
       errors?: Record<string, string>;
       error?: string;
-    }>("/research/social/search", { query, platforms, limit }),
+      min_likes?: number;
+      filtered_out?: number;
+    }>("/research/social/search", { query, platforms, limit, min_likes: minLikes }),
   xpozTrending: (niche: string, platforms: string[] | null, limit = 8, days = 7) =>
     jpost<{
       results?: {

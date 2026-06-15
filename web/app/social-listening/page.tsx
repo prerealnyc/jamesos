@@ -33,6 +33,8 @@ export default function SocialListeningPage() {
   const [query, setQuery] = useState("Staten Island real estate");
   const [sel, setSel] = useState<string[]>(PLATFORMS.map((p) => p.key));
   const [limit, setLimit] = useState(10);
+  const [minLikes, setMinLikes] = useState(10000);
+  const [filteredOut, setFilteredOut] = useState(0);
   const [busy, setBusy] = useState(false);
   const [posts, setPosts] = useState<Post[]>([]);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -58,10 +60,11 @@ export default function SocialListeningPage() {
     if (!query.trim() || sel.length === 0) return;
     setBusy(true); setErr(""); setRan(true);
     try {
-      const r = await api.xpozSearch(query.trim(), sel, limit);
+      const r = await api.xpozSearch(query.trim(), sel, limit, minLikes);
       if (r.error) { setErr(r.error); setPosts([]); setErrors({}); return; }
       setPosts(r.results || []);
       setErrors(r.errors || {});
+      setFilteredOut(r.filtered_out || 0);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "search failed");
     } finally { setBusy(false); }
@@ -178,12 +181,24 @@ export default function SocialListeningPage() {
                 sel.includes(p.key) ? "border-primary text-foreground bg-primary/10" : "border-border text-muted-foreground"
               }`}>{p.label}</button>
           ))}
-          <span className="text-[11px] text-muted-foreground ml-1">per platform:</span>
+          <span className="text-[11px] text-muted-foreground ml-1">show:</span>
           {[5, 10, 20].map((n) => (
             <button key={n} onClick={() => setLimit(n)}
               className={`text-[12px] rounded px-2 py-1 border transition-colors ${
                 limit === n ? "border-primary text-foreground bg-primary/10" : "border-border text-muted-foreground"
               }`}>{n}</button>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-2 mt-2">
+          <span className="text-[11px] text-muted-foreground">Min likes (quality floor):</span>
+          {[
+            { v: 1000, l: "1k" }, { v: 10000, l: "10k" },
+            { v: 50000, l: "50k" }, { v: 100000, l: "100k" }, { v: 0, l: "any" },
+          ].map((o) => (
+            <button key={o.v} onClick={() => setMinLikes(o.v)}
+              className={`text-[12px] rounded px-2.5 py-1 border transition-colors ${
+                minLikes === o.v ? "border-primary text-foreground bg-primary/10 font-semibold" : "border-border text-muted-foreground"
+              }`}>{o.l}</button>
           ))}
         </div>
         {err && <p className="text-destructive text-[12px] mt-2">✗ {err}</p>}
@@ -281,15 +296,17 @@ export default function SocialListeningPage() {
       {ran && !busy && (
         <Card>
           <div className="flex items-center justify-between">
-            <CardTitle>Mentions</CardTitle>
-            {Object.keys(errors).length > 0 && (
-              <span className="text-[11px] text-muted-foreground">
-                {Object.entries(errors).map(([k, v]) => `${k}: ${v}`).join(" · ")}
-              </span>
-            )}
+            <CardTitle>{minLikes > 0 ? `Viral mentions (${minLikes.toLocaleString()}+ likes)` : "Mentions"}</CardTitle>
+            <span className="text-[11px] text-muted-foreground">
+              {filteredOut > 0 && `${filteredOut} below the bar hidden`}
+              {Object.keys(errors).length > 0 && ` · ${Object.entries(errors).map(([k, v]) => `${k}: ${v}`).join(" · ")}`}
+            </span>
           </div>
           {posts.length === 0 ? (
-            <p className="text-muted-foreground text-sm mt-2">No mentions found for “{query}”. Try a broader term or more platforms.</p>
+            <p className="text-muted-foreground text-sm mt-2">
+              No posts cleared the {minLikes > 0 ? `${minLikes.toLocaleString()}+ likes bar` : "search"} for “{query}”.
+              {minLikes > 0 && " Lower the Min-likes floor, broaden the term, or widen platforms."}
+            </p>
           ) : (
             <div className="flex flex-col divide-y divide-border mt-1">
               {posts.map((p) => (
