@@ -153,18 +153,34 @@ async def search_social(
     out: list[dict] = []
     errors: dict[str, str] = {}
     try:
-        async with xpoz.AsyncXpozClient(settings.xpoz_api_key.strip(), check_update=False) as c:
-            for plat in plats:
+        # Lower client timeout than the default 300s — we're behind a ~30s
+        # edge proxy, so a slow provider must fail fast, not hang the request.
+        async with xpoz.AsyncXpozClient(
+            settings.xpoz_api_key.strip(), check_update=False, timeout=26
+        ) as c:
+            async def _one(plat: str) -> tuple[str, list[dict], str | None]:
                 try:
                     ns = getattr(c, plat)
                     kwargs: dict[str, Any] = {"fields": _FIELDS[plat], "limit": limit}
                     if start_date:
                         kwargs["start_date"] = start_date
-                    res = await ns.search_posts(query, **kwargs)
-                    for p in await _page_items(res, limit):
-                        out.append(_normalize(plat, p))
+                    # Per-platform ceiling so one slow network can't blow the
+                    # whole request past the edge timeout.
+                    res = await asyncio.wait_for(ns.search_posts(query, **kwargs), timeout=24)
+                    items = await _page_items(res, limit)
+                    return plat, [_normalize(plat, p) for p in items], None
+                except asyncio.TimeoutError:
+                    return plat, [], "timed out"
                 except Exception as e:  # noqa: BLE001 — one platform can't kill the rest
-                    errors[plat] = f"{type(e).__name__}: {e}"
+                    return plat, [], f"{type(e).__name__}: {e}"
+
+            # Run all platforms CONCURRENTLY — total time ≈ slowest single
+            # platform, not the sum (the sequential loop blew the 30s edge
+            # timeout on a 4-platform search).
+            for plat, posts, err in await asyncio.gather(*[_one(p) for p in plats]):
+                out.extend(posts)
+                if err:
+                    errors[plat] = err
     except Exception as e:  # noqa: BLE001 — connect/auth failure
         return {"error": f"{type(e).__name__}: {e}"}
     out.sort(key=lambda r: (r.get("likes") or 0), reverse=True)
