@@ -152,21 +152,42 @@ async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
     autopilot will preferentially ride angles those creators are working,
     not just whatever happens to be the most-recent global trend.
     """
+    from . import xpoz_intel
     from .ingestion import ingest_many
     from .research import get_research_provider, research_to_events
     from .trends import list_cohort_trends
 
+    subject = (cfg.get("topic_hint") or "").strip() or "this brand's industry and niche"
+
+    # Xpoz live-trend feed — real high-engagement posts in the niche RIGHT
+    # NOW across X/IG/TikTok/Reddit. Its own viral signal, so it also lets
+    # autopilot ideate even WITHOUT a Perplexity key.
+    xpoz_posts: list[dict] = []
+    if xpoz_intel.configured():
+        try:
+            tr = await xpoz_intel.trending_in_niche(subject, limit=6, days=7)
+            xpoz_posts = tr.get("results") or []
+        except Exception:  # noqa: BLE001 — a research feed must never break a batch
+            xpoz_posts = []
+
     provider = get_research_provider()
     if provider.name == "stub":
-        return None  # no live research → no viral signal → don't ideate
+        # No Perplexity — but Xpoz alone is a valid viral signal.
+        if not xpoz_posts:
+            return None
+        return {
+            "provider": "xpoz", "subject": subject, "summary": "", "findings": [],
+            "sources": [p["url"] for p in xpoz_posts if p.get("url")],
+            "trends": [], "xpoz_trending": xpoz_posts,
+            "cohort_creators": [], "cohort_trends": [],
+        }
 
-    subject = (cfg.get("topic_hint") or "").strip() or "this brand's industry and niche"
     focus = (cfg.get("research_focus") or "").strip() or _VIRALITY_FOCUS
     try:
         result = await provider.research(subject, focus)
     except Exception:  # noqa: BLE001
         return None
-    if result.is_empty():
+    if result.is_empty() and not xpoz_posts:
         return None
 
     # Persist the research into memory (citable + reusable), best-effort.
@@ -189,12 +210,13 @@ async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
     cohort = await list_cohort_trends(subject, limit=8, tenant_id=tenant_id)
 
     return {
-        "provider": result.provider,
+        "provider": result.provider if not result.is_empty() else "xpoz",
         "subject": subject,
         "summary": result.summary,
         "findings": result.findings,
-        "sources": [s.url for s in result.sources],
+        "sources": [s.url for s in result.sources] + [p["url"] for p in xpoz_posts if p.get("url")],
         "trends": trends,
+        "xpoz_trending": xpoz_posts,
         "cohort_creators": cohort["creators"],
         "cohort_trends": cohort["trends"],
     }
@@ -260,11 +282,23 @@ async def generate_ideas(
             f"{cohort_block or '(no scraped trend events yet — refresh the watchlist on Social Companion to populate)'}\n"
         )
 
+    # Xpoz live viral posts in the niche — the strongest "what's working
+    # RIGHT NOW" signal: real posts ranked by engagement across X/IG/TikTok/
+    # Reddit. Ideas should ride these hooks/angles (NOT copy the words).
+    from . import xpoz_intel
+    xpoz_lines = xpoz_intel.trending_lines(intel.get("xpoz_trending") or [])
+    xpoz_section = (
+        "\nLIVE VIRAL POSTS IN YOUR NICHE (Xpoz — real high-engagement posts "
+        "right now; ride these hooks/angles, do NOT copy their words):\n"
+        + "\n".join(f"- {ln}" for ln in xpoz_lines) + "\n"
+    ) if xpoz_lines else ""
+
     ctx = (
         f"LIVE MARKET RESEARCH (subject: {intel.get('subject')}, via "
         f"{intel.get('provider')}):\n{intel.get('summary','')}\n\n"
         f"KEY FINDINGS (what's working now):\n{findings or '(none)'}\n\n"
         f"SCRAPED TRENDS:\n{trends or '(none — research only)'}\n"
+        f"{xpoz_section}"
         f"{cohort_section}\n"
         f"BRAND VOICE (write in this voice):\n{voice}"
     )

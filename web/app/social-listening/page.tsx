@@ -38,6 +38,8 @@ export default function SocialListeningPage() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [ran, setRan] = useState(false);
   const [err, setErr] = useState("");
+  const [drafting, setDrafting] = useState<string | null>(null);
+  const [draftMsg, setDraftMsg] = useState<{ id: string; text: string; ok: boolean } | null>(null);
 
   useEffect(() => { api.xpozAccount().then(setAcct).catch(() => {}); }, []);
 
@@ -58,6 +60,26 @@ export default function SocialListeningPage() {
     } finally { setBusy(false); }
   }
 
+  async function draftFrom(p: Post) {
+    const key = p.platform + p.id;
+    setDrafting(key); setDraftMsg(null);
+    try {
+      const d = await api.xpozDraftFromPost({
+        text: p.text, platform: "instagram", author: p.author,
+        source_platform: p.platform, format: "reel_script",
+      });
+      const ok = d.status === "generated";
+      setDraftMsg({
+        id: key, ok,
+        text: ok
+          ? `On-brand draft created (voice ${d.voice_score}). Review it in the Approval Queue.`
+          : d.note || `Draft flagged by voice-QA (score ${d.voice_score}). Check the queue.`,
+      });
+    } catch (e) {
+      setDraftMsg({ id: key, ok: false, text: e instanceof Error ? e.message : "draft failed" });
+    } finally { setDrafting(null); }
+  }
+
   // Aggregate analytics over the result set.
   const totalEng = posts.reduce((a, p) => a + (p.likes || 0) + (p.comments || 0), 0);
   const byPlatform = PLATFORMS.map((pl) => {
@@ -73,7 +95,7 @@ export default function SocialListeningPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Social Listening"
-        sub="Real-time brand monitoring across X, Instagram, TikTok and Reddit — powered by Xpoz (1.5B+ indexed posts). Search any topic, competitor, or your own brand and see who's talking and how loud."
+        sub="Find the top trending content in your niche across X, Instagram, TikTok and Reddit — powered by Xpoz (1.5B+ posts). Search a topic, competitor, or your brand; see what's working; then turn any post into an on-brand draft with one click. Autopilot also rides these live trends automatically."
       />
 
       {/* Account / quota */}
@@ -205,7 +227,22 @@ export default function SocialListeningPage() {
                       <span className="ml-auto">♥ {num(p.likes)} · 💬 {num(p.comments)}{p.views != null ? ` · ▶ ${num(p.views)}` : ""}</span>
                     </div>
                     <p className="text-[13px] mt-1">{p.text}</p>
-                    {p.url && <a href={p.url} target="_blank" rel="noopener noreferrer" className="text-[11px] text-primary hover:underline mt-1 inline-block">View original →</a>}
+                    <div className="flex items-center gap-3 mt-1.5">
+                      {p.url && <a href={p.url} target="_blank" rel="noopener noreferrer" className="text-[11px] text-muted-foreground hover:underline">View original →</a>}
+                      <button
+                        onClick={() => draftFrom(p)}
+                        disabled={drafting === p.platform + p.id}
+                        className="text-[11px] text-primary hover:underline disabled:opacity-50 inline-flex items-center gap-1"
+                      >
+                        {drafting === p.platform + p.id ? <Spinner /> : "✦ Draft content from this →"}
+                      </button>
+                    </div>
+                    {draftMsg?.id === p.platform + p.id && (
+                      <div className={`mt-2 rounded-md border p-2 text-[12px] ${draftMsg.ok ? "border-primary/40 bg-primary/10 text-foreground" : "border-destructive/40 bg-destructive/10 text-foreground"}`}>
+                        {draftMsg.text}{" "}
+                        {draftMsg.ok && <a href="/queue" className="text-primary underline font-medium">Open Approval Queue →</a>}
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}

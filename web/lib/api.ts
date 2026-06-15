@@ -689,6 +689,23 @@ export const api = {
       errors?: Record<string, string>;
       error?: string;
     }>("/research/social/search", { query, platforms, limit }),
+  xpozTrending: (niche: string, platforms: string[] | null, limit = 8, days = 7) =>
+    jpost<{
+      results?: {
+        platform: string; id: string; text: string; author: string | null;
+        likes: number | null; comments: number | null; shares?: number | null;
+        views?: number | null; subreddit?: string | null;
+        created: string; url: string | null;
+      }[];
+      count?: number; errors?: Record<string, string>; error?: string;
+    }>("/research/social/trending", { niche, platforms, limit, days }),
+  xpozDraftFromPost: (body: {
+    text: string; platform?: string; author?: string | null;
+    source_platform?: string | null; format?: string;
+  }) =>
+    jpost<{ status: string; action_id: string | null; voice_score: number; note: string | null }>(
+      "/research/social/draft-from-post", body,
+    ),
 
   // ── Live analytics (aggregated across connected accounts) ───────
   analyticsLiveSummary: () =>

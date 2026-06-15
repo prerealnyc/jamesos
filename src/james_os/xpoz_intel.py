@@ -171,4 +171,37 @@ async def search_social(
     return {"query": query, "results": out, "count": len(out), "errors": errors}
 
 
-__all__ = ["PLATFORMS", "configured", "account_info", "search_social"]
+async def trending_in_niche(
+    niche: str,
+    platforms: list[str] | None = None,
+    limit: int = 8,
+    days: int = 7,
+) -> dict:
+    """Top recent posts in a niche, ranked by engagement — 'what's working
+    right now' for content ideation. Thin wrapper over search_social with a
+    recency window; returns the same normalized shape."""
+    from datetime import date, timedelta
+
+    start = (date.today() - timedelta(days=max(1, days))).isoformat()
+    return await search_social(niche, platforms=platforms, limit=limit, start_date=start)
+
+
+def trending_lines(posts: list[dict], cap: int = 10) -> list[str]:
+    """Compact one-line summaries of trending posts for LLM prompt grounding.
+    e.g. '[x @jp ♥12000 💬300] We just closed the biggest deal…'"""
+    out: list[str] = []
+    for p in (posts or [])[:cap]:
+        txt = (p.get("text") or "").replace("\n", " ").strip()[:180]
+        likes = p.get("likes")
+        comments = p.get("comments")
+        out.append(
+            f"[{p.get('platform','?')} @{p.get('author') or 'unknown'} "
+            f"♥{likes if likes is not None else '?'} 💬{comments if comments is not None else '?'}] {txt}"
+        )
+    return out
+
+
+__all__ = [
+    "PLATFORMS", "configured", "account_info", "search_social",
+    "trending_in_niche", "trending_lines",
+]

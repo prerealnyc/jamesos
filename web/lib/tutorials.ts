@@ -410,8 +410,10 @@ export const TUTORIALS: Record<string, Tutorial> = {
       "Pick which platforms to include (X, Instagram, TikTok, Reddit) and how many results per platform, then click Search.",
       "Read the summary cards \u2014 total mentions, total engagement, and which platform is loudest \u2014 plus the by-platform bars and the single top mention.",
       "Scroll the Mentions list to see each post with its author, likes, comments, and a link to the original.",
+      "Found a post worth riding? Click '\u2726 Draft content from this' under it \u2014 the system writes an on-brand reel script inspired by that post's hook (never a copy) and drops it in your Approval Queue.",
     ],
     tips: [
+      "Autopilot also uses this automatically \u2014 every batch is grounded in the live viral posts Xpoz finds in your niche, so your daily content rides real trends without you lifting a finger.",
       "Each search spends Xpoz credits, so the result count you pick (5/10/20 per platform) draws from your monthly quota \u2014 watch the credits-left number on the account card.",
       "Results are sorted by engagement (most likes first), so the posts that matter most are at the top.",
       "Keyword search is broad \u2014 a generic term pulls in loosely-related posts; use a specific brand name or phrase for tighter results.",
