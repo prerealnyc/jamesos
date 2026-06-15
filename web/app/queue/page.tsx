@@ -38,6 +38,11 @@ export default function QueuePage() {
   const [kind, setKind] = useState<"videos" | "posts" | "all">("videos");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string; href?: string; hrefLabel?: string } | null>(null);
+  // Edit-in-place + batch approve.
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
 
   async function load() {
     try {
@@ -95,6 +100,45 @@ export default function QueuePage() {
     } finally {
       setActing(null);
     }
+  }
+
+  function toggleSelect(id: string) {
+    setSelected((s) => {
+      const n = new Set(s);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  }
+
+  async function approveSelected() {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    setBatchBusy(true);
+    try {
+      for (const id of ids) await api.approve(id).catch(() => {});
+      setSelected(new Set());
+      setToast({ message: `Approved ${ids.length} item${ids.length === 1 ? "" : "s"}.` });
+      await load();
+    } finally { setBatchBusy(false); }
+  }
+
+  // Edit the draft text, optionally approving in the same click.
+  async function saveEdit(id: string, thenApprove: boolean) {
+    setActing(id);
+    try {
+      await api.editQueueItem(id, editText.trim());
+      setItems((list) => list.map((x) => (x.id === id ? { ...x, content: editText.trim() } : x)));
+      setEditing(null);
+      if (thenApprove) {
+        await api.approve(id);
+        setToast({ message: "Edited & approved." });
+        await load();
+      } else {
+        setToast({ message: "Saved." });
+      }
+    } catch (e) {
+      setToast({ message: e instanceof Error ? e.message : "Save failed" });
+    } finally { setActing(null); }
   }
 
   async function confirmReject(id: string) {
@@ -178,6 +222,16 @@ export default function QueuePage() {
         );
       })()}
 
+      {selected.size > 0 && (
+        <div className="flex items-center gap-3 rounded-lg border border-primary/40 bg-primary/5 px-4 py-2.5">
+          <span className="text-[13px] font-medium">{selected.size} selected</span>
+          <button onClick={() => setSelected(new Set())} className="text-[12px] text-muted-foreground hover:text-foreground">clear</button>
+          <Button className="ml-auto" onClick={approveSelected} disabled={batchBusy}>
+            {batchBusy ? <Spinner /> : `Approve ${selected.size} selected`}
+          </Button>
+        </div>
+      )}
+
       {loading ? (
         <Card>
           <Spinner /> <span className="text-muted-foreground text-sm ml-2">Loading queue…</span>
@@ -246,6 +300,15 @@ export default function QueuePage() {
             return (
             <Card key={it.id}>
               <div className="flex items-center gap-2 mb-2">
+                {it.status === "pending" && (
+                  <input
+                    type="checkbox"
+                    checked={selected.has(it.id)}
+                    onChange={() => toggleSelect(it.id)}
+                    aria-label="Select for batch approve"
+                    className="h-4 w-4 accent-[hsl(var(--primary))]"
+                  />
+                )}
                 <Badge tone="primary">{it.platform}</Badge>
                 <Badge tone="accent">{it.pillar}</Badge>
                 <span className="text-xs text-muted-foreground">
@@ -265,21 +328,35 @@ export default function QueuePage() {
                   </Badge>
                 </span>
               </div>
-              {/* Inline video preview for finished renders — lets the
-                  marketing manager watch + decide without leaving the
-                  page. preload='metadata' so we don't pull the whole
-                  file on render. */}
-              {video && it.mediaUrl && (
-                <div className="mb-3 bg-black rounded-md overflow-hidden max-w-xs" style={{ aspectRatio: "9 / 16" }}>
-                  <video
-                    src={it.mediaUrl}
-                    controls
-                    preload="metadata"
-                    className="w-full h-full"
+              {/* The COMPLETE piece in one row: its media (video render or
+                  generated image) beside the text it'll post with — so the
+                  manager reviews everything at a glance, not text alone. */}
+              <div className="flex gap-4">
+                {video && it.mediaUrl ? (
+                  <div className="shrink-0 bg-black rounded-md overflow-hidden w-[150px]" style={{ aspectRatio: "9 / 16" }}>
+                    <video src={it.mediaUrl} controls preload="metadata" className="w-full h-full" />
+                  </div>
+                ) : it.imageUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={it.imageUrl}
+                    alt="generated post image"
+                    className="shrink-0 w-[150px] h-[150px] object-cover rounded-md border border-border"
                   />
+                ) : null}
+                <div className="min-w-0 flex-1">
+                  {editing === it.id ? (
+                    <textarea
+                      value={editText}
+                      onChange={(e) => setEditText(e.target.value)}
+                      autoFocus
+                      className="w-full bg-background border border-input rounded-md px-3 py-2 text-[14px] leading-relaxed resize-y min-h-[120px] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    />
+                  ) : (
+                    <p className="text-[15px] leading-relaxed whitespace-pre-wrap">{it.content}</p>
+                  )}
                 </div>
-              )}
-              <p className="text-[15px] leading-relaxed whitespace-pre-wrap">{it.content}</p>
+              </div>
               <div className="mt-3 pt-3 border-t border-border flex items-center gap-4 text-[12px] text-muted-foreground">
                 {it.voiceScore != null && (
                   <span>
@@ -287,7 +364,18 @@ export default function QueuePage() {
                   </span>
                 )}
                 <span>by {it.proposedBy}</span>
-                {it.status === "pending" && rejecting !== it.id && (
+                {it.status === "pending" && rejecting !== it.id && editing === it.id && (
+                  <span className="ml-auto flex gap-2 items-center">
+                    <Button variant="ghost" onClick={() => setEditing(null)} disabled={acting === it.id}>Cancel</Button>
+                    <Button variant="secondary" onClick={() => saveEdit(it.id, false)} disabled={acting === it.id || !editText.trim()}>
+                      {acting === it.id ? <Spinner /> : "Save"}
+                    </Button>
+                    <Button onClick={() => saveEdit(it.id, true)} disabled={acting === it.id || !editText.trim()}>
+                      {acting === it.id ? <Spinner /> : "Save & approve"}
+                    </Button>
+                  </span>
+                )}
+                {it.status === "pending" && rejecting !== it.id && editing !== it.id && (
                   <span className="ml-auto flex gap-2 items-center">
                     <button
                       onClick={() => deleteItem(it.id)}
@@ -297,6 +385,16 @@ export default function QueuePage() {
                     >
                       🗑 Delete
                     </button>
+                    {!video && (
+                      <button
+                        onClick={() => { setEditing(it.id); setEditText(it.content || ""); }}
+                        disabled={acting === it.id}
+                        className="text-[12px] text-muted-foreground hover:text-foreground disabled:opacity-40 px-1"
+                        title="Tweak the text before approving"
+                      >
+                        ✎ Edit
+                      </button>
+                    )}
                     <Button
                       variant="secondary"
                       onClick={() => {

@@ -169,6 +169,7 @@ export type QueueItem = {
   mediaUrl?: string | null;   // rendered video URL (Creatomate / Backblaze)
   proposedBy: string;
   createdAt: string | null;
+  scheduledFor?: string | null;  // ISO datetime once scheduled
   reason: string | null;
 };
 
@@ -1185,6 +1186,10 @@ export const api = {
     ),
   deleteQueueItem: (id: string) =>
     jdel<{ ok: boolean; deleted: boolean }>(`/api/queue/${id}`),
+  editQueueItem: (id: string, content: string) =>
+    jpatch<{ ok: boolean; content: string }>(`/api/queue/${id}`, { content }),
+  scheduleQueueItem: (id: string, scheduledFor: string) =>
+    jpost<{ ok: boolean; scheduled_for: string | null }>(`/api/queue/${id}/schedule`, { scheduled_for: scheduledFor }),
   guardrails: () =>
     jget<{ guardrails: Guardrail[] }>("/api/guardrails"),
   integrations: () =>

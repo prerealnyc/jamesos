@@ -520,6 +520,44 @@ async def delete_item(item_id: UUID) -> dict:
     return {"ok": True, "id": str(item_id), "deleted": True}
 
 
+@router.patch("/queue/{item_id}")
+async def edit_item(item_id: UUID, body: dict = Body(default={})) -> dict:
+    """Edit a pending draft's text before approving — so the manager can
+    fix a word in place instead of rejecting and regenerating. Writes the
+    new text onto payload.content (the field _action_to_queue_item reads)."""
+    new_content = str(body.get("content") or "").strip()
+    if not new_content:
+        raise HTTPException(status_code=400, detail="content required")
+    async with acquire() as conn:
+        tag = await conn.execute(
+            "UPDATE actions SET payload = jsonb_set("
+            "coalesce(payload,'{}'::jsonb), '{content}', to_jsonb($2::text), true), "
+            "updated_at = now() WHERE id = $1 AND status = 'pending'",
+            item_id, new_content,
+        )
+    if not tag.endswith(" 1"):
+        raise HTTPException(status_code=404, detail="pending action not found")
+    return {"ok": True, "id": str(item_id), "content": new_content}
+
+
+@router.post("/queue/{item_id}/schedule")
+async def schedule_item(item_id: UUID, body: dict = Body(default={})) -> dict:
+    """Set (or clear) a scheduled publish time on an approved piece. Stores
+    an ISO datetime on payload.scheduled_for. Honest scope: this records the
+    intent — actual auto-publishing is a separate connected-account step."""
+    when = str(body.get("scheduled_for") or "").strip()
+    async with acquire() as conn:
+        tag = await conn.execute(
+            "UPDATE actions SET payload = jsonb_set("
+            "coalesce(payload,'{}'::jsonb), '{scheduled_for}', to_jsonb($2::text), true), "
+            "updated_at = now() WHERE id = $1",
+            item_id, when,
+        )
+    if not tag.endswith(" 1"):
+        raise HTTPException(status_code=404, detail=f"action {item_id} not found")
+    return {"ok": True, "id": str(item_id), "scheduled_for": when or None}
+
+
 @router.get("/guardrails")
 async def guardrails() -> dict:
     """The learned 'never do this' ledger from past rejections."""
