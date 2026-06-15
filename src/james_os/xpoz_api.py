@@ -5,14 +5,40 @@ Mounted under /research/social/* (already proxied by the Next rewrite for
 main.py, so this is a plain APIRouter with no Depends.
 """
 
-from fastapi import APIRouter
+from uuid import UUID
+
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from . import xpoz_intel
+from . import social_saved, xpoz_intel
 from .content import generate_content
 from .models import ContentBrief, ContentDraft
 
 router = APIRouter()
+
+
+async def _draft_from_text(
+    text: str, platform: str, author: str | None,
+    source_platform: str | None, fmt: str, extra: str = "",
+) -> ContentDraft:
+    """Shared: trend post → on-brand draft via the content engine + voice-QA."""
+    src = (f"a high-performing {source_platform} post" if source_platform
+           else "a high-performing social post")
+    by = f" by @{author}" if author else ""
+    steer = (
+        f"Model this on {src}{by} that is going viral in our niche RIGHT NOW. "
+        f"Match its HOOK pattern, structure and pacing — but write it 100% in "
+        f"our brand voice about our world. Do NOT copy the post's words, "
+        f"claims, or specifics. Reference post:\n\"\"\"\n{text[:2500]}\n\"\"\""
+    )
+    if extra.strip():
+        steer += f"\n\nAlso: {extra.strip()}"
+    brief = ContentBrief(
+        platform=platform, format=fmt,
+        topic="a piece inspired by what's trending in our niche right now",
+        extra_instructions=steer,
+    )
+    return await generate_content(brief)
 
 
 class SocialSearchRequest(BaseModel):
@@ -63,28 +89,57 @@ async def xpoz_trending(req: TrendingRequest) -> dict:
 
 @router.post("/research/social/draft-from-post", response_model=ContentDraft)
 async def xpoz_draft_from_post(req: DraftFromPostRequest) -> ContentDraft:
-    """Turn a trending post into a brand-voice draft. Grounds the piece in
-    the brand's own voice/thesis memory and runs the voice-QA gate, then
-    lands in the approval queue — 'inspired by', never a copy. A verbatim
-    rip would FAIL voice-QA by design."""
-    src = (f"a high-performing {req.source_platform} post" if req.source_platform
-           else "a high-performing social post")
-    by = f" by @{req.author}" if req.author else ""
-    steer = (
-        f"Model this on {src}{by} that is going viral in our niche RIGHT NOW. "
-        f"Match its HOOK pattern, structure and pacing — but write it 100% in "
-        f"our brand voice about our world. Do NOT copy the post's words, "
-        f"claims, or specifics. Reference post:\n\"\"\"\n{req.text[:2500]}\n\"\"\""
+    """Turn a trending post into a brand-voice draft (lands in the approval
+    queue — 'inspired by', never a copy; a verbatim rip FAILS voice-QA)."""
+    return await _draft_from_text(
+        req.text, req.platform, req.author, req.source_platform,
+        req.format, req.extra_instructions,
     )
-    if req.extra_instructions.strip():
-        steer += f"\n\nAlso: {req.extra_instructions.strip()}"
-    brief = ContentBrief(
-        platform=req.platform,
-        format=req.format,
-        topic="a piece inspired by what's trending in our niche right now",
-        extra_instructions=steer,
+
+
+# ── Saved-posts shelf: save from search → curate → generate ─────────
+
+class SavePostRequest(BaseModel):
+    post: dict                                # a search result row
+    niche: str = ""                           # the search term it came from
+
+
+class DraftSavedRequest(BaseModel):
+    platform: str = "instagram"               # output platform
+    format: str = "reel_script"
+    extra_instructions: str = ""
+
+
+@router.post("/research/social/saved")
+async def xpoz_save(req: SavePostRequest) -> dict:
+    """Save a post from search results onto the curation shelf (idempotent)."""
+    return await social_saved.save_post(req.post, niche=req.niche)
+
+
+@router.get("/research/social/saved")
+async def xpoz_list_saved() -> dict:
+    """The curation shelf — saved posts, newest first."""
+    return {"saved": await social_saved.list_saved()}
+
+
+@router.delete("/research/social/saved/{saved_id}")
+async def xpoz_delete_saved(saved_id: UUID) -> dict:
+    await social_saved.delete_saved(saved_id)
+    return {"ok": True}
+
+
+@router.post("/research/social/saved/{saved_id}/draft", response_model=ContentDraft)
+async def xpoz_draft_saved(saved_id: UUID, req: DraftSavedRequest) -> ContentDraft:
+    """Generate an on-brand draft from a saved post, then mark it drafted."""
+    saved = await social_saved.get_saved(saved_id)
+    if saved is None:
+        raise HTTPException(status_code=404, detail="saved post not found")
+    draft = await _draft_from_text(
+        saved["text"], req.platform, saved.get("author"),
+        saved.get("source_platform"), req.format, req.extra_instructions,
     )
-    return await generate_content(brief)
+    await social_saved.mark_drafted(saved_id, draft.action_id)
+    return draft
 
 
 __all__ = ["router"]

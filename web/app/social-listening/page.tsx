@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { api, type SavedPost } from "@/lib/api";
 import { Button, Card, CardTitle, Input, Badge, Spinner, PageHeader } from "@/components/ui";
 
 type Post = {
@@ -40,6 +40,13 @@ export default function SocialListeningPage() {
   const [err, setErr] = useState("");
   const [drafting, setDrafting] = useState<string | null>(null);
   const [draftMsg, setDraftMsg] = useState<{ id: string; text: string; ok: boolean } | null>(null);
+  const [saved, setSaved] = useState<SavedPost[]>([]);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [savedBusy, setSavedBusy] = useState<string | null>(null);
+  const [savedMsg, setSavedMsg] = useState<{ id: string; text: string; ok: boolean } | null>(null);
+
+  useEffect(() => { api.xpozListSaved().then((r) => setSaved(r.saved)).catch(() => {}); }, []);
+  const savedKeys = new Set(saved.map((s) => s.source_platform + s.post_id));
 
   useEffect(() => { api.xpozAccount().then(setAcct).catch(() => {}); }, []);
 
@@ -58,6 +65,28 @@ export default function SocialListeningPage() {
     } catch (e) {
       setErr(e instanceof Error ? e.message : "search failed");
     } finally { setBusy(false); }
+  }
+
+  async function savePost(p: Post) {
+    setSavingId(p.platform + p.id);
+    try {
+      const row = await api.xpozSave(p as unknown as Record<string, unknown>, query.trim());
+      setSaved((s) => (s.some((x) => x.id === row.id) ? s : [row, ...s]));
+    } catch { /* ignore */ } finally { setSavingId(null); }
+  }
+  async function removeSaved(id: string) {
+    try { await api.xpozDeleteSaved(id); setSaved((s) => s.filter((x) => x.id !== id)); } catch { /* ignore */ }
+  }
+  async function draftSaved(s: SavedPost) {
+    setSavedBusy(s.id); setSavedMsg(null);
+    try {
+      const d = await api.xpozDraftSaved(s.id);
+      const ok = d.status === "generated";
+      setSaved((list) => list.map((x) => (x.id === s.id ? { ...x, status: ok ? "drafted" : x.status, action_id: d.action_id } : x)));
+      setSavedMsg({ id: s.id, ok, text: ok ? `On-brand draft created (voice ${d.voice_score}).` : d.note || `Flagged by voice-QA (${d.voice_score}).` });
+    } catch (e) {
+      setSavedMsg({ id: s.id, ok: false, text: e instanceof Error ? e.message : "draft failed" });
+    } finally { setSavedBusy(null); }
   }
 
   async function draftFrom(p: Post) {
@@ -160,6 +189,52 @@ export default function SocialListeningPage() {
         {err && <p className="text-destructive text-[12px] mt-2">✗ {err}</p>}
       </Card>
 
+      {/* Saved shelf — curate, then generate */}
+      {saved.length > 0 && (
+        <Card className="border-primary/30">
+          <div className="flex items-center justify-between">
+            <CardTitle>Saved for content ({saved.length})</CardTitle>
+            <span className="text-[11px] text-muted-foreground">Pick what to make — each becomes an on-brand draft in your voice</span>
+          </div>
+          <div className="flex flex-col divide-y divide-border mt-1">
+            {saved.map((s) => (
+              <div key={s.id} className="py-3">
+                <div className="flex gap-3">
+                  <Badge tone={s.status === "drafted" ? "ok" : "muted"}>
+                    {PLATFORM_LABEL[s.source_platform] || s.source_platform}
+                  </Badge>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[12px] text-muted-foreground flex items-center gap-2">
+                      <span className="font-medium text-foreground">@{s.author || "unknown"}</span>
+                      <span>· ♥ {num(s.likes)} · 💬 {num(s.comments)}</span>
+                      {s.niche && <span className="ml-auto italic">“{s.niche}”</span>}
+                    </div>
+                    <p className="text-[13px] mt-1">{s.text.slice(0, 220)}</p>
+                    <div className="flex items-center gap-3 mt-1.5">
+                      {s.status === "drafted" ? (
+                        <a href="/queue" className="text-[11px] text-primary hover:underline">✓ Drafted — review in queue →</a>
+                      ) : (
+                        <button onClick={() => draftSaved(s)} disabled={savedBusy === s.id}
+                          className="text-[11px] text-primary hover:underline disabled:opacity-50 inline-flex items-center gap-1">
+                          {savedBusy === s.id ? <Spinner /> : "✦ Make content in James's voice →"}
+                        </button>
+                      )}
+                      <button onClick={() => removeSaved(s.id)} className="text-[11px] text-muted-foreground hover:text-destructive">Remove</button>
+                    </div>
+                    {savedMsg?.id === s.id && (
+                      <div className={`mt-2 rounded-md border p-2 text-[12px] ${savedMsg.ok ? "border-primary/40 bg-primary/10" : "border-destructive/40 bg-destructive/10"} text-foreground`}>
+                        {savedMsg.text}{" "}
+                        {savedMsg.ok && <a href="/queue" className="text-primary underline font-medium">Open Approval Queue →</a>}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
       {/* Aggregate analytics */}
       {ran && !busy && posts.length > 0 && (
         <>
@@ -229,6 +304,13 @@ export default function SocialListeningPage() {
                     <p className="text-[13px] mt-1">{p.text}</p>
                     <div className="flex items-center gap-3 mt-1.5">
                       {p.url && <a href={p.url} target="_blank" rel="noopener noreferrer" className="text-[11px] text-muted-foreground hover:underline">View original →</a>}
+                      <button
+                        onClick={() => savePost(p)}
+                        disabled={savingId === p.platform + p.id || savedKeys.has(p.platform + p.id)}
+                        className="text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60 inline-flex items-center gap-1"
+                      >
+                        {savingId === p.platform + p.id ? <Spinner /> : savedKeys.has(p.platform + p.id) ? "✓ Saved" : "☆ Save"}
+                      </button>
                       <button
                         onClick={() => draftFrom(p)}
                         disabled={drafting === p.platform + p.id}

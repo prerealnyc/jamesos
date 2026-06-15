@@ -3,6 +3,21 @@
 
 export type Citation = { event_id: string; span: string; confidence: number };
 
+export type SavedPost = {
+  id: string;
+  source_platform: string;
+  post_id: string;
+  author: string;
+  text: string;
+  likes: number;
+  comments: number;
+  url: string;
+  niche: string;
+  status: "saved" | "drafted";
+  action_id: string | null;
+  created_at: string;
+};
+
 export type AskResponse = {
   response: string;
   citations: Citation[];
@@ -705,6 +720,18 @@ export const api = {
   }) =>
     jpost<{ status: string; action_id: string | null; voice_score: number; note: string | null }>(
       "/research/social/draft-from-post", body,
+    ),
+
+  // ── Saved-posts shelf: save from search → curate → generate ──────
+  xpozSave: (post: Record<string, unknown>, niche: string) =>
+    jpost<SavedPost>("/research/social/saved", { post, niche }),
+  xpozListSaved: () =>
+    jget<{ saved: SavedPost[] }>("/research/social/saved"),
+  xpozDeleteSaved: (id: string) =>
+    jdel<{ ok: boolean }>(`/research/social/saved/${id}`),
+  xpozDraftSaved: (id: string, platform = "instagram", format = "reel_script") =>
+    jpost<{ status: string; action_id: string | null; voice_score: number; note: string | null }>(
+      `/research/social/saved/${id}/draft`, { platform, format },
     ),
 
   // ── Live analytics (aggregated across connected accounts) ───────
