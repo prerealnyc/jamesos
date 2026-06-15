@@ -52,25 +52,23 @@ jobs:
         if: steps.next.outputs.has_item == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          AREA: ${{ steps.next.outputs.area }}
-          TITLE: ${{ steps.next.outputs.title }}
-          DETAIL: ${{ steps.next.outputs.detail }}
         run: |
-          PROMPT="You are implementing ONE piece of human-approved user feedback in this repository (a FastAPI backend in src/james_os and a Next.js app in web/).
-
-          Feedback area: ${AREA}
-          What to do: ${TITLE}
-          Detail / diagnosis: ${DETAIL}
-
-          Rules:
-          - Make the MINIMAL change that implements this. Touch only the relevant module(s).
-          - Do NOT refactor unrelated code, rename things, or reformat files you aren't changing.
-          - Match the surrounding code style and comment density.
-          - After editing, VERIFY: run 'python -m py_compile' on any changed Python file; if you changed anything under web/, run 'cd web && npx tsc --noEmit'. Fix what you broke.
-          - If the feedback is already satisfied by existing code, make NO changes and say so.
-          - Do not edit the test suite except to add one focused test for your change.
-          When finished, stop."
-          claude -p "$PROMPT" --dangerously-skip-permissions || true
+          {
+            echo "You are implementing ONE piece of human-approved user feedback in this repository (a FastAPI backend in src/james_os and a Next.js app in web/)."
+            echo ""
+            cat agent_task.md
+            echo ""
+            echo "Rules:"
+            echo "- Make the MINIMAL change that implements this. Touch only the relevant module(s)."
+            echo "- Do NOT refactor unrelated code, rename things, or reformat files you aren't changing."
+            echo "- Match the surrounding code style and comment density."
+            echo "- After editing, VERIFY: run 'python -m py_compile' on any changed Python file; if you changed anything under web/, run 'cd web && npx tsc --noEmit'. Fix what you broke."
+            echo "- If the feedback is already satisfied by existing code, make NO changes and say so."
+            echo "- Do not edit the test suite except to add one focused test for your change."
+            echo "When finished, stop."
+          } > agent_prompt.txt
+          claude -p "$(cat agent_prompt.txt)" --dangerously-skip-permissions || true
+          rm -f agent_task.md agent_prompt.txt
 
       - name: Verify changed Python compiles
         id: verify
@@ -90,7 +88,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CHANGE_ID: ${{ steps.next.outputs.change_id }}
           AREA: ${{ steps.next.outputs.area }}
-          TITLE: ${{ steps.next.outputs.title }}
           COMPILE: ${{ steps.verify.outputs.compile }}
         run: |
           if [ -z "$(git status --porcelain)" ]; then
@@ -98,25 +95,24 @@ jobs:
             echo "made_pr=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          TITLE="Auto: feedback fix (${AREA})"
           BRANCH="agent/feedback-${CHANGE_ID:0:8}"
           git config user.name "jamesos-agent"
           git config user.email "agent@prerealinvestments.com"
           git checkout -b "$BRANCH"
           git add -A
-          git commit -m "Auto: ${TITLE}
+          git commit -m "${TITLE}
 
           Implemented by the autonomous feedback agent from an approved
-          What's Next item (${AREA}). Compile check: ${COMPILE}.
+          What's Next item (area: ${AREA}, change ${CHANGE_ID}). Compile: ${COMPILE}.
 
-          ⚠️ Auto-generated — review before merging. Merging this is what
-          ships the change; nothing is live until you approve."
+          Auto-generated — review before merging. Merging ships the change;
+          nothing is live until you approve."
           git push -u origin "$BRANCH"
-          URL=$(gh pr create --title "Auto: ${TITLE}" \
+          URL=$(gh pr create --title "$TITLE" \
             --body "**Autonomous feedback fix** — area: \`${AREA}\` · change id: \`${CHANGE_ID}\` · py compile: \`${COMPILE}\`
 
-          This PR was written by the hourly feedback agent from an item you approved on the *What's Next* board. **Review the diff before merging** — merging is the deploy gate; nothing changes in production until you do.
-
-          What it was asked to implement: ${TITLE}" \
+          Written by the hourly feedback agent from an item you approved on the *What's Next* board. **Review the diff before merging** — merging is the deploy gate; nothing changes in production until you do." \
             --base main --head "$BRANCH")
           echo "pr_url=$URL" >> "$GITHUB_OUTPUT"
           echo "made_pr=true" >> "$GITHUB_OUTPUT"
