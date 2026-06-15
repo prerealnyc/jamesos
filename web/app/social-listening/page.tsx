@@ -27,16 +27,6 @@ function num(n: number | null | undefined): string {
   return String(n);
 }
 
-function parseUsage(usage?: string): string {
-  if (!usage) return "";
-  const m = usage.match(/subscription_credits_remaining=(\d+)/);
-  return m ? `${Number(m[1]).toLocaleString()} credits left` : usage.slice(0, 60);
-}
-function parsePlan(plan?: string): string {
-  if (!plan) return "";
-  const m = plan.match(/name='([^']+)'/);
-  return m ? m[1] : "";
-}
 
 export default function SocialListeningPage() {
   const [acct, setAcct] = useState<Awaited<ReturnType<typeof api.xpozAccount>> | null>(null);
@@ -101,8 +91,18 @@ export default function SocialListeningPage() {
           <p className="text-[13px] text-destructive mt-2">{acct.error}</p>
         ) : acct ? (
           <div className="flex flex-wrap gap-6 mt-2 text-[13px]">
-            <span><span className="text-muted-foreground">Plan: </span><b>{parsePlan(acct.plan) || "—"}</b></span>
-            <span><span className="text-muted-foreground">Usage: </span><b>{parseUsage(acct.usage) || "—"}</b></span>
+            <span><span className="text-muted-foreground">Plan: </span><b>{acct.plan_name || "—"}</b></span>
+            <span>
+              <span className="text-muted-foreground">Credits left: </span>
+              <b>{acct.credits_remaining != null ? acct.credits_remaining.toLocaleString() : "—"}</b>
+              {acct.credits != null && <span className="text-muted-foreground"> / {acct.credits.toLocaleString()} {acct.reset_frequency || ""}</span>}
+            </span>
+            {acct.tracked_items != null && (
+              <span><span className="text-muted-foreground">Tracked items: </span><b>{acct.tracked_items}</b></span>
+            )}
+            {acct.next_renewal && (
+              <span><span className="text-muted-foreground">Renews: </span><b>{acct.next_renewal.slice(0, 10)}</b></span>
+            )}
           </div>
         ) : (
           <div className="text-muted-foreground text-sm mt-2 flex items-center gap-2"><Spinner /> checking…</div>

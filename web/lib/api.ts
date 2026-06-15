@@ -670,7 +670,11 @@ export const api = {
   xpozAccount: () =>
     jget<{
       configured: boolean;
-      plan?: string; usage?: string; billing?: string; error?: string;
+      plan_name?: string | null; credits?: number | null;
+      tracked_items?: number | null; reset_frequency?: string | null;
+      credits_remaining?: number | null; extra_credits_remaining?: number | null;
+      billing_period?: string | null; next_renewal?: string | null;
+      error?: string;
     }>("/research/social/account"),
   xpozSearch: (query: string, platforms: string[] | null, limit = 10) =>
     jpost<{

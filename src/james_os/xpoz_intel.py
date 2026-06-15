@@ -111,8 +111,23 @@ async def account_info() -> dict:
     try:
         async with xpoz.AsyncXpozClient(settings.xpoz_api_key.strip(), check_update=False) as c:
             d = await c.account.get_account_details()
-        return {"configured": True, "plan": _g(d, "plan"),
-                "usage": _g(d, "usage"), "billing": _g(d, "billing")}
+        # Flatten the SDK objects to JSON-safe primitives — the client
+        # expects plain strings/numbers, not nested plan/usage objects.
+        plan = _g(d, "plan")
+        feats = _g(plan, "features")
+        usage = _g(d, "usage")
+        billing = _g(d, "billing")
+        return {
+            "configured": True,
+            "plan_name": _g(plan, "name"),
+            "credits": _g(feats, "credits"),
+            "tracked_items": _g(feats, "tracked_items"),
+            "reset_frequency": _g(feats, "credit_reset_frequency"),
+            "credits_remaining": _g(usage, "subscription_credits_remaining"),
+            "extra_credits_remaining": _g(usage, "extra_credits_remaining"),
+            "billing_period": _g(billing, "billing_period"),
+            "next_renewal": str(_g(billing, "next_renewal_date") or "") or None,
+        }
     except Exception as e:  # noqa: BLE001
         return {"configured": True, "error": f"{type(e).__name__}: {e}"}
 
