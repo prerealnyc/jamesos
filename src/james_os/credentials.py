@@ -83,7 +83,6 @@ MANAGED_FIELDS: list[ManagedField] = [
     ManagedField(
         "heygen_voice_id", "HeyGen voice id (to speak text)", "Video & media", secret=False
     ),
-    ManagedField("descript_api_key", "Descript API key", "Video & media"),
     ManagedField("runway_api_key", "Runway API key", "Video & media"),
     ManagedField("higgsfield_api_key", "Higgsfield API key (HF_API_KEY) — experimental", "Video & media"),
     ManagedField("higgsfield_api_secret", "Higgsfield API secret (HF_API_SECRET)", "Video & media"),

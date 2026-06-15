@@ -78,6 +78,82 @@
   }
 }
 
+/* ─────────────────────────────────────────────────────────────────────
+   "Iris" redesign theme — OPT-IN preview, toggled via the floating
+   switcher (ThemeSwitcher). Adds `theme-iris` to <html>; original tokens
+   above stay the default. Memory = Iris indigo (action), Signal Gold =
+   provenance (--memory), Archive Slate = the vault. Higher specificity
+   (html.…) so these win over :root / .dark without touching them.
+   ───────────────────────────────────────────────────────────────────── */
+html.theme-iris {
+  --background: 220 33% 97%;          /* Graphite-50  #F6F7FA */
+  --foreground: 222 19% 13%;          /* Ink          #1B1F28  15.4:1 AAA */
+  --border: 222 19% 89%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 19% 13%;
+  --sidebar: 222 26% 15%;             /* Archive Slate #1C2230 */
+  --sidebar-foreground: 248 22% 92%;
+  --sidebar-border: 222 18% 26%;
+  --sidebar-primary: 247 70% 73%;     /* Iris-300 — active/logo on slate (AA) */
+  --sidebar-accent: 222 22% 22%;
+  --sidebar-accent-foreground: 248 22% 94%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222 19% 13%;
+  --primary: 247 64% 57%;             /* Iris-500   #5C4CD6  6.14:1 AA */
+  --primary-foreground: 0 0% 100%;
+  --secondary: 222 19% 92%;
+  --secondary-foreground: 222 19% 18%;
+  --muted: 222 24% 94%;
+  --muted-foreground: 222 12% 42%;    /* #5F6678  4.93:1 — fixes the AA bug */
+  --accent: 163 67% 37%;              /* Verdigris  #1F9E7A */
+  --accent-foreground: 0 0% 100%;
+  --destructive: 6 67% 54%;           /* Vermilion */
+  --destructive-foreground: 0 0% 100%;
+  --input: 222 17% 80%;
+  --ring: 247 64% 57%;
+  --memory: 40 75% 53%;               /* Signal Gold (provenance) */
+  --memory-foreground: 222 26% 15%;
+  --success: 163 67% 37%;
+  --warning: 35 90% 45%;
+  --shadow-sm: 0 1px 3px 0 hsl(222 40% 12% / 0.08), 0 1px 2px -1px hsl(222 40% 12% / 0.06);
+  --shadow: 0 4px 8px -2px hsl(222 40% 12% / 0.10), 0 2px 4px -2px hsl(222 40% 12% / 0.06);
+  --shadow-lg: 0 12px 20px -4px hsl(222 40% 12% / 0.12), 0 4px 8px -4px hsl(222 40% 12% / 0.08);
+}
+html.dark.theme-iris {
+  --background: 222 23% 9%;           /* Ink-950  #11141B */
+  --foreground: 248 24% 92%;          /* #E7E5F0 */
+  --border: 222 16% 22%;
+  --card: 222 21% 12%;                /* #181C25 */
+  --card-foreground: 248 24% 92%;
+  --sidebar: 222 27% 7%;              /* deepest vault — content floats above */
+  --sidebar-foreground: 248 20% 90%;
+  --sidebar-border: 222 16% 18%;
+  --sidebar-primary: 247 70% 73%;     /* Iris-300 #9A8FE4 on slate — 7.6:1 AAA */
+  --sidebar-accent: 222 22% 16%;
+  --sidebar-accent-foreground: 248 20% 92%;
+  --popover: 222 21% 12%;
+  --popover-foreground: 248 24% 92%;
+  --primary: 247 62% 64%;             /* Iris-400 #7A6BDC fill, white text AA */
+  --primary-foreground: 0 0% 100%;
+  --secondary: 222 16% 18%;
+  --secondary-foreground: 248 20% 92%;
+  --muted: 222 16% 16%;
+  --muted-foreground: 222 12% 72%;
+  --accent: 163 60% 45%;              /* Verdigris (dark) */
+  --accent-foreground: 0 0% 100%;
+  --destructive: 6 67% 58%;
+  --destructive-foreground: 0 0% 100%;
+  --input: 222 14% 26%;
+  --ring: 247 62% 64%;
+  --memory: 40 78% 58%;
+  --memory-foreground: 222 26% 12%;
+  --success: 163 60% 45%;
+  --warning: 35 90% 55%;
+  --shadow-sm: 0 1px 3px 0 hsl(222 60% 2% / 0.40), 0 1px 2px -1px hsl(222 60% 2% / 0.30);
+  --shadow: 0 4px 8px -2px hsl(222 60% 2% / 0.45), 0 2px 4px -2px hsl(222 60% 2% / 0.35);
+  --shadow-lg: 0 12px 20px -4px hsl(222 60% 2% / 0.55), 0 4px 8px -4px hsl(222 60% 2% / 0.40);
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

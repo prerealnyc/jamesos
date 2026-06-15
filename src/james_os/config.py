@@ -59,7 +59,6 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str = ""   # voice synthesis / cloning
     heygen_api_key: str = ""       # avatar video
     heygen_avatar_id: str = ""     # default avatar for renders
-    descript_api_key: str = ""     # audio/video editing
     runway_api_key: str = ""       # video generation
     minimax_api_key: str = ""      # video generation
     postproxy_api_key: str = ""    # multi-platform publishing
@@ -77,9 +76,9 @@ class Settings(BaseSettings):
     # Generative clips (Runway Gen-3/4). Provider-abstracted with a stub
     # so the durable job pipeline (submit → poll → land in approval queue)
     # is provable end-to-end WITHOUT burning render credits. Flip to
-    # `runway` once the key is verified. Higgsfield/Descript/MiniMax are
+    # `runway` once the key is verified. Higgsfield is wired; MiniMax is
     # intentionally NOT wired — no usable public REST API / no key — and
-    # are not faked.
+    # is not faked.
     video_provider: str = "stub"  # runway | higgsfield | stub
     runway_model: str = "gen4_turbo"          # gen4_turbo | gen3a_turbo
     runway_api_version: str = "2024-11-06"    # X-Runway-Version header

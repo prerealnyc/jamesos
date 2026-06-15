@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { Shell } from "@/components/shell";
+import { ThemeSwitcher } from "@/components/theme-switcher";
 
 export const metadata: Metadata = {
   title: "JAMES OS · Brand Manager",
@@ -12,6 +13,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className="dark">
       <head>
+        {/* Apply the saved theme preview before paint (no flash). */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "try{if(localStorage.getItem('jos-theme-preview')==='iris')document.documentElement.classList.add('theme-iris')}catch(e){}",
+          }}
+        />
         {/* Same typefaces as the approved dashboard build */}
         <link
           href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&display=swap"
@@ -24,6 +32,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body className="font-sans">
         <Shell>{children}</Shell>
+        <ThemeSwitcher />
       </body>
     </html>
   );

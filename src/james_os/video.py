@@ -15,8 +15,8 @@ is the real engine.
 
 Honest scope: Runway's public dev API is image-conditioned
 (`image_to_video`). We do NOT fake a text-only endpoint — if no still is
-supplied the Runway provider says so plainly. Higgsfield/Descript/MiniMax
-are not wired (no usable public REST API / no key) and are not faked.
+supplied the Runway provider says so plainly. Higgsfield is wired;
+MiniMax is not (no usable public REST API / no key) and is not faked.
 """
 
 import json

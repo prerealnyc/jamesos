@@ -76,12 +76,14 @@ const NAV: Group[] = [
 ];
 
 // Auth pages render full-bleed without the sidebar chrome — the
-// signed-in shell is for the workspace, not the front door.
+// signed-in shell is for the workspace, not the front door. `/preview`
+// is the self-contained redesign preview (its own sidebar + content).
 const AUTH_PATHS = ["/login", "/signup"];
+const FULL_BLEED = ["/preview"];
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
-  if (AUTH_PATHS.includes(path)) {
+  if (AUTH_PATHS.includes(path) || FULL_BLEED.some((p) => path.startsWith(p))) {
     return <>{children}</>;
   }
   return (

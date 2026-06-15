@@ -146,7 +146,6 @@ async def integrations() -> dict:
             "openai": cfg(settings.openai_api_key),
             "elevenlabs": cfg(settings.elevenlabs_api_key),
             "heygen": cfg(settings.heygen_api_key),
-            "descript": cfg(settings.descript_api_key),
             "runway": cfg(settings.runway_api_key),
             "minimax": cfg(settings.minimax_api_key),
             "postproxy": cfg(settings.postproxy_api_key),
@@ -285,18 +284,6 @@ async def _probe(client: httpx.AsyncClient, name: str) -> dict:
                 "verified on first real generation call",
             }
 
-        if name == "descript":
-            if not settings.descript_api_key:
-                return {"status": "not_configured", "detail": ""}
-            # Descript's public API has no confirmed free read endpoint and
-            # the key is a bearer:secret pair. We do NOT fabricate a green
-            # check — honestly deferred to first real use.
-            return {
-                "status": "unverified",
-                "detail": "credential present (dx_bearer:dx_secret format); "
-                "no confirmed free probe endpoint — verified at first real use",
-            }
-
         if name == "perplexity":
             if not settings.perplexity_api_key:
                 return {"status": "not_configured", "detail": ""}
@@ -403,7 +390,7 @@ async def integrations_check() -> dict:
     """
     services = [
         "anthropic", "openai", "voyage", "cohere",
-        "heygen", "runway", "descript",
+        "heygen", "runway",
         "perplexity", "google_search",
         "apify", "creatomate", "shotstack",
     ]

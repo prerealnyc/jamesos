@@ -19,6 +19,9 @@ const config: Config = {
         muted: { DEFAULT: "hsl(var(--muted))", foreground: "hsl(var(--muted-foreground))" },
         accent: { DEFAULT: "hsl(var(--accent))", foreground: "hsl(var(--accent-foreground))" },
         destructive: { DEFAULT: "hsl(var(--destructive))", foreground: "hsl(var(--destructive-foreground))" },
+        memory: { DEFAULT: "hsl(var(--memory, var(--accent)))", foreground: "hsl(var(--memory-foreground, var(--accent-foreground)))" },
+        success: { DEFAULT: "hsl(var(--success, var(--accent)))" },
+        warning: { DEFAULT: "hsl(var(--warning, 40 75% 52%))" },
         sidebar: {
           DEFAULT: "hsl(var(--sidebar))",
           foreground: "hsl(var(--sidebar-foreground))",

@@ -193,7 +193,6 @@ const PROBE_FOR: Record<string, string> = {
   perplexity_api_key: "perplexity",
   google_search_api_key: "google_search",
   heygen_api_key: "heygen",
-  descript_api_key: "descript",
   runway_api_key: "runway",
 };
 
