@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Icon } from "@/components/icons";
+import { HubTabs, BRAND_TABS, RESEARCH_TABS } from "@/components/hub-tabs";
 
 type Item = {
   href: string; label: string; sub: string; icon: string; live?: boolean;
@@ -25,7 +26,14 @@ const VIDEO_SUBROUTES = [
   "/video", "/long-form", "/engaging-video", "/story-mix",
   "/heygen-video", "/story-video", "/pipeline", "/editor",
 ];
-const MEDIA_SUBROUTES = ["/jp-clips", "/hero", "/broll", "/audio"];
+// One "Create" hub over every maker (batch, post, video, image).
+const CREATE_SUBROUTES = ["/create", "/autopilot", "/design-studio", "/images", ...VIDEO_SUBROUTES];
+// Assets = the 4 media libraries + style templates, already tab-unified.
+const ASSETS_SUBROUTES = ["/jp-clips", "/hero", "/broll", "/audio", "/style-templates"];
+// Research = listen + trends + people, tab-unified via HubTabs.
+const RESEARCH_SUBROUTES = ["/social-listening", "/market-research", "/social-companion"];
+// Brand = rules + voice studio + health, tab-unified via HubTabs.
+const BRAND_SUBROUTES = ["/brand", "/voice-studio", "/jp-live"];
 
 const NAV: Group[] = [
   {
@@ -35,43 +43,31 @@ const NAV: Group[] = [
     ],
   },
   {
-    // Autopilot is the headline — one-click content at scale. Content
-    // Studio nests under it for the manual path (build one piece by hand).
     title: "Create",
     items: [
-      { href: "/autopilot", label: "Autopilot", sub: "One-click multi-day content batches", icon: "queue", live: true },
-      { href: "/design-studio", label: "Content Studio", sub: "Manual: write one draft by hand", icon: "design", live: true, indent: true },
-      { href: "/video", label: "Video Studio", sub: "All 7 video makers in one place", icon: "pipeline", live: true, match: VIDEO_SUBROUTES, indent: true },
-      { href: "/images", label: "Post Images", sub: "AI hero images for posts", icon: "images", live: true, indent: true },
+      { href: "/create", label: "Create", sub: "Posts, videos, images & batches — one place", icon: "design", live: true, match: CREATE_SUBROUTES },
     ],
   },
   {
     title: "Review & Library",
     items: [
-      { href: "/queue", label: "Approval Queue", sub: "Videos + posts split, ready to ship", icon: "queue", live: true },
+      { href: "/queue", label: "Approval Queue", sub: "Review, edit & approve every piece", icon: "queue", live: true },
       { href: "/library", label: "Output Library", sub: "Finished content — download & share", icon: "clips", live: true },
       { href: "/updates", label: "What's Next", sub: "Feedback → changes: live + queued", icon: "design", live: true },
-      { href: "/jp-clips", label: "Media Library", sub: "Reference clips & hero footage", icon: "clips", live: true, match: MEDIA_SUBROUTES },
-      { href: "/style-templates", label: "Style Templates", sub: "Trending styles, reverse-engineered to replicate", icon: "pipeline", live: true },
+      { href: "/jp-clips", label: "Assets", sub: "Footage, hero, B-roll, audio & styles", icon: "clips", live: true, match: ASSETS_SUBROUTES },
     ],
   },
   {
     title: "Intelligence",
     items: [
       { href: "/analytics", label: "Analytics", sub: "Your brand-account performance", icon: "social", live: true },
-      { href: "/social-listening", label: "Social Listening", sub: "Brand mentions across X/IG/TikTok/Reddit (Xpoz)", icon: "market", live: true },
-      // Social Companion folded in here — peer/competitor research is
-      // part of "Social Research" alongside the trend radar.
-      { href: "/market-research", label: "Social Research", sub: "Influencers, trends & peer intel", icon: "market", live: true, match: ["/market-research", "/social-companion"] },
+      { href: "/social-listening", label: "Research", sub: "Listen, trends & people across socials", icon: "market", live: true, match: RESEARCH_SUBROUTES },
     ],
   },
   {
-    // Voice & brand health — reference material, not daily-driver. Bottom.
-    title: "Brand Reference",
+    title: "Brand",
     items: [
-      { href: "/voice-studio", label: "Voice Studio", sub: "Feed the voice from Drive (transcribe & learn)", icon: "voice", live: true },
-      { href: "/brand", label: "Voice Rules", sub: "Brand voice & guidelines", icon: "voice", live: true },
-      { href: "/jp-live", label: "JP Live", sub: "Live brand health", icon: "live", live: true },
+      { href: "/brand", label: "Brand", sub: "Voice rules, voice studio & health", icon: "voice", live: true, match: BRAND_SUBROUTES },
     ],
   },
 ];
@@ -156,7 +152,17 @@ export function Shell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <main className="flex-1 min-w-0 bg-background">
-        <div className="max-w-4xl mx-auto px-8 py-10">{children}</div>
+        <div className="max-w-4xl mx-auto px-8 py-10">
+          {/* Hub tab strips unify a cluster of pages into one surface.
+              Media/Assets pages render their own MediaTabs in-page. */}
+          {BRAND_SUBROUTES.some((p) => path === p || path.startsWith(p + "/")) && (
+            <div className="mb-6"><HubTabs tabs={BRAND_TABS} /></div>
+          )}
+          {RESEARCH_SUBROUTES.some((p) => path === p || path.startsWith(p + "/")) && (
+            <div className="mb-6"><HubTabs tabs={RESEARCH_TABS} /></div>
+          )}
+          {children}
+        </div>
       </main>
     </div>
   );
