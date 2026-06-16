@@ -282,7 +282,7 @@ CAPTION_PRESETS: dict[str, dict] = {
     },
 }
 
-DEFAULT_CAPTION_STYLE = "clean_white"
+DEFAULT_CAPTION_STYLE = "magenta_blocks"
 AUTO_PICK_KEY = "auto"      # frontend sentinel meaning "let the LLM pick"
 
 
@@ -597,38 +597,22 @@ def _hook_body_split(captions: list[dict]) -> tuple[list[dict], list[dict]]:
 
 
 def magenta_blocks_elements(captions: list[dict], track: int = 3) -> list[dict]:
-    """Serhant/SXSW block style. Hook: white uppercase Archivo Black lines,
-    each on a solid hot-magenta box, stacked mid-frame. Body: magenta
-    uppercase on a solid black box, lower in frame."""
-    hook, body = _hook_body_split(captions)
-    if not hook and not body:
-        return []
-    out: list[dict] = []
-    hook_text = " ".join((c.get("text") or "").strip() for c in hook)
-    hook_start, hook_end = _hook_window(hook, body)
-    lines = _hook_lines(hook_text)
-    line_gap = 9.4
-    base = SAFE_TOP_PCT + 6.5  # first line center; block stacks DOWN inside the zone
-    for i, (line, _y) in enumerate(lines):
-        out.append({
-            # One track per simultaneous line — see _HOOK_TRACK_OFFSET.
-            "type": "text", "text": line.upper(),
-            "track": track + _HOOK_TRACK_OFFSET + i,
-            "time": round(hook_start, 2),
-            "duration": round(max(0.2, hook_end - hook_start), 2),
-            "width": "76%",
-            "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
-            "y": f"{base + i * line_gap:.1f}%", "y_anchor": "50%",
-            "font_family": "Archivo Black", "font_weight": "900",
-            "font_size": f"{_fit_hook_vh([l for l, _ in lines], 6.6)} vh",
-            "fill_color": "#FFFFFF",
-            "background_color": "#FF00C8",
-            "letter_spacing": "0",
-        })
+    """Magenta caption look — every phrase as a magenta-on-box caption at the
+    chin, never over the face. THE DEFAULT STYLE.
+
+    The big stacked white-on-magenta HOOK block at the start was removed
+    (2026-06-15, per owner: it covered the speaker's face). Now every caption
+    — including the opening lines — renders as the normal per-phrase magenta
+    body caption in the safe zone.
+    """
     preset = CAPTION_PRESETS["magenta_blocks"]
-    for c in body:
+    out: list[dict] = []
+    for c in captions:
+        text = (c.get("text") or "").strip()
+        if not text:
+            continue
         out.append(caption_element(
-            text=(c.get("text") or "").strip(),
+            text=text,
             start=float(c.get("start") or 0.0), end=float(c.get("end") or 0.0),
             preset=preset, track=track, role="default",
         ))

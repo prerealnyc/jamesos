@@ -62,10 +62,11 @@ _VIDEO_MODE = "engaging_avatar"
 # When cfg['rotate_captions'] is on, video j in a batch gets
 # rotation[(offset + j) % len], and the offset persists across batches so
 # every style gets seen on real renders, not just the first daily_count.
-_CAPTION_ROTATION = (
-    "viral_hook", "magenta_blocks", "editorial_serif", "gradient_mint",
-    "tiktok_yellow", "highlight_box", "karaoke_green",
-)
+# Magenta is the chosen default look (2026-06-15). Autopilot no longer
+# rotates through hook/face-covering styles — every batch reel uses the
+# magenta per-phrase captions. Other styles remain available for manual
+# selection; they're just not the autopilot default anymore.
+_CAPTION_ROTATION = ("magenta_blocks",)
 _VIDEO_ASPECT = "9:16"
 
 # Short, punchy steer for the video script writer. Reels want a spoken
