@@ -890,11 +890,13 @@ async def _run_engaging_avatar(
     # placement that respects the insert overlays)
     async with acquire(tenant_id) as conn:
         await _set(conn, pid, status="planning")
-    # EVERY output is 9:16 vertical. The split speaker is rendered at the
-    # output aspect (9:16) and shown FULL-FRAME anchored to the top of the
-    # canvas; the opaque bottom B-roll panel is painted over the speaker's
-    # lower half. So the head is never cropped and nothing is ever 16:9.
-    avatar_aspect = row["aspect"]
+    # Output is ALWAYS 9:16 vertical. For the split, the speaker goes in the
+    # TOP HALF — a near-square box. A 9:16 portrait cover-cropped into a square
+    # box loses the head (the "only part of his face" bug); a LANDSCAPE
+    # head-and-shoulders source cover-fits that box with the FULL face. So the
+    # split speaker is shot landscape and cropped into the top half — it never
+    # appears as a 16:9 video; the final reel is 9:16.
+    avatar_aspect = "16:9" if composition == "split_horizontal" else row["aspect"]
     avatar_url, err = await _render_avatar(
         script, avatar_aspect, captions=False, pid=pid, tenant_id=tenant_id,
     )
