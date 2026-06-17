@@ -79,4 +79,89 @@ async def compose_video(
     }
 
 
-__all__ = ["compose_video"]
+async def compose_video_batch(
+    n: int = 10,
+    platform: str = "instagram",
+    aspect: str = "9:16",
+    tenant_id: UUID | None = None,
+) -> dict:
+    """Generate N ready-to-pick topic+script options from live trend DATA —
+    no topic input. Pulls the tracked influencers' posts (Xpoz) + niche
+    trending + research via _gather_intel, ideates N trend-grounded topics,
+    and writes a full on-voice reel script for each (in parallel). The caller
+    reviews and picks which one to render. Nothing renders here.
+
+    Returns {scripts: [{title, topic, trend_basis, script, voice_score,
+    voice_status}], count, niche, error}.
+    """
+    import asyncio
+
+    from .autopilot import _gather_intel, generate_ideas, get_config, trend_steer
+
+    n = max(1, min(int(n or 10), 10))
+
+    # Steer purely from data: use the brand's configured niche (autopilot
+    # topic_hint) as the secondary search seed — the tracked-creator posts are
+    # pulled regardless of niche. No per-request topic from the user.
+    try:
+        cfg = await get_config(tenant_id)
+    except Exception:  # noqa: BLE001
+        cfg = {}
+    niche = (cfg.get("topic_hint") or "").strip()
+
+    intel = await _gather_intel(
+        {"topic_hint": niche, "research_focus": cfg.get("research_focus", "")},
+        tenant_id,
+    )
+    if not intel:
+        return {"scripts": [], "count": 0, "niche": niche, "platform": platform,
+                "aspect": aspect,
+                "error": "No live trend data available — connect Xpoz / add "
+                "tracked creators in Research (or a Perplexity key), then retry."}
+
+    ideas = await generate_ideas(n, intel, tenant_id)
+    if not ideas:
+        return {"scripts": [], "count": 0, "niche": niche, "platform": platform,
+                "aspect": aspect,
+                "error": "Ideation produced no topics from the trend data."}
+
+    sem = asyncio.Semaphore(5)
+
+    async def _one(idea: dict) -> dict:
+        async with sem:
+            try:
+                draft = await generate_content(
+                    ContentBrief(
+                        platform=platform, format="reel_script",
+                        pillar=idea.get("pillar", ""), topic=idea["topic"],
+                        extra_instructions=(
+                            "Single-arc first-person story for a short video. "
+                            "Decisive ownership, concrete specifics — no listicle, "
+                            "no clichés."
+                        ) + trend_steer(idea),
+                    ),
+                    tenant_id,
+                )
+                script = (draft.draft or "").strip()
+                vscore, vstatus = draft.voice_score, draft.status
+            except Exception as e:  # noqa: BLE001 — one bad script can't kill the batch
+                script, vscore, vstatus = "", None, f"error: {e}"
+            return {
+                "title": idea.get("title") or idea.get("topic", ""),
+                "topic": idea.get("topic", ""),
+                "trend_basis": idea.get("trend_basis", ""),
+                "script": script or idea.get("topic", ""),
+                "voice_score": vscore,
+                "voice_status": vstatus,
+            }
+
+    scripts = [s for s in await asyncio.gather(*[_one(i) for i in ideas]) if s.get("script")]
+    return {
+        "scripts": scripts, "count": len(scripts), "niche": niche,
+        "platform": platform, "aspect": aspect, "error": None,
+        "intel": {"provider": intel.get("provider"),
+                  "sources": (intel.get("sources") or [])[:10]},
+    }
+
+
+__all__ = ["compose_video", "compose_video_batch"]

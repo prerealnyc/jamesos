@@ -72,6 +72,12 @@ export default function EngagingVideoPage() {
   const [prod, setProd] = useState<Production | null>(null);
   const [recent, setRecent] = useState<Production[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Trend-driven script batch ("generate 10 scripts to pick from").
+  type BatchScript = { title: string; topic: string; trend_basis: string; script: string; voice_score?: number };
+  const [scriptBatch, setScriptBatch] = useState<BatchScript[]>([]);
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [batchErr, setBatchErr] = useState("");
+  const batchPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   async function loadRecent() {
     try {
@@ -90,7 +96,10 @@ export default function EngagingVideoPage() {
   }
   useEffect(() => {
     loadRecent();
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      if (batchPollRef.current) clearInterval(batchPollRef.current);
+    };
   }, []);
 
   async function generateScript() {
@@ -104,6 +113,39 @@ export default function EngagingVideoPage() {
     } finally {
       setComposing(false);
     }
+  }
+
+  async function generateScripts() {
+    setBatchLoading(true); setBatchErr(""); setScriptBatch([]);
+    try {
+      const { batch_id } = await api.startScriptBatch({ n: 10, platform, aspect });
+      if (batchPollRef.current) clearInterval(batchPollRef.current);
+      batchPollRef.current = setInterval(async () => {
+        const r = await api.getScriptBatch(batch_id).catch(() => null);
+        if (!r) return;
+        if (r.status === "done") {
+          if (batchPollRef.current) clearInterval(batchPollRef.current);
+          setScriptBatch(r.scripts || []);
+          setBatchLoading(false);
+          if (!(r.scripts || []).length) {
+            setBatchErr(r.error || "No scripts generated — connect Xpoz / add tracked creators in Research.");
+          }
+        } else if (r.status === "failed") {
+          if (batchPollRef.current) clearInterval(batchPollRef.current);
+          setBatchErr(r.error || "generation failed");
+          setBatchLoading(false);
+        }
+      }, 3000);
+    } catch (e) {
+      setBatchErr(e instanceof Error ? e.message : "could not start");
+      setBatchLoading(false);
+    }
+  }
+
+  function useScript(s: BatchScript) {
+    setScript(s.script);
+    setTopic(s.title || s.topic);
+    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   async function produce() {
@@ -149,6 +191,41 @@ export default function EngagingVideoPage() {
         title="Engaging Reel"
         sub="James on camera full-time, with 2-5 cinematic B-roll cutaways punching in at the moments the LLM picks as visually amplifiable. Hero references flow when an insert is about James himself. Captions are placed safely around the speaker's face. Same HeyGen spend as avatar-only; visibly more engaging."
       />
+
+      <Card>
+        <CardTitle>Generate scripts from trends</CardTitle>
+        <p className="text-[12px] text-muted-foreground mb-3">
+          No topic needed — pulls your tracked influencers (Xpoz) + niche trending + research,
+          then drafts 10 ready topic + script options. Pick one to load it below, choose a
+          format, and produce.
+        </p>
+        <Button variant="secondary" onClick={generateScripts} disabled={batchLoading}>
+          {batchLoading
+            ? <span className="flex items-center gap-2"><Spinner /> pulling trends + writing 10 scripts… (~30–45s)</span>
+            : "Generate 10 scripts"}
+        </Button>
+        {batchErr && <p className="text-destructive text-[12px] mt-2">✗ {batchErr}</p>}
+        {scriptBatch.length > 0 && (
+          <div className="mt-3 space-y-2">
+            {scriptBatch.map((s, i) => (
+              <div key={i} className="border border-border rounded-md p-3 hover:bg-muted/20">
+                <div className="flex items-start justify-between gap-3">
+                  <span className="text-[13px] font-medium">{s.title || s.topic}</span>
+                  <Button onClick={() => useScript(s)} className="text-[12px] !px-3 !py-1 shrink-0">
+                    Use this script
+                  </Button>
+                </div>
+                {s.trend_basis && (
+                  <p className="text-[11px] text-primary mt-1">↗ rides: {s.trend_basis}</p>
+                )}
+                <p className="text-[12px] text-muted-foreground mt-1.5 line-clamp-3 whitespace-pre-wrap">
+                  {s.script}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
 
       <Card>
         <CardTitle>Format</CardTitle>

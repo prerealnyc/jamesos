@@ -603,6 +603,15 @@ export const api = {
     jpost<ScenePlan>("/video/plan", { script, platform, aspect }),
   composeVideo: (topic_hint: string, platform = "instagram", aspect = "9:16") =>
     jpost<ComposeResult>("/video/compose", { topic_hint, platform, aspect }),
+  // Trend-driven batch: generate N ready topic+script options (no topic input).
+  startScriptBatch: (body: { n?: number; platform?: string; aspect?: string }) =>
+    jpost<{ batch_id: string; status: string }>("/video/scripts/batch", body),
+  getScriptBatch: (id: string) =>
+    jget<{
+      batch_id: string; status: "running" | "done" | "failed"; count?: number;
+      niche?: string; error?: string | null;
+      scripts: { title: string; topic: string; trend_basis: string; script: string; voice_score?: number; voice_status?: string }[];
+    }>(`/video/scripts/batch/${id}`),
   renderScene: (scene: Scene, aspect = "9:16") =>
     jpost<Scene>("/video/render-scene", { scene, aspect }),
   produceVideo: (opts: {

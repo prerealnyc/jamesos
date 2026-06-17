@@ -19,6 +19,7 @@ fire while the server is up. It's restart-safe (it checks last_run_date in
 config, not a fragile timer), but a 24/7 deployment needs a real worker.
 """
 
+import asyncio
 import json
 from datetime import UTC, date, datetime
 from uuid import UUID
@@ -164,28 +165,35 @@ async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
     # autopilot ideate even WITHOUT a Perplexity key.
     xpoz_posts: list[dict] = []
     if xpoz_intel.configured():
-        # 1) Posts BY the creators the brand tracks (the Research watchlist) —
-        #    the primary "ride what our targets are doing RIGHT NOW" signal.
+        # Two Xpoz feeds, run CONCURRENTLY (each is ~20-25s; sequential would
+        # blow the latency budget):
+        #   1) posts BY the creators the brand tracks (Research watchlist) — the
+        #      primary "ride what our targets are doing RIGHT NOW" signal,
+        #   2) top viral posts in the niche — a broader fallback feed.
         try:
             watch = await get_watchlist(tenant_id)
         except Exception:  # noqa: BLE001
             watch = []
-        creator_posts: list[dict] = []
-        if watch:
-            try:
-                cr = await xpoz_intel.trending_from_creators(
-                    watch, limit=8, days=14, min_likes=10000
-                )
-                creator_posts = cr.get("results") or []
-            except Exception:  # noqa: BLE001
-                creator_posts = []
-        # 2) Top viral posts in the niche — a broader fallback feed.
-        niche_posts: list[dict] = []
-        try:
-            tr = await xpoz_intel.trending_in_niche(subject, limit=6, days=7, min_likes=10000)
-            niche_posts = tr.get("results") or []
-        except Exception:  # noqa: BLE001 — a research feed must never break a batch
-            niche_posts = []
+
+        async def _creators() -> list[dict]:
+            if not watch:
+                return []
+            cr = await xpoz_intel.trending_from_creators(
+                watch, limit=8, days=14, min_likes=10000
+            )
+            return cr.get("results") or []
+
+        async def _niche() -> list[dict]:
+            tr = await xpoz_intel.trending_in_niche(
+                subject, limit=6, days=7, min_likes=10000
+            )
+            return tr.get("results") or []
+
+        _cr_res, _ni_res = await asyncio.gather(
+            _creators(), _niche(), return_exceptions=True
+        )
+        creator_posts = _cr_res if isinstance(_cr_res, list) else []
+        niche_posts = _ni_res if isinstance(_ni_res, list) else []
         # Tracked-creator posts lead; dedup by url.
         _seen: set = set()
         for p in creator_posts + niche_posts:
