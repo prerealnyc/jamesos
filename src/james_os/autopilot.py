@@ -155,7 +155,7 @@ async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
     from . import xpoz_intel
     from .ingestion import ingest_many
     from .research import get_research_provider, research_to_events
-    from .trends import list_cohort_trends
+    from .trends import get_watchlist, list_cohort_trends
 
     subject = (cfg.get("topic_hint") or "").strip() or "this brand's industry and niche"
 
@@ -164,11 +164,36 @@ async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
     # autopilot ideate even WITHOUT a Perplexity key.
     xpoz_posts: list[dict] = []
     if xpoz_intel.configured():
+        # 1) Posts BY the creators the brand tracks (the Research watchlist) —
+        #    the primary "ride what our targets are doing RIGHT NOW" signal.
+        try:
+            watch = await get_watchlist(tenant_id)
+        except Exception:  # noqa: BLE001
+            watch = []
+        creator_posts: list[dict] = []
+        if watch:
+            try:
+                cr = await xpoz_intel.trending_from_creators(
+                    watch, limit=8, days=14, min_likes=10000
+                )
+                creator_posts = cr.get("results") or []
+            except Exception:  # noqa: BLE001
+                creator_posts = []
+        # 2) Top viral posts in the niche — a broader fallback feed.
+        niche_posts: list[dict] = []
         try:
             tr = await xpoz_intel.trending_in_niche(subject, limit=6, days=7, min_likes=10000)
-            xpoz_posts = tr.get("results") or []
+            niche_posts = tr.get("results") or []
         except Exception:  # noqa: BLE001 — a research feed must never break a batch
-            xpoz_posts = []
+            niche_posts = []
+        # Tracked-creator posts lead; dedup by url.
+        _seen: set = set()
+        for p in creator_posts + niche_posts:
+            u = p.get("url") or ""
+            if u and u in _seen:
+                continue
+            _seen.add(u)
+            xpoz_posts.append(p)
 
     provider = get_research_provider()
     if provider.name == "stub":
@@ -290,8 +315,9 @@ async def generate_ideas(
     from . import xpoz_intel
     xpoz_lines = xpoz_intel.trending_lines(intel.get("xpoz_trending") or [])
     xpoz_section = (
-        "\nLIVE VIRAL POSTS IN YOUR NICHE (Xpoz — real high-engagement posts "
-        "right now; ride these hooks/angles, do NOT copy their words):\n"
+        "\nLIVE VIRAL POSTS — real high-engagement posts right now, including "
+        "ones BY the creators this brand tracks (marked ·tracked). Ride these "
+        "proven hooks/angles; do NOT copy their words:\n"
         + "\n".join(f"- {ln}" for ln in xpoz_lines) + "\n"
     ) if xpoz_lines else ""
 

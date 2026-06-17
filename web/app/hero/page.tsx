@@ -337,6 +337,8 @@ function HiggsfieldSoulsCard() {
   >([]);
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [training, setTraining] = useState(false);
+  const [trainMsg, setTrainMsg] = useState<string | null>(null);
   // The Soul ID currently wired into B-roll renders (settings.higgsfield_soul_id).
   const [activeId, setActiveId] = useState<string>("");
   const [saving, setSaving] = useState<string | null>(null);
@@ -385,6 +387,24 @@ function HiggsfieldSoulsCard() {
     }
   }
 
+  // Train a brand-new Soul from the uploaded hero photo library.
+  async function trainSoul() {
+    setTraining(true); setTrainMsg(null);
+    try {
+      const r = await api.trainHiggsfieldSoul({ name: "James" });
+      if (r.ok) {
+        setTrainMsg(r.note || `Training started on ${r.trained_on ?? "your"} photos.`);
+        setTimeout(() => { load(); }, 2000); // surface the new Soul once it appears
+      } else {
+        setTrainMsg("✗ " + (r.error || "training did not start"));
+      }
+    } catch (e) {
+      setTrainMsg("✗ " + (e instanceof Error ? e.message : "request failed"));
+    } finally {
+      setTraining(false);
+    }
+  }
+
   return (
     <Card>
       <CardTitle>Higgsfield Soul IDs (trained characters)</CardTitle>
@@ -408,10 +428,22 @@ function HiggsfieldSoulsCard() {
             No active hero Soul yet — hero B-roll falls back to your uploaded photos.
           </p>}
       {saveErr && <p className="text-[12px] mb-2 text-destructive">✗ {saveErr}</p>}
-      <Button onClick={load} disabled={loading}>
-        {loading ? <span className="flex items-center gap-2"><Spinner /> checking your account…</span>
-          : (loaded ? "↻ Refresh Soul IDs" : "Find my Soul IDs")}
-      </Button>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button onClick={load} disabled={loading}>
+          {loading ? <span className="flex items-center gap-2"><Spinner /> checking your account…</span>
+            : (loaded ? "↻ Refresh Soul IDs" : "Find my Soul IDs")}
+        </Button>
+        <Button variant="secondary" onClick={trainSoul} disabled={training}
+          title="Train a new Soul on your uploaded hero photos (needs 5–20 photos and a paid Higgsfield plan).">
+          {training ? <span className="flex items-center gap-2"><Spinner /> training…</span>
+            : "Train a Soul from my hero photos"}
+        </Button>
+      </div>
+      {trainMsg && (
+        <p className={`text-[12px] mt-2 ${trainMsg.startsWith("✗") ? "text-destructive" : "text-muted-foreground"}`}>
+          {trainMsg}
+        </p>
+      )}
 
       {loaded && !configured && (
         <p className="text-[12px] mt-2 text-destructive">

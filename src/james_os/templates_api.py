@@ -93,6 +93,36 @@ async def higgsfield_soul_image(req: SoulImageRequest) -> dict:
             "note": "still rendering — check Higgsfield dashboard or retry status"}
 
 
+class TrainSoulRequest(BaseModel):
+    name: str = "James"
+
+
+@router.post("/higgsfield/train-soul")
+async def higgsfield_train_soul(req: TrainSoulRequest) -> dict:
+    """Train a NEW Higgsfield Soul ID from the brand-hero photo library
+    (role='hero_photo'). Sends the photos' public URLs to Higgsfield's
+    custom-references endpoint. Needs 5–20 hero photos and a paid Higgsfield
+    plan; returns the new reference id — training runs ~3–5 min, then refresh
+    the Soul list and 'Use for James'."""
+    from .higgsfield_souls import configured, create_reference
+    from .media import list_media
+    if not configured():
+        return {"ok": False, "error": "Higgsfield API key + secret aren't set. Add them in Settings."}
+    photos = await list_media(role="hero_photo", tenant_id=_tenant())
+    urls = [p.get("uri") for p in photos if (p.get("uri") or "").startswith("http")]
+    if len(urls) < 5:
+        return {"ok": False,
+                "error": f"Need at least 5 hero photos with public URLs to train a Soul; found {len(urls)}. "
+                         "Upload more to the Hero library first."}
+    res = await create_reference(name=req.name, image_urls=urls)
+    if res.get("error") or not res.get("reference_id"):
+        return {"ok": False, "error": res.get("error") or "training did not start",
+                "trained_on": res.get("trained_on", 0)}
+    return {"ok": True, "reference_id": res["reference_id"], "status": res.get("status"),
+            "trained_on": res.get("trained_on"),
+            "note": "Soul training started (~3–5 min). Refresh Soul IDs above, then click 'Use for James'."}
+
+
 @router.get("/templates/{template_id}")
 async def template_detail(template_id: UUID) -> dict:
     row = await T.get_template(template_id, _tenant())

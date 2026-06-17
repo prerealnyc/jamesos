@@ -1100,6 +1100,9 @@ export const api = {
     }>("/higgsfield/souls"),
   generateSoulImage: (body: { custom_reference_id: string; prompt: string; aspect?: string; strength?: number }) =>
     jpost<{ status: string; image_url?: string; request_id: string; note?: string }>("/higgsfield/soul-image", body),
+  // Train a NEW Soul ID from the uploaded hero photo library (role=hero_photo).
+  trainHiggsfieldSoul: (body: { name: string }) =>
+    jpost<{ ok: boolean; reference_id?: string; status?: string; trained_on?: number; note?: string; error?: string }>("/higgsfield/train-soul", body),
   // Brand kit — nameplate / watermark / end-card identity on every render.
   getBrandKit: () =>
     jget<{ display_name: string; tagline: string; handle: string; logo_url: string }>("/brand-kit"),
