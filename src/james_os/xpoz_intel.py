@@ -11,6 +11,8 @@ how every other provider in this codebase fails honestly.
 from __future__ import annotations
 
 import asyncio
+import re
+from collections import Counter
 from typing import Any
 
 from .config import settings
@@ -239,7 +241,39 @@ def trending_lines(posts: list[dict], cap: int = 10) -> list[str]:
     return out
 
 
+_KW_STOP = {
+    "this", "that", "with", "from", "your", "have", "what", "when", "they",
+    "will", "about", "just", "like", "than", "then", "them", "were", "into",
+    "over", "more", "youre", "dont", "cant", "weve", "heres", "https", "http",
+    "because", "really", "could", "would", "should", "their", "there", "these",
+    "those", "being", "after", "make", "made", "want", "need", "know", "people",
+    "every", "still", "much", "very", "here", "thing", "things", "going",
+}
+
+
+def trending_keywords(posts: list[dict], cap: int = 12) -> list[str]:
+    """Top hashtags + frequent salient terms across the trending posts — the
+    literal 'what words are working right now' signal for the script writer.
+    Hashtags rank first (highest intent), then frequent content words."""
+    tags: Counter = Counter()
+    words: Counter = Counter()
+    for p in posts or []:
+        txt = (p.get("text") or "")
+        for tag in re.findall(r"#(\w{2,30})", txt):
+            tags[tag.lower()] += 1
+        for w in re.findall(r"[A-Za-z][A-Za-z']{2,}", txt.lower()):
+            w = w.strip("'")
+            if len(w) >= 4 and w not in _KW_STOP:
+                words[w] += 1
+    out: list[str] = [f"#{t}" for t, _ in tags.most_common(cap)]
+    for w, _ in words.most_common(cap * 3):
+        if len(out) >= cap:
+            break
+        out.append(w)
+    return out[:cap]
+
+
 __all__ = [
     "PLATFORMS", "configured", "account_info", "search_social",
-    "trending_in_niche", "trending_lines",
+    "trending_in_niche", "trending_lines", "trending_keywords",
 ]

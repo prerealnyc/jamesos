@@ -1179,6 +1179,95 @@ async def animate_inserts(
             insert.video_error = insert.video_error or f"B-roll animation failed: {res}"
 
 
+def _soul_aspect(aspect: str) -> str:
+    """Map the render aspect to a Higgsfield soul/character aspect_ratio."""
+    a = (aspect or "").strip().lower()
+    if a in ("16:9", "landscape", "wide"):
+        return "16:9"
+    if a in ("1:1", "square"):
+        return "1:1"
+    return "9:16"  # reels/stories default — vertical
+
+
+async def _soul_still(prompt: str, aspect: str) -> tuple[bytes | None, str | None]:
+    """Render ONE brand-hero still from the configured Higgsfield Soul ID:
+    submit → poll → download PNG bytes. Returns (png, None) on success or
+    (None, error). NEVER raises — any failure degrades to the photo-reference
+    / generic fallback in _render_hero_or_scene_still, so a single hero shot
+    can never abort the whole still batch."""
+    from . import higgsfield_souls as hs
+    soul_id = (settings.higgsfield_soul_id or "").strip()
+    if not (soul_id and hs.configured()):
+        return None, "soul not configured"
+    try:
+        strength = float(settings.higgsfield_soul_strength or 0.8)
+    except (TypeError, ValueError):
+        strength = 0.8
+    try:
+        sub = await hs.generate_character_image(
+            custom_reference_id=soul_id, prompt=prompt,
+            aspect_ratio=_soul_aspect(aspect), strength=strength,
+        )
+        rid = sub.get("request_id")
+        if sub.get("error") or not rid:
+            return None, sub.get("error") or "soul submit failed"
+        # Poll up to ~90s. Soul images return in a handful of seconds; the
+        # headroom absorbs queue spikes. Transient poll blips (HTTP/transport
+        # errors on the status endpoint) are retried within the budget — only
+        # a genuine terminal render status ends the attempt early.
+        img_url = ""
+        for _ in range(30):
+            await asyncio.sleep(3)
+            st = await hs.poll_request(rid)
+            if st.get("image_url"):
+                img_url = st["image_url"]
+                break
+            err_s = st.get("error") or ""
+            if err_s.startswith(("HTTP ", "transport error", "unparseable")):
+                continue  # transient poll error — keep trying within budget
+            status = (st.get("status") or "").lower()
+            if status in ("failed", "error", "canceled", "cancelled"):
+                return None, st.get("error") or f"soul render {status}"
+        if not img_url:
+            return None, "soul render timed out"
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as c:
+            r = await c.get(img_url)
+        if r.status_code >= 400 or not r.content:
+            return None, f"soul download HTTP {r.status_code}"
+        return r.content, None
+    except Exception as e:  # noqa: BLE001 — soul render must never abort the batch
+        return None, f"soul render error: {e}"
+
+
+async def _render_hero_or_scene_still(
+    *, prompt: str, uses_hero: bool,
+    hero_refs: list[tuple[str, bytes]] | None,
+    aspect: str, platform: str, style: str,
+) -> tuple[bytes | None, str | None]:
+    """Generate one B-roll still, best identity first. Brand-hero shots
+    prefer the trained Higgsfield Soul (same face every cut); on any Soul
+    failure they fall back to gpt-image-1 photo-reference edits, then to a
+    generic text-only scene. Shared by the insert and beat render paths."""
+    # 1) Soul ID — consistent hero across every cut.
+    if uses_hero and (settings.higgsfield_soul_id or "").strip():
+        png, err = await _soul_still(prompt, aspect)
+        if png:
+            return png, None
+    # 2) Photo-reference hero edit.
+    if uses_hero and hero_refs:
+        from .imagegen import generate_post_image_with_refs
+        png, _meta, err = await generate_post_image_with_refs(
+            topic=prompt, references=hero_refs,
+            platform=platform, brief="", aspect=aspect, style=style,
+        )
+        return png, err
+    # 3) Generic scene.
+    png, _meta, err = await generate_post_image(
+        topic=prompt, platform=platform, brief="", aspect=aspect, style=style,
+    )
+    return png, err
+
+
 async def gen_insert_images(
     inserts: list[Insert],
     aspect: str,
@@ -1199,24 +1288,11 @@ async def gen_insert_images(
             if not i.image_prompt:
                 i.image_error = "no prompt"
                 return
-            if i.uses_hero and hero_refs:
-                from .imagegen import generate_post_image_with_refs
-                png, _meta, err = await generate_post_image_with_refs(
-                    topic=i.image_prompt,
-                    references=hero_refs,
-                    platform=platform,
-                    brief="",
-                    aspect=aspect,
-                    style=style,
-                )
-            else:
-                png, _meta, err = await generate_post_image(
-                    topic=i.image_prompt,
-                    platform=platform,
-                    brief="",
-                    aspect=aspect,
-                    style=style,
-                )
+            png, err = await _render_hero_or_scene_still(
+                prompt=i.image_prompt, uses_hero=i.uses_hero,
+                hero_refs=hero_refs, aspect=aspect,
+                platform=platform, style=style,
+            )
             if not png:
                 i.image_error = err or "image gen failed"
                 return
@@ -1230,7 +1306,10 @@ async def gen_insert_images(
             except Exception as e:  # noqa: BLE001
                 i.image_error = f"storage save failed: {e}"
 
-    await asyncio.gather(*(_one(i) for i in inserts))
+    # return_exceptions=True: one still's failure (incl. an unexpected raise
+    # from the Soul path) must never abort the whole batch — mirrors
+    # animate_inserts. Each _one records its own per-still error in place.
+    await asyncio.gather(*(_one(i) for i in inserts), return_exceptions=True)
 
 
 async def slice_avatar_beats(
@@ -1388,24 +1467,11 @@ async def _gen_one_beat_image(
     if not beat.image_prompt:
         beat.image_error = "no prompt"
         return
-    if beat.uses_hero and hero_refs:
-        from .imagegen import generate_post_image_with_refs
-        png, _meta, err = await generate_post_image_with_refs(
-            topic=beat.image_prompt,
-            references=hero_refs,
-            platform=platform,
-            brief="",
-            aspect=aspect,
-            style=style,
-        )
-    else:
-        png, _meta, err = await generate_post_image(
-            topic=beat.image_prompt,
-            platform=platform,
-            brief="",
-            aspect=aspect,
-            style=style,
-        )
+    png, err = await _render_hero_or_scene_still(
+        prompt=beat.image_prompt, uses_hero=beat.uses_hero,
+        hero_refs=hero_refs, aspect=aspect,
+        platform=platform, style=style,
+    )
     if not png:
         beat.image_error = err or "image gen failed"
         return
@@ -1447,7 +1513,8 @@ async def gen_beat_images(
                 hero_refs=hero_refs,
             )
 
-    await asyncio.gather(*(_one(b) for b in beats))
+    # return_exceptions=True: a single beat's failure can't abort the batch.
+    await asyncio.gather(*(_one(b) for b in beats), return_exceptions=True)
 
 
 # ── public entrypoint used by the production pipeline ─────────────────

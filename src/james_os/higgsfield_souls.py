@@ -161,14 +161,23 @@ async def generate_character_image(
 
 
 async def poll_request(request_id: str) -> dict:
-    """Poll a generation. Returns {status, image_url, error}."""
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
-        r = await c.get(
-            f"{_BASE}/requests/{request_id}/status", headers=_headers()
-        )
+    """Poll a generation. Returns {status, image_url, error}. Never raises —
+    a transport blip or HTTP error surfaces as an empty status with an
+    "HTTP "/"transport error" error string so the caller can keep polling
+    (transient) rather than mistaking it for a terminal render failure."""
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as c:
+            r = await c.get(
+                f"{_BASE}/requests/{request_id}/status", headers=_headers()
+            )
+    except Exception as e:  # noqa: BLE001
+        return {"status": "", "image_url": "", "error": f"transport error: {e}"}
     if r.status_code >= 400:
-        return {"status": "failed", "image_url": "", "error": f"HTTP {r.status_code}: {r.text[:200]}"}
-    data = r.json()
+        return {"status": "", "image_url": "", "error": f"HTTP {r.status_code}: {r.text[:200]}"}
+    try:
+        data = r.json()
+    except Exception as e:  # noqa: BLE001
+        return {"status": "", "image_url": "", "error": f"unparseable: {e}"}
     status = str(data.get("status", "")).lower()
     url = ""
     imgs = data.get("images") or data.get("results") or data.get("output") or []

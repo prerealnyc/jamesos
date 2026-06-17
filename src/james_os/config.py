@@ -92,6 +92,11 @@ class Settings(BaseSettings):
     higgsfield_api_key: str = ""              # HF_API_KEY
     higgsfield_api_secret: str = ""           # HF_API_SECRET (joined as key:secret)
     higgsfield_model: str = "higgsfield-ai/dop/standard"  # I2V model path (swap to kling/seedance ids)
+    # Trained Soul ID (Higgsfield custom-reference) for the brand hero. When
+    # set, B-roll stills the script tags `uses_hero` render the SAME person
+    # (e.g. James) across every cut, instead of relying on photo-reference.
+    higgsfield_soul_id: str = ""              # empty = off (fall back to photo refs)
+    higgsfield_soul_strength: float = 0.8     # 0..1 how hard the Soul drives the still
 
     # ─── Video productions (script → scene plan → clips → assembled mp4) ───
     # Each stage is provider-abstracted with a stub so the whole pipeline is

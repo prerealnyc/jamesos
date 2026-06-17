@@ -179,6 +179,7 @@ async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
             "provider": "xpoz", "subject": subject, "summary": "", "findings": [],
             "sources": [p["url"] for p in xpoz_posts if p.get("url")],
             "trends": [], "xpoz_trending": xpoz_posts,
+            "xpoz_keywords": xpoz_intel.trending_keywords(xpoz_posts),
             "cohort_creators": [], "cohort_trends": [],
         }
 
@@ -217,6 +218,7 @@ async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
         "sources": [s.url for s in result.sources] + [p["url"] for p in xpoz_posts if p.get("url")],
         "trends": trends,
         "xpoz_trending": xpoz_posts,
+        "xpoz_keywords": xpoz_intel.trending_keywords(xpoz_posts),
         "cohort_creators": cohort["creators"],
         "cohort_trends": cohort["trends"],
     }
@@ -293,12 +295,19 @@ async def generate_ideas(
         + "\n".join(f"- {ln}" for ln in xpoz_lines) + "\n"
     ) if xpoz_lines else ""
 
+    kw = intel.get("xpoz_keywords") or []
+    keyword_section = (
+        "\nTRENDING KEYWORDS/HASHTAGS right now (echo where it's authentic to "
+        "the story; never keyword-stuff): " + ", ".join(kw) + "\n"
+    ) if kw else ""
+
     ctx = (
         f"LIVE MARKET RESEARCH (subject: {intel.get('subject')}, via "
         f"{intel.get('provider')}):\n{intel.get('summary','')}\n\n"
         f"KEY FINDINGS (what's working now):\n{findings or '(none)'}\n\n"
         f"SCRAPED TRENDS:\n{trends or '(none — research only)'}\n"
         f"{xpoz_section}"
+        f"{keyword_section}"
         f"{cohort_section}\n"
         f"BRAND VOICE (write in this voice):\n{voice}"
     )
@@ -319,8 +328,32 @@ async def generate_ideas(
                 "topic": topic,
                 "pillar": str(it.get("pillar") or "").strip(),
                 "trend_basis": str(it.get("trend_basis") or "").strip(),
+                # Batch-level trending terms, carried on every idea so the
+                # downstream script writer can ride them (see trend_steer).
+                "trend_keywords": kw,
             })
     return ideas
+
+
+def trend_steer(idea: dict) -> str:
+    """One-off steer appended to a content brief so the SCRIPT itself (not just
+    the chosen topic) rides the live trend: the idea's specific hook plus the
+    batch's trending terms. Authentic-only — never keyword-stuff or sound
+    promotional. Returns '' when the idea carries no trend signal."""
+    basis = (idea.get("trend_basis") or "").strip()
+    kw = idea.get("trend_keywords") or []
+    if not basis and not kw:
+        return ""
+    parts: list[str] = []
+    if basis:
+        parts.append(f"Ride this trending angle: {basis}.")
+    if kw:
+        parts.append(
+            "Where it is authentic to the story you may echo what is resonating "
+            f"right now ({', '.join(kw[:10])}); never force keywords or sound "
+            "promotional."
+        )
+    return " " + " ".join(parts)
 
 
 # ─────────────────────────────────────────────────────────── batch ──
@@ -421,8 +454,10 @@ async def run_batch(
             draft = await generate_content(ContentBrief(
                 platform=platform, format=fmt,
                 pillar=idea.get("pillar", ""), topic=idea["topic"],
-                extra_instructions="Write as a single-arc first-person story, "
-                                   "not a list. Decisive ownership, concrete specifics.",
+                extra_instructions=(
+                    "Write as a single-arc first-person story, not a list. "
+                    "Decisive ownership, concrete specifics."
+                ) + trend_steer(idea),
             ), tenant_id)
             generated += 1
             if draft.action_id:

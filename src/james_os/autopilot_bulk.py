@@ -45,7 +45,7 @@ import asyncio
 import json
 from uuid import UUID
 
-from .autopilot import _gather_intel, generate_ideas, get_config, set_config
+from .autopilot import _gather_intel, generate_ideas, get_config, set_config, trend_steer
 from .autopilot_templates import pick_distinct_templates
 from .config import settings
 from .content import generate_content
@@ -110,15 +110,19 @@ async def _attach_image_to_action(
     item). Returns the served image URL, or None on any failure (the text
     action is already queued and stands on its own — the image is additive).
     """
-    from .imagegen import generate_post_image
+    from .imagegen import direct_image_scene, generate_post_image
     from .media import create_media
     from .media import storage as media_storage
 
     topic = (idea.get("topic") or idea.get("title") or "").strip()
+    # Direct a cinematic, realistic scene from the ACTUAL story (not the
+    # one-line topic) so the hero image carries the post's emotional tension.
+    # Falls back to the topic if the director LLM is unavailable.
+    scene = await direct_image_scene(draft_text, fallback_topic=topic)
     png, meta, err = await generate_post_image(
-        topic=topic,
+        topic=scene,
         platform=platform,
-        brief=draft_text[:240],
+        brief="",
         tenant_id=tenant_id,
     )
     if not png:
@@ -180,7 +184,7 @@ async def _make_text_post(
             format="post",
             pillar=idea.get("pillar", ""),
             topic=idea["topic"],
-            extra_instructions=_TEXT_STEER,
+            extra_instructions=_TEXT_STEER + trend_steer(idea),
         ),
         tenant_id,
     )
@@ -231,7 +235,7 @@ async def _make_video(
             format="reel_script",
             pillar=idea.get("pillar", ""),
             topic=idea["topic"],
-            extra_instructions=_VIDEO_STEER,
+            extra_instructions=_VIDEO_STEER + trend_steer(idea),
         ),
         tenant_id,
     )
