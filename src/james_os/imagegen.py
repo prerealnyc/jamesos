@@ -314,6 +314,7 @@ async def generate_post_image_with_refs(
     brief: str = "",
     aspect: str = "",
     style: str = _DEFAULT_STYLE,
+    tenant_id=None,
 ) -> tuple[bytes | None, dict, str]:
     """Topic + reference image bytes → PNG bytes.
 
@@ -335,6 +336,7 @@ async def generate_post_image_with_refs(
     if not references:
         return await generate_post_image(
             topic, platform=platform, brief=brief, aspect=aspect, style=style,
+            tenant_id=tenant_id,
         )
     client = _client()
     if client is None:
@@ -355,8 +357,9 @@ async def generate_post_image_with_refs(
     # The prompt explicitly tells the model to preserve the recurring
     # subject from the references — without this nudge, gpt-image-1 will
     # sometimes ignore the reference identity for stylistic reasons.
+    guidelines = await _brand_visual_directive(tenant_id)
     edit_prompt = (
-        _build_post_prompt(topic, brief, chosen_style)
+        _build_post_prompt(topic, brief, chosen_style, guidelines)
         + " The recurring person from the reference photos must be "
         "rendered as the subject of this scene with the same face, "
         "build, hair, beard, and signature dress. Do not substitute "

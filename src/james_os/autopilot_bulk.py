@@ -110,7 +110,8 @@ async def _attach_image_to_action(
     item). Returns the served image URL, or None on any failure (the text
     action is already queued and stands on its own — the image is additive).
     """
-    from .imagegen import direct_image_scene, generate_post_image
+    from .hero_context import get_hero_photo_files
+    from .imagegen import direct_image_scene, generate_post_image_with_refs
     from .media import create_media
     from .media import storage as media_storage
 
@@ -119,8 +120,13 @@ async def _attach_image_to_action(
     # one-line topic) so the hero image carries the post's emotional tension.
     # Falls back to the topic if the director LLM is unavailable.
     scene = await direct_image_scene(draft_text, fallback_topic=topic)
-    png, meta, err = await generate_post_image(
+    # Baseline every text-post image on the brand hero's uploaded photos so the
+    # SAME person shows up across all posts. With no hero photos uploaded,
+    # generate_post_image_with_refs transparently falls back to the no-ref path.
+    hero_refs = await get_hero_photo_files(tenant_id=tenant_id)
+    png, meta, err = await generate_post_image_with_refs(
         topic=scene,
+        references=hero_refs,
         platform=platform,
         brief="",
         tenant_id=tenant_id,
