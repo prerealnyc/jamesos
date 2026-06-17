@@ -21,6 +21,7 @@ config, not a fragile timer), but a 24/7 deployment needs a real worker.
 
 import asyncio
 import json
+import logging
 from datetime import UTC, date, datetime
 from uuid import UUID
 
@@ -349,9 +350,15 @@ async def generate_ideas(
         out = await get_llm().complete_json(
             system=_IDEA_SYSTEM.format(n=n),
             messages=[{"role": "user", "content": ctx}],
-            max_tokens=1000, temperature=0.8,
+            # Scale the token budget with n — 10 detailed ideas (title/topic/
+            # pillar/trend_basis) overflow a flat 1000 and the JSON truncates,
+            # which used to parse-fail silently into "no topics".
+            max_tokens=min(4000, 500 + n * 260), temperature=0.8,
         )
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "generate_ideas LLM call failed (n=%s): %s", n, e
+        )
         return []
     ideas = []
     for it in (out.get("ideas") or [])[:n]:
