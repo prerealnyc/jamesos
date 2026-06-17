@@ -713,25 +713,20 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         visuals on the bottom" reel composition the Design Inspector captures
         as layout.type == 'split_horizontal'.
 
-        Unlike engaging_avatar (a FULL-FRAME speaker with transient B-roll
-        cutaways), here the two regions are CO-PRESENT for the whole video —
-        the speaker never leaves the top, the bottom is always the content
-        panel. This is the structural difference the audit flagged as the
-        reason replication "gave the same style": engaging_avatar can't emit
-        two stacked regions, this can.
+        DYNAMIC split: the speaker is FULL-FRAME 9:16, and B-roll punches into
+        the BOTTOM half only DURING its insert windows. So the speaker reads as
+        "pushed to the top half" while a B-roll is up, and fills the whole frame
+        in the gaps between inserts — no white, no dark filler panel.
 
-          track 1 — speaker video, FULL-FRAME 9:16 anchored to the top (audio)
-          track 2 — opaque bottom backing panel, full duration (guarantees the
-                    speaker's legs are NEVER visible — covers fade-ins, seams,
-                    and the no-insert case)
-          track 3 — B-roll image/video in the BOTTOM half, TILED continuous
-          track 4 — bold captions centred on the horizontal seam (y=50%)
+          track 1 — speaker video, FULL-FRAME 9:16, cover (carries audio)
+          track 2 — B-roll image/video in the BOTTOM half, only during inserts
+                    (opaque cover, muted); gaps show the full-frame speaker
+          track 3 — captions centred on the seam — magenta-on-white per-phrase
           track 5 — optional background music ducked under the voice
 
-        Output is 9:16 vertical. The speaker is a 9:16 source shown full-frame
-        (head at top, never cropped); the always-on bottom B-roll panel paints
-        over the speaker's legs, giving the top/bottom split with no 16:9 source
-        and no dark gaps — the bottom continuously illustrates the narration.
+        Output is 9:16 vertical throughout. The speaker fills the frame via
+        cover (no 16:9 letterbox, no white bars); when an insert is live the
+        opaque bottom panel covers his lower half so the top half is his face.
         """
         w, h = _dims(aspect)
         elements: list[dict] = []
@@ -754,42 +749,29 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 "x_anchor": "50%", "y_anchor": "0%",
             })
 
-        # track 2 — opaque BOTTOM backing for the WHOLE video, BELOW the B-roll
-        # tiles. Guarantees the speaker's lower half is never visible behind the
-        # bottom panel: it covers tile fade frames, any sub-frame seam between
-        # tiles, and the degenerate no-insert case (where the bottom would
-        # otherwise show the speaker's legs).
-        if total > 0:
-            elements.append({
-                "type": "text", "text": " ",
-                "track": 2, "time": 0, "duration": round(total, 2),
-                "background_color": "#0B0B0F",
-                **BOTTOM,
-            })
-
-        # track 3 — B-roll in the BOTTOM half, TILED to cover [0, total] with no
-        # gaps: each clip holds from its anchor until the next begins (the first
-        # back-fills from 0), so the panel always shows the visual for what's
-        # being said. Instant cuts (no fade) keep it opaque; muted (speaker is
-        # the master audio). Prefer the animated clip, fall back to the still.
-        usable = [
-            ins for ins in inserts
-            if (ins.get("video_url") or ins.get("image_url") or "").strip().startswith("http")
-        ]
-        usable.sort(key=lambda i: float(i.get("start") or 0.0))
-        for idx, ins in enumerate(usable):
+        # track 2 — B-roll punches into the BOTTOM half ONLY during its insert
+        # windows. With no insert live, NOTHING covers the speaker, so the
+        # full-frame avatar fills the whole 9:16 frame (full avatar); when an
+        # insert IS live it paints the bottom half opaque (cover, no white) and
+        # the avatar reads as "pushed to the top half". Muted — the speaker
+        # carries the master audio. Prefer the animated clip, fall back to still.
+        for ins in inserts:
             video_url = (ins.get("video_url") or "").strip()
             image_url = (ins.get("image_url") or "").strip()
-            seg_start = 0.0 if idx == 0 else float(ins.get("start") or 0.0)
-            if idx + 1 < len(usable):
-                _nxt = usable[idx + 1].get("start")
-                seg_end = float(_nxt) if _nxt is not None else total
-            else:
-                seg_end = total
-            dur = max(0.4, seg_end - seg_start)
+            url = video_url if video_url.startswith("http") else image_url
+            if not url.startswith("http"):
+                continue
+            start = float(ins.get("start") or 0.0)
+            end = float(ins.get("end") or start)
+            dur = max(0.4, end - start)
             common = {
-                "track": 3, "time": round(seg_start, 2), "duration": round(dur, 2),
+                "track": 2, "time": round(start, 2), "duration": round(dur, 2),
                 "fit": "cover", **BOTTOM,
+                "animations": [
+                    {"time": 0, "duration": 0.2, "type": "fade"},
+                    {"time": max(0, dur - 0.2), "duration": 0.2,
+                     "type": "fade", "reversed": True},
+                ],
             }
             if video_url.startswith("http"):
                 elements.append({"type": "video", "source": video_url,
@@ -797,17 +779,15 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             else:
                 elements.append({"type": "image", "source": image_url, **common})
 
-        # track 4 — bold captions in the MIDDLE band, on the seam between the
-        # top speaker and the bottom B-roll. Spec: top 50% speaker, bottom 50%
-        # B-roll, captions across the centre (not buried in the bottom panel).
-        preset = get_preset(caption_style)
-        _styled = styled_caption_elements(caption_style, captions, track=4)
+        # track 3 — captions centred on the seam between the top speaker and the
+        # bottom B-roll. This split FORCES the magenta-on-white look (magenta
+        # uppercase on a white box), per-phrase, regardless of the incoming
+        # style — "magenta_white" is a plain preset (not a designer builder),
+        # so styled_caption_elements no-ops and the standard loop renders it.
+        cap_style = "magenta_white"
+        preset = get_preset(cap_style)
+        _styled = styled_caption_elements(cap_style, captions, track=3)
         if _styled is not None:
-            # Designer styles (viral_hook, magenta_blocks, editorial_serif,
-            # gradient_mint) emit their complete multi-element track here —
-            # remap their full-frame geometry onto the seam (same constraint
-            # the standard loop below applies), then blank the list so the
-            # standard loop no-ops.
             _constrain_styled_to_split(_styled, "horizontal")
             elements.extend(_styled)
             captions = []
@@ -818,7 +798,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             start = float(c.get("start") or 0.0)
             end = float(c.get("end") or start)
             elem = caption_element(
-                text=text, start=start, end=end, preset=preset, track=4,
+                text=text, start=start, end=end, preset=preset, track=3,
                 role="broll",
             )
             elem["y"] = "50%"          # centre on the horizontal seam
