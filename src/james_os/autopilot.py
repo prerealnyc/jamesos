@@ -143,6 +143,9 @@ HARD RULES — every idea must obey the BRAND GUIDELINES above:
 - It MUST obey the voice/topic rules — never a banned word, never an off-brand
   or off-pillar angle. If a trend can't be expressed inside a pillar and the
   rules, skip it and ride a different trend instead.
+- GROUND it in a real theme James actually teaches/tells (see "TOPICS JAMES
+  ACTUALLY TEACHES" when provided). Pull the angle from HIS world and make it
+  trend-relevant — never invent a topic he would not cover.
 
 Return STRICT JSON:
 {{"ideas": [{{"title": str, "topic": str (a one-line story prompt the writer
@@ -302,6 +305,31 @@ async def _guidelines_for_ideation(tenant_id: UUID | None) -> str:
     return "\n".join(out).strip()
 
 
+async def _topics_from_corpus(tenant_id: UUID | None) -> list[str]:
+    """The topics James ACTUALLY teaches/tells — extracted from his voice
+    corpus (Academy module/episode titles + podcast). Gives ideation a real
+    topic taxonomy to ground ideas in, so they come from his world (mindset,
+    core values, investment sales, etc.) instead of invented angles."""
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            r"""
+            WITH t AS (
+              SELECT unnest(regexp_matches(
+                raw_content,
+                '(Module\s*\d+[^\n]{0,70}|Episode\s*\d+[^\n]{0,70})', 'g')) AS title
+              FROM events
+              WHERE superseded_by IS NULL AND payload->>'category' = 'voice_corpus'
+            )
+            SELECT DISTINCT trim(both ' =-' from title) AS topic
+            FROM t
+            WHERE length(trim(both ' =-' from title)) > 12
+            ORDER BY topic
+            LIMIT 40
+            """
+        )
+    return [r["topic"] for r in rows if (r["topic"] or "").strip()]
+
+
 async def generate_ideas(
     n: int, intel: dict, tenant_id: UUID | None = None
 ) -> list[dict]:
@@ -323,6 +351,14 @@ async def generate_ideas(
         "below (banned words, approved hooks, what to avoid):\n"
         f"{guidelines}\n\n"
     ) if guidelines else ""
+
+    his_topics = await _topics_from_corpus(tenant_id)
+    topics_section = (
+        "TOPICS JAMES ACTUALLY TEACHES / TELLS (his real curriculum + podcast). "
+        "Ground each idea in one of THESE real themes wherever possible, then "
+        "make it relevant to a current trend — do NOT invent a topic outside "
+        "his world:\n- " + "\n- ".join(his_topics) + "\n\n"
+    ) if his_topics else ""
     findings = "\n".join(f"- {f}" for f in (intel.get("findings") or [])[:12])
     trends = "\n".join(f"- {t}" for t in (intel.get("trends") or []))
 
@@ -379,6 +415,7 @@ async def generate_ideas(
 
     ctx = (
         f"{gl_section}"
+        f"{topics_section}"
         f"LIVE MARKET RESEARCH (subject: {intel.get('subject')}, via "
         f"{intel.get('provider')}):\n{intel.get('summary','')}\n\n"
         f"KEY FINDINGS (what's working now):\n{findings or '(none)'}\n\n"
