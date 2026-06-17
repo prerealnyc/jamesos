@@ -745,7 +745,7 @@ export const api = {
     jget<{
       total_followers: number; followers_partial?: boolean;
       total_posts: number; account_count: number; platform_count: number;
-      per_platform: { platform: string; accounts: number; posts: number; followers: number | null }[];
+      per_platform: { platform: string; accounts: number; posts: number; followers: number; followers_known: boolean }[];
       notes?: string[];
     }>("/analytics/live/summary"),
   analyticsLiveBreakdown: () =>
