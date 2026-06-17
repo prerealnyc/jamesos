@@ -121,8 +121,9 @@ async def set_config(
 # ─────────────────────────────────────────────────────────── ideation ──
 
 _IDEA_SYSTEM = """You are the content strategist for a personal brand.
-You are given LIVE market research and trends describing what is working /
-going viral RIGHT NOW, plus the brand voice. You may also be given a
+You are given the BRAND GUIDELINES (the content pillars + posting ratios and
+the voice/topic rules), LIVE market research and trends describing what is
+working / going viral RIGHT NOW, plus the brand voice. You may also be given a
 CURATED COHORT — creators on the brand's speaking-targets watchlist whose
 interests overlap the topic. When that cohort and its trend events are
 present, bias ideas toward angles those creators are currently working;
@@ -135,11 +136,19 @@ or topic that's currently working). Each MUST be a SINGLE-ARC STORY angle (a
 first-person moment, decision, or lesson) in the brand's voice — never a
 listicle, never "N tips". Be specific; no generic platitudes.
 
+HARD RULES — every idea must obey the BRAND GUIDELINES above:
+- It MUST fit one of the brand's content pillars. Put that pillar's EXACT name
+  in `pillar`. Spread the {n} ideas across the pillars roughly by the
+  guideline ratios — don't pile them all into one pillar.
+- It MUST obey the voice/topic rules — never a banned word, never an off-brand
+  or off-pillar angle. If a trend can't be expressed inside a pillar and the
+  rules, skip it and ride a different trend instead.
+
 Return STRICT JSON:
 {{"ideas": [{{"title": str, "topic": str (a one-line story prompt the writer
-will expand, phrased as a personal story), "pillar": str,
-"trend_basis": str (the specific trend/insight this idea rides — name the
-creator when riding a COHORT TREND)}}]}}"""
+will expand, phrased as a personal story), "pillar": str (the EXACT brand
+pillar name this idea serves), "trend_basis": str (the specific trend/insight
+this idea rides — name the creator when riding a COHORT TREND)}}]}}"""
 
 
 async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
@@ -268,6 +277,31 @@ async def _voice_for_ideation(tenant_id: UUID | None) -> str:
     return "\n---\n".join((r["raw_content"] or "")[:500] for r in voice) or "(no voice corpus)"
 
 
+async def _guidelines_for_ideation(tenant_id: UUID | None) -> str:
+    """Brand-guideline material for IDEATION — the content pillars + voice /
+    topic rules — so generated TOPICS fit the pillars and obey the rules, not
+    only the scripts. Pulled in document order (the earliest chunks are the
+    positioning + pillars + voice sections), capped to keep the prompt lean."""
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            "SELECT raw_content FROM events "
+            "WHERE payload->>'category'='guideline' AND superseded_by IS NULL "
+            "AND length(raw_content) > 80 "
+            "ORDER BY effective_at ASC, created_at ASC LIMIT 22"
+        )
+    out: list[str] = []
+    total = 0
+    for r in rows:
+        c = (r["raw_content"] or "").strip()
+        if not c:
+            continue
+        out.append(c)
+        total += len(c)
+        if total > 9000:  # ~2.2k tokens: positioning + pillars + voice rules
+            break
+    return "\n".join(out).strip()
+
+
 async def generate_ideas(
     n: int, intel: dict, tenant_id: UUID | None = None
 ) -> list[dict]:
@@ -282,6 +316,13 @@ async def generate_ideas(
     """
     n = max(1, min(n, 10))
     voice = await _voice_for_ideation(tenant_id)
+    guidelines = await _guidelines_for_ideation(tenant_id)
+    gl_section = (
+        "BRAND GUIDELINES — every idea MUST fit one of these content pillars "
+        "(set `pillar` to its exact name) and obey the voice / topic rules "
+        "below (banned words, approved hooks, what to avoid):\n"
+        f"{guidelines}\n\n"
+    ) if guidelines else ""
     findings = "\n".join(f"- {f}" for f in (intel.get("findings") or [])[:12])
     trends = "\n".join(f"- {t}" for t in (intel.get("trends") or []))
 
@@ -337,6 +378,7 @@ async def generate_ideas(
     ) if kw else ""
 
     ctx = (
+        f"{gl_section}"
         f"LIVE MARKET RESEARCH (subject: {intel.get('subject')}, via "
         f"{intel.get('provider')}):\n{intel.get('summary','')}\n\n"
         f"KEY FINDINGS (what's working now):\n{findings or '(none)'}\n\n"
