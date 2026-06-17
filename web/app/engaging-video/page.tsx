@@ -154,13 +154,13 @@ export default function EngagingVideoPage() {
         <CardTitle>Format</CardTitle>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {([
-            { id: "engaging_avatar", title: "Full-frame avatar", desc: "James on camera the whole time; cinematic B-roll punches in as brief cutaways. Captions placed around the face." },
-            { id: "split_horizontal", title: "Split-screen", desc: "James pinned to the top half, B-roll in the bottom half the whole time, pink captions across the middle seam." },
+            { id: "engaging_avatar", title: "Full-frame avatar", desc: "9:16 reel — James on camera the whole time; cinematic B-roll punches in as brief cutaways. Captions placed around the face." },
+            { id: "split_horizontal", title: "Split — vertical 9:16", desc: "9:16 reel — James up top, B-roll fills the bottom continuously to illustrate what he's saying, pink captions on the seam." },
           ] as const).map((opt) => (
             <button
               key={opt.id}
               type="button"
-              onClick={() => setMode(opt.id)}
+              onClick={() => { setMode(opt.id); if (opt.id === "split_horizontal") setAspect("9:16"); }}
               className={`text-left rounded-lg border p-3 transition-colors ${mode === opt.id ? "border-primary bg-primary/5" : "border-border hover:bg-muted/30"}`}
             >
               <div className="flex items-center gap-2">
@@ -189,8 +189,8 @@ export default function EngagingVideoPage() {
             </Select>
           </div>
           <div>
-            <Label>Aspect</Label>
-            <Select value={aspect} onChange={(e) => setAspect(e.target.value)}>
+            <Label>Aspect{mode === "split_horizontal" ? " (locked to 9:16 for split)" : ""}</Label>
+            <Select value={aspect} onChange={(e) => setAspect(e.target.value)} disabled={mode === "split_horizontal"}>
               {["9:16", "16:9", "1:1"].map((a) => <option key={a}>{a}</option>)}
             </Select>
           </div>
