@@ -63,6 +63,9 @@ export default function EngagingVideoPage() {
   const [script, setScript] = useState("");
   const [captionStyle, setCaptionStyle] = useState("");
   const [imageStyle, setImageStyle] = useState("");
+  // Video format: full-frame avatar (engaging_avatar) vs split-screen
+  // (split_horizontal — avatar top, B-roll bottom, captions on the seam).
+  const [mode, setMode] = useState<"engaging_avatar" | "split_horizontal">("engaging_avatar");
   const [composing, setComposing] = useState(false);
   const [producing, setProducing] = useState(false);
   const [err, setErr] = useState("");
@@ -76,7 +79,10 @@ export default function EngagingVideoPage() {
       setRecent(
         list
           .filter(
-            (p) => (p as Production & { mode?: string }).mode === "engaging_avatar",
+            (p) => {
+              const m = String((p as Production & { mode?: string }).mode ?? "");
+              return m === "engaging_avatar" || m === "split_horizontal";
+            },
           )
           .slice(0, 8),
       );
@@ -105,7 +111,7 @@ export default function EngagingVideoPage() {
     setProducing(true); setErr(""); setProd(null);
     try {
       const p = await api.produceVideo({
-        mode: "engaging_avatar",
+        mode,
         script: script.trim(),
         platform, aspect,
         caption_style: captionStyle,
@@ -143,6 +149,29 @@ export default function EngagingVideoPage() {
         title="Engaging Reel"
         sub="James on camera full-time, with 2-5 cinematic B-roll cutaways punching in at the moments the LLM picks as visually amplifiable. Hero references flow when an insert is about James himself. Captions are placed safely around the speaker's face. Same HeyGen spend as avatar-only; visibly more engaging."
       />
+
+      <Card>
+        <CardTitle>Format</CardTitle>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {([
+            { id: "engaging_avatar", title: "Full-frame avatar", desc: "James on camera the whole time; cinematic B-roll punches in as brief cutaways. Captions placed around the face." },
+            { id: "split_horizontal", title: "Split-screen", desc: "James pinned to the top half, B-roll in the bottom half the whole time, pink captions across the middle seam." },
+          ] as const).map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => setMode(opt.id)}
+              className={`text-left rounded-lg border p-3 transition-colors ${mode === opt.id ? "border-primary bg-primary/5" : "border-border hover:bg-muted/30"}`}
+            >
+              <div className="flex items-center gap-2">
+                <span className={`inline-block w-3.5 h-3.5 rounded-full border ${mode === opt.id ? "border-primary bg-primary" : "border-muted-foreground"}`} />
+                <span className="text-[13px] font-medium">{opt.title}</span>
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1.5">{opt.desc}</p>
+            </button>
+          ))}
+        </div>
+      </Card>
 
       <Card>
         <CardTitle>1. Write or generate the script</CardTitle>
@@ -215,7 +244,7 @@ export default function EngagingVideoPage() {
             </p>
           </div>
           <Button onClick={produce} disabled={producing || active || !script.trim()}>
-            {producing || active ? <Spinner /> : "Make engaging reel"}
+            {producing || active ? <Spinner /> : (mode === "split_horizontal" ? "Make split-screen reel" : "Make engaging reel")}
           </Button>
         </div>
         {err && <p className="text-destructive text-sm mt-2">✗ {err}</p>}

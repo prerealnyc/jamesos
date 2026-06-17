@@ -608,7 +608,7 @@ export const api = {
   produceVideo: (opts: {
     script?: string; platform?: string; aspect?: string; title?: string;
     scenes?: Scene[];
-    mode?: "mixed" | "avatar_only" | "timeline" | "story_audio" | "avatar_story_mix" | "engaging_avatar";
+    mode?: "mixed" | "avatar_only" | "timeline" | "story_audio" | "avatar_story_mix" | "engaging_avatar" | "split_horizontal";
     caption_style?: string;             // blank → AI picks
     image_style?: string;               // blank → cinematic for story modes
   }) => jpost<Production>("/video/produce", {
