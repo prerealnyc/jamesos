@@ -1172,17 +1172,10 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
     except (KeyError, TypeError):
         cstyle = ""
     if not cstyle:
-        # The picker matches a preset to the SPOKEN WORDS — reconstruct the
-        # transcript from the Whisper caption flashes (long-form has no
-        # script field; assets.audio_url is just an mp3 URL, useless to an
-        # LLM). Mirrors the engaging_avatar path, which passes the script.
-        transcript = " ".join(
-            (c.get("raw_text") or c.get("text") or "")
-            for c in (assets.captions or [])
-        ).strip()
-        cstyle, _why = await pick_caption_style(
-            transcript, row["platform"], brand_context, avoid=cap_avoid,
-        )
+        # Template 1 (upload-clip / long-form) locks to magenta-on-black
+        # captions by default — that's the brand-defined look for this format.
+        # An explicit caption_style on the row still overrides.
+        cstyle = "magenta_blocks"
 
     asm = get_assembly_provider()
     if not hasattr(asm, "render_engaging_avatar"):

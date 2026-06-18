@@ -221,6 +221,7 @@ async def _make_video(
     idea: dict, platform: str, tenant_id: UUID | None,
     template: dict | None = None, broll_engine: str = "",
     caption_style: str = "", smart_captions: bool = False,
+    video_template: str = "",
 ) -> dict:
     """One video reel: write a short on-voice script, then kick a durable
     production (rendered fire-and-forget — it queues its own pending action
@@ -249,6 +250,17 @@ async def _make_video(
     if not script:
         raise RuntimeError(draft.note or "no script produced for the reel")
 
+    # Reel FORMAT template (the two saved looks). When set it drives the
+    # layout + caption style, overriding any style-template/rotation defaults:
+    #   "split" → avatar-top / B-roll-bottom 50/50, magenta-on-white captions
+    #   "full"  → full-frame avatar + B-roll cutaways, magenta-on-black captions
+    # A style template (Design Inspector) still supplies image_style/music/etc.
+    forced_mode = forced_caption = ""
+    if video_template == "split":
+        forced_mode, forced_caption = "split_horizontal", "magenta_white"
+    elif video_template == "full":
+        forced_mode, forced_caption = "engaging_avatar", "magenta_blocks"
+
     title = (idea.get("title") or "")[:120]
     if template and template.get("template"):
         from .template_apply import map_template_to_render
@@ -260,11 +272,10 @@ async def _make_video(
             # real dimensions); fall back to the vertical social default.
             aspect=m["aspect"] or _VIDEO_ASPECT,
             title=title,
-            mode=m["mode"],
-            # Caption precedence: an explicit rotation style wins (the point is
-            # comparing looks); smart mode forces a blank so the pipeline's LLM
-            # picker chooses per-script; otherwise the template's preset stands.
-            caption_style=caption_style or ("" if smart_captions else m["caption_style"]),
+            mode=forced_mode or m["mode"],
+            # Caption precedence: format template > explicit rotation style >
+            # smart-mode blank (pipeline LLM picks) > the style template preset.
+            caption_style=forced_caption or caption_style or ("" if smart_captions else m["caption_style"]),
             image_style=m["image_style"],
             music_mood=m["music_mood"],
             logo_position=m["logo_position"] if m["logo_on"] else "",
@@ -273,19 +284,19 @@ async def _make_video(
             video_engine=broll_engine,
             tenant_id=tenant_id,
         )
-        applied_mode = m["mode"]
+        applied_mode = forced_mode or m["mode"]
     else:
         prod = await start_production(
             script=script,
             platform=platform,
             aspect=_VIDEO_ASPECT,
             title=title,
-            mode=_VIDEO_MODE,
-            caption_style=caption_style,
+            mode=forced_mode or _VIDEO_MODE,
+            caption_style=forced_caption or caption_style,
             video_engine=broll_engine,
             tenant_id=tenant_id,
         )
-        applied_mode = _VIDEO_MODE
+        applied_mode = forced_mode or _VIDEO_MODE
 
     # Fire-and-forget: renders take minutes. The production row + the
     # pending action it lands are the durable record; we don't await it.
@@ -412,11 +423,15 @@ async def generate_bulk(
                 _CAPTION_ROTATION[(rot_offset + j) % len(_CAPTION_ROTATION)]
                 if rotate_captions else ""
             )
+            # Alternate the two saved reel templates per video: even = full-frame
+            # avatar (magenta-on-black), odd = split 50/50 (magenta-on-white).
+            video_template = "split" if (j % 2) else "full"
             video_results.append(
                 await _make_video(
                     _idea_at(n_text + j), platform, tenant_id,
                     template=tpl, broll_engine=broll_engine,
                     caption_style=cap_style, smart_captions=smart_captions,
+                    video_template=video_template,
                 )
             )
             video_queued += 1

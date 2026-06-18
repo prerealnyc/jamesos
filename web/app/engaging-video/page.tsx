@@ -96,6 +96,13 @@ export default function EngagingVideoPage() {
   }
   useEffect(() => {
     loadRecent();
+    // Template 2 deep-link from Create (/engaging-video?t=split) presets the
+    // split 50/50 format + locks 9:16. Read from the URL to avoid the
+    // useSearchParams Suspense requirement.
+    if (typeof window !== "undefined") {
+      const t = new URLSearchParams(window.location.search).get("t");
+      if (t === "split") { setMode("split_horizontal"); setAspect("9:16"); }
+    }
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
       if (batchPollRef.current) clearInterval(batchPollRef.current);
