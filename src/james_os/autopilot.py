@@ -138,8 +138,9 @@ listicle, never "N tips". Be specific; no generic platitudes.
 
 HARD RULES — every idea must obey the BRAND GUIDELINES above:
 - It MUST fit one of the brand's content pillars. Put that pillar's EXACT name
-  in `pillar`. Spread the {n} ideas across the pillars roughly by the
-  guideline ratios — don't pile them all into one pillar.
+  in `pillar`. If a PILLAR QUOTA is given, you MUST hit those exact per-pillar
+  counts (they override "roughly by ratios"); otherwise spread the {n} ideas
+  across the pillars roughly by the guideline ratios — never pile them into one.
 - It MUST obey the voice/topic rules — never a banned word, never an off-brand
   or off-pillar angle. If a trend can't be expressed inside a pillar and the
   rules, skip it and ride a different trend instead.
@@ -330,6 +331,52 @@ async def _topics_from_corpus(tenant_id: UUID | None) -> list[str]:
     return [r["topic"] for r in rows if (r["topic"] or "").strip()]
 
 
+async def _pillar_ratios(tenant_id: UUID | None) -> list[tuple[str, int]]:
+    """Parse the content-pillar percentages straight from the brand guidelines
+    (e.g. 'Look Within (35%)'). Data-driven — works for any tenant whose
+    guidelines name pillars with a (NN%) share. Returns [(name, pct)] deduped,
+    in document order; empty when no ratios are present."""
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            r"""
+            SELECT m[1] AS name, m[2] AS pct
+            FROM events e,
+                 LATERAL regexp_matches(
+                   e.raw_content,
+                   '([A-Za-z][A-Za-z ''&]{2,40}?)\s*\((\d{1,3})%\)', 'g') AS m
+            WHERE e.superseded_by IS NULL AND e.payload->>'category' = 'guideline'
+            """
+        )
+    seen: dict[str, int] = {}
+    order: list[str] = []
+    for r in rows:
+        name = (r["name"] or "").strip()
+        try:
+            pct = int(r["pct"])
+        except (TypeError, ValueError):
+            continue
+        if not name or pct <= 0 or pct > 100 or name in seen:
+            continue
+        seen[name] = pct
+        order.append(name)
+    return [(nm, seen[nm]) for nm in order]
+
+
+def _pillar_quota(ratios: list[tuple[str, int]], n: int) -> list[tuple[str, int]]:
+    """Largest-remainder (Hamilton) allocation of n ideas across pillars by
+    their percentages — guarantees the per-pillar counts sum to EXACTLY n."""
+    if not ratios or n <= 0:
+        return []
+    total = sum(p for _, p in ratios) or 1
+    raw = [(name, n * pct / total) for name, pct in ratios]
+    counts = [int(x) for _, x in raw]
+    remainder = n - sum(counts)
+    by_frac = sorted(range(len(raw)), key=lambda i: raw[i][1] - int(raw[i][1]), reverse=True)
+    for k in range(max(0, remainder)):
+        counts[by_frac[k % len(by_frac)]] += 1
+    return [(raw[i][0], counts[i]) for i in range(len(raw))]
+
+
 async def generate_ideas(
     n: int, intel: dict, tenant_id: UUID | None = None
 ) -> list[dict]:
@@ -359,6 +406,19 @@ async def generate_ideas(
         "make it relevant to a current trend — do NOT invent a topic outside "
         "his world:\n- " + "\n- ".join(his_topics) + "\n\n"
     ) if his_topics else ""
+
+    # Hard pillar quota — parse the guideline ratios and allocate the n ideas
+    # across pillars by largest-remainder so the batch hits the brand mix
+    # EXACTLY (e.g. 10 → Look Within 4 / Receipts 2 / Real Problem 2 / Free
+    # Forever 1 / Just James 1). When no ratios are in the guidelines this is
+    # empty and the prompt falls back to "spread roughly by ratios".
+    quota = _pillar_quota(await _pillar_ratios(tenant_id), n)
+    quota_section = (
+        f"PILLAR QUOTA — produce EXACTLY this many ideas per pillar (they sum "
+        f"to {n}); set each idea's `pillar` to the exact name and do not deviate "
+        f"from these counts:\n"
+        + "\n".join(f"- {name}: {c}" for name, c in quota if c > 0) + "\n\n"
+    ) if quota else ""
     findings = "\n".join(f"- {f}" for f in (intel.get("findings") or [])[:12])
     trends = "\n".join(f"- {t}" for t in (intel.get("trends") or []))
 
@@ -415,6 +475,7 @@ async def generate_ideas(
 
     ctx = (
         f"{gl_section}"
+        f"{quota_section}"
         f"{topics_section}"
         f"LIVE MARKET RESEARCH (subject: {intel.get('subject')}, via "
         f"{intel.get('provider')}):\n{intel.get('summary','')}\n\n"
