@@ -38,17 +38,10 @@ const OPTIONS: Option[] = [
   },
   {
     href: "/design-studio",
-    title: "A written post",
-    oneLiner: "One text post, by hand",
-    detail: "Write a single on-brand post or caption with the content engine and your voice — for when you want to craft one piece deliberately.",
+    title: "A post (text + image)",
+    oneLiner: "One topic → on-voice post + matching image",
+    detail: "Write a single on-brand post in your voice AND generate a cinematic image of James (from your hero library) to match it — composed together and queued as one item.",
     icon: "design",
-  },
-  {
-    href: "/images",
-    title: "An image",
-    oneLiner: "AI hero image for a post",
-    detail: "Generate a clean, on-brand image for a post — no text or logos baked in, so you add your own headline.",
-    icon: "images",
   },
 ];
 

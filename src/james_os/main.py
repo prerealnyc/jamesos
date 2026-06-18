@@ -57,6 +57,7 @@ from .models import (
     MediaUpdate,
     MultiGenerateRequest,
     PlugIn,
+    PostComposeRequest,
     PostImageRequest,
     PlugInCreate,
     ResearchRequest,
@@ -759,6 +760,68 @@ async def generate_multi(req: MultiGenerateRequest) -> dict:
         "topic": topic,
         "drafts": [d.model_dump(mode="json") for d in drafts],
         "queued": sum(1 for d in drafts if d.action_id is not None),
+    }
+
+
+@app.post("/post/compose")
+async def post_compose(req: PostComposeRequest) -> dict:
+    """One topic → an on-voice written post AND a matching hero image, together.
+
+    Generates the post (full voice + voice-QA pipeline, queued for approval),
+    then — when include_image — directs a cinematic scene from the *draft* and
+    renders it baselined on the brand hero's uploaded photos (same person every
+    post), attaching it to the same queued action so the reviewer sees text +
+    image as one item. The image is additive: a render failure never loses the
+    already-queued text.
+    """
+    topic = (req.topic or "").strip()
+    if not topic:
+        raise HTTPException(status_code=400, detail="topic is required")
+
+    draft = await generate_content(
+        ContentBrief(
+            platform=req.platform or "instagram",
+            format="post",
+            pillar=req.pillar,
+            topic=topic,
+            research_subject=req.research_subject,
+            extra_instructions=req.extra_instructions,
+        )
+    )
+
+    image_url: str | None = None
+    image_error: str | None = None
+    if req.include_image:
+        if draft.action_id is None:
+            image_error = "post was not queued, so no image was attached"
+        else:
+            from .db import _request_tenant
+            try:
+                _tid = _request_tenant.get()
+            except LookupError:
+                _tid = None
+            _tid = _tid or settings.default_tenant_id
+            from .autopilot_bulk import _attach_image_to_action
+            try:
+                image_url = await _attach_image_to_action(
+                    action_id=draft.action_id,
+                    idea={"topic": topic, "title": topic},
+                    platform=req.platform or "instagram",
+                    draft_text=draft.draft or topic,
+                    tenant_id=_tid,
+                )
+                if image_url is None:
+                    image_error = (
+                        "image generation unavailable — add OPENAI_API_KEY in "
+                        "Settings to attach a hero image"
+                    )
+            except Exception as e:  # noqa: BLE001 — text already queued; image is additive
+                image_error = f"image generation failed: {e}"
+
+    return {
+        "draft": draft.model_dump(mode="json"),
+        "image_url": image_url,
+        "image_error": image_error,
     }
 
 
@@ -1593,7 +1656,8 @@ async def images_generate(req: PostImageRequest) -> dict:
     Stub-honest: with no OPENAI_API_KEY this returns 400 with a clear
     reason — never a fake image.
     """
-    from .imagegen import generate_post_image
+    from .hero_context import get_hero_photo_files
+    from .imagegen import generate_post_image_with_refs
     from .media import storage as media_storage
 
     topic = (req.topic or "").strip()
@@ -1605,13 +1669,20 @@ async def images_generate(req: PostImageRequest) -> dict:
         _img_tid = _request_tenant.get()
     except LookupError:
         _img_tid = None
-    png, meta, err = await generate_post_image(
+    _img_tid = _img_tid or settings.default_tenant_id
+    # Baseline every generated post image on the brand hero's uploaded photos
+    # so the SAME person (James) shows up consistently. With no hero photos
+    # uploaded, generate_post_image_with_refs transparently falls back to the
+    # no-reference generate path.
+    hero_refs = await get_hero_photo_files(tenant_id=_img_tid)
+    png, meta, err = await generate_post_image_with_refs(
         topic=topic,
+        references=hero_refs,
         platform=req.platform.strip() or "linkedin",
         brief=req.brief,
         aspect=req.aspect,
         style=req.style,
-        tenant_id=_img_tid or settings.default_tenant_id,
+        tenant_id=_img_tid,
     )
     if not png:
         raise HTTPException(status_code=400, detail=err or "image generation failed")

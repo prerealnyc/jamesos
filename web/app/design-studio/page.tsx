@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { api, type ContentDraft } from "@/lib/api";
+import { api, mediaUrl, type ContentDraft } from "@/lib/api";
 import {
   Button,
   Card,
@@ -18,7 +18,6 @@ import {
 
 const MULTI_PLATFORMS = ["linkedin", "facebook", "instagram", "x", "tiktok"];
 const PLATFORMS = ["instagram", "linkedin", "x", "youtube", "tiktok", "threads"];
-const FORMATS = ["post", "caption", "reel_script", "thread", "short_hook"];
 
 function scoreTone(s: number): "ok" | "accent" | "destructive" {
   if (s >= 0.7) return "ok";
@@ -37,23 +36,167 @@ function parseSlides(draft: string): string[] | null {
 }
 
 export default function ContentStudio() {
-  const [mode, setMode] = useState<"multi" | "single">("multi");
+  const [mode, setMode] = useState<"post" | "multi">("post");
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title="Content Studio"
-        sub="Turn one idea into on-voice content. Grounded in voice + thesis + research + the learned guardrails; an independent voice-QA scores every draft; nothing ships without approval."
+        title="Post — text + image"
+        sub="One topic → an on-voice written post AND a matching image of James (from your hero library), composed together and queued as one item. Grounded in voice + thesis + research + the learned guardrails; voice-QA scores every draft; nothing ships without approval."
       />
       <div className="flex gap-2">
-        <TabBtn active={mode === "multi"} onClick={() => setMode("multi")}>
-          Multi-platform
+        <TabBtn active={mode === "post"} onClick={() => setMode("post")}>
+          Post + image
         </TabBtn>
-        <TabBtn active={mode === "single"} onClick={() => setMode("single")}>
-          Single draft
+        <TabBtn active={mode === "multi"} onClick={() => setMode("multi")}>
+          Multi-platform (text)
         </TabBtn>
       </div>
-      {mode === "multi" ? <MultiMode /> : <SingleMode />}
+      {mode === "post" ? <PostImageMode /> : <MultiMode />}
     </div>
+  );
+}
+
+// ── Post + image: one topic → on-voice post + a matching hero image ──
+
+function PostImageMode() {
+  const [topic, setTopic] = useState("");
+  const [platform, setPlatform] = useState("instagram");
+  const [pillar, setPillar] = useState("");
+  const [extra, setExtra] = useState("");
+  const [includeImage, setIncludeImage] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState<ContentDraft | null>(null);
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [imageErr, setImageErr] = useState<string | null>(null);
+  const [err, setErr] = useState("");
+
+  async function run() {
+    if (!topic.trim()) return;
+    setBusy(true);
+    setErr("");
+    setDraft(null);
+    setImageUrl(null);
+    setImageErr(null);
+    try {
+      const r = await api.composePost({
+        topic,
+        platform,
+        pillar,
+        extra_instructions: extra,
+        include_image: includeImage,
+      });
+      setDraft(r.draft);
+      setImageUrl(r.image_url);
+      setImageErr(r.image_error);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "generation failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <Card>
+        <CardTitle>One topic → post + matching image</CardTitle>
+        <p className="text-[12px] text-muted-foreground -mt-1 mb-2">
+          Writes the post in James&apos;s voice, then renders a cinematic image
+          of James from your hero library to match it. Both land together in the
+          Approval Queue for review.
+        </p>
+        <Label>Topic</Label>
+        <Textarea
+          rows={2}
+          placeholder="what the post is about"
+          value={topic}
+          onChange={(e) => setTopic(e.target.value)}
+        />
+        <div className="grid grid-cols-2 gap-4 mt-1">
+          <div>
+            <Label>Platform</Label>
+            <Select value={platform} onChange={(e) => setPlatform(e.target.value)}>
+              {PLATFORMS.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div>
+            <Label>Pillar (optional)</Label>
+            <Input value={pillar} onChange={(e) => setPillar(e.target.value)} placeholder="which brand pillar" />
+          </div>
+        </div>
+        <Label>Extra instructions (optional)</Label>
+        <Input value={extra} onChange={(e) => setExtra(e.target.value)} placeholder="a one-off steer" />
+        <label className="flex items-center gap-2 mt-3 text-[13px] cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={includeImage}
+            onChange={(e) => setIncludeImage(e.target.checked)}
+            className="accent-primary"
+          />
+          Generate a matching image (James, from your hero library)
+        </label>
+        <div className="mt-3">
+          <Button onClick={run} disabled={busy || !topic.trim()}>
+            {busy ? <Spinner /> : includeImage ? "Generate post + image" : "Generate post"}
+          </Button>
+        </div>
+        {err && <p className="text-destructive text-sm mt-2">✗ {err}</p>}
+        {busy && (
+          <p className="text-[12px] text-muted-foreground mt-2">
+            {includeImage
+              ? "Writing the post + voice-QA, then rendering the image — ~30–60s."
+              : "Writing the post + voice-QA — ~15–30s."}
+          </p>
+        )}
+      </Card>
+
+      {draft && (
+        <>
+          <div className="text-[12px] text-muted-foreground flex items-center gap-2">
+            {draft.action_id ? (
+              <>
+                <Badge tone="primary">queued for approval</Badge>
+                <Link href="/queue" className="text-primary hover:underline">
+                  Review in the queue →
+                </Link>
+              </>
+            ) : (
+              <Badge tone="accent">not queued</Badge>
+            )}
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <DraftCard draft={draft} />
+            {includeImage && (
+              <Card>
+                <CardTitle>Matching image</CardTitle>
+                {imageUrl ? (
+                  <>
+                    <a href={mediaUrl(imageUrl)} target="_blank" rel="noopener noreferrer">
+                      <img
+                        src={mediaUrl(imageUrl)}
+                        alt="post image"
+                        className="w-full rounded-md border border-border mt-2 bg-background"
+                      />
+                    </a>
+                    <p className="text-[11px] text-muted-foreground mt-2">
+                      Attached to the queued post. Referenced from your hero
+                      library so James stays consistent across posts.
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-[12px] text-muted-foreground mt-2">
+                    {imageErr || "No image returned."}
+                  </p>
+                )}
+              </Card>
+            )}
+          </div>
+        </>
+      )}
+    </>
   );
 }
 
@@ -254,88 +397,5 @@ function DraftCard({ draft }: { draft: ContentDraft }) {
         </div>
       )}
     </div>
-  );
-}
-
-// ── Single draft (original) ──
-
-function SingleMode() {
-  const [platform, setPlatform] = useState("instagram");
-  const [format, setFormat] = useState("post");
-  const [pillar, setPillar] = useState("");
-  const [topic, setTopic] = useState("");
-  const [research, setResearch] = useState("");
-  const [extra, setExtra] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [out, setOut] = useState<ContentDraft | null>(null);
-  const [err, setErr] = useState("");
-
-  async function run() {
-    if (!topic.trim()) return;
-    setBusy(true);
-    setErr("");
-    setOut(null);
-    try {
-      setOut(
-        await api.generate({
-          platform,
-          format,
-          pillar,
-          topic,
-          research_subject: research,
-          extra_instructions: extra,
-        })
-      );
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "generation failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <>
-      <Card>
-        <CardTitle>Brief</CardTitle>
-        <div className="grid grid-cols-2 gap-4 mt-2">
-          <div>
-            <Label>Platform</Label>
-            <Select value={platform} onChange={(e) => setPlatform(e.target.value)}>
-              {PLATFORMS.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </Select>
-          </div>
-          <div>
-            <Label>Format</Label>
-            <Select value={format} onChange={(e) => setFormat(e.target.value)}>
-              {FORMATS.map((f) => (
-                <option key={f} value={f}>
-                  {f}
-                </option>
-              ))}
-            </Select>
-          </div>
-        </div>
-        <Label>Pillar (optional)</Label>
-        <Input value={pillar} onChange={(e) => setPillar(e.target.value)} />
-        <Label>Topic</Label>
-        <Textarea rows={2} value={topic} onChange={(e) => setTopic(e.target.value)} />
-        <Label>Ground facts in research on (optional)</Label>
-        <Input value={research} onChange={(e) => setResearch(e.target.value)} />
-        <Label>Extra instructions (optional)</Label>
-        <Input value={extra} onChange={(e) => setExtra(e.target.value)} />
-        <div className="mt-3">
-          <Button onClick={run} disabled={busy || !topic.trim()}>
-            {busy ? <Spinner /> : "Generate draft"}
-          </Button>
-        </div>
-        {err && <p className="text-destructive text-sm mt-2">✗ {err}</p>}
-      </Card>
-
-      {out && <DraftCard draft={out} />}
-    </>
   );
 }

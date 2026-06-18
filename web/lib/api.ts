@@ -1170,6 +1170,21 @@ export const api = {
     jpost<ContentDraft>("/generate-script", { event_id, platform, extra_instructions }),
   generate: (brief: Partial<ContentBrief> & { topic: string }) =>
     jpost<ContentDraft>("/generate", brief),
+  // One topic → on-voice written post + a matching hero-referenced image,
+  // composed together and queued as one item for approval.
+  composePost: (body: {
+    topic: string;
+    platform?: string;
+    pillar?: string;
+    research_subject?: string;
+    extra_instructions?: string;
+    include_image?: boolean;
+  }) =>
+    jpost<{
+      draft: ContentDraft;
+      image_url: string | null;
+      image_error: string | null;
+    }>("/post/compose", { platform: "instagram", include_image: true, ...body }),
   generateMulti: (body: {
     topic: string;
     pillar?: string;

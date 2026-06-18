@@ -161,6 +161,20 @@ class ContentBrief(BaseModel):
     extra_instructions: str = ""  # optional one-off steer
 
 
+class PostComposeRequest(BaseModel):
+    """One topic → an on-voice written post AND a matching hero image,
+    composed together. The text runs the full voice + voice-QA pipeline and
+    is queued for approval; when `include_image` is set, a cinematic image is
+    directed from the *draft* and baselined on the brand hero's photos so the
+    same person appears across posts, then attached to the same queued item."""
+    topic: str
+    platform: str = "instagram"
+    pillar: str = ""
+    research_subject: str = ""
+    extra_instructions: str = ""
+    include_image: bool = True
+
+
 # ─────────────────────────────────── Trend radar ──
 
 class TrendDiscoverRequest(BaseModel):
