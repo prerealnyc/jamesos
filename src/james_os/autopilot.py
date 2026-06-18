@@ -19,7 +19,9 @@ fire while the server is up. It's restart-safe (it checks last_run_date in
 config, not a fragile timer), but a 24/7 deployment needs a real worker.
 """
 
+import asyncio
 import json
+import logging
 from datetime import UTC, date, datetime
 from uuid import UUID
 
@@ -119,8 +121,9 @@ async def set_config(
 # ─────────────────────────────────────────────────────────── ideation ──
 
 _IDEA_SYSTEM = """You are the content strategist for a personal brand.
-You are given LIVE market research and trends describing what is working /
-going viral RIGHT NOW, plus the brand voice. You may also be given a
+You are given the BRAND GUIDELINES (the content pillars + posting ratios and
+the voice/topic rules), LIVE market research and trends describing what is
+working / going viral RIGHT NOW, plus the brand voice. You may also be given a
 CURATED COHORT — creators on the brand's speaking-targets watchlist whose
 interests overlap the topic. When that cohort and its trend events are
 present, bias ideas toward angles those creators are currently working;
@@ -133,11 +136,23 @@ or topic that's currently working). Each MUST be a SINGLE-ARC STORY angle (a
 first-person moment, decision, or lesson) in the brand's voice — never a
 listicle, never "N tips". Be specific; no generic platitudes.
 
+HARD RULES — every idea must obey the BRAND GUIDELINES above:
+- It MUST fit one of the brand's content pillars. Put that pillar's EXACT name
+  in `pillar`. If a PILLAR QUOTA is given, you MUST hit those exact per-pillar
+  counts (they override "roughly by ratios"); otherwise spread the {n} ideas
+  across the pillars roughly by the guideline ratios — never pile them into one.
+- It MUST obey the voice/topic rules — never a banned word, never an off-brand
+  or off-pillar angle. If a trend can't be expressed inside a pillar and the
+  rules, skip it and ride a different trend instead.
+- GROUND it in a real theme James actually teaches/tells (see "TOPICS JAMES
+  ACTUALLY TEACHES" when provided). Pull the angle from HIS world and make it
+  trend-relevant — never invent a topic he would not cover.
+
 Return STRICT JSON:
 {{"ideas": [{{"title": str, "topic": str (a one-line story prompt the writer
-will expand, phrased as a personal story), "pillar": str,
-"trend_basis": str (the specific trend/insight this idea rides — name the
-creator when riding a COHORT TREND)}}]}}"""
+will expand, phrased as a personal story), "pillar": str (the EXACT brand
+pillar name this idea serves), "trend_basis": str (the specific trend/insight
+this idea rides — name the creator when riding a COHORT TREND)}}]}}"""
 
 
 async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
@@ -155,7 +170,7 @@ async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
     from . import xpoz_intel
     from .ingestion import ingest_many
     from .research import get_research_provider, research_to_events
-    from .trends import list_cohort_trends
+    from .trends import get_watchlist, list_cohort_trends
 
     subject = (cfg.get("topic_hint") or "").strip() or "this brand's industry and niche"
 
@@ -164,11 +179,43 @@ async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
     # autopilot ideate even WITHOUT a Perplexity key.
     xpoz_posts: list[dict] = []
     if xpoz_intel.configured():
+        # Two Xpoz feeds, run CONCURRENTLY (each is ~20-25s; sequential would
+        # blow the latency budget):
+        #   1) posts BY the creators the brand tracks (Research watchlist) — the
+        #      primary "ride what our targets are doing RIGHT NOW" signal,
+        #   2) top viral posts in the niche — a broader fallback feed.
         try:
-            tr = await xpoz_intel.trending_in_niche(subject, limit=6, days=7, min_likes=10000)
-            xpoz_posts = tr.get("results") or []
-        except Exception:  # noqa: BLE001 — a research feed must never break a batch
-            xpoz_posts = []
+            watch = await get_watchlist(tenant_id)
+        except Exception:  # noqa: BLE001
+            watch = []
+
+        async def _creators() -> list[dict]:
+            if not watch:
+                return []
+            cr = await xpoz_intel.trending_from_creators(
+                watch, limit=8, days=14, min_likes=10000
+            )
+            return cr.get("results") or []
+
+        async def _niche() -> list[dict]:
+            tr = await xpoz_intel.trending_in_niche(
+                subject, limit=6, days=7, min_likes=10000
+            )
+            return tr.get("results") or []
+
+        _cr_res, _ni_res = await asyncio.gather(
+            _creators(), _niche(), return_exceptions=True
+        )
+        creator_posts = _cr_res if isinstance(_cr_res, list) else []
+        niche_posts = _ni_res if isinstance(_ni_res, list) else []
+        # Tracked-creator posts lead; dedup by url.
+        _seen: set = set()
+        for p in creator_posts + niche_posts:
+            u = p.get("url") or ""
+            if u and u in _seen:
+                continue
+            _seen.add(u)
+            xpoz_posts.append(p)
 
     provider = get_research_provider()
     if provider.name == "stub":
@@ -179,6 +226,7 @@ async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
             "provider": "xpoz", "subject": subject, "summary": "", "findings": [],
             "sources": [p["url"] for p in xpoz_posts if p.get("url")],
             "trends": [], "xpoz_trending": xpoz_posts,
+            "xpoz_keywords": xpoz_intel.trending_keywords(xpoz_posts),
             "cohort_creators": [], "cohort_trends": [],
         }
 
@@ -217,6 +265,7 @@ async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
         "sources": [s.url for s in result.sources] + [p["url"] for p in xpoz_posts if p.get("url")],
         "trends": trends,
         "xpoz_trending": xpoz_posts,
+        "xpoz_keywords": xpoz_intel.trending_keywords(xpoz_posts),
         "cohort_creators": cohort["creators"],
         "cohort_trends": cohort["trends"],
     }
@@ -230,6 +279,102 @@ async def _voice_for_ideation(tenant_id: UUID | None) -> str:
             "AND length(raw_content) > 200 ORDER BY random() LIMIT 3"
         )
     return "\n---\n".join((r["raw_content"] or "")[:500] for r in voice) or "(no voice corpus)"
+
+
+async def _guidelines_for_ideation(tenant_id: UUID | None) -> str:
+    """Brand-guideline material for IDEATION — the content pillars + voice /
+    topic rules — so generated TOPICS fit the pillars and obey the rules, not
+    only the scripts. Pulled in document order (the earliest chunks are the
+    positioning + pillars + voice sections), capped to keep the prompt lean."""
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            "SELECT raw_content FROM events "
+            "WHERE payload->>'category'='guideline' AND superseded_by IS NULL "
+            "AND length(raw_content) > 80 "
+            "ORDER BY effective_at ASC, created_at ASC LIMIT 22"
+        )
+    out: list[str] = []
+    total = 0
+    for r in rows:
+        c = (r["raw_content"] or "").strip()
+        if not c:
+            continue
+        out.append(c)
+        total += len(c)
+        if total > 9000:  # ~2.2k tokens: positioning + pillars + voice rules
+            break
+    return "\n".join(out).strip()
+
+
+async def _topics_from_corpus(tenant_id: UUID | None) -> list[str]:
+    """The topics James ACTUALLY teaches/tells — extracted from his voice
+    corpus (Academy module/episode titles + podcast). Gives ideation a real
+    topic taxonomy to ground ideas in, so they come from his world (mindset,
+    core values, investment sales, etc.) instead of invented angles."""
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            r"""
+            WITH t AS (
+              SELECT unnest(regexp_matches(
+                raw_content,
+                '(Module\s*\d+[^\n]{0,70}|Episode\s*\d+[^\n]{0,70})', 'g')) AS title
+              FROM events
+              WHERE superseded_by IS NULL AND payload->>'category' = 'voice_corpus'
+            )
+            SELECT DISTINCT trim(both ' =-' from title) AS topic
+            FROM t
+            WHERE length(trim(both ' =-' from title)) > 12
+            ORDER BY topic
+            LIMIT 40
+            """
+        )
+    return [r["topic"] for r in rows if (r["topic"] or "").strip()]
+
+
+async def _pillar_ratios(tenant_id: UUID | None) -> list[tuple[str, int]]:
+    """Parse the content-pillar percentages straight from the brand guidelines
+    (e.g. 'Look Within (35%)'). Data-driven — works for any tenant whose
+    guidelines name pillars with a (NN%) share. Returns [(name, pct)] deduped,
+    in document order; empty when no ratios are present."""
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            r"""
+            SELECT m[1] AS name, m[2] AS pct
+            FROM events e,
+                 LATERAL regexp_matches(
+                   e.raw_content,
+                   '([A-Za-z][A-Za-z ''&]{2,40}?)\s*\((\d{1,3})%\)', 'g') AS m
+            WHERE e.superseded_by IS NULL AND e.payload->>'category' = 'guideline'
+            """
+        )
+    seen: dict[str, int] = {}
+    order: list[str] = []
+    for r in rows:
+        name = (r["name"] or "").strip()
+        try:
+            pct = int(r["pct"])
+        except (TypeError, ValueError):
+            continue
+        if not name or pct <= 0 or pct > 100 or name in seen:
+            continue
+        seen[name] = pct
+        order.append(name)
+    return [(nm, seen[nm]) for nm in order]
+
+
+def _pillar_quota(ratios: list[tuple[str, int]], n: int) -> list[tuple[str, int]]:
+    """Largest-remainder (Hamilton) allocation of n ideas across pillars by
+    their percentages — guarantees the per-pillar counts sum to EXACTLY n."""
+    if not ratios or n <= 0:
+        return []
+    total = sum(p for _, p in ratios) or 1
+    raw = [(name, n * pct / total) for name, pct in ratios]
+    counts = [int(x) for _, x in raw]
+    remainder = n - sum(counts)
+    by_frac = sorted(range(len(raw)), key=lambda i: raw[i][1] - int(raw[i][1]), reverse=True)
+    for k in range(max(0, remainder)):
+        counts[by_frac[k % len(by_frac)]] += 1
+    return [(raw[i][0], counts[i]) for i in range(len(raw))]
 
 
 async def generate_ideas(
@@ -246,6 +391,34 @@ async def generate_ideas(
     """
     n = max(1, min(n, 10))
     voice = await _voice_for_ideation(tenant_id)
+    guidelines = await _guidelines_for_ideation(tenant_id)
+    gl_section = (
+        "BRAND GUIDELINES — every idea MUST fit one of these content pillars "
+        "(set `pillar` to its exact name) and obey the voice / topic rules "
+        "below (banned words, approved hooks, what to avoid):\n"
+        f"{guidelines}\n\n"
+    ) if guidelines else ""
+
+    his_topics = await _topics_from_corpus(tenant_id)
+    topics_section = (
+        "TOPICS JAMES ACTUALLY TEACHES / TELLS (his real curriculum + podcast). "
+        "Ground each idea in one of THESE real themes wherever possible, then "
+        "make it relevant to a current trend — do NOT invent a topic outside "
+        "his world:\n- " + "\n- ".join(his_topics) + "\n\n"
+    ) if his_topics else ""
+
+    # Hard pillar quota — parse the guideline ratios and allocate the n ideas
+    # across pillars by largest-remainder so the batch hits the brand mix
+    # EXACTLY (e.g. 10 → Look Within 4 / Receipts 2 / Real Problem 2 / Free
+    # Forever 1 / Just James 1). When no ratios are in the guidelines this is
+    # empty and the prompt falls back to "spread roughly by ratios".
+    quota = _pillar_quota(await _pillar_ratios(tenant_id), n)
+    quota_section = (
+        f"PILLAR QUOTA — produce EXACTLY this many ideas per pillar (they sum "
+        f"to {n}); set each idea's `pillar` to the exact name and do not deviate "
+        f"from these counts:\n"
+        + "\n".join(f"- {name}: {c}" for name, c in quota if c > 0) + "\n\n"
+    ) if quota else ""
     findings = "\n".join(f"- {f}" for f in (intel.get("findings") or [])[:12])
     trends = "\n".join(f"- {t}" for t in (intel.get("trends") or []))
 
@@ -288,17 +461,28 @@ async def generate_ideas(
     from . import xpoz_intel
     xpoz_lines = xpoz_intel.trending_lines(intel.get("xpoz_trending") or [])
     xpoz_section = (
-        "\nLIVE VIRAL POSTS IN YOUR NICHE (Xpoz — real high-engagement posts "
-        "right now; ride these hooks/angles, do NOT copy their words):\n"
+        "\nLIVE VIRAL POSTS — real high-engagement posts right now, including "
+        "ones BY the creators this brand tracks (marked ·tracked). Ride these "
+        "proven hooks/angles; do NOT copy their words:\n"
         + "\n".join(f"- {ln}" for ln in xpoz_lines) + "\n"
     ) if xpoz_lines else ""
 
+    kw = intel.get("xpoz_keywords") or []
+    keyword_section = (
+        "\nTRENDING KEYWORDS/HASHTAGS right now (echo where it's authentic to "
+        "the story; never keyword-stuff): " + ", ".join(kw) + "\n"
+    ) if kw else ""
+
     ctx = (
+        f"{gl_section}"
+        f"{quota_section}"
+        f"{topics_section}"
         f"LIVE MARKET RESEARCH (subject: {intel.get('subject')}, via "
         f"{intel.get('provider')}):\n{intel.get('summary','')}\n\n"
         f"KEY FINDINGS (what's working now):\n{findings or '(none)'}\n\n"
         f"SCRAPED TRENDS:\n{trends or '(none — research only)'}\n"
         f"{xpoz_section}"
+        f"{keyword_section}"
         f"{cohort_section}\n"
         f"BRAND VOICE (write in this voice):\n{voice}"
     )
@@ -306,9 +490,15 @@ async def generate_ideas(
         out = await get_llm().complete_json(
             system=_IDEA_SYSTEM.format(n=n),
             messages=[{"role": "user", "content": ctx}],
-            max_tokens=1000, temperature=0.8,
+            # Scale the token budget with n — 10 detailed ideas (title/topic/
+            # pillar/trend_basis) overflow a flat 1000 and the JSON truncates,
+            # which used to parse-fail silently into "no topics".
+            max_tokens=min(4000, 500 + n * 260), temperature=0.8,
         )
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "generate_ideas LLM call failed (n=%s): %s", n, e
+        )
         return []
     ideas = []
     for it in (out.get("ideas") or [])[:n]:
@@ -319,8 +509,32 @@ async def generate_ideas(
                 "topic": topic,
                 "pillar": str(it.get("pillar") or "").strip(),
                 "trend_basis": str(it.get("trend_basis") or "").strip(),
+                # Batch-level trending terms, carried on every idea so the
+                # downstream script writer can ride them (see trend_steer).
+                "trend_keywords": kw,
             })
     return ideas
+
+
+def trend_steer(idea: dict) -> str:
+    """One-off steer appended to a content brief so the SCRIPT itself (not just
+    the chosen topic) rides the live trend: the idea's specific hook plus the
+    batch's trending terms. Authentic-only — never keyword-stuff or sound
+    promotional. Returns '' when the idea carries no trend signal."""
+    basis = (idea.get("trend_basis") or "").strip()
+    kw = idea.get("trend_keywords") or []
+    if not basis and not kw:
+        return ""
+    parts: list[str] = []
+    if basis:
+        parts.append(f"Ride this trending angle: {basis}.")
+    if kw:
+        parts.append(
+            "Where it is authentic to the story you may echo what is resonating "
+            f"right now ({', '.join(kw[:10])}); never force keywords or sound "
+            "promotional."
+        )
+    return " " + " ".join(parts)
 
 
 # ─────────────────────────────────────────────────────────── batch ──
@@ -421,8 +635,10 @@ async def run_batch(
             draft = await generate_content(ContentBrief(
                 platform=platform, format=fmt,
                 pillar=idea.get("pillar", ""), topic=idea["topic"],
-                extra_instructions="Write as a single-arc first-person story, "
-                                   "not a list. Decisive ownership, concrete specifics.",
+                extra_instructions=(
+                    "Write as a single-arc first-person story, not a list. "
+                    "Decisive ownership, concrete specifics."
+                ) + trend_steer(idea),
             ), tenant_id)
             generated += 1
             if draft.action_id:

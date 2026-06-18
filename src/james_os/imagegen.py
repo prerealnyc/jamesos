@@ -102,8 +102,23 @@ POST_STYLES: dict[str, str] = {
         "gravitas. Feels like a film still, never like stock photography. "
         + _BASE_RULES
     ),
+    "cinematic_real": (
+        # DEFAULT for post hero images. Premium, photorealistic, emotionally
+        # grounded — a film still, never flat-vector illustration or stock.
+        # Allows a real human subject with genuine emotion (the stories are
+        # first-person), so it deliberately does NOT inherit the no-faces
+        # _BASE_RULES.
+        "Cinematic, photorealistic film still in the style of premium editorial "
+        "photography or a prestige brand campaign. Emotional realism with a real "
+        "human subject when the story is personal. Golden-hour or hard "
+        "directional natural light, warm tones, shallow depth of field, "
+        "ultra-detailed, upscale real-world setting, subtle ambition and tension. "
+        "Looks like a frame from a prestige film — never stock photography, never "
+        "illustration. Single strong focal point. Absolutely no text, numbers, "
+        "words, logos, charts, or watermarks."
+    ),
 }
-_DEFAULT_STYLE = "editorial"
+_DEFAULT_STYLE = "cinematic_real"
 
 
 def _client() -> AsyncOpenAI | None:
@@ -157,6 +172,49 @@ def _build_post_prompt(
             f"{brand_guidelines.strip()[:500]}"
         )
     return " ".join(parts)[:1300]
+
+
+_IMG_DIRECTOR_SYSTEM = (
+    "You are a cinematic photo director for a premium personal brand. Given a "
+    "first-person story, write ONE image-generation prompt for a single "
+    "photorealistic still that captures the story's EMOTIONAL TENSION — never a "
+    "literal, generic, or stock scene.\n"
+    "Requirements:\n"
+    "- Cinematic film-still realism: name the lighting (e.g. golden hour, hard "
+    "window light, rim light), shallow depth of field, ultra-realistic detail, "
+    "warm tones, emotional realism, an upscale/premium setting.\n"
+    "- Ground it in the story's specific scene, stakes, and subtext (e.g. "
+    "intuition vs algorithms, confidence under skepticism, momentum and demand, "
+    "premium positioning, testing the ceiling).\n"
+    "- A real human subject showing genuine, specific emotion is encouraged for "
+    "personal stories.\n"
+    "- Absolutely NO text, numbers, words, logos, charts, or watermarks in the image.\n"
+    "- FORBIDDEN clichés that kill the tension: 'realtor with house', 'happy "
+    "couple buying a home', 'businessman holding paperwork', generic smiling stock.\n"
+    'Return STRICT JSON: {"prompt": str} — the prompt 40-80 words, no quotes inside.'
+)
+
+
+async def direct_image_scene(story: str, fallback_topic: str = "") -> str:
+    """LLM image director: turn a post's story into ONE cinematic, realistic
+    scene prompt that carries its emotional tension (the post equivalent of the
+    video pipeline's write_image_prompts). Best-effort — returns fallback_topic
+    if the LLM is unavailable or errors, so image generation never depends on it."""
+    story = (story or "").strip()
+    if not story:
+        return fallback_topic
+    try:
+        from .llm import get_llm
+
+        out = await get_llm().complete_json(
+            system=_IMG_DIRECTOR_SYSTEM,
+            messages=[{"role": "user", "content": story[:2000]}],
+            max_tokens=300, temperature=0.7,
+        )
+        scene = str((out or {}).get("prompt") or "").strip()
+        return scene or fallback_topic
+    except Exception:  # noqa: BLE001
+        return fallback_topic
 
 
 async def _brand_visual_directive(tenant_id) -> str:
@@ -256,6 +314,7 @@ async def generate_post_image_with_refs(
     brief: str = "",
     aspect: str = "",
     style: str = _DEFAULT_STYLE,
+    tenant_id=None,
 ) -> tuple[bytes | None, dict, str]:
     """Topic + reference image bytes → PNG bytes.
 
@@ -277,6 +336,7 @@ async def generate_post_image_with_refs(
     if not references:
         return await generate_post_image(
             topic, platform=platform, brief=brief, aspect=aspect, style=style,
+            tenant_id=tenant_id,
         )
     client = _client()
     if client is None:
@@ -297,8 +357,9 @@ async def generate_post_image_with_refs(
     # The prompt explicitly tells the model to preserve the recurring
     # subject from the references — without this nudge, gpt-image-1 will
     # sometimes ignore the reference identity for stylistic reasons.
+    guidelines = await _brand_visual_directive(tenant_id)
     edit_prompt = (
-        _build_post_prompt(topic, brief, chosen_style)
+        _build_post_prompt(topic, brief, chosen_style, guidelines)
         + " The recurring person from the reference photos must be "
         "rendered as the subject of this scene with the same face, "
         "build, hair, beard, and signature dress. Do not substitute "

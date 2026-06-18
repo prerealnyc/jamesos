@@ -890,11 +890,12 @@ async def _run_engaging_avatar(
     # placement that respects the insert overlays)
     async with acquire(tenant_id) as conn:
         await _set(conn, pid, status="planning")
-    # split_horizontal pins the speaker into a SQUARE-ish top panel. A 9:16
-    # portrait avatar cover-cropped into that panel loses the top of the head
-    # (the face-cut the user flagged) — only the middle vertical band survives.
-    # A 16:9 landscape avatar keeps the FULL face height and only trims the empty
-    # sides, so render the split speaker landscape.
+    # Output is ALWAYS 9:16 vertical. For the split, the speaker goes in the
+    # TOP HALF — a near-square box. A 9:16 portrait cover-cropped into a square
+    # box loses the head (the "only part of his face" bug); a LANDSCAPE
+    # head-and-shoulders source cover-fits that box with the FULL face. So the
+    # split speaker is shot landscape and cropped into the top half — it never
+    # appears as a 16:9 video; the final reel is 9:16.
     avatar_aspect = "16:9" if composition == "split_horizontal" else row["aspect"]
     avatar_url, err = await _render_avatar(
         script, avatar_aspect, captions=False, pid=pid, tenant_id=tenant_id,
@@ -1171,17 +1172,10 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
     except (KeyError, TypeError):
         cstyle = ""
     if not cstyle:
-        # The picker matches a preset to the SPOKEN WORDS — reconstruct the
-        # transcript from the Whisper caption flashes (long-form has no
-        # script field; assets.audio_url is just an mp3 URL, useless to an
-        # LLM). Mirrors the engaging_avatar path, which passes the script.
-        transcript = " ".join(
-            (c.get("raw_text") or c.get("text") or "")
-            for c in (assets.captions or [])
-        ).strip()
-        cstyle, _why = await pick_caption_style(
-            transcript, row["platform"], brand_context, avoid=cap_avoid,
-        )
+        # Template 1 (upload-clip / long-form) locks to magenta-on-black
+        # captions by default — that's the brand-defined look for this format.
+        # An explicit caption_style on the row still overrides.
+        cstyle = "magenta_blocks"
 
     asm = get_assembly_provider()
     if not hasattr(asm, "render_engaging_avatar"):

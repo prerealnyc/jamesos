@@ -713,40 +713,34 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         visuals on the bottom" reel composition the Design Inspector captures
         as layout.type == 'split_horizontal'.
 
-        Unlike engaging_avatar (a FULL-FRAME speaker with transient B-roll
-        cutaways), here the two regions are CO-PRESENT for the whole video —
-        the speaker never leaves the top, the bottom is always the content
-        panel. This is the structural difference the audit flagged as the
-        reason replication "gave the same style": engaging_avatar can't emit
-        two stacked regions, this can.
+        FIXED 50/50 split, output 9:16: TOP half = speaker, BOTTOM half = B-roll
+        the whole time.
 
-          track 1 — speaker video, constrained to the TOP half (carries audio)
-          track 2 — B-roll image/video, constrained to the BOTTOM half, pinned
-                    to its insert window; muted (speaker is the master audio)
-          track 3 — bold captions pinned LOW (role='broll' → ~75% y) so the
-                    text lives in the bottom panel, never over the face
-          track 4 — optional background music ducked under the voice
+          track 1 — speaker in the TOP half (LANDSCAPE source, cover → face
+                    fills the ~square top box; carries audio)
+          track 2 — opaque dark backing for the BOTTOM half (bottom never white)
+          track 3 — B-roll in the BOTTOM half, tiled CONTINUOUS (always 50/50)
+          track 4 — captions centred on the seam — magenta-on-white per-phrase
+          track 5 — optional background music ducked under the voice
 
-        Bottom-region gaps fall back to the composition's dark canvas, reading
-        as a clean text panel — a faithful v1 of the reference's bottom strip.
-        A persistent decorated panel (brand color / UI chrome) is a later pass.
+        The speaker is shot landscape (head-and-shoulders) so cover-fitting him
+        into the square top box keeps his full face; a 9:16 portrait would crop
+        the head. The final reel is 9:16 — the landscape is only the source crop.
         """
         w, h = _dims(aspect)
         elements: list[dict] = []
         total = max(audio_duration, inserts[-1]["end"] if inserts else 0.0)
 
-        # Region geometry. Top element pinned by its TOP edge to y=0%; bottom
-        # element pinned by its BOTTOM edge to y=100%. Each is exactly half the
-        # canvas height, full width — the two halves tile the frame with no gap.
+        # Region geometry — top and bottom halves, each full width × 50% height.
         TOP = {"x": "50%", "y": "0%", "width": "100%", "height": "50%",
                "x_anchor": "50%", "y_anchor": "0%"}
         BOTTOM = {"x": "50%", "y": "100%", "width": "100%", "height": "50%",
                   "x_anchor": "50%", "y_anchor": "100%"}
 
-        # track 1 — speaker pinned to the TOP half, carries the master audio.
-        # 'cover' fills the panel edge-to-edge; the caller renders the split
-        # speaker at 16:9 so cover keeps the FULL face height and only trims the
-        # empty sides (a 9:16 source here would crop the forehead/eyes).
+        # track 1 — speaker in the TOP half. The caller renders him LANDSCAPE
+        # (head-and-shoulders); cover-fitting that into the ~square top panel
+        # keeps his FACE filling the panel (a 9:16 portrait source would crop
+        # the head off). Carries the master audio.
         if avatar_video_url and avatar_video_url.startswith("http"):
             elements.append({
                 "type": "video", "source": avatar_video_url,
@@ -755,26 +749,38 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 **TOP,
             })
 
-        # track 2 — B-roll in the BOTTOM half, pinned to each insert window.
-        # Prefer the Runway-animated clip; fall back to the still. Video is
-        # muted because the speaker on track 1 is the master audio.
-        for ins in inserts:
+        # track 2 — opaque dark backing for the BOTTOM half, full duration, so
+        # the bottom is NEVER white: it covers B-roll fades, any sub-frame seam,
+        # and the no-insert case. The B-roll tiles render on top of it.
+        if total > 0:
+            elements.append({
+                "type": "text", "text": " ",
+                "track": 2, "time": 0, "duration": round(total, 2),
+                "background_color": "#0B0B0F", **BOTTOM,
+            })
+
+        # track 3 — B-roll fills the BOTTOM half CONTINUOUSLY (fixed 50/50):
+        # tiled to cover [0, total] with no gaps — each clip holds from its
+        # anchor until the next begins (first back-fills from 0). Opaque cover,
+        # muted (the speaker carries the audio). Prefer the animated clip.
+        usable = [
+            ins for ins in inserts
+            if (ins.get("video_url") or ins.get("image_url") or "").strip().startswith("http")
+        ]
+        usable.sort(key=lambda i: float(i.get("start") or 0.0))
+        for idx, ins in enumerate(usable):
             video_url = (ins.get("video_url") or "").strip()
             image_url = (ins.get("image_url") or "").strip()
-            url = video_url if video_url.startswith("http") else image_url
-            if not url or not url.startswith("http"):
-                continue
-            start = float(ins.get("start") or 0.0)
-            end = float(ins.get("end") or start)
-            dur = max(0.4, end - start)
+            seg_start = 0.0 if idx == 0 else float(ins.get("start") or 0.0)
+            if idx + 1 < len(usable):
+                _nxt = usable[idx + 1].get("start")
+                seg_end = float(_nxt) if _nxt is not None else total
+            else:
+                seg_end = total
+            dur = max(0.4, seg_end - seg_start)
             common = {
-                "track": 2, "time": start, "duration": dur, "fit": "cover",
-                **BOTTOM,
-                "animations": [
-                    {"time": 0, "duration": 0.15, "type": "fade"},
-                    {"time": max(0, dur - 0.15), "duration": 0.15,
-                     "type": "fade", "reversed": True},
-                ],
+                "track": 3, "time": round(seg_start, 2), "duration": round(dur, 2),
+                "fit": "cover", **BOTTOM,
             }
             if video_url.startswith("http"):
                 elements.append({"type": "video", "source": video_url,
@@ -782,17 +788,15 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             else:
                 elements.append({"type": "image", "source": image_url, **common})
 
-        # track 3 — bold captions in the MIDDLE band, on the seam between the
-        # top speaker and the bottom B-roll. Spec: top 50% speaker, bottom 50%
-        # B-roll, captions across the centre (not buried in the bottom panel).
-        preset = get_preset(caption_style)
-        _styled = styled_caption_elements(caption_style, captions, track=3)
+        # track 3 — captions centred on the seam between the top speaker and the
+        # bottom B-roll. This split FORCES the magenta-on-white look (magenta
+        # uppercase on a white box), per-phrase, regardless of the incoming
+        # style — "magenta_white" is a plain preset (not a designer builder),
+        # so styled_caption_elements no-ops and the standard loop renders it.
+        cap_style = "magenta_white"
+        preset = get_preset(cap_style)
+        _styled = styled_caption_elements(cap_style, captions, track=4)
         if _styled is not None:
-            # Designer styles (viral_hook, magenta_blocks, editorial_serif,
-            # gradient_mint) emit their complete multi-element track here —
-            # remap their full-frame geometry onto the seam (same constraint
-            # the standard loop below applies), then blank the list so the
-            # standard loop no-ops.
             _constrain_styled_to_split(_styled, "horizontal")
             elements.extend(_styled)
             captions = []
@@ -803,17 +807,18 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             start = float(c.get("start") or 0.0)
             end = float(c.get("end") or start)
             elem = caption_element(
-                text=text, start=start, end=end, preset=preset, track=3,
+                text=text, start=start, end=end, preset=preset, track=4,
                 role="broll",
             )
             elem["y"] = "50%"          # centre on the horizontal seam
             elem["y_anchor"] = "50%"
             elements.append(elem)
 
-        # track 5 — ONE transition whoosh at the first cutaway only (only
+        # track 8 — ONE transition whoosh at the first cutaway only (only
         # when the audio library has one; '' skips the layer). A whoosh on
         # every cutaway reads as a tic — human feedback: "multiple times
-        # is irritating".
+        # is irritating". (Audio track; z-order irrelevant — 8 just avoids the
+        # polish layer's tracks 6/7/9/10/11.)
         if sfx_url.startswith("http"):
             for ins in inserts:
                 if not ((ins.get("video_url") or ins.get("image_url") or "").strip().startswith("http")):
@@ -821,17 +826,17 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 _t = float(ins.get("start") or 0.0)
                 elements.append({
                     "type": "audio", "source": sfx_url,
-                    "track": 5, "time": round(max(0.0, _t - 0.15), 2),
+                    "track": 8, "time": round(max(0.0, _t - 0.15), 2),
                     "duration": 0.7, "volume": 60,
                 })
                 break
 
-        # track 4 — optional music heavily ducked under the speaker voice
+        # track 5 — optional music heavily ducked under the speaker voice
         music_url = music_track_url or _music_url_for(music_mood)
         if music_url and total > 0:
             elements.append({
                 "type": "audio", "source": music_url,
-                "track": 4, "time": 0, "duration": total,
+                "track": 5, "time": 0, "duration": total,
                 # Ducked bed: low constant level under the voice (Creatomate
                 # can't sidechain), eased with fades so it never
                 # clips on at full.

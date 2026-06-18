@@ -11,6 +11,8 @@ how every other provider in this codebase fails honestly.
 from __future__ import annotations
 
 import asyncio
+import re
+from collections import Counter
 from typing import Any
 
 from .config import settings
@@ -224,6 +226,77 @@ async def trending_in_niche(
     )
 
 
+async def trending_from_creators(
+    creators: list[dict],
+    limit: int = 10,
+    days: int = 14,
+    min_likes: int = 10000,
+    max_creators: int = 6,
+) -> dict:
+    """Latest high-engagement posts BY the tenant's tracked creators (the
+    Research watchlist) via Xpoz. For each creator we search their platform
+    for the handle and keep only posts whose author matches that handle,
+    ≥min_likes, within `days`. Bounded to `max_creators` per run to cap
+    credit spend (this runs inside the autopilot batch, not a web request).
+    Returns the search_social shape; each post is tagged `from_creator`."""
+    if not configured():
+        return {"results": [], "count": 0, "creators_queried": 0,
+                "error": "No Xpoz API key configured."}
+    # Dedup by (platform, handle); curated creators (those with interests)
+    # first so a bounded run favours the hand-picked, on-topic names.
+    seen: set = set()
+    picks: list[dict] = []
+    ordered = sorted(creators or [], key=lambda c: 0 if c.get("interests") else 1)
+    for c in ordered:
+        plat = (c.get("platform") or "").lower()
+        handle = (c.get("handle") or "").strip().lstrip("@")
+        if plat not in PLATFORMS or not handle:
+            continue
+        key = (plat, handle.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        picks.append({"platform": plat, "handle": handle, "name": c.get("name") or handle})
+        if len(picks) >= max_creators:
+            break
+    if not picks:
+        return {"results": [], "count": 0, "creators_queried": 0, "error": None}
+
+    from datetime import date, timedelta
+    start = (date.today() - timedelta(days=max(1, days))).isoformat()
+
+    async def _one(p: dict) -> list[dict]:
+        r = await search_social(
+            p["handle"], platforms=[p["platform"]], limit=4,
+            start_date=start, min_likes=min_likes,
+        )
+        h = p["handle"].lower()
+        mine = [
+            x for x in (r.get("results") or [])
+            if (x.get("author") or "").lower().lstrip("@") == h
+        ]
+        for x in mine:
+            x["from_creator"] = p["name"]
+        return mine
+
+    batches = await asyncio.gather(*[_one(p) for p in picks], return_exceptions=True)
+    flat: list[dict] = []
+    for b in batches:
+        if isinstance(b, list):
+            flat.extend(b)
+    # Dedup by url, rank by likes, cap.
+    seen_urls: set = set()
+    uniq: list[dict] = []
+    for x in sorted(flat, key=lambda r: (r.get("likes") or 0), reverse=True):
+        u = x.get("url") or ""
+        if u and u in seen_urls:
+            continue
+        seen_urls.add(u)
+        uniq.append(x)
+    uniq = uniq[:limit]
+    return {"results": uniq, "count": len(uniq), "creators_queried": len(picks), "error": None}
+
+
 def trending_lines(posts: list[dict], cap: int = 10) -> list[str]:
     """Compact one-line summaries of trending posts for LLM prompt grounding.
     e.g. '[x @jp ♥12000 💬300] We just closed the biggest deal…'"""
@@ -232,14 +305,48 @@ def trending_lines(posts: list[dict], cap: int = 10) -> list[str]:
         txt = (p.get("text") or "").replace("\n", " ").strip()[:180]
         likes = p.get("likes")
         comments = p.get("comments")
+        tag = f" ·tracked:{p['from_creator']}" if p.get("from_creator") else ""
         out.append(
             f"[{p.get('platform','?')} @{p.get('author') or 'unknown'} "
-            f"♥{likes if likes is not None else '?'} 💬{comments if comments is not None else '?'}] {txt}"
+            f"♥{likes if likes is not None else '?'} 💬{comments if comments is not None else '?'}{tag}] {txt}"
         )
     return out
 
 
+_KW_STOP = {
+    "this", "that", "with", "from", "your", "have", "what", "when", "they",
+    "will", "about", "just", "like", "than", "then", "them", "were", "into",
+    "over", "more", "youre", "dont", "cant", "weve", "heres", "https", "http",
+    "because", "really", "could", "would", "should", "their", "there", "these",
+    "those", "being", "after", "make", "made", "want", "need", "know", "people",
+    "every", "still", "much", "very", "here", "thing", "things", "going",
+}
+
+
+def trending_keywords(posts: list[dict], cap: int = 12) -> list[str]:
+    """Top hashtags + frequent salient terms across the trending posts — the
+    literal 'what words are working right now' signal for the script writer.
+    Hashtags rank first (highest intent), then frequent content words."""
+    tags: Counter = Counter()
+    words: Counter = Counter()
+    for p in posts or []:
+        txt = (p.get("text") or "")
+        for tag in re.findall(r"#(\w{2,30})", txt):
+            tags[tag.lower()] += 1
+        for w in re.findall(r"[A-Za-z][A-Za-z']{2,}", txt.lower()):
+            w = w.strip("'")
+            if len(w) >= 4 and w not in _KW_STOP:
+                words[w] += 1
+    out: list[str] = [f"#{t}" for t, _ in tags.most_common(cap)]
+    for w, _ in words.most_common(cap * 3):
+        if len(out) >= cap:
+            break
+        out.append(w)
+    return out[:cap]
+
+
 __all__ = [
     "PLATFORMS", "configured", "account_info", "search_social",
-    "trending_in_niche", "trending_lines",
+    "trending_in_niche", "trending_from_creators", "trending_lines",
+    "trending_keywords",
 ]

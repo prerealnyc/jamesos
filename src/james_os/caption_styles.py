@@ -184,6 +184,28 @@ CAPTION_PRESETS: dict[str, dict] = {
         "transform": "uppercase",
         "letter_spacing": "0",
     },
+    "magenta_white": {
+        # Split-reel variant of magenta_blocks: magenta uppercase on a WHITE
+        # box (instead of black). Rendered per-phrase via the standard caption
+        # path (NOT a designer builder), so it honors this background_color.
+        "label": "Magenta on white",
+        "description": "Magenta uppercase on a white box — the split-reel caption look.",
+        "font_family": "Archivo Black",
+        "font_weight": "900",
+        "font_size_vh": 4.6,
+        "fill_color": "#FF00C8",
+        "stroke_color": "transparent",
+        "stroke_width": "0",
+        "shadow_color": "",
+        "shadow_blur": "0",
+        "shadow_x": "0",
+        "shadow_y": "0",
+        "background_color": "#FFFFFF",
+        "y_position": "50%",
+        "x_alignment": "50%",
+        "transform": "uppercase",
+        "letter_spacing": "0",
+    },
     "editorial_serif": {
         # Magazine title-card look: a small white uppercase sans kicker
         # ("WORLD'S FIRST") over huge YELLOW ITALIC SERIF stacked lines

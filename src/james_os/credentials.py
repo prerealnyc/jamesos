@@ -88,6 +88,7 @@ MANAGED_FIELDS: list[ManagedField] = [
     ManagedField("higgsfield_api_key", "Higgsfield API key (HF_API_KEY) — experimental", "Video & media"),
     ManagedField("higgsfield_api_secret", "Higgsfield API secret (HF_API_SECRET)", "Video & media"),
     ManagedField("higgsfield_model", "Higgsfield I2V model (e.g. higgsfield-ai/dop/standard, kling-video/v2.1/pro/image-to-video)", "Video & media", secret=False),
+    ManagedField("higgsfield_soul_id", "Higgsfield Soul ID — consistent brand hero (James) across B-roll. Copy from Hero → Soul IDs.", "Video & media", secret=False),
     ManagedField("creatomate_api_key", "Creatomate API key (video assembly)", "Video & media"),
     ManagedField("shotstack_api_key", "Shotstack API key (video assembly)", "Video & media"),
     ManagedField(

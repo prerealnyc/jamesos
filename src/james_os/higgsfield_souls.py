@@ -117,6 +117,54 @@ async def get_soul(reference_id: str) -> dict:
     return {"soul": _norm_soul(r.json()), "error": None}
 
 
+async def create_reference(*, name: str, image_urls: list[str]) -> dict:
+    """Train a NEW Soul ID (custom reference) from hosted training photos.
+
+    POST /v1/custom-references with input_images as public image URLs (the
+    documented shape: [{"type":"image_url","image_url": "https://…"}]).
+    Higgsfield wants 5–20 face photos (8–12 ideal) and a paid plan (Basic+);
+    training takes ~3–5 min — poll readiness via list_souls. Returns
+    {reference_id, status, trained_on, error}."""
+    if not configured():
+        return {"reference_id": "", "status": "failed", "trained_on": 0,
+                "error": "Higgsfield API key/secret not set."}
+    urls = [u for u in (image_urls or []) if isinstance(u, str) and u.startswith("http")]
+    if len(urls) < 5:
+        return {"reference_id": "", "status": "failed", "trained_on": len(urls),
+                "error": f"Need at least 5 public photo URLs to train a Soul; got {len(urls)}."}
+    urls = urls[:20]  # Higgsfield caps training at 20 images
+    body = {
+        "name": (name or "hero").strip()[:80],
+        "input_images": [{"type": "image_url", "image_url": u} for u in urls],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
+            r = await c.post(
+                f"{_BASE}/v1/custom-references", headers=_headers(), json=body
+            )
+    except Exception as e:  # noqa: BLE001
+        return {"reference_id": "", "status": "failed", "trained_on": len(urls),
+                "error": f"transport error: {e}"}
+    if r.status_code in (401, 403):
+        return {"reference_id": "", "status": "failed", "trained_on": len(urls),
+                "error": f"auth/permission denied (HTTP {r.status_code}): {r.text[:240]}"}
+    if r.status_code >= 400:
+        return {"reference_id": "", "status": "failed", "trained_on": len(urls),
+                "error": f"HTTP {r.status_code}: {r.text[:240]}"}
+    try:
+        data = r.json()
+    except Exception:  # noqa: BLE001
+        return {"reference_id": "", "status": "failed", "trained_on": len(urls),
+                "error": f"unparseable response: {r.text[:200]}"}
+    rid = str(data.get("id") or data.get("reference_id") or data.get("uuid") or "")
+    return {
+        "reference_id": rid,
+        "status": str(data.get("status", "training")),
+        "trained_on": len(urls),
+        "error": None if rid else f"no id in response: {str(data)[:200]}",
+    }
+
+
 async def generate_character_image(
     *,
     custom_reference_id: str,
@@ -161,14 +209,23 @@ async def generate_character_image(
 
 
 async def poll_request(request_id: str) -> dict:
-    """Poll a generation. Returns {status, image_url, error}."""
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
-        r = await c.get(
-            f"{_BASE}/requests/{request_id}/status", headers=_headers()
-        )
+    """Poll a generation. Returns {status, image_url, error}. Never raises —
+    a transport blip or HTTP error surfaces as an empty status with an
+    "HTTP "/"transport error" error string so the caller can keep polling
+    (transient) rather than mistaking it for a terminal render failure."""
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as c:
+            r = await c.get(
+                f"{_BASE}/requests/{request_id}/status", headers=_headers()
+            )
+    except Exception as e:  # noqa: BLE001
+        return {"status": "", "image_url": "", "error": f"transport error: {e}"}
     if r.status_code >= 400:
-        return {"status": "failed", "image_url": "", "error": f"HTTP {r.status_code}: {r.text[:200]}"}
-    data = r.json()
+        return {"status": "", "image_url": "", "error": f"HTTP {r.status_code}: {r.text[:200]}"}
+    try:
+        data = r.json()
+    except Exception as e:  # noqa: BLE001
+        return {"status": "", "image_url": "", "error": f"unparseable: {e}"}
     status = str(data.get("status", "")).lower()
     url = ""
     imgs = data.get("images") or data.get("results") or data.get("output") or []
@@ -181,6 +238,6 @@ async def poll_request(request_id: str) -> dict:
 
 
 __all__ = [
-    "configured", "list_souls", "get_soul",
+    "configured", "list_souls", "get_soul", "create_reference",
     "generate_character_image", "poll_request",
 ]

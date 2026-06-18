@@ -52,6 +52,46 @@ const OPTIONS: Option[] = [
   },
 ];
 
+const TEMPLATES: Option[] = [
+  {
+    href: "/long-form",
+    title: "Template 1 — Your clip, full-frame",
+    oneLiner: "Upload a clip · B-roll on top · magenta-on-black",
+    detail: "Upload your own 1-minute talking-head clip; we cut it, layer cinematic B-roll over it, and burn magenta-on-black captions. Real you, full-frame 9:16.",
+    icon: "pipeline",
+  },
+  {
+    href: "/engaging-video?t=split",
+    title: "Template 2 — Avatar split 50/50",
+    oneLiner: "Script → avatar top, B-roll bottom · magenta-on-white",
+    detail: "Write or auto-generate a script; the HeyGen avatar fills the TOP half (face framed), B-roll fills the BOTTOM half (vertical 9:16), with magenta-on-white captions on the seam.",
+    icon: "queue",
+    tag: "New",
+  },
+];
+
+function OptionCard({ o }: { o: Option }) {
+  return (
+    <Link href={o.href}>
+      <Card className="h-full transition-colors hover:border-primary/60 cursor-pointer">
+        <div className="flex items-center gap-3">
+          <span className="grid h-9 w-9 place-items-center rounded-md bg-primary/10 text-primary">
+            <Icon name={o.icon} />
+          </span>
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold">{o.title}</span>
+              {o.tag && <Badge tone="primary">{o.tag}</Badge>}
+            </div>
+            <div className="text-[12px] text-muted-foreground">{o.oneLiner}</div>
+          </div>
+        </div>
+        <p className="text-[13px] text-muted-foreground mt-3 leading-relaxed">{o.detail}</p>
+      </Card>
+    </Link>
+  );
+}
+
 export default function CreatePage() {
   return (
     <div className="flex flex-col gap-6">
@@ -61,26 +101,17 @@ export default function CreatePage() {
       />
 
       <div className="grid grid-cols-2 gap-4">
-        {OPTIONS.map((o) => (
-          <Link key={o.href} href={o.href}>
-            <Card className="h-full transition-colors hover:border-primary/60 cursor-pointer">
-              <div className="flex items-center gap-3">
-                <span className="grid h-9 w-9 place-items-center rounded-md bg-primary/10 text-primary">
-                  <Icon name={o.icon} />
-                </span>
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold">{o.title}</span>
-                    {o.tag && <Badge tone="primary">{o.tag}</Badge>}
-                  </div>
-                  <div className="text-[12px] text-muted-foreground">{o.oneLiner}</div>
-                </div>
-              </div>
-              <p className="text-[13px] text-muted-foreground mt-3 leading-relaxed">{o.detail}</p>
-            </Card>
-          </Link>
-        ))}
+        {OPTIONS.map((o) => <OptionCard key={o.href} o={o} />)}
       </div>
+
+      <section>
+        <h2 className="text-[13px] font-medium text-muted-foreground uppercase tracking-wider mb-3">
+          Reel templates
+        </h2>
+        <div className="grid grid-cols-2 gap-4">
+          {TEMPLATES.map((o) => <OptionCard key={o.href} o={o} />)}
+        </div>
+      </section>
 
       <p className="text-[12px] text-muted-foreground">
         Not sure? Start with <Link href="/autopilot" className="text-primary underline">Batch</Link> — it does the thinking for you.

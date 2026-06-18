@@ -63,12 +63,21 @@ export default function EngagingVideoPage() {
   const [script, setScript] = useState("");
   const [captionStyle, setCaptionStyle] = useState("");
   const [imageStyle, setImageStyle] = useState("");
+  // Video format: full-frame avatar (engaging_avatar) vs split-screen
+  // (split_horizontal — avatar top, B-roll bottom, captions on the seam).
+  const [mode, setMode] = useState<"engaging_avatar" | "split_horizontal">("engaging_avatar");
   const [composing, setComposing] = useState(false);
   const [producing, setProducing] = useState(false);
   const [err, setErr] = useState("");
   const [prod, setProd] = useState<Production | null>(null);
   const [recent, setRecent] = useState<Production[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Trend-driven script batch ("generate 10 scripts to pick from").
+  type BatchScript = { title: string; topic: string; trend_basis: string; script: string; voice_score?: number };
+  const [scriptBatch, setScriptBatch] = useState<BatchScript[]>([]);
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [batchErr, setBatchErr] = useState("");
+  const batchPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   async function loadRecent() {
     try {
@@ -76,7 +85,10 @@ export default function EngagingVideoPage() {
       setRecent(
         list
           .filter(
-            (p) => (p as Production & { mode?: string }).mode === "engaging_avatar",
+            (p) => {
+              const m = String((p as Production & { mode?: string }).mode ?? "");
+              return m === "engaging_avatar" || m === "split_horizontal";
+            },
           )
           .slice(0, 8),
       );
@@ -84,7 +96,17 @@ export default function EngagingVideoPage() {
   }
   useEffect(() => {
     loadRecent();
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    // Template 2 deep-link from Create (/engaging-video?t=split) presets the
+    // split 50/50 format + locks 9:16. Read from the URL to avoid the
+    // useSearchParams Suspense requirement.
+    if (typeof window !== "undefined") {
+      const t = new URLSearchParams(window.location.search).get("t");
+      if (t === "split") { setMode("split_horizontal"); setAspect("9:16"); }
+    }
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      if (batchPollRef.current) clearInterval(batchPollRef.current);
+    };
   }, []);
 
   async function generateScript() {
@@ -100,12 +122,45 @@ export default function EngagingVideoPage() {
     }
   }
 
+  async function generateScripts() {
+    setBatchLoading(true); setBatchErr(""); setScriptBatch([]);
+    try {
+      const { batch_id } = await api.startScriptBatch({ n: 10, platform, aspect });
+      if (batchPollRef.current) clearInterval(batchPollRef.current);
+      batchPollRef.current = setInterval(async () => {
+        const r = await api.getScriptBatch(batch_id).catch(() => null);
+        if (!r) return;
+        if (r.status === "done") {
+          if (batchPollRef.current) clearInterval(batchPollRef.current);
+          setScriptBatch(r.scripts || []);
+          setBatchLoading(false);
+          if (!(r.scripts || []).length) {
+            setBatchErr(r.error || "No scripts generated — connect Xpoz / add tracked creators in Research.");
+          }
+        } else if (r.status === "failed") {
+          if (batchPollRef.current) clearInterval(batchPollRef.current);
+          setBatchErr(r.error || "generation failed");
+          setBatchLoading(false);
+        }
+      }, 3000);
+    } catch (e) {
+      setBatchErr(e instanceof Error ? e.message : "could not start");
+      setBatchLoading(false);
+    }
+  }
+
+  function useScript(s: BatchScript) {
+    setScript(s.script);
+    setTopic(s.title || s.topic);
+    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   async function produce() {
     if (!script.trim()) { setErr("Add a script first."); return; }
     setProducing(true); setErr(""); setProd(null);
     try {
       const p = await api.produceVideo({
-        mode: "engaging_avatar",
+        mode,
         script: script.trim(),
         platform, aspect,
         caption_style: captionStyle,
@@ -145,6 +200,64 @@ export default function EngagingVideoPage() {
       />
 
       <Card>
+        <CardTitle>Generate scripts from trends</CardTitle>
+        <p className="text-[12px] text-muted-foreground mb-3">
+          No topic needed — pulls your tracked influencers (Xpoz) + niche trending + research,
+          then drafts 10 ready topic + script options. Pick one to load it below, choose a
+          format, and produce.
+        </p>
+        <Button variant="secondary" onClick={generateScripts} disabled={batchLoading}>
+          {batchLoading
+            ? <span className="flex items-center gap-2"><Spinner /> pulling trends + writing 10 scripts… (~30–45s)</span>
+            : "Generate 10 scripts"}
+        </Button>
+        {batchErr && <p className="text-destructive text-[12px] mt-2">✗ {batchErr}</p>}
+        {scriptBatch.length > 0 && (
+          <div className="mt-3 space-y-2">
+            {scriptBatch.map((s, i) => (
+              <div key={i} className="border border-border rounded-md p-3 hover:bg-muted/20">
+                <div className="flex items-start justify-between gap-3">
+                  <span className="text-[13px] font-medium">{s.title || s.topic}</span>
+                  <Button onClick={() => useScript(s)} className="text-[12px] !px-3 !py-1 shrink-0">
+                    Use this script
+                  </Button>
+                </div>
+                {s.trend_basis && (
+                  <p className="text-[11px] text-primary mt-1">↗ rides: {s.trend_basis}</p>
+                )}
+                <p className="text-[12px] text-muted-foreground mt-1.5 line-clamp-3 whitespace-pre-wrap">
+                  {s.script}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <CardTitle>Format</CardTitle>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {([
+            { id: "engaging_avatar", title: "Full-frame avatar", desc: "9:16 reel — James on camera the whole time; cinematic B-roll punches in as brief cutaways. Captions placed around the face." },
+            { id: "split_horizontal", title: "Split — vertical 9:16", desc: "9:16 reel — James up top, B-roll fills the bottom continuously to illustrate what he's saying, pink captions on the seam." },
+          ] as const).map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => { setMode(opt.id); if (opt.id === "split_horizontal") setAspect("9:16"); }}
+              className={`text-left rounded-lg border p-3 transition-colors ${mode === opt.id ? "border-primary bg-primary/5" : "border-border hover:bg-muted/30"}`}
+            >
+              <div className="flex items-center gap-2">
+                <span className={`inline-block w-3.5 h-3.5 rounded-full border ${mode === opt.id ? "border-primary bg-primary" : "border-muted-foreground"}`} />
+                <span className="text-[13px] font-medium">{opt.title}</span>
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1.5">{opt.desc}</p>
+            </button>
+          ))}
+        </div>
+      </Card>
+
+      <Card>
         <CardTitle>1. Write or generate the script</CardTitle>
         <Label>Topic (optional, used by auto-generate)</Label>
         <Input
@@ -160,8 +273,8 @@ export default function EngagingVideoPage() {
             </Select>
           </div>
           <div>
-            <Label>Aspect</Label>
-            <Select value={aspect} onChange={(e) => setAspect(e.target.value)}>
+            <Label>Aspect{mode === "split_horizontal" ? " (locked to 9:16 for split)" : ""}</Label>
+            <Select value={aspect} onChange={(e) => setAspect(e.target.value)} disabled={mode === "split_horizontal"}>
               {["9:16", "16:9", "1:1"].map((a) => <option key={a}>{a}</option>)}
             </Select>
           </div>
@@ -215,7 +328,7 @@ export default function EngagingVideoPage() {
             </p>
           </div>
           <Button onClick={produce} disabled={producing || active || !script.trim()}>
-            {producing || active ? <Spinner /> : "Make engaging reel"}
+            {producing || active ? <Spinner /> : (mode === "split_horizontal" ? "Make split-screen reel" : "Make engaging reel")}
           </Button>
         </div>
         {err && <p className="text-destructive text-sm mt-2">✗ {err}</p>}

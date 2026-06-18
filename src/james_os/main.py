@@ -816,6 +816,65 @@ async def video_compose(req: VideoComposeRequest) -> dict:
     return await compose_video(req.topic_hint.strip(), req.platform, req.aspect)
 
 
+# ── Trend-driven script batch: "generate N scripts to pick from" ──
+# Background job (the trend pull + N script gens exceed the request timeout).
+# In-memory, keyed by batch_id — a short-lived interactive flow (generate →
+# pick within minutes); pruned to the most recent few dozen.
+_SCRIPT_BATCHES: dict[str, dict] = {}
+
+
+class ScriptBatchRequest(BaseModel):
+    n: int = 10
+    platform: str = "instagram"
+    aspect: str = "9:16"
+
+
+@app.post("/video/scripts/batch", status_code=202)
+async def video_scripts_batch(req: ScriptBatchRequest, background: BackgroundTasks) -> dict:
+    """Kick a background batch that pulls trend data (tracked creators via
+    Xpoz + niche + research — NO topic input) and drafts N ready topic+script
+    options to pick from. Returns a batch_id; poll GET for the results."""
+    from uuid import uuid4
+
+    from .db import _request_tenant
+    try:
+        tid = _request_tenant.get()
+    except LookupError:
+        tid = None
+    n = max(1, min(int(req.n or 10), 10))
+    plat, asp = (req.platform or "instagram"), (req.aspect or "9:16")
+    batch_id = str(uuid4())
+    _SCRIPT_BATCHES[batch_id] = {"status": "running", "scripts": [], "error": None}
+    # Prune so the dict can't grow unbounded across a long-lived process.
+    while len(_SCRIPT_BATCHES) > 30:
+        _SCRIPT_BATCHES.pop(next(iter(_SCRIPT_BATCHES)))
+
+    async def _run() -> None:
+        try:
+            from .video_compose import compose_video_batch
+            res = await compose_video_batch(n, plat, asp, tid)
+            _SCRIPT_BATCHES[batch_id] = {
+                "status": "done", "scripts": res.get("scripts", []),
+                "count": res.get("count", 0), "niche": res.get("niche", ""),
+                "error": res.get("error"),
+            }
+        except Exception as e:  # noqa: BLE001
+            _SCRIPT_BATCHES[batch_id] = {
+                "status": "failed", "scripts": [], "error": str(e),
+            }
+
+    background.add_task(_run)
+    return {"batch_id": batch_id, "status": "running"}
+
+
+@app.get("/video/scripts/batch/{batch_id}")
+async def video_scripts_batch_get(batch_id: str) -> dict:
+    b = _SCRIPT_BATCHES.get(batch_id)
+    if not b:
+        raise HTTPException(status_code=404, detail="batch not found (expired or unknown)")
+    return {"batch_id": batch_id, **b}
+
+
 @app.post("/video/produce", status_code=201)
 async def video_produce(req: VideoProduceRequest, background: BackgroundTasks) -> dict:
     """Kick off a durable production. Accepts either a `script` (auto-planned)

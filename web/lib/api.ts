@@ -603,12 +603,21 @@ export const api = {
     jpost<ScenePlan>("/video/plan", { script, platform, aspect }),
   composeVideo: (topic_hint: string, platform = "instagram", aspect = "9:16") =>
     jpost<ComposeResult>("/video/compose", { topic_hint, platform, aspect }),
+  // Trend-driven batch: generate N ready topic+script options (no topic input).
+  startScriptBatch: (body: { n?: number; platform?: string; aspect?: string }) =>
+    jpost<{ batch_id: string; status: string }>("/video/scripts/batch", body),
+  getScriptBatch: (id: string) =>
+    jget<{
+      batch_id: string; status: "running" | "done" | "failed"; count?: number;
+      niche?: string; error?: string | null;
+      scripts: { title: string; topic: string; trend_basis: string; script: string; voice_score?: number; voice_status?: string }[];
+    }>(`/video/scripts/batch/${id}`),
   renderScene: (scene: Scene, aspect = "9:16") =>
     jpost<Scene>("/video/render-scene", { scene, aspect }),
   produceVideo: (opts: {
     script?: string; platform?: string; aspect?: string; title?: string;
     scenes?: Scene[];
-    mode?: "mixed" | "avatar_only" | "timeline" | "story_audio" | "avatar_story_mix" | "engaging_avatar";
+    mode?: "mixed" | "avatar_only" | "timeline" | "story_audio" | "avatar_story_mix" | "engaging_avatar" | "split_horizontal";
     caption_style?: string;             // blank → AI picks
     image_style?: string;               // blank → cinematic for story modes
   }) => jpost<Production>("/video/produce", {
@@ -745,7 +754,7 @@ export const api = {
     jget<{
       total_followers: number; followers_partial?: boolean;
       total_posts: number; account_count: number; platform_count: number;
-      per_platform: { platform: string; accounts: number; posts: number; followers: number | null }[];
+      per_platform: { platform: string; accounts: number; posts: number; followers: number; followers_known: boolean }[];
       notes?: string[];
     }>("/analytics/live/summary"),
   analyticsLiveBreakdown: () =>
@@ -1100,6 +1109,9 @@ export const api = {
     }>("/higgsfield/souls"),
   generateSoulImage: (body: { custom_reference_id: string; prompt: string; aspect?: string; strength?: number }) =>
     jpost<{ status: string; image_url?: string; request_id: string; note?: string }>("/higgsfield/soul-image", body),
+  // Train a NEW Soul ID from the uploaded hero photo library (role=hero_photo).
+  trainHiggsfieldSoul: (body: { name: string }) =>
+    jpost<{ ok: boolean; reference_id?: string; status?: string; trained_on?: number; note?: string; error?: string }>("/higgsfield/train-soul", body),
   // Brand kit — nameplate / watermark / end-card identity on every render.
   getBrandKit: () =>
     jget<{ display_name: string; tagline: string; handle: string; logo_url: string }>("/brand-kit"),

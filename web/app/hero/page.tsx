@@ -337,6 +337,38 @@ function HiggsfieldSoulsCard() {
   >([]);
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [training, setTraining] = useState(false);
+  const [trainMsg, setTrainMsg] = useState<string | null>(null);
+  // The Soul ID currently wired into B-roll renders (settings.higgsfield_soul_id).
+  const [activeId, setActiveId] = useState<string>("");
+  const [saving, setSaving] = useState<string | null>(null);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+  // True when the Soul ID is pinned by the HIGGSFIELD_SOUL_ID env var — it
+  // can't be turned off from the UI (clearing reverts to the env value).
+  const [envPinned, setEnvPinned] = useState(false);
+
+  function applyCred(c: { fields: { name: string; masked: string; configured: boolean; source: string }[] }) {
+    const f = c.fields.find((x) => x.name === "higgsfield_soul_id");
+    setActiveId(f?.masked || "");
+    setEnvPinned(!!f && f.configured && f.source === "env");
+  }
+
+  // Read which Soul (if any) is the active hero on mount.
+  useEffect(() => {
+    api.getCredentials().then(applyCred).catch(() => {});
+  }, []);
+
+  async function setActive(id: string) {
+    setSaving(id || "__clear__");
+    setSaveErr(null);
+    try {
+      applyCred(await api.setCredentials({ higgsfield_soul_id: id }));
+    } catch (e) {
+      setSaveErr(e instanceof Error ? e.message : "failed to save the active Soul");
+    } finally {
+      setSaving(null);
+    }
+  }
 
   async function load() {
     setLoading(true);
@@ -355,18 +387,63 @@ function HiggsfieldSoulsCard() {
     }
   }
 
+  // Train a brand-new Soul from the uploaded hero photo library.
+  async function trainSoul() {
+    setTraining(true); setTrainMsg(null);
+    try {
+      const r = await api.trainHiggsfieldSoul({ name: "James" });
+      if (r.ok) {
+        setTrainMsg(r.note || `Training started on ${r.trained_on ?? "your"} photos.`);
+        setTimeout(() => { load(); }, 2000); // surface the new Soul once it appears
+      } else {
+        setTrainMsg("✗ " + (r.error || "training did not start"));
+      }
+    } catch (e) {
+      setTrainMsg("✗ " + (e instanceof Error ? e.message : "request failed"));
+    } finally {
+      setTraining(false);
+    }
+  }
+
   return (
     <Card>
       <CardTitle>Higgsfield Soul IDs (trained characters)</CardTitle>
       <p className="text-[12px] text-muted-foreground mt-1 mb-2">
         Soul IDs are characters you trained on Higgsfield — a reusable, consistent
         person across every generation. This reads them straight from your connected
-        account. Copy an ID to drive a Soul-based hero render.
+        account. Pick <b>“Use for James”</b> to drive every hero B-roll shot through that Soul.
       </p>
-      <Button onClick={load} disabled={loading}>
-        {loading ? <span className="flex items-center gap-2"><Spinner /> checking your account…</span>
-          : (loaded ? "↻ Refresh Soul IDs" : "Find my Soul IDs")}
-      </Button>
+      {activeId
+        ? <p className="text-[12px] mb-2 rounded-md border border-border bg-secondary/40 px-3 py-2">
+            ✓ Active hero Soul: <span className="font-mono">{activeId}</span> — B-roll shots about
+            James now render through it.{" "}
+            {envPinned
+              ? <span className="block mt-1 text-muted-foreground">
+                  Pinned by HIGGSFIELD_SOUL_ID in the environment — clear it there to disable.
+                </span>
+              : <button onClick={() => setActive("")} disabled={saving !== null}
+                  className="text-primary hover:underline">turn off</button>}
+          </p>
+        : <p className="text-[12px] mb-2 text-muted-foreground">
+            No active hero Soul yet — hero B-roll falls back to your uploaded photos.
+          </p>}
+      {saveErr && <p className="text-[12px] mb-2 text-destructive">✗ {saveErr}</p>}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button onClick={load} disabled={loading}>
+          {loading ? <span className="flex items-center gap-2"><Spinner /> checking your account…</span>
+            : (loaded ? "↻ Refresh Soul IDs" : "Find my Soul IDs")}
+        </Button>
+        <Button variant="secondary" onClick={trainSoul} disabled={training}
+          title="Train a new Soul on your uploaded hero photos (needs 5–20 photos and a paid Higgsfield plan).">
+          {training ? <span className="flex items-center gap-2"><Spinner /> training…</span>
+            : "Train a Soul from my hero photos"}
+        </Button>
+      </div>
+      {trainMsg && (
+        <p className={`text-[12px] mt-2 ${trainMsg.startsWith("✗") ? "text-destructive" : "text-muted-foreground"}`}>
+          {trainMsg}
+        </p>
+      )}
 
       {loaded && !configured && (
         <p className="text-[12px] mt-2 text-destructive">
@@ -398,12 +475,23 @@ function HiggsfieldSoulsCard() {
                 <div className="text-[11px] text-muted-foreground font-mono truncate">{s.id}</div>
                 {s.status && <div className="text-[10px] uppercase tracking-wide opacity-60">{s.status}</div>}
               </div>
-              <button
-                onClick={() => { navigator.clipboard?.writeText(s.id); setCopied(s.id); }}
-                className="text-[11px] text-primary hover:underline shrink-0"
-              >
-                {copied === s.id ? "copied ✓" : "copy ID"}
-              </button>
+              <div className="flex flex-col items-end gap-1 shrink-0">
+                {activeId === s.id
+                  ? <span className="text-[11px] font-medium text-primary">✓ Active hero</span>
+                  : <button
+                      onClick={() => setActive(s.id)}
+                      disabled={saving !== null}
+                      className="text-[11px] text-primary hover:underline disabled:opacity-50"
+                    >
+                      {saving === s.id ? "saving…" : "Use for James"}
+                    </button>}
+                <button
+                  onClick={() => { navigator.clipboard?.writeText(s.id); setCopied(s.id); }}
+                  className="text-[11px] text-muted-foreground hover:underline"
+                >
+                  {copied === s.id ? "copied ✓" : "copy ID"}
+                </button>
+              </div>
             </div>
           ))}
         </div>
