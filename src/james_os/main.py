@@ -825,6 +825,25 @@ async def post_compose(req: PostComposeRequest) -> dict:
     }
 
 
+@app.get("/post/ideas")
+async def post_ideas(n: int = 10) -> dict:
+    """Suggested post topics, steered purely from live data — the same
+    ideation that powers the video 'Generate 10 scripts' flow (tracked
+    creators + niche trends + research, grounded in James's real topics and
+    obeying the brand pillar quota), but topics only (no scripts), so the
+    post composer can show ready-to-pick suggestions the moment it loads.
+
+    Returns {ideas: [{title, topic, pillar, trend_basis}], count, niche, error}.
+    """
+    from .video_compose import suggest_topics
+    from .db import _request_tenant
+    try:
+        _tid = _request_tenant.get()
+    except LookupError:
+        _tid = None
+    return await suggest_topics(n=n, tenant_id=_tid or settings.default_tenant_id)
+
+
 # ─────────────────────────────────────────────────────────────── video ──
 
 @app.post("/video/generate", status_code=201)

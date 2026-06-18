@@ -164,4 +164,59 @@ async def compose_video_batch(
     }
 
 
-__all__ = ["compose_video", "compose_video_batch"]
+async def suggest_topics(
+    n: int = 10, tenant_id: UUID | None = None
+) -> dict:
+    """N data-steered topic ideas — the SAME ideation that powers the video
+    'Generate 10 scripts' flow, but WITHOUT writing scripts. Pulls tracked-
+    creator posts (Xpoz) + niche trending + research via _gather_intel, then
+    ideates N trend-grounded, pillar-quota'd topics in James's world. Fast
+    (one LLM call, no per-idea script pass) so it can pre-seed the post
+    composer the moment the page loads.
+
+    Returns {ideas: [{title, topic, pillar, trend_basis}], count, niche,
+    error}.
+    """
+    from .autopilot import _gather_intel, generate_ideas, get_config
+
+    n = max(1, min(int(n or 10), 10))
+    try:
+        cfg = await get_config(tenant_id)
+    except Exception:  # noqa: BLE001
+        cfg = {}
+    niche = (cfg.get("topic_hint") or "").strip()
+
+    intel = await _gather_intel(
+        {"topic_hint": niche, "research_focus": cfg.get("research_focus", "")},
+        tenant_id,
+    )
+    if not intel:
+        return {
+            "ideas": [], "count": 0, "niche": niche,
+            "error": "No live trend data available — connect Xpoz / add "
+            "tracked creators in Research (or a Perplexity key), then retry.",
+        }
+
+    ideas = await generate_ideas(n, intel, tenant_id)
+    if not ideas:
+        return {
+            "ideas": [], "count": 0, "niche": niche,
+            "error": "Ideation produced no topics from the trend data.",
+        }
+    return {
+        "ideas": [
+            {
+                "title": i.get("title", ""),
+                "topic": i.get("topic", ""),
+                "pillar": i.get("pillar", ""),
+                "trend_basis": i.get("trend_basis", ""),
+            }
+            for i in ideas
+        ],
+        "count": len(ideas),
+        "niche": niche,
+        "error": None,
+    }
+
+
+__all__ = ["compose_video", "compose_video_batch", "suggest_topics"]

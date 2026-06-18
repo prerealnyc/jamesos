@@ -1185,6 +1185,16 @@ export const api = {
       image_url: string | null;
       image_error: string | null;
     }>("/post/compose", { platform: "instagram", include_image: true, ...body }),
+  // Suggested post topics, steered from live data (same engine as video
+  // 'Generate 10 scripts'): tracked creators + trends + James's real topics,
+  // pillar-quota'd. Topics only — fast enough to pre-seed the composer.
+  postIdeas: (n = 10) =>
+    jget<{
+      ideas: { title: string; topic: string; pillar: string; trend_basis: string }[];
+      count: number;
+      niche: string;
+      error: string | null;
+    }>(`/post/ideas?n=${n}`),
   generateMulti: (body: {
     topic: string;
     pillar?: string;

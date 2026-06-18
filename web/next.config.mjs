@@ -24,6 +24,9 @@ const nextConfig = {
       { source: "/generate", destination: `${BACKEND}/generate` },
       { source: "/generate-multi", destination: `${BACKEND}/generate-multi` },
       { source: "/generate-script", destination: `${BACKEND}/generate-script` },
+      // Post composer — /post/compose (text + hero image) and /post/ideas
+      // (suggested topics). Sub-paths only; there's no bare /post Next page.
+      { source: "/post/:path*", destination: `${BACKEND}/post/:path*` },
       { source: "/research", destination: `${BACKEND}/research` },
       { source: "/video/:path*", destination: `${BACKEND}/video/:path*` },
       // Autopilot, Trends, Media — without these, Autopilot / Social

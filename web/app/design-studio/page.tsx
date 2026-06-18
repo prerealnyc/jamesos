@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, mediaUrl, type ContentDraft } from "@/lib/api";
 import {
@@ -58,6 +58,8 @@ export default function ContentStudio() {
 
 // ── Post + image: one topic → on-voice post + a matching hero image ──
 
+type TopicIdea = { title: string; topic: string; pillar: string; trend_basis: string };
+
 function PostImageMode() {
   const [topic, setTopic] = useState("");
   const [platform, setPlatform] = useState("instagram");
@@ -69,6 +71,36 @@ function PostImageMode() {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [imageErr, setImageErr] = useState<string | null>(null);
   const [err, setErr] = useState("");
+
+  // Suggested topics — same data-steered ideation as the video flow.
+  // Auto-loaded on arrival so picks are ready before you type anything.
+  const [ideas, setIdeas] = useState<TopicIdea[]>([]);
+  const [ideasBusy, setIdeasBusy] = useState(false);
+  const [ideasErr, setIdeasErr] = useState<string | null>(null);
+
+  async function loadIdeas() {
+    setIdeasBusy(true);
+    setIdeasErr(null);
+    try {
+      const r = await api.postIdeas(10);
+      setIdeas(r.ideas || []);
+      if ((!r.ideas || r.ideas.length === 0) && r.error) setIdeasErr(r.error);
+    } catch (e) {
+      setIdeasErr(e instanceof Error ? e.message : "could not load topics");
+    } finally {
+      setIdeasBusy(false);
+    }
+  }
+  useEffect(() => {
+    loadIdeas();
+  }, []);
+
+  function pickIdea(i: TopicIdea) {
+    setTopic(i.topic);
+    if (i.pillar) setPillar(i.pillar);
+    // Bring the form into view on smaller screens.
+    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   async function run() {
     if (!topic.trim()) return;
@@ -98,11 +130,66 @@ function PostImageMode() {
   return (
     <>
       <Card>
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle>Suggested topics</CardTitle>
+          <button
+            onClick={loadIdeas}
+            disabled={ideasBusy}
+            className="text-[12px] text-primary hover:underline disabled:opacity-50"
+          >
+            {ideasBusy ? "thinking…" : "↻ regenerate"}
+          </button>
+        </div>
+        <p className="text-[12px] text-muted-foreground -mt-1 mb-2">
+          Steered from live data — tracked creators + trends + James&apos;s real
+          topics, balanced to your brand pillars. Click one to load it.
+        </p>
+        {ideasBusy && ideas.length === 0 ? (
+          <div className="flex items-center gap-2 text-[13px] text-muted-foreground py-2">
+            <Spinner /> Pulling trends + ideating 10 topics… ~15–25s
+          </div>
+        ) : ideasErr ? (
+          <p className="text-[12px] text-muted-foreground py-1">
+            {ideasErr}{" "}
+            <button onClick={loadIdeas} className="text-primary hover:underline">
+              retry
+            </button>
+          </p>
+        ) : ideas.length === 0 ? (
+          <p className="text-[12px] text-muted-foreground py-1">No topics yet.</p>
+        ) : (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {ideas.map((i, idx) => (
+              <button
+                key={idx}
+                onClick={() => pickIdea(i)}
+                className={`text-left rounded-lg border p-3 transition-colors hover:border-primary/60 ${
+                  topic === i.topic ? "border-primary bg-primary/5" : "border-border"
+                }`}
+              >
+                <div className="flex items-start gap-2">
+                  <span className="text-[13px] font-medium leading-snug flex-1">
+                    {i.topic}
+                  </span>
+                  {i.pillar && <Badge tone="muted">{i.pillar}</Badge>}
+                </div>
+                {i.trend_basis && (
+                  <p className="text-[11px] text-muted-foreground mt-1 line-clamp-2">
+                    {i.trend_basis}
+                  </p>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card>
         <CardTitle>One topic → post + matching image</CardTitle>
         <p className="text-[12px] text-muted-foreground -mt-1 mb-2">
-          Writes the post in James&apos;s voice, then renders a cinematic image
-          of James from your hero library to match it. Both land together in the
-          Approval Queue for review.
+          Pick a suggestion above or type your own. Writes the post in
+          James&apos;s voice, then renders a cinematic image of James from your
+          hero library to match it. Both land together in the Approval Queue.
         </p>
         <Label>Topic</Label>
         <Textarea
