@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api, mediaUrl, type ContentDraft } from "@/lib/api";
 import {
@@ -67,6 +67,7 @@ function PostImageMode() {
   const [extra, setExtra] = useState("");
   const [includeImage, setIncludeImage] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [imgBusy, setImgBusy] = useState(false);
   const [draft, setDraft] = useState<ContentDraft | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [imageErr, setImageErr] = useState<string | null>(null);
@@ -78,21 +79,48 @@ function PostImageMode() {
   const [ideasBusy, setIdeasBusy] = useState(false);
   const [ideasErr, setIdeasErr] = useState<string | null>(null);
 
+  // Topic ideation is a background job (intel is 30-60s) — start, then poll.
+  // A token guards against a superseding regenerate / unmount.
+  const pollRef = useRef<{ cancelled: boolean } | null>(null);
+
   async function loadIdeas() {
+    if (pollRef.current) pollRef.current.cancelled = true;
+    const token = { cancelled: false };
+    pollRef.current = token;
+
     setIdeasBusy(true);
     setIdeasErr(null);
     try {
-      const r = await api.postIdeas(10);
-      setIdeas(r.ideas || []);
-      if ((!r.ideas || r.ideas.length === 0) && r.error) setIdeasErr(r.error);
+      const { batch_id } = await api.startPostIdeas(10);
+      for (let i = 0; i < 45; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        if (token.cancelled) return;
+        const r = await api.getPostIdeas(batch_id);
+        if (r.status === "done") {
+          setIdeas(r.ideas || []);
+          if ((!r.ideas || r.ideas.length === 0) && r.error) setIdeasErr(r.error);
+          return;
+        }
+        if (r.status === "failed") {
+          setIdeasErr(r.error || "topic generation failed");
+          return;
+        }
+      }
+      setIdeasErr("Timed out generating topics — hit regenerate to retry.");
     } catch (e) {
-      setIdeasErr(e instanceof Error ? e.message : "could not load topics");
+      if (!token.cancelled)
+        setIdeasErr(e instanceof Error ? e.message : "could not load topics");
     } finally {
-      setIdeasBusy(false);
+      if (!token.cancelled) setIdeasBusy(false);
     }
   }
+
   useEffect(() => {
     loadIdeas();
+    return () => {
+      if (pollRef.current) pollRef.current.cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function pickIdea(i: TopicIdea) {
@@ -109,21 +137,44 @@ function PostImageMode() {
     setDraft(null);
     setImageUrl(null);
     setImageErr(null);
+    // Two short calls (each under the gateway timeout) instead of one ~50s
+    // call: write the post first, show it, THEN render the matching image.
+    let d: ContentDraft;
     try {
-      const r = await api.composePost({
-        topic,
+      d = await api.generate({
         platform,
+        format: "post",
         pillar,
+        topic,
         extra_instructions: extra,
-        include_image: includeImage,
       });
-      setDraft(r.draft);
+      setDraft(d);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "generation failed");
+      setBusy(false);
+      return;
+    }
+    setBusy(false);
+
+    if (!includeImage) return;
+    if (!d.action_id) {
+      setImageErr("post wasn't queued, so no image was attached");
+      return;
+    }
+    setImgBusy(true);
+    try {
+      const r = await api.attachPostImage({
+        action_id: d.action_id,
+        platform,
+        topic,
+        draft_text: d.draft || topic,
+      });
       setImageUrl(r.image_url);
       setImageErr(r.image_error);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "generation failed");
+      setImageErr(e instanceof Error ? e.message : "image generation failed");
     } finally {
-      setBusy(false);
+      setImgBusy(false);
     }
   }
 
@@ -226,16 +277,14 @@ function PostImageMode() {
           Generate a matching image (James, from your hero library)
         </label>
         <div className="mt-3">
-          <Button onClick={run} disabled={busy || !topic.trim()}>
+          <Button onClick={run} disabled={busy || imgBusy || !topic.trim()}>
             {busy ? <Spinner /> : includeImage ? "Generate post + image" : "Generate post"}
           </Button>
         </div>
         {err && <p className="text-destructive text-sm mt-2">✗ {err}</p>}
         {busy && (
           <p className="text-[12px] text-muted-foreground mt-2">
-            {includeImage
-              ? "Writing the post + voice-QA, then rendering the image — ~30–60s."
-              : "Writing the post + voice-QA — ~15–30s."}
+            Writing the post + voice-QA — ~15–30s.
           </p>
         )}
       </Card>
@@ -259,7 +308,11 @@ function PostImageMode() {
             {includeImage && (
               <Card>
                 <CardTitle>Matching image</CardTitle>
-                {imageUrl ? (
+                {imgBusy ? (
+                  <div className="flex items-center gap-2 text-[13px] text-muted-foreground py-3">
+                    <Spinner /> Rendering James from your hero library — ~15–25s…
+                  </div>
+                ) : imageUrl ? (
                   <>
                     <a href={mediaUrl(imageUrl)} target="_blank" rel="noopener noreferrer">
                       <img

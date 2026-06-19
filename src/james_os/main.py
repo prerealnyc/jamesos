@@ -55,6 +55,7 @@ from .models import (
     ContentDraft,
     MediaLinkRequest,
     MediaUpdate,
+    AttachPostImageRequest,
     MultiGenerateRequest,
     PlugIn,
     PostComposeRequest,
@@ -825,23 +826,95 @@ async def post_compose(req: PostComposeRequest) -> dict:
     }
 
 
-@app.get("/post/ideas")
-async def post_ideas(n: int = 10) -> dict:
-    """Suggested post topics, steered purely from live data — the same
-    ideation that powers the video 'Generate 10 scripts' flow (tracked
-    creators + niche trends + research, grounded in James's real topics and
-    obeying the brand pillar quota), but topics only (no scripts), so the
-    post composer can show ready-to-pick suggestions the moment it loads.
+@app.post("/post/attach-image")
+async def post_attach_image(req: AttachPostImageRequest) -> dict:
+    """Render a hero-referenced image for an already-queued post and attach it
+    to that action (browser composer's 2nd step — see /generate for the 1st).
 
-    Returns {ideas: [{title, topic, pillar, trend_basis}], count, niche, error}.
+    Directs a cinematic scene from the draft, renders the brand hero into it
+    (consistent person across posts), patches image_url onto the action's
+    payload, and registers it in the media library. Additive: on any failure
+    the queued text stands on its own and image_error explains why.
     """
-    from .video_compose import suggest_topics
     from .db import _request_tenant
     try:
         _tid = _request_tenant.get()
     except LookupError:
         _tid = None
-    return await suggest_topics(n=n, tenant_id=_tid or settings.default_tenant_id)
+    _tid = _tid or settings.default_tenant_id
+
+    from .autopilot_bulk import _attach_image_to_action
+    topic = (req.topic or "").strip()
+    try:
+        image_url = await _attach_image_to_action(
+            action_id=req.action_id,
+            idea={"topic": topic, "title": topic},
+            platform=req.platform or "instagram",
+            draft_text=(req.draft_text or topic),
+            tenant_id=_tid,
+        )
+    except Exception as e:  # noqa: BLE001 — text already queued; image is additive
+        return {"image_url": None, "image_error": f"image generation failed: {e}"}
+    return {
+        "image_url": image_url,
+        "image_error": None if image_url else (
+            "image generation unavailable — add OPENAI_API_KEY in Settings to "
+            "attach a hero image"
+        ),
+    }
+
+
+# Suggested-topics jobs run in the background — _gather_intel (Xpoz creator
+# search + niche + research) is 30-60s, which blows the gateway's synchronous
+# request timeout (→ 500). Same background-job + poll pattern as the video
+# script batch above.
+_TOPIC_BATCHES: dict[str, dict] = {}
+
+
+@app.post("/post/ideas", status_code=202)
+async def post_ideas_start(background: BackgroundTasks, n: int = 10) -> dict:
+    """Kick a background job that ideates N data-steered post topics — the same
+    ideation as the video 'Generate 10 scripts' (tracked creators + niche
+    trends + research, grounded in James's real topics, pillar-quota'd), topics
+    only. Returns a batch_id; poll GET /post/ideas/{batch_id} for the result."""
+    from uuid import uuid4
+
+    from .db import _request_tenant
+    try:
+        tid = _request_tenant.get()
+    except LookupError:
+        tid = None
+    tid = tid or settings.default_tenant_id
+    n = max(1, min(int(n or 10), 10))
+    batch_id = str(uuid4())
+    _TOPIC_BATCHES[batch_id] = {"status": "running", "ideas": [], "error": None}
+    while len(_TOPIC_BATCHES) > 30:
+        _TOPIC_BATCHES.pop(next(iter(_TOPIC_BATCHES)))
+
+    async def _run() -> None:
+        try:
+            from .video_compose import suggest_topics
+            res = await suggest_topics(n=n, tenant_id=tid)
+            _TOPIC_BATCHES[batch_id] = {
+                "status": "done", "ideas": res.get("ideas", []),
+                "count": res.get("count", 0), "niche": res.get("niche", ""),
+                "error": res.get("error"),
+            }
+        except Exception as e:  # noqa: BLE001
+            _TOPIC_BATCHES[batch_id] = {
+                "status": "failed", "ideas": [], "error": str(e),
+            }
+
+    background.add_task(_run)
+    return {"batch_id": batch_id, "status": "running"}
+
+
+@app.get("/post/ideas/{batch_id}")
+async def post_ideas_get(batch_id: str) -> dict:
+    b = _TOPIC_BATCHES.get(batch_id)
+    if not b:
+        raise HTTPException(status_code=404, detail="batch not found (expired or unknown)")
+    return {"batch_id": batch_id, **b}
 
 
 # ─────────────────────────────────────────────────────────────── video ──

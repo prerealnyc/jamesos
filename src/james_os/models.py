@@ -166,13 +166,32 @@ class PostComposeRequest(BaseModel):
     composed together. The text runs the full voice + voice-QA pipeline and
     is queued for approval; when `include_image` is set, a cinematic image is
     directed from the *draft* and baselined on the brand hero's photos so the
-    same person appears across posts, then attached to the same queued item."""
+    same person appears across posts, then attached to the same queued item.
+
+    NOTE: one-shot (text + image, ~50s) — fine for direct/server-to-server
+    callers. The browser UI uses /generate then /post/attach-image instead,
+    keeping each request under the gateway's synchronous timeout."""
     topic: str
     platform: str = "instagram"
     pillar: str = ""
     research_subject: str = ""
     extra_instructions: str = ""
     include_image: bool = True
+
+
+class AttachPostImageRequest(BaseModel):
+    """Attach a hero-referenced image to an already-queued post action.
+
+    Second step of the browser post composer: after /generate queues the
+    text (and returns its action_id + draft), this renders a cinematic image
+    of the brand hero from the *draft* and patches it onto that same action,
+    so the reviewer sees text + image as one item. Split out so each HTTP
+    request stays short (text ~30s, image ~20s) instead of one ~50s call
+    that the synchronous gateway times out (→ 500)."""
+    action_id: UUID
+    platform: str = "instagram"
+    topic: str = ""
+    draft_text: str = ""
 
 
 # ─────────────────────────────────── Trend radar ──

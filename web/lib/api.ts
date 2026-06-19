@@ -1170,31 +1170,34 @@ export const api = {
     jpost<ContentDraft>("/generate-script", { event_id, platform, extra_instructions }),
   generate: (brief: Partial<ContentBrief> & { topic: string }) =>
     jpost<ContentDraft>("/generate", brief),
-  // One topic → on-voice written post + a matching hero-referenced image,
-  // composed together and queued as one item for approval.
-  composePost: (body: {
-    topic: string;
+  // Attach a hero-referenced image to an already-queued post action — 2nd
+  // step of the browser composer (1st is `generate`). Split from /post/compose
+  // so each request stays under the gateway's synchronous timeout.
+  attachPostImage: (body: {
+    action_id: string;
     platform?: string;
-    pillar?: string;
-    research_subject?: string;
-    extra_instructions?: string;
-    include_image?: boolean;
+    topic?: string;
+    draft_text?: string;
   }) =>
-    jpost<{
-      draft: ContentDraft;
-      image_url: string | null;
-      image_error: string | null;
-    }>("/post/compose", { platform: "instagram", include_image: true, ...body }),
+    jpost<{ image_url: string | null; image_error: string | null }>(
+      "/post/attach-image",
+      { platform: "instagram", ...body }
+    ),
   // Suggested post topics, steered from live data (same engine as video
   // 'Generate 10 scripts'): tracked creators + trends + James's real topics,
-  // pillar-quota'd. Topics only — fast enough to pre-seed the composer.
-  postIdeas: (n = 10) =>
+  // pillar-quota'd. Backgrounded (intel is 30-60s, would time out a sync call):
+  // start → poll. Topics only, no scripts.
+  startPostIdeas: (n = 10) =>
+    jpost<{ batch_id: string; status: string }>(`/post/ideas?n=${n}`, {}),
+  getPostIdeas: (id: string) =>
     jget<{
+      batch_id: string;
+      status: "running" | "done" | "failed";
       ideas: { title: string; topic: string; pillar: string; trend_basis: string }[];
-      count: number;
-      niche: string;
-      error: string | null;
-    }>(`/post/ideas?n=${n}`),
+      count?: number;
+      niche?: string;
+      error?: string | null;
+    }>(`/post/ideas/${id}`),
   generateMulti: (body: {
     topic: string;
     pillar?: string;
