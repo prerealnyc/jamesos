@@ -179,6 +179,15 @@ class PostComposeRequest(BaseModel):
     include_image: bool = True
 
 
+class SetPostImageRequest(BaseModel):
+    """Attach an EXISTING image (e.g. a real hero photo the user picked) to an
+    already-queued post action — no generation. Patches the chosen URL onto the
+    action so the reviewer sees text + photo as one item. Used when the user
+    would rather use a real photo of themselves than an AI-rendered one."""
+    action_id: UUID
+    image_url: str
+
+
 class AttachPostImageRequest(BaseModel):
     """Attach a hero-referenced image to an already-queued post action.
 

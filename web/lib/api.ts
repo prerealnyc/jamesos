@@ -1170,7 +1170,7 @@ export const api = {
     jpost<ContentDraft>("/generate-script", { event_id, platform, extra_instructions }),
   generate: (brief: Partial<ContentBrief> & { topic: string }) =>
     jpost<ContentDraft>("/generate", brief),
-  // Attach a hero-referenced image to an already-queued post action — 2nd
+  // Attach a hero-referenced AI image to an already-queued post action — 2nd
   // step of the browser composer (1st is `generate`). Split from /post/compose
   // so each request stays under the gateway's synchronous timeout.
   attachPostImage: (body: {
@@ -1183,6 +1183,10 @@ export const api = {
       "/post/attach-image",
       { platform: "instagram", ...body }
     ),
+  // Attach a REAL hero photo (chosen by the user) to a queued post — no
+  // generation, guaranteed to look like James.
+  setPostImage: (body: { action_id: string; image_url: string }) =>
+    jpost<{ ok: boolean; image_url: string }>("/post/set-image", body),
   // Suggested post topics, steered from live data (same engine as video
   // 'Generate 10 scripts'): tracked creators + trends + James's real topics,
   // pillar-quota'd. Backgrounded (intel is 30-60s, would time out a sync call):

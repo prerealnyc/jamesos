@@ -60,6 +60,7 @@ from .models import (
     PlugIn,
     PostComposeRequest,
     PostImageRequest,
+    SetPostImageRequest,
     PlugInCreate,
     ResearchRequest,
     ResearchResponse,
@@ -862,6 +863,31 @@ async def post_attach_image(req: AttachPostImageRequest) -> dict:
             "attach a hero image"
         ),
     }
+
+
+@app.post("/post/set-image")
+async def post_set_image(req: SetPostImageRequest) -> dict:
+    """Attach an EXISTING image (a real hero photo the user picked) to a queued
+    post — no generation. Patches image_url/media_url/has_image onto the
+    action's payload so the reviewer sees text + the chosen photo as one item.
+    """
+    from .db import _request_tenant
+    try:
+        _tid = _request_tenant.get()
+    except LookupError:
+        _tid = None
+    url = (req.image_url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="image_url is required")
+    async with acquire(_tid) as conn:
+        status = await conn.execute(
+            "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1",
+            req.action_id,
+            json.dumps({"image_url": url, "media_url": url, "has_image": True}),
+        )
+    if status.endswith(" 0"):
+        raise HTTPException(status_code=404, detail="queued post not found")
+    return {"ok": True, "image_url": url}
 
 
 # Suggested-topics jobs run in the background — _gather_intel (Xpoz creator

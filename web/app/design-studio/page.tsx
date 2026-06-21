@@ -41,7 +41,7 @@ export default function ContentStudio() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Post — text + image"
-        sub="One topic → an on-voice written post AND a matching image of James (from your hero library), composed together and queued as one item. Grounded in voice + thesis + research + the learned guardrails; voice-QA scores every draft; nothing ships without approval."
+        sub="One topic → an on-voice written post AND a real photo of James you pick from the hero library, queued together as one item. Grounded in voice + thesis + research + the learned guardrails; voice-QA scores every draft; nothing ships without approval."
       />
       <div className="flex gap-2">
         <TabBtn active={mode === "post"} onClick={() => setMode("post")}>
@@ -65,13 +65,28 @@ function PostImageMode() {
   const [platform, setPlatform] = useState("instagram");
   const [pillar, setPillar] = useState("");
   const [extra, setExtra] = useState("");
-  const [includeImage, setIncludeImage] = useState(true);
   const [busy, setBusy] = useState(false);
   const [imgBusy, setImgBusy] = useState(false);
   const [draft, setDraft] = useState<ContentDraft | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [imageErr, setImageErr] = useState<string | null>(null);
   const [err, setErr] = useState("");
+
+  // Use a REAL hero photo (not an AI render) — pick one and it's attached
+  // to the post. Loaded from the hero library on mount.
+  const [heroPhotos, setHeroPhotos] = useState<string[]>([]);
+  const [selectedPhoto, setSelectedPhoto] = useState<string>("");
+
+  useEffect(() => {
+    api
+      .getHeroContext()
+      .then((r) => {
+        const urls = r.photo_urls || [];
+        setHeroPhotos(urls);
+        if (urls.length) setSelectedPhoto(urls[0]); // default to the first
+      })
+      .catch(() => setHeroPhotos([]));
+  }, []);
 
   // Suggested topics — same data-steered ideation as the video flow.
   // Auto-loaded on arrival so picks are ready before you type anything.
@@ -137,8 +152,7 @@ function PostImageMode() {
     setDraft(null);
     setImageUrl(null);
     setImageErr(null);
-    // Two short calls (each under the gateway timeout) instead of one ~50s
-    // call: write the post first, show it, THEN render the matching image.
+    // Write the post first (queued), show it, THEN attach the chosen photo.
     let d: ContentDraft;
     try {
       d = await api.generate({
@@ -156,23 +170,18 @@ function PostImageMode() {
     }
     setBusy(false);
 
-    if (!includeImage) return;
+    // Attach the real hero photo the user picked — no AI generation.
+    if (!selectedPhoto) return;
     if (!d.action_id) {
-      setImageErr("post wasn't queued, so no image was attached");
+      setImageErr("post wasn't queued, so no photo was attached");
       return;
     }
     setImgBusy(true);
     try {
-      const r = await api.attachPostImage({
-        action_id: d.action_id,
-        platform,
-        topic,
-        draft_text: d.draft || topic,
-      });
-      setImageUrl(r.image_url);
-      setImageErr(r.image_error);
+      await api.setPostImage({ action_id: d.action_id, image_url: selectedPhoto });
+      setImageUrl(selectedPhoto);
     } catch (e) {
-      setImageErr(e instanceof Error ? e.message : "image generation failed");
+      setImageErr(e instanceof Error ? e.message : "could not attach photo");
     } finally {
       setImgBusy(false);
     }
@@ -236,11 +245,11 @@ function PostImageMode() {
       </Card>
 
       <Card>
-        <CardTitle>One topic → post + matching image</CardTitle>
+        <CardTitle>One topic → post + James&apos;s photo</CardTitle>
         <p className="text-[12px] text-muted-foreground -mt-1 mb-2">
           Pick a suggestion above or type your own. Writes the post in
-          James&apos;s voice, then renders a cinematic image of James from your
-          hero library to match it. Both land together in the Approval Queue.
+          James&apos;s voice and attaches the real hero photo you pick below.
+          Both land together in the Approval Queue.
         </p>
         <Label>Topic</Label>
         <Textarea
@@ -267,18 +276,54 @@ function PostImageMode() {
         </div>
         <Label>Extra instructions (optional)</Label>
         <Input value={extra} onChange={(e) => setExtra(e.target.value)} placeholder="a one-off steer" />
-        <label className="flex items-center gap-2 mt-3 text-[13px] cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={includeImage}
-            onChange={(e) => setIncludeImage(e.target.checked)}
-            className="accent-primary"
-          />
-          Generate a matching image (James, from your hero library)
-        </label>
-        <div className="mt-3">
+        <div className="mt-4">
+          <div className="flex items-center justify-between gap-2">
+            <Label>James&apos;s photo for this post</Label>
+            {selectedPhoto && (
+              <button
+                onClick={() => setSelectedPhoto("")}
+                className="text-[11px] text-muted-foreground hover:text-foreground"
+              >
+                no photo
+              </button>
+            )}
+          </div>
+          {heroPhotos.length === 0 ? (
+            <p className="text-[12px] text-muted-foreground">
+              No hero photos yet. Upload some on the{" "}
+              <Link href="/hero" className="text-primary underline">
+                Hero
+              </Link>{" "}
+              page, then they&apos;ll show here to pick from.
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {heroPhotos.map((url) => (
+                <button
+                  key={url}
+                  type="button"
+                  onClick={() => setSelectedPhoto(url)}
+                  className={`relative h-20 w-20 overflow-hidden rounded-md border-2 transition-colors ${
+                    selectedPhoto === url
+                      ? "border-primary"
+                      : "border-transparent hover:border-border"
+                  }`}
+                  title="Use this photo"
+                >
+                  <img src={mediaUrl(url)} alt="hero" className="h-full w-full object-cover" />
+                  {selectedPhoto === url && (
+                    <span className="absolute bottom-0 right-0 bg-primary text-primary-foreground text-[10px] px-1 rounded-tl">
+                      ✓
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="mt-4">
           <Button onClick={run} disabled={busy || imgBusy || !topic.trim()}>
-            {busy ? <Spinner /> : includeImage ? "Generate post + image" : "Generate post"}
+            {busy ? <Spinner /> : selectedPhoto ? "Generate post + attach photo" : "Generate post"}
           </Button>
         </div>
         {err && <p className="text-destructive text-sm mt-2">✗ {err}</p>}
@@ -305,12 +350,12 @@ function PostImageMode() {
           </div>
           <div className="grid gap-3 md:grid-cols-2">
             <DraftCard draft={draft} />
-            {includeImage && (
+            {(selectedPhoto || imageUrl || imgBusy || imageErr) && (
               <Card>
-                <CardTitle>Matching image</CardTitle>
+                <CardTitle>James&apos;s photo</CardTitle>
                 {imgBusy ? (
                   <div className="flex items-center gap-2 text-[13px] text-muted-foreground py-3">
-                    <Spinner /> Rendering James from your hero library — ~15–25s…
+                    <Spinner /> Attaching the photo…
                   </div>
                 ) : imageUrl ? (
                   <>
@@ -322,13 +367,12 @@ function PostImageMode() {
                       />
                     </a>
                     <p className="text-[11px] text-muted-foreground mt-2">
-                      Attached to the queued post. Referenced from your hero
-                      library so James stays consistent across posts.
+                      Your real hero photo, attached to the queued post.
                     </p>
                   </>
                 ) : (
                   <p className="text-[12px] text-muted-foreground mt-2">
-                    {imageErr || "No image returned."}
+                    {imageErr || "No photo attached."}
                   </p>
                 )}
               </Card>
