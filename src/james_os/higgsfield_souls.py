@@ -207,13 +207,17 @@ async def generate_character_image(
     if not custom_reference_id:
         return {"request_id": "", "status": "failed",
                 "error": "custom_reference_id (Soul ID) is required."}
+    # /v1/text2image/soul wraps generation params under a "params" key
+    # (confirmed against the live API — a flat body 422s "params required").
     body = {
-        "prompt": prompt[:1500],
-        "custom_reference_id": custom_reference_id,
-        "custom_reference_strength": max(0.0, min(float(strength), 1.0)),
-        "width_and_height": _SOUL_SIZE.get(aspect_ratio, "1152x2048"),
-        "quality": quality if quality in ("720p", "1080p") else "1080p",
-        "batch_size": 1,
+        "params": {
+            "prompt": prompt[:1500],
+            "custom_reference_id": custom_reference_id,
+            "custom_reference_strength": max(0.0, min(float(strength), 1.0)),
+            "width_and_height": _SOUL_SIZE.get(aspect_ratio, "1152x2048"),
+            "quality": quality if quality in ("720p", "1080p") else "1080p",
+            "batch_size": 1,
+        }
     }
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
