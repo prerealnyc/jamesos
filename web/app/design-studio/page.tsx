@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { api, mediaUrl, type ContentDraft } from "@/lib/api";
+import { api, mediaUrl, type ContentDraft, type TopicIdea } from "@/lib/api";
 import {
   Button,
   Card,
@@ -58,7 +58,6 @@ export default function ContentStudio() {
 
 // ── Post + image: one topic → on-voice post + a matching hero image ──
 
-type TopicIdea = { title: string; topic: string; pillar: string; trend_basis: string };
 
 function PostImageMode() {
   const [topic, setTopic] = useState("");
@@ -131,13 +130,44 @@ function PostImageMode() {
     }
   }
 
+  // On arrival, show the SAVED suggestions (no regen). Only ideate when
+  // there are none saved yet. "regenerate" forces a fresh batch.
   useEffect(() => {
-    loadIdeas();
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await api.getSavedIdeas();
+        if (cancelled) return;
+        if (r.ideas && r.ideas.length) {
+          setIdeas(r.ideas);
+          return;
+        }
+      } catch {
+        /* fall through to generate */
+      }
+      if (!cancelled) loadIdeas();
+    })();
     return () => {
+      cancelled = true;
       if (pollRef.current) pollRef.current.cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function setIdeaStatus(id: string, status: "accepted" | "rejected" | "pending") {
+    // Optimistic — reject drops it, accept pins it, pending un-keeps.
+    setIdeas((prev) =>
+      status === "rejected"
+        ? prev.filter((i) => i.id !== id)
+        : prev.map((i) => (i.id === id ? { ...i, status } : i))
+    );
+    try {
+      const r = await api.setIdeaStatus(id, status);
+      setIdeas(r.ideas);
+    } catch {
+      /* keep optimistic state */
+    }
+  }
 
   function pickIdea(i: TopicIdea) {
     setTopic(i.topic);
@@ -227,7 +257,9 @@ function PostImageMode() {
         </div>
         <p className="text-[12px] text-muted-foreground -mt-1 mb-2">
           Steered from live data — tracked creators + trends + James&apos;s real
-          topics, balanced to your brand pillars. Click one to load it.
+          topics, balanced to your brand pillars. These are saved, so they stay
+          until you change them. Click a topic to load it · ✓ keep · ✕ reject ·
+          ↻ regenerate (kept ones stay).
         </p>
         {ideasBusy && ideas.length === 0 ? (
           <div className="flex items-center gap-2 text-[13px] text-muted-foreground py-2">
@@ -244,27 +276,70 @@ function PostImageMode() {
           <p className="text-[12px] text-muted-foreground py-1">No topics yet.</p>
         ) : (
           <div className="grid gap-2 sm:grid-cols-2">
-            {ideas.map((i, idx) => (
-              <button
-                key={idx}
-                onClick={() => pickIdea(i)}
-                className={`text-left rounded-lg border p-3 transition-colors hover:border-primary/60 ${
-                  topic === i.topic ? "border-primary bg-primary/5" : "border-border"
-                }`}
-              >
-                <div className="flex items-start gap-2">
-                  <span className="text-[13px] font-medium leading-snug flex-1">
-                    {i.topic}
-                  </span>
-                  {i.pillar && <Badge tone="muted">{i.pillar}</Badge>}
+            {ideas.map((i, idx) => {
+              const accepted = i.status === "accepted";
+              return (
+                <div
+                  key={i.id || idx}
+                  className={`rounded-lg border p-3 transition-colors ${
+                    accepted
+                      ? "border-primary bg-primary/10"
+                      : topic === i.topic
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:border-primary/60"
+                  }`}
+                >
+                  <div className="flex items-start gap-2">
+                    <button
+                      onClick={() => pickIdea(i)}
+                      className="text-left text-[13px] font-medium leading-snug flex-1"
+                      title="Load this topic into the composer"
+                    >
+                      {i.topic}
+                    </button>
+                    {accepted && <Badge tone="ok">kept</Badge>}
+                    {i.pillar && <Badge tone="muted">{i.pillar}</Badge>}
+                  </div>
+                  {i.trend_basis && (
+                    <p className="text-[11px] text-muted-foreground mt-1 line-clamp-2">
+                      {i.trend_basis}
+                    </p>
+                  )}
+                  <div className="flex items-center gap-2 mt-2">
+                    <button
+                      onClick={() => pickIdea(i)}
+                      className="text-[11px] text-primary hover:underline"
+                    >
+                      use this →
+                    </button>
+                    {i.id && (
+                      <div className="ml-auto flex items-center gap-1">
+                        <button
+                          onClick={() => setIdeaStatus(i.id!, accepted ? "pending" : "accepted")}
+                          title={accepted ? "Kept — click to un-keep" : "Keep this suggestion"}
+                          aria-label={accepted ? "Un-keep" : "Keep"}
+                          className={`h-6 w-6 grid place-items-center rounded-md border text-[12px] transition-colors ${
+                            accepted
+                              ? "border-primary bg-primary text-primary-foreground"
+                              : "border-border text-muted-foreground hover:border-primary hover:text-primary"
+                          }`}
+                        >
+                          ✓
+                        </button>
+                        <button
+                          onClick={() => setIdeaStatus(i.id!, "rejected")}
+                          title="Reject (remove this suggestion)"
+                          aria-label="Reject"
+                          className="h-6 w-6 grid place-items-center rounded-md border border-border text-[12px] text-muted-foreground transition-colors hover:border-destructive hover:text-destructive"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
-                {i.trend_basis && (
-                  <p className="text-[11px] text-muted-foreground mt-1 line-clamp-2">
-                    {i.trend_basis}
-                  </p>
-                )}
-              </button>
-            ))}
+              );
+            })}
           </div>
         )}
       </Card>

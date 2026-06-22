@@ -322,6 +322,15 @@ export type MediaRole =
 /** Aesthetic preset for /images/generate. Each maps to a distinct
  *  prompt prefix on the backend (see imagegen.POST_STYLES). Same topic
  *  + different style = different render. */
+export type TopicIdea = {
+  id?: string;
+  title: string;
+  topic: string;
+  pillar: string;
+  trend_basis: string;
+  status?: "pending" | "accepted";
+};
+
 export type PostImageStyle = "editorial" | "photoreal" | "minimal" | "bw_photo";
 
 export type StyleFingerprint = {
@@ -1212,11 +1221,15 @@ export const api = {
     jget<{
       batch_id: string;
       status: "running" | "done" | "failed";
-      ideas: { title: string; topic: string; pillar: string; trend_basis: string }[];
+      ideas: TopicIdea[];
       count?: number;
       niche?: string;
       error?: string | null;
     }>(`/post/ideas/${id}`),
+  // Persisted suggestions — shown on load so we don't re-ideate every visit.
+  getSavedIdeas: () => jget<{ ideas: TopicIdea[] }>("/post/ideas/saved"),
+  setIdeaStatus: (id: string, status: "accepted" | "rejected" | "pending") =>
+    jpost<{ ideas: TopicIdea[] }>("/post/ideas/status", { id, status }),
   generateMulti: (body: {
     topic: string;
     pillar?: string;

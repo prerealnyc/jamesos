@@ -56,6 +56,7 @@ from .models import (
     MediaLinkRequest,
     MediaUpdate,
     AttachPostImageRequest,
+    IdeaStatusRequest,
     MultiGenerateRequest,
     PlugIn,
     PostComposeRequest,
@@ -1035,12 +1036,18 @@ async def post_ideas_start(background: BackgroundTasks, n: int = 10) -> dict:
 
     async def _run() -> None:
         try:
+            from .topic_suggestions import save_batch
             from .video_compose import suggest_topics
             res = await suggest_topics(n=n, tenant_id=tid)
+            ideas = res.get("ideas", [])
+            # Persist so we don't re-ideate on the next page load. Keeps any
+            # accepted suggestions pinned; returns the full saved list (with
+            # ids + status) so the UI can render keep/reject immediately.
+            saved = await save_batch(tid, ideas) if ideas else []
             _TOPIC_BATCHES[batch_id] = {
-                "status": "done", "ideas": res.get("ideas", []),
-                "count": res.get("count", 0), "niche": res.get("niche", ""),
-                "error": res.get("error"),
+                "status": "done", "ideas": saved or ideas,
+                "count": len(saved) if saved else res.get("count", 0),
+                "niche": res.get("niche", ""), "error": res.get("error"),
             }
         except Exception as e:  # noqa: BLE001
             _TOPIC_BATCHES[batch_id] = {
@@ -1049,6 +1056,33 @@ async def post_ideas_start(background: BackgroundTasks, n: int = 10) -> dict:
 
     background.add_task(_run)
     return {"batch_id": batch_id, "status": "running"}
+
+
+# These STATIC subpaths must be declared before /post/ideas/{batch_id} so the
+# router doesn't capture "saved"/"status" as a batch_id.
+@app.get("/post/ideas/saved")
+async def post_ideas_saved() -> dict:
+    """The persisted suggestion list — shown on load so we don't regenerate."""
+    from .db import _request_tenant
+    from .topic_suggestions import get_saved
+    try:
+        tid = _request_tenant.get()
+    except LookupError:
+        tid = None
+    return {"ideas": await get_saved(tid or settings.default_tenant_id)}
+
+
+@app.post("/post/ideas/status")
+async def post_ideas_status(req: IdeaStatusRequest) -> dict:
+    """Keep (accepted), drop (rejected), or reset (pending) one suggestion."""
+    from .db import _request_tenant
+    from .topic_suggestions import set_status
+    try:
+        tid = _request_tenant.get()
+    except LookupError:
+        tid = None
+    items = await set_status(tid or settings.default_tenant_id, req.id, req.status)
+    return {"ideas": items}
 
 
 @app.get("/post/ideas/{batch_id}")

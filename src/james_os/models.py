@@ -179,6 +179,13 @@ class PostComposeRequest(BaseModel):
     include_image: bool = True
 
 
+class IdeaStatusRequest(BaseModel):
+    """Curate a saved post-topic suggestion: keep (accepted), drop (rejected),
+    or reset (pending)."""
+    id: str
+    status: str  # accepted | rejected | pending
+
+
 class SoulImageRequest(BaseModel):
     """Generate a James image from the trained Higgsfield Soul ID and attach it
     to a queued post. Backgrounded (the Soul render is 30-90s)."""
