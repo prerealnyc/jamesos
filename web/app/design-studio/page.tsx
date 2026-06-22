@@ -72,8 +72,9 @@ function PostImageMode() {
   const [imageErr, setImageErr] = useState<string | null>(null);
   const [err, setErr] = useState("");
 
-  // Use a REAL hero photo (not an AI render) — pick one and it's attached
-  // to the post. Loaded from the hero library on mount.
+  // Image source: a REAL hero photo (default, guaranteed likeness) OR a NEW
+  // AI render from the trained Higgsfield Soul ID.
+  const [imageMode, setImageMode] = useState<"photo" | "soul">("photo");
   const [heroPhotos, setHeroPhotos] = useState<string[]>([]);
   const [selectedPhoto, setSelectedPhoto] = useState<string>("");
 
@@ -170,18 +171,42 @@ function PostImageMode() {
     }
     setBusy(false);
 
-    // Attach the real hero photo the user picked — no AI generation.
-    if (!selectedPhoto) return;
+    // Image step. "photo" = attach the real hero photo (instant, exact
+    // likeness). "soul" = render a NEW James from the Higgsfield Soul ID.
+    if (imageMode === "photo" && !selectedPhoto) return;
     if (!d.action_id) {
-      setImageErr("post wasn't queued, so no photo was attached");
+      setImageErr("post wasn't queued, so no image was attached");
       return;
     }
     setImgBusy(true);
     try {
-      await api.setPostImage({ action_id: d.action_id, image_url: selectedPhoto });
-      setImageUrl(selectedPhoto);
+      if (imageMode === "photo") {
+        await api.setPostImage({ action_id: d.action_id, image_url: selectedPhoto });
+        setImageUrl(selectedPhoto);
+      } else {
+        const { job_id } = await api.startSoulImage({
+          action_id: d.action_id,
+          topic,
+          draft_text: d.draft || topic,
+          aspect: "9:16",
+        });
+        let done = false;
+        for (let i = 0; i < 60 && !done; i++) {
+          await new Promise((r) => setTimeout(r, 3000));
+          const r = await api.getSoulImage(job_id);
+          if (r.status === "done") {
+            setImageUrl(r.image_url);
+            if (!r.image_url && r.error) setImageErr(r.error);
+            done = true;
+          } else if (r.status === "failed") {
+            setImageErr(r.error || "Soul render failed");
+            done = true;
+          }
+        }
+        if (!done) setImageErr("Soul render timed out — try again.");
+      }
     } catch (e) {
-      setImageErr(e instanceof Error ? e.message : "could not attach photo");
+      setImageErr(e instanceof Error ? e.message : "could not attach image");
     } finally {
       setImgBusy(false);
     }
@@ -277,53 +302,87 @@ function PostImageMode() {
         <Label>Extra instructions (optional)</Label>
         <Input value={extra} onChange={(e) => setExtra(e.target.value)} placeholder="a one-off steer" />
         <div className="mt-4">
-          <div className="flex items-center justify-between gap-2">
-            <Label>James&apos;s photo for this post</Label>
-            {selectedPhoto && (
-              <button
-                onClick={() => setSelectedPhoto("")}
-                className="text-[11px] text-muted-foreground hover:text-foreground"
-              >
-                no photo
-              </button>
-            )}
+          <Label>Image for this post</Label>
+          <div className="flex gap-2 mb-2">
+            <button
+              type="button"
+              onClick={() => setImageMode("photo")}
+              className={`text-[12px] px-3 py-1.5 rounded-full border transition-colors ${
+                imageMode === "photo"
+                  ? "border-primary text-primary bg-primary/10"
+                  : "border-border text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Real photo
+            </button>
+            <button
+              type="button"
+              onClick={() => setImageMode("soul")}
+              className={`text-[12px] px-3 py-1.5 rounded-full border transition-colors ${
+                imageMode === "soul"
+                  ? "border-primary text-primary bg-primary/10"
+                  : "border-border text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              ✨ AI (Soul ID)
+            </button>
           </div>
-          {heroPhotos.length === 0 ? (
+
+          {imageMode === "photo" ? (
+            heroPhotos.length === 0 ? (
+              <p className="text-[12px] text-muted-foreground">
+                No hero photos yet. Upload some on the{" "}
+                <Link href="/hero" className="text-primary underline">
+                  Hero
+                </Link>{" "}
+                page, then they&apos;ll show here to pick from.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {heroPhotos.map((url) => (
+                  <button
+                    key={url}
+                    type="button"
+                    onClick={() => setSelectedPhoto(selectedPhoto === url ? "" : url)}
+                    className={`relative h-20 w-20 overflow-hidden rounded-md border-2 transition-colors ${
+                      selectedPhoto === url
+                        ? "border-primary"
+                        : "border-transparent hover:border-border"
+                    }`}
+                    title="Use this photo"
+                  >
+                    <img src={mediaUrl(url)} alt="hero" className="h-full w-full object-cover" />
+                    {selectedPhoto === url && (
+                      <span className="absolute bottom-0 right-0 bg-primary text-primary-foreground text-[10px] px-1 rounded-tl">
+                        ✓
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )
+          ) : (
             <p className="text-[12px] text-muted-foreground">
-              No hero photos yet. Upload some on the{" "}
+              Renders a fresh, on-topic image of James from your trained
+              Higgsfield Soul ID (~30–60s). Same face every time. Trained on the{" "}
               <Link href="/hero" className="text-primary underline">
                 Hero
               </Link>{" "}
-              page, then they&apos;ll show here to pick from.
+              page.
             </p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {heroPhotos.map((url) => (
-                <button
-                  key={url}
-                  type="button"
-                  onClick={() => setSelectedPhoto(url)}
-                  className={`relative h-20 w-20 overflow-hidden rounded-md border-2 transition-colors ${
-                    selectedPhoto === url
-                      ? "border-primary"
-                      : "border-transparent hover:border-border"
-                  }`}
-                  title="Use this photo"
-                >
-                  <img src={mediaUrl(url)} alt="hero" className="h-full w-full object-cover" />
-                  {selectedPhoto === url && (
-                    <span className="absolute bottom-0 right-0 bg-primary text-primary-foreground text-[10px] px-1 rounded-tl">
-                      ✓
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
           )}
         </div>
         <div className="mt-4">
           <Button onClick={run} disabled={busy || imgBusy || !topic.trim()}>
-            {busy ? <Spinner /> : selectedPhoto ? "Generate post + attach photo" : "Generate post"}
+            {busy ? (
+              <Spinner />
+            ) : imageMode === "soul" ? (
+              "Generate post + Soul image"
+            ) : selectedPhoto ? (
+              "Generate post + attach photo"
+            ) : (
+              "Generate post"
+            )}
           </Button>
         </div>
         {err && <p className="text-destructive text-sm mt-2">✗ {err}</p>}
@@ -350,12 +409,15 @@ function PostImageMode() {
           </div>
           <div className="grid gap-3 md:grid-cols-2">
             <DraftCard draft={draft} />
-            {(selectedPhoto || imageUrl || imgBusy || imageErr) && (
+            {((imageMode === "photo" && selectedPhoto) || imageUrl || imgBusy || imageErr) && (
               <Card>
-                <CardTitle>James&apos;s photo</CardTitle>
+                <CardTitle>{imageMode === "soul" ? "James (Soul ID)" : "James's photo"}</CardTitle>
                 {imgBusy ? (
                   <div className="flex items-center gap-2 text-[13px] text-muted-foreground py-3">
-                    <Spinner /> Attaching the photo…
+                    <Spinner />{" "}
+                    {imageMode === "soul"
+                      ? "Rendering James from your Soul ID — ~30–60s…"
+                      : "Attaching the photo…"}
                   </div>
                 ) : imageUrl ? (
                   <>
@@ -367,12 +429,14 @@ function PostImageMode() {
                       />
                     </a>
                     <p className="text-[11px] text-muted-foreground mt-2">
-                      Your real hero photo, attached to the queued post.
+                      {imageMode === "soul"
+                        ? "Fresh render from your Higgsfield Soul ID, attached to the queued post."
+                        : "Your real hero photo, attached to the queued post."}
                     </p>
                   </>
                 ) : (
                   <p className="text-[12px] text-muted-foreground mt-2">
-                    {imageErr || "No photo attached."}
+                    {imageErr || "No image attached."}
                   </p>
                 )}
               </Card>

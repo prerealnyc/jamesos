@@ -1187,6 +1187,21 @@ export const api = {
   // generation, guaranteed to look like James.
   setPostImage: (body: { action_id: string; image_url: string }) =>
     jpost<{ ok: boolean; image_url: string }>("/post/set-image", body),
+  // Generate a NEW James image from the trained Higgsfield Soul ID and attach
+  // it. Backgrounded (Soul render is 30-90s): start → poll.
+  startSoulImage: (body: {
+    action_id: string;
+    topic?: string;
+    draft_text?: string;
+    aspect?: string;
+  }) => jpost<{ job_id: string; status: string }>("/post/soul-image", body),
+  getSoulImage: (id: string) =>
+    jget<{
+      job_id: string;
+      status: "running" | "done" | "failed";
+      image_url: string | null;
+      error: string | null;
+    }>(`/post/soul-image/${id}`),
   // Suggested post topics, steered from live data (same engine as video
   // 'Generate 10 scripts'): tracked creators + trends + James's real topics,
   // pillar-quota'd. Backgrounded (intel is 30-60s, would time out a sync call):

@@ -61,6 +61,7 @@ from .models import (
     PostComposeRequest,
     PostImageRequest,
     SetPostImageRequest,
+    SoulImageRequest,
     PlugInCreate,
     ResearchRequest,
     ResearchResponse,
@@ -888,6 +889,121 @@ async def post_set_image(req: SetPostImageRequest) -> dict:
     if status.endswith(" 0"):
         raise HTTPException(status_code=404, detail="queued post not found")
     return {"ok": True, "image_url": url}
+
+
+# Soul-image generation is backgrounded (Higgsfield render is 30-90s, which
+# would blow the synchronous gateway timeout). Start → poll, like topic ideas.
+_SOUL_IMAGE_JOBS: dict[str, dict] = {}
+
+
+async def _generate_soul_post_image(
+    action_id, topic: str, draft_text: str, aspect: str, soul_id: str, tenant_id
+) -> str:
+    """Direct a scene from the draft → render James from the Soul ID → download,
+    persist, and attach to the queued post. Returns the served image URL."""
+    import httpx
+
+    from . import higgsfield_souls as hs
+    from .imagegen import direct_image_scene
+    from .media import create_media
+    from .media import storage as media_storage
+
+    scene = await direct_image_scene(draft_text or "", fallback_topic=topic or "")
+    prompt = (scene or topic or "James Prendamano").strip()
+    sub = await hs.generate_character_image(
+        custom_reference_id=soul_id, prompt=prompt, aspect_ratio=aspect or "9:16",
+        strength=0.85,
+    )
+    rid = sub.get("request_id")
+    if not rid:
+        raise RuntimeError(sub.get("error") or "Higgsfield submit failed")
+    image_url = ""
+    for _ in range(45):  # ~3 min
+        p = await hs.poll_request(rid)
+        st = p.get("status")
+        if st == "completed" and p.get("image_url"):
+            image_url = p["image_url"]
+            break
+        if st in ("failed", "nsfw", "canceled"):
+            raise RuntimeError(f"Higgsfield render {st}")
+        await asyncio.sleep(4)
+    if not image_url:
+        raise RuntimeError("Higgsfield render timed out")
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
+        r = await c.get(image_url)
+        r.raise_for_status()
+        png = r.content
+    tenant = str(tenant_id or settings.default_tenant_id)
+    served_uri, file_path = await asyncio.to_thread(
+        media_storage().save, tenant, png, "soul-post.png"
+    )
+    try:
+        await create_media(
+            role="post_image", source_type="upload", uri=served_uri,
+            file_path=file_path, title=(topic or "Soul image")[:120],
+            platform="instagram", mime="image/png",
+            tags=["style:soul", "soul"], notes=prompt[:500], tenant_id=tenant_id,
+        )
+    except Exception:  # noqa: BLE001 — library bookkeeping must not lose the URL
+        pass
+    async with acquire(tenant_id) as conn:
+        await conn.execute(
+            "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1",
+            action_id,
+            json.dumps({
+                "image_url": served_uri, "media_url": served_uri,
+                "has_image": True, "image_prompt": prompt,
+            }),
+        )
+    return served_uri
+
+
+@app.post("/post/soul-image", status_code=202)
+async def post_soul_image_start(req: SoulImageRequest, background: BackgroundTasks) -> dict:
+    """Render James from the trained Higgsfield Soul ID and attach to a queued
+    post. Backgrounded — returns a job_id; poll GET /post/soul-image/{job_id}."""
+    from uuid import uuid4
+
+    from .db import _request_tenant
+    try:
+        tid = _request_tenant.get()
+    except LookupError:
+        tid = None
+    tid = tid or settings.default_tenant_id
+    soul = (settings.higgsfield_soul_id or "").strip()
+    if not soul:
+        raise HTTPException(
+            status_code=400,
+            detail="No Higgsfield Soul ID configured. Train one on the Hero page first.",
+        )
+    job_id = str(uuid4())
+    _SOUL_IMAGE_JOBS[job_id] = {"status": "running", "image_url": None, "error": None}
+    while len(_SOUL_IMAGE_JOBS) > 30:
+        _SOUL_IMAGE_JOBS.pop(next(iter(_SOUL_IMAGE_JOBS)))
+
+    async def _run() -> None:
+        try:
+            url = await _generate_soul_post_image(
+                req.action_id, req.topic, req.draft_text, req.aspect or "9:16",
+                soul, tid,
+            )
+            _SOUL_IMAGE_JOBS[job_id] = {
+                "status": "done", "image_url": url,
+                "error": None if url else "render produced no image",
+            }
+        except Exception as e:  # noqa: BLE001
+            _SOUL_IMAGE_JOBS[job_id] = {"status": "failed", "image_url": None, "error": str(e)}
+
+    background.add_task(_run)
+    return {"job_id": job_id, "status": "running"}
+
+
+@app.get("/post/soul-image/{job_id}")
+async def post_soul_image_get(job_id: str) -> dict:
+    j = _SOUL_IMAGE_JOBS.get(job_id)
+    if not j:
+        raise HTTPException(status_code=404, detail="job not found (expired or unknown)")
+    return {"job_id": job_id, **j}
 
 
 # Suggested-topics jobs run in the background — _gather_intel (Xpoz creator

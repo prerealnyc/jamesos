@@ -179,6 +179,15 @@ class PostComposeRequest(BaseModel):
     include_image: bool = True
 
 
+class SoulImageRequest(BaseModel):
+    """Generate a James image from the trained Higgsfield Soul ID and attach it
+    to a queued post. Backgrounded (the Soul render is 30-90s)."""
+    action_id: UUID
+    topic: str = ""
+    draft_text: str = ""
+    aspect: str = "9:16"
+
+
 class SetPostImageRequest(BaseModel):
     """Attach an EXISTING image (e.g. a real hero photo the user picked) to an
     already-queued post action — no generation. Patches the chosen URL onto the

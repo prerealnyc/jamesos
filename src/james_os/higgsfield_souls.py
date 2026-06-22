@@ -9,12 +9,16 @@ out every time. Endpoints (server https://platform.higgsfield.ai):
   * GET  /v1/custom-references/{id}           — one Soul ID
   * POST /v1/custom-references                — create/train (name + images)
   * DEL  /v1/custom-references/{id}           — delete
-  * POST /higgsfield-ai/soul/character        — GENERATE using a Soul ID:
+  * POST /v1/text2image/soul                  — GENERATE using a Soul ID:
         required: prompt, custom_reference_id (= the Soul ID),
                   custom_reference_strength (0..1)
-        optional: aspect_ratio, resolution, batch_size, seed, style_id,
-                  enhance_prompt, style_strength, image_reference_url
+        optional: width_and_height (WxH string), quality ('720p'|'1080p'),
+                  batch_size (1|4), seed, style_id, style_strength
   * GET  /requests/{request_id}/status        — poll a generation
+
+NOTE: the cloud API (platform.higgsfield.ai) only sees Soul IDs trained
+THROUGH the API (POST /v1/custom-references). Souls made in the consumer web
+app (higgsfield.ai) are a separate account and are NOT visible here.
 
 Auth is the same `Key {key}:{secret}` pair as the video provider
 (settings.higgsfield_api_key / _api_secret), populated from the encrypted
@@ -165,16 +169,38 @@ async def create_reference(*, name: str, image_urls: list[str]) -> dict:
     }
 
 
+# Soul text2image accepts a fixed set of width×height strings (not an
+# aspect_ratio shorthand). Map the aspects we use to the nearest supported
+# resolution — see the official SDK's SoulSize enum (13 sizes).
+_SOUL_SIZE = {
+    "9:16": "1152x2048",   # tall portrait — IG/TikTok vertical
+    "16:9": "2048x1152",   # wide landscape
+    "1:1": "1536x1536",    # square — IG feed
+    "4:5": "1536x2048",    # standard portrait
+    "2:3": "1344x2016",
+    "3:2": "2016x1344",
+}
+
+
 async def generate_character_image(
     *,
     custom_reference_id: str,
     prompt: str,
     aspect_ratio: str = "9:16",
-    strength: float = 0.8,
-    resolution: str = "2K",
+    strength: float = 0.85,
+    quality: str = "1080p",
 ) -> dict:
-    """Submit a soul/character generation that renders the trained person from
-    their Soul ID. Returns {request_id, status, error}. Poll with poll_request."""
+    """Submit a Soul text-to-image generation that renders the trained person
+    from their Soul ID. Returns {request_id, status, error}. Poll with
+    poll_request.
+
+    Endpoint (confirmed against the official @higgsfield/client SDK + live API):
+      POST /v1/text2image/soul
+        prompt, custom_reference_id (the Soul ID),
+        custom_reference_strength (0..1), width_and_height (a supported
+        WxH string, NOT an aspect shorthand), quality ('720p'|'1080p'),
+        batch_size (1|4).
+    """
     if not configured():
         return {"request_id": "", "status": "failed",
                 "error": "Higgsfield API key/secret not set."}
@@ -185,13 +211,14 @@ async def generate_character_image(
         "prompt": prompt[:1500],
         "custom_reference_id": custom_reference_id,
         "custom_reference_strength": max(0.0, min(float(strength), 1.0)),
-        "aspect_ratio": aspect_ratio,
-        "resolution": resolution,
+        "width_and_height": _SOUL_SIZE.get(aspect_ratio, "1152x2048"),
+        "quality": quality if quality in ("720p", "1080p") else "1080p",
+        "batch_size": 1,
     }
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
             r = await c.post(
-                f"{_BASE}/higgsfield-ai/soul/character",
+                f"{_BASE}/v1/text2image/soul",
                 headers=_headers(), json=body,
             )
     except Exception as e:  # noqa: BLE001
