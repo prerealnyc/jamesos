@@ -912,8 +912,15 @@ async def _generate_soul_post_image(
 
     scene = await direct_image_scene(draft_text or "", fallback_topic=topic or "")
     prompt = (scene or topic or "James Prendamano").strip()
+    # Keep the whole head/face in frame — at feed ratios the Soul model can
+    # otherwise frame full-body with the head against the top edge.
+    prompt = (
+        prompt + " Framing: head-and-shoulders to waist-up, the full head and "
+        "face clearly within the frame (never cropped at the top), eyes toward "
+        "camera, centered."
+    )[:1500]
     sub = await hs.generate_character_image(
-        custom_reference_id=soul_id, prompt=prompt, aspect_ratio=aspect or "9:16",
+        custom_reference_id=soul_id, prompt=prompt, aspect_ratio=aspect or "4:5",
         strength=0.85,
     )
     rid = sub.get("request_id")
@@ -1050,7 +1057,7 @@ async def _create_one_post(
             out["image_url"] = image_url
         elif image_mode == "soul" and soul_id:
             out["image_url"] = await _generate_soul_post_image(
-                draft.action_id, topic, draft.draft or topic, "9:16", soul_id,
+                draft.action_id, topic, draft.draft or topic, "4:5", soul_id,
                 tenant_id,
             )
     except Exception as e:  # noqa: BLE001 — text already queued; image is additive

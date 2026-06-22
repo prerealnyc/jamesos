@@ -292,7 +292,7 @@ function PostImageMode() {
           action_id: d.action_id,
           topic,
           draft_text: d.draft || topic,
-          aspect: "9:16",
+          aspect: "4:5",
         });
         let done = false;
         for (let i = 0; i < 60 && !done; i++) {

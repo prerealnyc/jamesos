@@ -352,12 +352,19 @@ export default function QueuePage() {
                     <video src={it.mediaUrl} controls preload="metadata" className="w-full h-full" />
                   </div>
                 ) : it.imageUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={it.imageUrl}
-                    alt="generated post image"
-                    className="shrink-0 w-[150px] h-[150px] object-cover rounded-md border border-border"
-                  />
+                  // Portrait (4:5) box, top-aligned cover so the subject's head
+                  // is always visible — a square crop used to lop it off.
+                  <div
+                    className="shrink-0 bg-black rounded-md overflow-hidden border border-border w-[150px]"
+                    style={{ aspectRatio: "4 / 5" }}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={it.imageUrl}
+                      alt="generated post image"
+                      className="w-full h-full object-cover object-top"
+                    />
+                  </div>
                 ) : null}
                 <div className="min-w-0 flex-1">
                   {editing === it.id ? (

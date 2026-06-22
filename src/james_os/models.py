@@ -208,7 +208,7 @@ class SoulImageRequest(BaseModel):
     action_id: UUID
     topic: str = ""
     draft_text: str = ""
-    aspect: str = "9:16"
+    aspect: str = "4:5"   # Instagram feed portrait (not 9:16 Reel/Story)
 
 
 class SetPostImageRequest(BaseModel):
