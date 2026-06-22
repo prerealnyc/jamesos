@@ -1211,6 +1211,26 @@ export const api = {
       image_url: string | null;
       error: string | null;
     }>(`/post/soul-image/${id}`),
+  // Create posts (text + image) for one or more topics in the background.
+  startCreateBatch: (body: {
+    topics: { topic: string; pillar?: string }[];
+    platform?: string;
+    image_mode?: "photo" | "soul" | "none";
+    image_url?: string;
+  }) =>
+    jpost<{ job_id: string; status: string; total: number }>(
+      "/post/create-batch",
+      { platform: "instagram", image_mode: "photo", ...body }
+    ),
+  getCreateBatch: (id: string) =>
+    jget<{
+      job_id: string;
+      status: "running" | "done" | "failed";
+      total: number;
+      done: number;
+      results: { topic: string; action_id: string | null; image_url: string | null; error: string | null }[];
+      error?: string | null;
+    }>(`/post/create-batch/${id}`),
   // Suggested post topics, steered from live data (same engine as video
   // 'Generate 10 scripts'): tracked creators + trends + James's real topics,
   // pillar-quota'd. Backgrounded (intel is 30-60s, would time out a sync call):

@@ -179,7 +179,7 @@ async def suggest_topics(
     """
     from .autopilot import _gather_intel, generate_ideas, get_config
 
-    n = max(1, min(int(n or 10), 10))
+    n = max(1, min(int(n or 10), 30))
     try:
         cfg = await get_config(tenant_id)
     except Exception:  # noqa: BLE001

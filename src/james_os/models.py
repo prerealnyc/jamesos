@@ -179,6 +179,22 @@ class PostComposeRequest(BaseModel):
     include_image: bool = True
 
 
+class CreatePostTopic(BaseModel):
+    topic: str
+    pillar: str = ""
+
+
+class CreateBatchRequest(BaseModel):
+    """Create posts (text + image) for one or more topics in the background.
+    Used by per-card 'Create post' (one topic) and 'Create all kept' (many).
+    image_mode: 'photo' attaches hero photos (rotated, or image_url for all),
+    'soul' renders James from the Soul ID, 'none' skips the image."""
+    topics: list[CreatePostTopic]
+    platform: str = "instagram"
+    image_mode: str = "photo"   # photo | soul | none
+    image_url: str = ""          # photo mode: a specific photo; "" → rotate hero library
+
+
 class IdeaStatusRequest(BaseModel):
     """Curate a saved post-topic suggestion: keep (accepted), drop (rejected),
     or reset (pending)."""

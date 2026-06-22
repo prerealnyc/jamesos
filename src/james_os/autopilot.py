@@ -389,7 +389,7 @@ async def generate_ideas(
         the brand is trying to ride alongside. Prompt asks the LLM to bias
         ideas toward this feed when it's populated.
     """
-    n = max(1, min(n, 10))
+    n = max(1, min(n, 30))
     voice = await _voice_for_ideation(tenant_id)
     guidelines = await _guidelines_for_ideation(tenant_id)
     gl_section = (
@@ -493,7 +493,7 @@ async def generate_ideas(
             # Scale the token budget with n — 10 detailed ideas (title/topic/
             # pillar/trend_basis) overflow a flat 1000 and the JSON truncates,
             # which used to parse-fail silently into "no topics".
-            max_tokens=min(4000, 500 + n * 260), temperature=0.8,
+            max_tokens=min(9000, 500 + n * 300), temperature=0.8,
         )
     except Exception as e:  # noqa: BLE001
         logging.getLogger(__name__).warning(

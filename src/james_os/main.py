@@ -56,6 +56,7 @@ from .models import (
     MediaLinkRequest,
     MediaUpdate,
     AttachPostImageRequest,
+    CreateBatchRequest,
     IdeaStatusRequest,
     MultiGenerateRequest,
     PlugIn,
@@ -1007,6 +1008,140 @@ async def post_soul_image_get(job_id: str) -> dict:
     return {"job_id": job_id, **j}
 
 
+# Batch post creation (text + image per topic) — powers per-card "Create post"
+# (one topic) and "Create all kept" (many). Backgrounded: text + Soul renders
+# are slow, so kick it and let it fill the Approval Queue.
+_CREATE_BATCHES: dict[str, dict] = {}
+
+
+async def _create_one_post(
+    topic: str, pillar: str, platform: str, image_mode: str,
+    image_url: str, soul_id: str, tenant_id,
+) -> dict:
+    """Generate a post for one topic and attach an image per image_mode.
+    Returns {topic, action_id, image_url, error}. Image is additive."""
+    out: dict = {"topic": topic, "action_id": None, "image_url": None, "error": None}
+    try:
+        draft = await generate_content(
+            ContentBrief(
+                platform=platform or "instagram", format="post",
+                pillar=pillar or "", topic=topic,
+            ),
+            tenant_id,
+        )
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"text generation failed: {e}"
+        return out
+    out["action_id"] = str(draft.action_id) if draft.action_id else None
+    if draft.action_id is None:
+        out["error"] = "post was not queued"
+        return out
+    try:
+        if image_mode == "photo" and image_url:
+            async with acquire(tenant_id) as conn:
+                await conn.execute(
+                    "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1",
+                    draft.action_id,
+                    json.dumps({
+                        "image_url": image_url, "media_url": image_url,
+                        "has_image": True,
+                    }),
+                )
+            out["image_url"] = image_url
+        elif image_mode == "soul" and soul_id:
+            out["image_url"] = await _generate_soul_post_image(
+                draft.action_id, topic, draft.draft or topic, "9:16", soul_id,
+                tenant_id,
+            )
+    except Exception as e:  # noqa: BLE001 — text already queued; image is additive
+        out["error"] = f"image failed: {e}"
+    return out
+
+
+@app.post("/post/create-batch", status_code=202)
+async def post_create_batch(req: CreateBatchRequest, background: BackgroundTasks) -> dict:
+    """Create posts (text + image) for one or more topics in the background.
+    Returns a job_id; poll GET /post/create-batch/{job_id}."""
+    from uuid import uuid4
+
+    from .db import _request_tenant
+    try:
+        tid = _request_tenant.get()
+    except LookupError:
+        tid = None
+    tid = tid or settings.default_tenant_id
+
+    topics = [t for t in (req.topics or []) if (t.topic or "").strip()]
+    if not topics:
+        raise HTTPException(status_code=400, detail="no topics to create")
+    image_mode = req.image_mode if req.image_mode in ("photo", "soul", "none") else "photo"
+    soul_id = (settings.higgsfield_soul_id or "").strip()
+    if image_mode == "soul" and not soul_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No Higgsfield Soul ID configured. Train one on the Hero page first.",
+        )
+
+    job_id = str(uuid4())
+    job = {"status": "running", "total": len(topics), "done": 0, "results": []}
+    _CREATE_BATCHES[job_id] = job
+    # Prune only FINISHED jobs — never evict one that's still running (its
+    # background task holds a local ref to `job`, so eviction can't KeyError it,
+    # but we still must not drop a live job the client is polling).
+    finished = [k for k, v in _CREATE_BATCHES.items() if v.get("status") != "running"]
+    while len(_CREATE_BATCHES) > 20 and finished:
+        _CREATE_BATCHES.pop(finished.pop(0), None)
+
+    async def _run() -> None:
+        sem = asyncio.Semaphore(2)
+        # Fetch hero photos here (not in the handler) so the 202 returns fast —
+        # get_hero_context can fire a cold-cache OpenAI vision call. No specific
+        # photo in photo mode → rotate the library across the batch.
+        hero_urls: list[str] = []
+        if image_mode == "photo" and not (req.image_url or "").strip():
+            try:
+                from .hero_context import get_hero_context
+                ctx = await get_hero_context(tid)
+                hero_urls = list(ctx.photo_urls) if ctx else []
+            except Exception:  # noqa: BLE001
+                hero_urls = []
+
+        async def _one(idx: int, t) -> None:
+            async with sem:
+                img = (req.image_url or "").strip()
+                if image_mode == "photo" and not img and hero_urls:
+                    img = hero_urls[idx % len(hero_urls)]
+                r = await _create_one_post(
+                    (t.topic or "").strip(), t.pillar, req.platform,
+                    image_mode, img, soul_id, tid,
+                )
+                # Mutate the captured `job` ref, not _CREATE_BATCHES[job_id] —
+                # safe even if the entry was evicted from the global dict.
+                job["results"].append(r)
+                job["done"] += 1
+
+        try:
+            await asyncio.gather(
+                *[_one(i, t) for i, t in enumerate(topics)],
+                return_exceptions=True,
+            )
+            job["status"] = "done"
+        except Exception as e:  # noqa: BLE001
+            job["status"] = "failed"
+            job["error"] = str(e)
+
+    background.add_task(_run)
+    return {"job_id": job_id, "status": "running", "total": len(topics)}
+
+
+@app.get("/post/create-batch/{job_id}")
+async def post_create_batch_get(job_id: str) -> dict:
+    j = _CREATE_BATCHES.get(job_id)
+    if not j:
+        raise HTTPException(status_code=404, detail="job not found (expired or unknown)")
+    return {"job_id": job_id, **j}
+
+
 # Suggested-topics jobs run in the background — _gather_intel (Xpoz creator
 # search + niche + research) is 30-60s, which blows the gateway's synchronous
 # request timeout (→ 500). Same background-job + poll pattern as the video
@@ -1028,7 +1163,7 @@ async def post_ideas_start(background: BackgroundTasks, n: int = 10) -> dict:
     except LookupError:
         tid = None
     tid = tid or settings.default_tenant_id
-    n = max(1, min(int(n or 10), 10))
+    n = max(1, min(int(n or 10), 30))
     batch_id = str(uuid4())
     _TOPIC_BATCHES[batch_id] = {"status": "running", "ideas": [], "error": None}
     while len(_TOPIC_BATCHES) > 30:

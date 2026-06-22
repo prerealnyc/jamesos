@@ -93,10 +93,16 @@ function PostImageMode() {
   const [ideas, setIdeas] = useState<TopicIdea[]>([]);
   const [ideasBusy, setIdeasBusy] = useState(false);
   const [ideasErr, setIdeasErr] = useState<string | null>(null);
+  const [count, setCount] = useState(10); // how many topics to generate
+  // Per-card create status (keyed by idea id) + batch progress.
+  const [cardCreating, setCardCreating] = useState<Record<string, "running" | "done" | "failed">>({});
+  const [batch, setBatch] = useState<{ running: boolean; done: number; total: number } | null>(null);
 
   // Topic ideation is a background job (intel is 30-60s) — start, then poll.
   // A token guards against a superseding regenerate / unmount.
   const pollRef = useRef<{ cancelled: boolean } | null>(null);
+  // Flips true on unmount so in-flight create-batch polling loops bail.
+  const createCancel = useRef(false);
 
   async function loadIdeas() {
     if (pollRef.current) pollRef.current.cancelled = true;
@@ -106,7 +112,7 @@ function PostImageMode() {
     setIdeasBusy(true);
     setIdeasErr(null);
     try {
-      const { batch_id } = await api.startPostIdeas(10);
+      const { batch_id } = await api.startPostIdeas(count);
       for (let i = 0; i < 45; i++) {
         await new Promise((r) => setTimeout(r, 2000));
         if (token.cancelled) return;
@@ -149,6 +155,7 @@ function PostImageMode() {
     })();
     return () => {
       cancelled = true;
+      createCancel.current = true;
       if (pollRef.current) pollRef.current.cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -174,6 +181,73 @@ function PostImageMode() {
     if (i.pillar) setPillar(i.pillar);
     // Bring the form into view on smaller screens.
     if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  // Create posts (text + image) for a set of topics — uses the current image
+  // mode (real photo / Soul). Backgrounded server-side; we poll for progress.
+  // Bails if the component unmounted (createCancel flips on cleanup).
+  async function createPosts(
+    topics: TopicIdea[],
+    imageUrl: string,
+    onProgress?: (done: number, total: number) => void
+  ): Promise<boolean> {
+    const { job_id } = await api.startCreateBatch({
+      topics: topics.map((t) => ({ topic: t.topic, pillar: t.pillar })),
+      platform,
+      image_mode: imageMode,
+      image_url: imageMode === "photo" ? imageUrl : "",
+    });
+    // Soul renders are ~30-60s each (2 at a time) — poll generously.
+    for (let i = 0; i < 160; i++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      if (createCancel.current) return false;
+      const r = await api.getCreateBatch(job_id);
+      onProgress?.(r.done, r.total);
+      // Only a success if EVERY topic produced a queued post — an empty/short
+      // results array (some topic threw) must not read as success.
+      if (r.status === "done")
+        return r.results.length === r.total && r.results.every((x) => x.action_id);
+      if (r.status === "failed") return false;
+    }
+    return false;
+  }
+
+  async function createForIdea(i: TopicIdea) {
+    if (!i.id) return;
+    const id = i.id;
+    setCardCreating((s) => ({ ...s, [id]: "running" }));
+    try {
+      const ok = await createPosts([i], selectedPhoto);
+      setCardCreating((s) => ({ ...s, [id]: ok ? "done" : "failed" }));
+    } catch {
+      setCardCreating((s) => ({ ...s, [id]: "failed" }));
+    }
+  }
+
+  async function createAllKept() {
+    const kept = ideas.filter(
+      (i) => i.status === "accepted" && (!i.id || cardCreating[i.id] !== "done")
+    );
+    if (!kept.length || batch?.running) return;
+    // Reflect status on the kept cards too, so they don't keep offering
+    // "create post" (which would queue duplicates) after the batch.
+    setCardCreating((s) => {
+      const n = { ...s };
+      kept.forEach((k) => k.id && (n[k.id] = "running"));
+      return n;
+    });
+    setBatch({ running: true, done: 0, total: kept.length });
+    try {
+      // Empty imageUrl in photo mode → backend rotates the hero library.
+      const ok = await createPosts(kept, "", (done, total) => setBatch({ running: true, done, total }));
+      setCardCreating((s) => {
+        const n = { ...s };
+        kept.forEach((k) => k.id && (n[k.id] = ok ? "done" : "failed"));
+        return n;
+      });
+    } finally {
+      setBatch((b) => (b ? { ...b, running: false } : null));
+    }
   }
 
   async function run() {
@@ -245,22 +319,58 @@ function PostImageMode() {
   return (
     <>
       <Card>
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
           <CardTitle>Suggested topics</CardTitle>
-          <button
-            onClick={loadIdeas}
-            disabled={ideasBusy}
-            className="text-[12px] text-primary hover:underline disabled:opacity-50"
-          >
-            {ideasBusy ? "thinking…" : "↻ regenerate"}
-          </button>
+          <div className="flex items-center gap-2">
+            <label className="text-[12px] text-muted-foreground">how many</label>
+            <input
+              type="number"
+              min={1}
+              max={30}
+              value={count}
+              onChange={(e) =>
+                setCount(Math.max(1, Math.min(30, parseInt(e.target.value || "10", 10) || 10)))
+              }
+              className="w-14 rounded-md border border-border bg-background px-2 py-1 text-[13px]"
+            />
+            <button
+              onClick={loadIdeas}
+              disabled={ideasBusy}
+              className="text-[12px] text-primary hover:underline disabled:opacity-50"
+            >
+              {ideasBusy ? "thinking…" : `↻ generate ${count}`}
+            </button>
+          </div>
         </div>
         <p className="text-[12px] text-muted-foreground -mt-1 mb-2">
           Steered from live data — tracked creators + trends + James&apos;s real
-          topics, balanced to your brand pillars. These are saved, so they stay
-          until you change them. Click a topic to load it · ✓ keep · ✕ reject ·
-          ↻ regenerate (kept ones stay).
+          topics, balanced to your brand pillars. Saved, so they stay until you
+          change them. Click a topic to load it · ✓ keep · ✕ reject · Create post
+          turns one into a queued post + image.
         </p>
+        {(() => {
+          const keptPending = ideas.filter(
+            (i) => i.status === "accepted" && (!i.id || cardCreating[i.id] !== "done")
+          );
+          if (!keptPending.length && !batch?.running) return null;
+          return (
+            <div className="flex items-center gap-3 mb-3 rounded-lg border border-primary/40 bg-primary/5 p-2.5">
+              <span className="text-[12px] text-foreground">{keptPending.length} kept</span>
+              <Button onClick={createAllKept} disabled={batch?.running || !keptPending.length}>
+                {batch?.running ? (
+                  <>
+                    <Spinner /> Creating {batch.done}/{batch.total}…
+                  </>
+                ) : (
+                  `Create all kept (${imageMode === "soul" ? "Soul" : "photo"})`
+                )}
+              </Button>
+              <span className="text-[11px] text-muted-foreground">
+                → posts + images land in the Approval Queue
+              </span>
+            </div>
+          );
+        })()}
         {ideasBusy && ideas.length === 0 ? (
           <div className="flex items-center gap-2 text-[13px] text-muted-foreground py-2">
             <Spinner /> Pulling trends + ideating 10 topics… ~15–25s
@@ -312,6 +422,24 @@ function PostImageMode() {
                     >
                       use this →
                     </button>
+                    {i.id &&
+                      (cardCreating[i.id] === "running" ? (
+                        <span className="text-[11px] text-muted-foreground flex items-center gap-1">
+                          <Spinner /> creating…
+                        </span>
+                      ) : cardCreating[i.id] === "done" ? (
+                        <Link href="/queue" className="text-[11px] text-primary hover:underline">
+                          queued ✓
+                        </Link>
+                      ) : (
+                        <button
+                          onClick={() => createForIdea(i)}
+                          className="text-[11px] text-primary hover:underline"
+                          title="Write the post + attach an image and queue it"
+                        >
+                          {cardCreating[i.id] === "failed" ? "retry create" : "create post"}
+                        </button>
+                      ))}
                     {i.id && (
                       <div className="ml-auto flex items-center gap-1">
                         <button
