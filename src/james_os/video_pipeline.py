@@ -1376,4 +1376,17 @@ async def get_production(production_id: UUID, tenant_id: UUID | None = None) -> 
     return _row(row) if row else None
 
 
-__all__ = ["start_production", "run_production", "list_productions", "get_production"]
+async def delete_production(production_id: UUID, tenant_id: UUID | None = None) -> bool:
+    """Hard-delete a production row. Returns True if a row was removed (RLS via
+    acquire scopes it to the caller's tenant)."""
+    async with acquire(tenant_id) as conn:
+        status = await conn.execute(
+            "DELETE FROM video_productions WHERE id=$1", production_id
+        )
+    return status.rsplit(" ", 1)[-1] != "0"
+
+
+__all__ = [
+    "start_production", "run_production", "list_productions", "get_production",
+    "delete_production",
+]

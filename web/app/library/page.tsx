@@ -16,8 +16,8 @@
  * Mode + review filter chips narrow the video grid. All client-side,
  * no server roundtrip.
  *
- * Honest scope: this is a viewer / catalog only — it does NOT delete
- * or re-render. Use /pipeline for that. Videos play from Creatomate's
+ * Scope: a viewer / catalog with per-item Delete (removes the catalog
+ * row; it does NOT re-render — use /pipeline for that). Videos play from Creatomate's
  * Backblaze URL directly; if Creatomate's TTL ever expires those, we
  * fall back to the persisted mirror at /video/clips/library.
  */
@@ -212,6 +212,34 @@ export default function LibraryPage() {
       setCopiedPostId(it.id);
       setTimeout(() => setCopiedPostId((id) => (id === it.id ? null : id)), 1500);
     } catch { /* noop — older browsers */ }
+  }
+
+  // Hard-delete from the library. Videos remove the production row; posts
+  // remove the queue item. Optimistic — drop from the list on success.
+  async function deleteProductionItem(p: Production) {
+    if (!window.confirm("Delete this video from the library? This can't be undone.")) return;
+    setActing(p.id); setErr("");
+    try {
+      await api.deleteProduction(p.id);
+      setItems((cur) => cur.filter((x) => x.id !== p.id));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "delete failed");
+    } finally {
+      setActing(null);
+    }
+  }
+
+  async function deletePostItem(it: QueueItem) {
+    if (!window.confirm("Delete this post from the library? This can't be undone.")) return;
+    setActing(it.id); setErr("");
+    try {
+      await api.deleteQueueItem(it.id);
+      setPosts((cur) => cur.filter((x) => x.id !== it.id));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "delete failed");
+    } finally {
+      setActing(null);
+    }
   }
 
   return (
@@ -464,6 +492,14 @@ export default function LibraryPage() {
                     <Button variant="secondary" onClick={() => copyUrl(p)}>
                       {copiedId === p.id ? "✓ Copied" : "Copy URL"}
                     </Button>
+                    <button
+                      onClick={() => deleteProductionItem(p)}
+                      disabled={acting === p.id}
+                      title="Delete permanently from the library"
+                      className="text-[12px] px-3 py-1.5 rounded-md border border-border text-muted-foreground hover:border-destructive hover:text-destructive transition-colors disabled:opacity-50"
+                    >
+                      🗑 Delete
+                    </button>
                     <a
                       href={p.final_url || "#"}
                       target="_blank"
@@ -543,6 +579,14 @@ export default function LibraryPage() {
                           <Button variant="secondary" onClick={() => copyPostText(it)}>
                             {copiedPostId === it.id ? "✓ Copied" : "Copy text"}
                           </Button>
+                          <button
+                            onClick={() => deletePostItem(it)}
+                            disabled={acting === it.id}
+                            title="Delete permanently from the library"
+                            className="text-[12px] px-3 py-1.5 rounded-md border border-border text-muted-foreground hover:border-destructive hover:text-destructive transition-colors disabled:opacity-50"
+                          >
+                            🗑 Delete
+                          </button>
                           {img && (
                             <a
                               href={img}

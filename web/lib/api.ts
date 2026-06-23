@@ -930,6 +930,8 @@ export const api = {
     jpost<{ ok: boolean; id: string; status: string; learned_id: string | null }>(
       `/video/productions/${id}/reject`, { reason },
     ),
+  deleteProduction: (id: string) =>
+    jdel<{ ok: boolean; id: string }>(`/video/productions/${id}`),
   listVideoFeedback: (limit = 30, tag = "") => {
     const q = new URLSearchParams();
     if (limit) q.set("limit", String(limit));

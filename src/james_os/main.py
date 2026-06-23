@@ -1463,6 +1463,17 @@ async def video_reject(
     }
 
 
+@app.delete("/video/productions/{production_id}")
+async def video_delete(production_id: UUID) -> dict:
+    """Hard-delete a finished video production from the Output Library.
+    Removes the catalog row (the rendered file lives on the provider CDN)."""
+    from .video_pipeline import delete_production
+    ok = await delete_production(production_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="production not found")
+    return {"ok": True, "id": str(production_id)}
+
+
 @app.get("/video/feedback")
 async def video_feedback_list(limit: int = 50, tag: str = "") -> dict:
     """Recent video-feedback events for display on /library and any
