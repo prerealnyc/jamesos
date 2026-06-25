@@ -22,6 +22,7 @@ import {
   PageHeader,
 } from "@/components/ui";
 import VideoEditor from "@/components/video-editor";
+import { RenderTracker } from "@/components/render-tracker";
 
 export default function VideoStudio() {
   const [mode, setMode] = useState<"composer" | "producer" | "clip">("composer");
@@ -79,7 +80,16 @@ function Producer() {
   async function loadList() {
     try { setProductions(await api.listProductions()); } catch {}
   }
-  useEffect(() => { loadList(); return () => { if (pollRef.current) clearInterval(pollRef.current); }; }, []);
+  // Live-poll the list every 4s so the tracker reflects ANY in-flight render —
+  // including ones kicked from autopilot or other pages, not just this one.
+  useEffect(() => {
+    loadList();
+    const t = setInterval(loadList, 4000);
+    return () => {
+      clearInterval(t);
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
 
   async function preview() {
     if (!script.trim()) return;
@@ -112,6 +122,9 @@ function Producer() {
   }
 
   const active = prod && prod.status !== "succeeded" && prod.status !== "failed";
+  // Keep the open production view live off the 4s list poll (so a render
+  // selected from the list, or kicked elsewhere, updates without its own poll).
+  const liveProd = prod ? productions.find((x) => x.id === prod.id) || prod : null;
 
   return (
     <>
@@ -146,23 +159,39 @@ function Producer() {
       </Card>
 
       {plan && !prod && <PlanView plan={plan} />}
-      {prod && <ProductionView prod={prod} />}
+      {liveProd && <ProductionView prod={liveProd} />}
 
-      {productions.length > 0 && (
-        <Card>
-          <CardTitle>Recent productions</CardTitle>
-          <div className="flex flex-col gap-2 mt-2">
-            {productions.map((p) => (
-              <div key={p.id} className="flex items-center gap-2 text-[13px] border border-border rounded-md p-2">
-                <Badge tone={STAGE_TONE[p.status]}>{p.status}</Badge>
-                <span className="flex-1 truncate">{p.title || p.script.slice(0, 60)}</span>
-                <span className="text-muted-foreground text-[11px]">{p.scenes?.length || 0} scenes</span>
-                <button className="text-primary text-[12px]" onClick={() => setProd(p)}>view</button>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
+      {productions.length > 0 && (() => {
+        const activeProds = productions.filter((p) => p.status !== "succeeded" && p.status !== "failed");
+        return (
+          <Card>
+            <div className="flex items-center justify-between gap-2">
+              <CardTitle>Render tracker</CardTitle>
+              {activeProds.length > 0 && (
+                <span className="text-[12px] text-muted-foreground flex items-center gap-1.5">
+                  <Spinner /> {activeProds.length} rendering
+                </span>
+              )}
+            </div>
+            <div className="flex flex-col gap-2 mt-2">
+              {productions.map((p) => {
+                const isActive = p.status !== "succeeded" && p.status !== "failed";
+                return (
+                  <div key={p.id} className="border border-border rounded-md p-2.5 flex flex-col gap-2">
+                    <div className="flex items-center gap-2 text-[13px]">
+                      <Badge tone={STAGE_TONE[p.status]}>{p.status}</Badge>
+                      <span className="flex-1 truncate">{p.title || p.script.slice(0, 60)}</span>
+                      <span className="text-muted-foreground text-[11px]">{p.scenes?.length || 0} scenes</span>
+                      <button className="text-primary text-[12px]" onClick={() => setProd(p)}>view</button>
+                    </div>
+                    {isActive && <RenderTracker prod={p} compact />}
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        );
+      })()}
     </>
   );
 }
@@ -194,8 +223,6 @@ function PlanView({ plan }: { plan: ScenePlan }) {
 
 function ProductionView({ prod }: { prod: Production }) {
   const isStub = (prod.final_url || "").startsWith("stub://");
-  const stages = ["planning", "rendering_clips", "assembling", "succeeded"];
-  const curIdx = stages.indexOf(prod.status);
   return (
     <Card>
       <div className="flex items-center justify-between">
@@ -203,15 +230,9 @@ function ProductionView({ prod }: { prod: Production }) {
         <Badge tone={STAGE_TONE[prod.status]}>{prod.status}</Badge>
       </div>
 
-      <div className="flex gap-1 mt-2 mb-3">
-        {stages.map((st, i) => (
-          <div key={st} className={`h-1.5 flex-1 rounded ${
-            prod.status === "failed" ? "bg-destructive/40" : i <= curIdx ? "bg-primary" : "bg-secondary"
-          }`} title={st} />
-        ))}
+      <div className="mt-3 mb-3">
+        <RenderTracker prod={prod} />
       </div>
-
-      {prod.error && <p className="text-destructive text-sm mb-2">✗ {prod.error}</p>}
 
       <div className="text-[11px] text-muted-foreground mb-3">
         avatar: {prod.avatar_provider} · b-roll: {prod.broll_provider} · assembly: {prod.assembly_provider}

@@ -500,6 +500,16 @@ export type Production = {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  // Server-computed render progress for the tracker (videos only).
+  progress?: {
+    stage: string;
+    stage_index: number;
+    total_stages: number;
+    label: string;       // "what it's doing" right now
+    pct: number;         // 0-100
+    elapsed_s: number;
+    eta_s: number;       // approximate seconds remaining
+  };
 };
 
 /** One assemblable clip surfaced by /video/clips/library — used as a source

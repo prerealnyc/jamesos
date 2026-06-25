@@ -67,8 +67,60 @@ async def _avoid_block(tags: list[str] | None, tenant_id: UUID | None) -> str:
         return ""
 
 
+# ── render progress / ETA ─────────────────────────────────────────────
+# Working stages in order (terminal 'succeeded'/'failed' handled separately).
+_PROGRESS_STAGES = ["queued", "planning", "rendering_clips", "assembling"]
+_STAGE_LABEL = {
+    "queued": "Queued — waiting to start",
+    "planning": "Planning the scenes & beats",
+    "rendering_clips": "Rendering clips — avatar + animated B-roll (the long part)",
+    "assembling": "Assembling, captioning & mixing audio",
+    "succeeded": "Done",
+    "failed": "Failed",
+}
+# Rough typical seconds per stage — rendering_clips dominates (HeyGen avatar +
+# image-to-video B-roll). The ETA is APPROXIMATE by design.
+_STAGE_TYPICAL_S = {"queued": 4, "planning": 18, "rendering_clips": 220, "assembling": 80}
+
+
+def _progress(r) -> dict:
+    """Approximate render progress + ETA for the tracker. Stage-weighted by
+    typical durations, blended with time elapsed in the current stage."""
+    from datetime import datetime, timezone
+
+    status = (r.get("status") or "queued")
+    n = len(_PROGRESS_STAGES)
+    if status == "failed":
+        return {"stage": "failed", "stage_index": 0, "total_stages": n,
+                "label": _STAGE_LABEL["failed"], "pct": 100, "elapsed_s": 0, "eta_s": 0}
+    if status == "succeeded":
+        return {"stage": "succeeded", "stage_index": n, "total_stages": n,
+                "label": _STAGE_LABEL["succeeded"], "pct": 100, "elapsed_s": 0, "eta_s": 0}
+    try:
+        now = datetime.now(timezone.utc)
+        created = r.get("created_at")
+        updated = r.get("updated_at") or created
+        elapsed_total = max(0, int((now - created).total_seconds())) if created else 0
+        elapsed_stage = max(0, int((now - updated).total_seconds())) if updated else 0
+    except Exception:  # noqa: BLE001
+        elapsed_total = elapsed_stage = 0
+    idx = _PROGRESS_STAGES.index(status) if status in _PROGRESS_STAGES else 0
+    total_typical = sum(_STAGE_TYPICAL_S[s] for s in _PROGRESS_STAGES)
+    before = sum(_STAGE_TYPICAL_S[s] for s in _PROGRESS_STAGES[:idx])
+    cur = _STAGE_TYPICAL_S.get(status, 60)
+    done = before + min(elapsed_stage, cur)
+    pct = max(1, min(99, round(done / total_typical * 100)))
+    remaining = (cur - min(elapsed_stage, cur)) + sum(
+        _STAGE_TYPICAL_S[s] for s in _PROGRESS_STAGES[idx + 1:]
+    )
+    return {"stage": status, "stage_index": idx, "total_stages": n,
+            "label": _STAGE_LABEL.get(status, status), "pct": pct,
+            "elapsed_s": elapsed_total, "eta_s": max(5, int(remaining))}
+
+
 def _row(r) -> dict:
     d = dict(r)
+    d["progress"] = _progress(r)
     for k in ("id", "tenant_id", "queued_action_id"):
         if d.get(k) is not None:
             d[k] = str(d[k])
