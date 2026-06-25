@@ -194,9 +194,10 @@ function PostImageMode() {
     const { job_id } = await api.startCreateBatch({
       topics: topics.map((t) => ({ topic: t.topic, pillar: t.pillar })),
       platform,
-      // Batch create supports photo/soul; "designed" isn't a batch mode yet,
-      // so it falls back to a hero photo for bulk creation.
-      image_mode: imageMode === "designed" ? "photo" : imageMode,
+      // Batch supports photo / soul / designed. In "designed" mode the backend
+      // runs the art-director machine per post (quote / meme / statement),
+      // varied across the batch — no specific image_url needed.
+      image_mode: imageMode,
       image_url: imageMode === "photo" ? imageUrl : "",
     });
     // Soul renders are ~30-60s each (2 at a time) — poll generously.
@@ -368,7 +369,13 @@ function PostImageMode() {
                     <Spinner /> Creating {batch.done}/{batch.total}…
                   </>
                 ) : (
-                  `Create all kept (${imageMode === "soul" ? "Soul" : "photo"})`
+                  `Create all kept (${
+                    imageMode === "soul"
+                      ? "Soul"
+                      : imageMode === "designed"
+                      ? "Designed"
+                      : "photo"
+                  })`
                 )}
               </Button>
               <span className="text-[11px] text-muted-foreground">

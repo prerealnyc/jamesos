@@ -1245,7 +1245,7 @@ export const api = {
   startCreateBatch: (body: {
     topics: { topic: string; pillar?: string }[];
     platform?: string;
-    image_mode?: "photo" | "soul" | "none";
+    image_mode?: "photo" | "soul" | "designed" | "none";
     image_url?: string;
   }) =>
     jpost<{ job_id: string; status: string; total: number }>(
@@ -1258,7 +1258,7 @@ export const api = {
       status: "running" | "done" | "failed";
       total: number;
       done: number;
-      results: { topic: string; action_id: string | null; image_url: string | null; error: string | null }[];
+      results: { topic: string; action_id: string | null; image_url: string | null; format?: string | null; error: string | null }[];
       error?: string | null;
     }>(`/post/create-batch/${id}`),
   // Suggested post topics, steered from live data (same engine as video

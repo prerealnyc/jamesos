@@ -1021,9 +1021,15 @@ async def post_soul_image_get(job_id: str) -> dict:
 _DESIGNED_JOBS: dict[str, dict] = {}
 
 
-async def _generate_designed_post_image(action_id, topic: str, draft_text: str, tenant_id) -> str:
+async def _generate_designed_post_image(
+    action_id, topic: str, draft_text: str, tenant_id, avoid: str = "",
+) -> tuple[str, str]:
     """Art-director → text-free background (Soul James or cinematic scene) →
-    Pillow-composited quote card / meme → persist + attach to the action."""
+    Pillow-composited quote card / meme → persist + attach to the action.
+
+    Returns (served_uri, format) — the format ("quote" | "meme" | "statement")
+    is surfaced so batch callers can vary it across many posts. `avoid` is a
+    soft variety hint forwarded to the art director."""
     import httpx
 
     from .brand_kit import get_brand_kit
@@ -1033,7 +1039,7 @@ async def _generate_designed_post_image(action_id, topic: str, draft_text: str, 
     from .media import create_media
     from .media import storage as media_storage
 
-    spec = await direct_designed_image(draft_text or "", topic or "")
+    spec = await direct_designed_image(draft_text or "", topic or "", avoid=avoid)
     fmt = spec.get("format") or "quote"
     bg_prompt = (spec.get("bg_prompt") or topic or "cinematic golden-hour scene").strip()
     bg_kind = spec.get("bg_kind") or "scene"
@@ -1121,7 +1127,7 @@ async def _generate_designed_post_image(action_id, topic: str, draft_text: str, 
             action_id,
             json.dumps({"image_url": served_uri, "media_url": served_uri, "has_image": True}),
         )
-    return served_uri
+    return served_uri, fmt
 
 
 @app.post("/post/designed-image", status_code=202)
@@ -1143,7 +1149,7 @@ async def post_designed_image_start(req: SoulImageRequest, background: Backgroun
 
     async def _run() -> None:
         try:
-            url = await _generate_designed_post_image(
+            url, _fmt = await _generate_designed_post_image(
                 req.action_id, req.topic, req.draft_text, tid,
             )
             _DESIGNED_JOBS[job_id] = {
@@ -1173,11 +1179,15 @@ _CREATE_BATCHES: dict[str, dict] = {}
 
 async def _create_one_post(
     topic: str, pillar: str, platform: str, image_mode: str,
-    image_url: str, soul_id: str, tenant_id,
+    image_url: str, soul_id: str, tenant_id, avoid: str = "",
 ) -> dict:
     """Generate a post for one topic and attach an image per image_mode.
-    Returns {topic, action_id, image_url, error}. Image is additive."""
-    out: dict = {"topic": topic, "action_id": None, "image_url": None, "error": None}
+    Returns {topic, action_id, image_url, format, error}. Image is additive.
+    `avoid` is a soft variety hint forwarded to the designed art director."""
+    out: dict = {
+        "topic": topic, "action_id": None, "image_url": None,
+        "format": None, "error": None,
+    }
     try:
         draft = await generate_content(
             ContentBrief(
@@ -1210,6 +1220,12 @@ async def _create_one_post(
                 draft.action_id, topic, draft.draft or topic, "4:5", soul_id,
                 tenant_id,
             )
+        elif image_mode == "designed":
+            url, fmt = await _generate_designed_post_image(
+                draft.action_id, topic, draft.draft or topic, tenant_id, avoid=avoid,
+            )
+            out["image_url"] = url
+            out["format"] = fmt
     except Exception as e:  # noqa: BLE001 — text already queued; image is additive
         out["error"] = f"image failed: {e}"
     return out
@@ -1231,7 +1247,7 @@ async def post_create_batch(req: CreateBatchRequest, background: BackgroundTasks
     topics = [t for t in (req.topics or []) if (t.topic or "").strip()]
     if not topics:
         raise HTTPException(status_code=400, detail="no topics to create")
-    image_mode = req.image_mode if req.image_mode in ("photo", "soul", "none") else "photo"
+    image_mode = req.image_mode if req.image_mode in ("photo", "soul", "designed", "none") else "photo"
     soul_id = (settings.higgsfield_soul_id or "").strip()
     if image_mode == "soul" and not soul_id:
         raise HTTPException(
@@ -1263,15 +1279,31 @@ async def post_create_batch(req: CreateBatchRequest, background: BackgroundTasks
             except Exception:  # noqa: BLE001
                 hero_urls = []
 
+        # Designed mode: keep a running tally of which card formats have been
+        # used so the art director can vary them across the batch (anti-repeat).
+        format_counts: dict[str, int] = {}
+
+        def _avoid_fmt() -> str:
+            if not format_counts:
+                return ""
+            top = max(format_counts, key=lambda k: format_counts[k])
+            # Only nudge once a format starts to dominate, so a 2-post batch
+            # isn't forced into an awkward format.
+            return top if format_counts[top] >= 2 else ""
+
         async def _one(idx: int, t) -> None:
             async with sem:
                 img = (req.image_url or "").strip()
                 if image_mode == "photo" and not img and hero_urls:
                     img = hero_urls[idx % len(hero_urls)]
+                avoid = _avoid_fmt() if image_mode == "designed" else ""
                 r = await _create_one_post(
                     (t.topic or "").strip(), t.pillar, req.platform,
-                    image_mode, img, soul_id, tid,
+                    image_mode, img, soul_id, tid, avoid,
                 )
+                f = r.get("format")
+                if f:
+                    format_counts[f] = format_counts.get(f, 0) + 1
                 # Mutate the captured `job` ref, not _CREATE_BATCHES[job_id] —
                 # safe even if the entry was evicted from the global dict.
                 job["results"].append(r)

@@ -188,10 +188,12 @@ class CreateBatchRequest(BaseModel):
     """Create posts (text + image) for one or more topics in the background.
     Used by per-card 'Create post' (one topic) and 'Create all kept' (many).
     image_mode: 'photo' attaches hero photos (rotated, or image_url for all),
-    'soul' renders James from the Soul ID, 'none' skips the image."""
+    'soul' renders James from the Soul ID, 'designed' runs the multi-format
+    art-director machine (quote / meme / statement, varied across the batch),
+    'none' skips the image."""
     topics: list[CreatePostTopic]
     platform: str = "instagram"
-    image_mode: str = "photo"   # photo | soul | none
+    image_mode: str = "photo"   # photo | soul | designed | none
     image_url: str = ""          # photo mode: a specific photo; "" → rotate hero library
 
 

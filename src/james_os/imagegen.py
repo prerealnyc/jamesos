@@ -245,11 +245,16 @@ _DESIGN_DIRECTOR_SYSTEM = (
 )
 
 
-async def direct_designed_image(draft_text: str, topic: str = "") -> dict:
+async def direct_designed_image(draft_text: str, topic: str = "", avoid: str = "") -> dict:
     """LLM art director → {format, quote, top_text, bottom_text, bg_prompt,
     bg_kind} for the multi-format image machine. Best-effort: falls back to a
     quote built from the draft's first line so the machine never hard-depends
-    on the LLM."""
+    on the LLM.
+
+    `avoid` is a soft variety hint (a format name like "quote") used when
+    creating many posts in one batch: it nudges the art director toward a
+    DIFFERENT format so a batch doesn't emit the same card type over and over,
+    while still letting content win when a post clearly fits the avoided one."""
     text = (draft_text or topic or "").strip()
     fallback = {
         "format": "quote",
@@ -263,9 +268,16 @@ async def direct_designed_image(draft_text: str, topic: str = "") -> dict:
     try:
         from .llm import get_llm
 
+        user_content = text[:2000]
+        if avoid:
+            user_content += (
+                f"\n\n[Variety note: recent posts in this batch already used the "
+                f"'{avoid}' format. Prefer a DIFFERENT format for THIS post "
+                f"UNLESS its content clearly fits '{avoid}' best.]"
+            )
         out = await get_llm().complete_json(
             system=_DESIGN_DIRECTOR_SYSTEM,
-            messages=[{"role": "user", "content": text[:2000]}],
+            messages=[{"role": "user", "content": user_content}],
             max_tokens=400, temperature=0.7,
         )
         out = out or {}
