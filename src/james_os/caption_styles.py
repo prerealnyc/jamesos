@@ -735,8 +735,12 @@ def gradient_mint_elements(captions: list[dict], track: int = 3) -> list[dict]:
 # Designer styles that emit a complete multi-element caption track instead of
 # the builders' one-element-per-flash loop. The assembly builders call
 # styled_caption_elements() first and fall back to the standard loop on None.
+#
+# NOTE: viral_hook is intentionally NOT registered. Its two-phase "huge stacked
+# title" emphasised single words and overflowed the frame (captions "outside
+# and big / flying everywhere"). Unregistering it makes any residual viral_hook
+# request fall back to the uniform, width-constrained standard caption loop.
 _STYLED_BUILDERS = {
-    "viral_hook": viral_hook_elements,
     "magenta_blocks": magenta_blocks_elements,
     "editorial_serif": editorial_serif_elements,
     "gradient_mint": gradient_mint_elements,

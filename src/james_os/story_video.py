@@ -526,32 +526,19 @@ async def pick_caption_style(
     the default preset on any failure so a production never crashes
     over caption styling.
 
-    `avoid` — a video_feedback.video_avoid_block() string of past human
-    rejections (caption + general tags). Passed as its own payload field
-    so it survives brand_context truncation and steers the picker away
-    from styles/positions a human already rejected. Empty = no steering.
+    `avoid` — kept for signature compatibility (no longer used).
+
+    UNIFORM CAPTIONS: every auto-styled video uses ONE standard look —
+    `bold_pop` (white, heavy Archivo Black, thick black stroke, uppercase,
+    centered, consistent size, width-constrained so it never overflows). The
+    old per-video LLM picker chose styles like `viral_hook`, whose two-phase
+    "huge stacked title" emphasised single words and overflowed the frame
+    ("captions outside and big / flying everywhere"). Per user direction —
+    "use the standard caption type, same formatting" — the variety picker is
+    disabled. Template-locked styles (magenta) are unaffected: this only runs
+    when no caption_style is set on the production.
     """
-    from .caption_styles import CAPTION_PRESETS, DEFAULT_CAPTION_STYLE
-    payload = {
-        "platform": platform,
-        "brand_context": brand_context[:400],
-        "avoid": avoid[:800],
-        "script": (script or "")[:1500],
-        "available": list(CAPTION_PRESETS.keys()),
-    }
-    try:
-        out = await get_llm().complete_json(
-            system=_CAPTION_PICK_SYSTEM,
-            messages=[{"role": "user", "content": json.dumps(payload)}],
-            max_tokens=120, temperature=0.2,
-        )
-    except Exception:  # noqa: BLE001
-        return DEFAULT_CAPTION_STYLE, "LLM picker failed; using default"
-    name = str(out.get("caption_style") or "").strip().lower()
-    if name not in CAPTION_PRESETS:
-        return DEFAULT_CAPTION_STYLE, f"LLM returned unknown '{name}'; default"
-    reason = str(out.get("reason") or "")[:140]
-    return name, reason
+    return "bold_pop", "uniform standard caption (variety/emphasis disabled)"
 
 
 _CLASSIFY_SYSTEM = """You are the director for a short-form social video.
