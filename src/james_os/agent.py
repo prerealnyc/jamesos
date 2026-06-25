@@ -424,8 +424,32 @@ _register(Tool(
 ))
 
 
-async def _t_approve_item(item_id: str, reason: str = "approved by agent") -> dict:
+async def _t_approve_item(
+    item_id: str, reason: str = "approved by agent", override: bool = False,
+) -> dict:
     async with acquire() as conn:
+        # Same hard gate as the dashboard approve path: a draft that FAILED
+        # voice-QA must not be approved (even by the agent) without an explicit
+        # override, so a "mandatory" voice rule can't be bypassed via chat.
+        gate = await conn.fetchrow(
+            "SELECT payload FROM actions WHERE id=$1 AND status='pending'",
+            UUID(item_id),
+        )
+        if gate is not None and not override:
+            gp = gate["payload"]
+            if isinstance(gp, str):
+                import json as _json
+                gp = _json.loads(gp)
+            gp = gp or {}
+            if gp.get("flagged") is True or gp.get("qa_passed") is False:
+                return {
+                    "ok": False,
+                    "error": "qa_flagged: this draft failed voice-QA. Re-call "
+                    "with override=true only if the user explicitly says to "
+                    "approve it anyway.",
+                }
+        if override:
+            reason = f"[QA-OVERRIDE] {reason}"
         tag = await conn.execute(
             "UPDATE actions SET status='approved', approval_reason=$2, "
             "decided_at=now() WHERE id=$1",
@@ -445,12 +469,13 @@ async def _t_approve_item(item_id: str, reason: str = "approved by agent") -> di
 
 _register(Tool(
     name="approve_item",
-    description="Approve a queue item by id. Use ONLY when the user has explicitly told you to approve something.",
+    description="Approve a queue item by id. Use ONLY when the user has explicitly told you to approve something. If the item failed voice-QA this returns a qa_flagged error; re-call with override=true only when the user explicitly says to approve it anyway.",
     input_schema={
         "type": "object",
         "properties": {
             "item_id": {"type": "string"},
             "reason": {"type": "string", "default": "approved by agent"},
+            "override": {"type": "boolean", "default": False},
         },
         "required": ["item_id"],
     },
