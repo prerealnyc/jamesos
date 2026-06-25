@@ -201,11 +201,12 @@ def statement_card(bg_bytes: bytes, statement: str, handle: str = "",
     sf, sl = _fit(draw, (statement or "").upper(), _ARCHIVO, W - 2 * pad, 430, start=84, minimum=36)
     sy = _draw_centered(draw, sl, sf, W // 2, y, fill=_INK)
 
-    # Full-width image of James below the statement.
+    # Full-width image of James below the statement. Bias the crop high so his
+    # head/face is always kept (never cropped to the torso).
     img_top = int(sy + 28)
     if H - img_top > 200:
         panel = ImageOps.fit(_open_rgb(bg_bytes), (W, H - img_top),
-                             method=Image.LANCZOS, centering=(0.5, 0.32))
+                             method=Image.LANCZOS, centering=(0.5, 0.22))
         canvas.paste(panel, (0, img_top))
     return _png(canvas)
 

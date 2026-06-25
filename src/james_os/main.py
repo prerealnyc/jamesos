@@ -1042,8 +1042,16 @@ async def _generate_designed_post_image(action_id, topic: str, draft_text: str, 
     soul = (settings.higgsfield_soul_id or "").strip()
     if bg_kind == "james" and soul:
         from . import higgsfield_souls as hs
+        # Make sure James's FACE renders clearly and isn't cropped — these
+        # cards lean on his likeness, so frame him face-forward.
+        james_prompt = (
+            bg_prompt
+            + " Framing: medium head-and-shoulders to waist-up shot, James's "
+            "full face clearly visible, sharp and well-lit, looking toward "
+            "camera, not cropped at the top, centered."
+        )[:1500]
         sub = await hs.generate_character_image(
-            custom_reference_id=soul, prompt=bg_prompt, aspect_ratio="4:5", strength=0.85,
+            custom_reference_id=soul, prompt=james_prompt, aspect_ratio="4:5", strength=0.85,
         )
         rid = sub.get("request_id")
         url = ""
