@@ -1073,9 +1073,13 @@ async def animate_inserts(
                 await mark_reused(reused["media_id"], tenant_id)
                 return
             motion_prompt = (
-                "Cinematic, subtle, photoreal motion that matches the subject: "
-                "a slow camera push-in or gentle parallax, natural movement "
-                "within the scene, no morphing, no text. "
+                "Real cinematic VIDEO with clearly visible motion — this must "
+                "read as live footage, NOT a still photo. Include a noticeable "
+                "camera move (a dolly/push-in or slow pan) AND live motion "
+                "within the scene itself (people walking, traffic moving, "
+                "light and shadow shifting, foliage/fabric in the breeze). "
+                "Photoreal, smooth and natural — no morphing, no warping, "
+                "no text. "
                 f"Scene: {scene}"
             )[:950]
             # Long holds (reflective pacing, 6-8s windows) need a 10s
