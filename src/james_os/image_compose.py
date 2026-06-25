@@ -171,4 +171,43 @@ def meme_card(bg_bytes: bytes, top_text: str, bottom_text: str, handle: str = ""
     return _png(canvas)
 
 
-__all__ = ["quote_card", "meme_card", "W", "H"]
+def statement_card(bg_bytes: bytes, statement: str, handle: str = "",
+                   profile_bytes: bytes | None = None) -> bytes:
+    """Brad-Lea style: an IG-post header (profile + @handle) + a bold black
+    STATEMENT on white + a full-width image of James below (rendered from the
+    Soul ID by the caller)."""
+    canvas = Image.new("RGB", (W, H), (255, 255, 255))
+    draw = ImageDraw.Draw(canvas)
+    pad = 56
+    y = 40
+
+    # IG-post-style header: profile circle + @handle.
+    if profile_bytes:
+        d = 72
+        circ = _circle(profile_bytes, d)
+        canvas.paste(circ, (pad, y), circ)
+        if handle:
+            h = handle if handle.startswith("@") else "@" + handle
+            hf = _font(_ARCHIVO, 28)
+            draw.text((pad + d + 18, y + (d - 28) // 2 - 4), h, font=hf, fill=_INK)
+        y += d + 22
+    elif handle:
+        h = handle if handle.startswith("@") else "@" + handle
+        hf = _font(_ARCHIVO, 28)
+        draw.text((pad, y), h, font=hf, fill=_INK)
+        y += 50
+
+    # Bold statement (uppercase), centered, auto-fit.
+    sf, sl = _fit(draw, (statement or "").upper(), _ARCHIVO, W - 2 * pad, 430, start=84, minimum=36)
+    sy = _draw_centered(draw, sl, sf, W // 2, y, fill=_INK)
+
+    # Full-width image of James below the statement.
+    img_top = int(sy + 28)
+    if H - img_top > 200:
+        panel = ImageOps.fit(_open_rgb(bg_bytes), (W, H - img_top),
+                             method=Image.LANCZOS, centering=(0.5, 0.32))
+        canvas.paste(panel, (0, img_top))
+    return _png(canvas)
+
+
+__all__ = ["quote_card", "meme_card", "statement_card", "W", "H"]

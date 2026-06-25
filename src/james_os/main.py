@@ -1028,7 +1028,7 @@ async def _generate_designed_post_image(action_id, topic: str, draft_text: str, 
 
     from .brand_kit import get_brand_kit
     from .hero_context import get_hero_photo_files
-    from .image_compose import meme_card, quote_card
+    from .image_compose import meme_card, quote_card, statement_card
     from .imagegen import direct_designed_image, generate_post_image
     from .media import create_media
     from .media import storage as media_storage
@@ -1084,6 +1084,12 @@ async def _generate_designed_post_image(action_id, topic: str, draft_text: str, 
 
     if fmt == "meme":
         out = meme_card(bg_bytes, spec.get("top_text") or topic, spec.get("bottom_text") or "", handle)
+    elif fmt == "statement":
+        out = statement_card(
+            bg_bytes,
+            spec.get("statement") or spec.get("quote") or topic,
+            handle, profile_bytes,
+        )
     else:
         quote = (spec.get("quote") or "").strip() or (draft_text or topic or "").split(". ")[0]
         out = quote_card(bg_bytes, quote, handle, profile_bytes)

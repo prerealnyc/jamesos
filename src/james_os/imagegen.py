@@ -225,20 +225,23 @@ _DESIGN_DIRECTOR_SYSTEM = (
     "later in perfect type — so NEVER put any words in bg_prompt.\n\n"
     "Return STRICT JSON:\n"
     "{\n"
-    '  "format": "quote" | "meme",\n'
+    '  "format": "quote" | "meme" | "statement",\n'
     '  "quote": "<quote format: ONE punchy, scroll-stopping line in the '
     "author's voice, <= 14 words, no hashtags, no surrounding quote marks>\",\n"
     '  "top_text": "<meme format: the SETUP line, <= 8 words>",\n'
     '  "bottom_text": "<meme format: the PUNCHLINE / truth turn, <= 8 words>",\n'
-    '  "bg_prompt": "<a TEXT-FREE photoreal cinematic background scene to '
-    "generate — describe a real scene/mood; absolutely NO text, words, "
-    'letters, signs or logos>",\n'
+    '  "statement": "<statement format: a bold declarative statement / hot '
+    "take / identity line in the author's voice, <= 16 words>\",\n"
+    '  "bg_prompt": "<a TEXT-FREE photoreal cinematic background to generate — '
+    "for statement format, describe JAMES in a relevant scene; otherwise a "
+    "real scene/mood. Absolutely NO text, words, letters, signs or logos>\",\n"
     '  "bg_kind": "scene" | "james"\n'
     "}\n\n"
-    "Rules: use 'meme' ONLY when the post has a clear expectation-vs-reality "
-    "or before/after turn; otherwise 'quote'. bg_kind 'james' only if James "
-    "himself should be the visual, else 'scene'. Match the author's voice; no "
-    "clichés, no hype words."
+    "Rules: 'meme' ONLY for a clear expectation-vs-reality / before-after turn. "
+    "'statement' for a values/identity declaration or hot take where JAMES is "
+    "the visual (bg_kind MUST be 'james'). Otherwise 'quote'. bg_kind 'james' "
+    "only when James himself should be the visual, else 'scene'. Match the "
+    "author's voice; no clichés, no hype words."
 )
 
 
@@ -266,20 +269,26 @@ async def direct_designed_image(draft_text: str, topic: str = "") -> dict:
             max_tokens=400, temperature=0.7,
         )
         out = out or {}
-        fmt = "meme" if str(out.get("format", "")).lower() == "meme" else "quote"
+        raw_fmt = str(out.get("format", "")).lower()
+        fmt = raw_fmt if raw_fmt in ("quote", "meme", "statement") else "quote"
+        # Statement format puts James in the image — force bg_kind=james.
+        bg_kind = "james" if (fmt == "statement" or str(out.get("bg_kind", "")).lower() == "james") else "scene"
         spec = {
             "format": fmt,
             "quote": str(out.get("quote") or "").strip(),
             "top_text": str(out.get("top_text") or "").strip(),
             "bottom_text": str(out.get("bottom_text") or "").strip(),
+            "statement": str(out.get("statement") or "").strip(),
             "bg_prompt": str(out.get("bg_prompt") or "").strip() or fallback["bg_prompt"],
-            "bg_kind": "james" if str(out.get("bg_kind", "")).lower() == "james" else "scene",
+            "bg_kind": bg_kind,
         }
-        # Guard: a quote format with no quote, or a meme with no lines, falls back.
+        # Guards: each format needs its text or it falls back to a quote.
         if fmt == "quote" and not spec["quote"]:
             spec["quote"] = fallback["quote"]
         if fmt == "meme" and not (spec["top_text"] or spec["bottom_text"]):
             return fallback
+        if fmt == "statement" and not spec["statement"]:
+            spec["statement"] = spec["quote"] or fallback["quote"]
         return spec
     except Exception:  # noqa: BLE001
         return fallback
