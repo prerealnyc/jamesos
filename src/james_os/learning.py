@@ -135,7 +135,14 @@ async def record_approval(
     if isinstance(payload, str):
         import json
         payload = json.loads(payload)
-    event = approval_to_event(payload or {})
+    payload = payload or {}
+    # Never reinforce a draft that FAILED voice-QA, even when a human
+    # override-approved it. An override is "ship it despite the flag", not
+    # "imitate this" — promoting it would teach the engine to repeat the very
+    # violation the gate caught.
+    if payload.get("flagged") is True or payload.get("qa_passed") is False:
+        return None
+    event = approval_to_event(payload)
     if event is None:
         return None
     stored = await ingest_many([event], tenant_id)
@@ -161,6 +168,90 @@ async def record_rejection(
         payload = json.loads(payload)
 
     event = rejection_to_event(payload or {}, reason)
+    stored = await ingest_many([event], tenant_id)
+    return str(stored[0].id) if stored else None
+
+
+EDIT_FEEDBACK_SOURCE = "edit_feedback"
+
+
+def edit_to_event(payload: dict, old_content: str, new_content: str) -> EventCreate | None:
+    """A human EDITED an AI draft before approving — the richest signal there
+    is ('engine wrote X, a human changed it to Y'). Capture before→after as a
+    corrective style rule (frustration category, so it's injected as an <avoid>
+    and gated by voice-QA, same as rejections). Returns None for trivial,
+    near-identical edits (typo fixes) so the ledger doesn't fill with noise."""
+    import difflib
+
+    old = (old_content or "").strip()
+    new = (new_content or "").strip()
+    if not old or not new or old == new:
+        return None
+    # Only a SUBSTANTIVE rewrite is worth a rule — skip reworded/cosmetic edits
+    # (raises the bar vs. a simple ratio check so the ledger isn't flooded by
+    # the far-more-frequent edits, which would evict rejection guardrails).
+    if difflib.SequenceMatcher(None, old, new).ratio() > 0.85:
+        return None
+    platform = str(payload.get("platform", "") or "")
+    fmt = str(payload.get("format", "") or "")
+    topic = str(payload.get("topic", "") or payload.get("pillar", "") or "")
+    # AVOID-only: capture the ORIGINAL phrasing as something to avoid. The
+    # positive half (the edited text) is already learned when the manager
+    # approves the edited draft (record_approval → voice_corpus). Putting the
+    # edited text here would (a) double-count and (b) tell voice-QA to AVOID
+    # the very phrasing the human chose.
+    text = (
+        f"A human REWROTE this AI {platform or 'social'} {fmt or 'post'}"
+        f"{f' about “{topic}”' if topic else ''} before approving — the phrasing "
+        f"below was NOT good enough and was rewritten. Avoid writing like this:\n"
+        f"{old[:600]}"
+    )
+    digest = hashlib.sha256(f"{old[:80]}|{new[:80]}".encode()).hexdigest()[:16]
+    return EventCreate(
+        event_type="note",
+        payload={
+            "text": text,
+            "category": FRUSTRATION_CATEGORY,
+            "platform": platform,
+            "format": fmt,
+            "topic": topic,
+            "source": EDIT_FEEDBACK_SOURCE,
+        },
+        raw_content=text,
+        source=EventSource(
+            adapter="edit_feedback",
+            dedupe_key=f"edit-{digest}",
+            raw_metadata={"category": FRUSTRATION_CATEGORY, "source": EDIT_FEEDBACK_SOURCE},
+        ),
+        entities=[
+            f"category:{FRUSTRATION_CATEGORY}",
+            EDIT_FEEDBACK_SOURCE,
+            *([f"platform:{platform}"] if platform else []),
+        ],
+        effective_at=datetime.now(UTC),
+        confidence=1.0,  # a human's hands-on edit is authoritative
+    )
+
+
+async def record_edit(
+    action_id: UUID, old_content: str, new_content: str,
+    tenant_id: UUID | None = None,
+) -> str | None:
+    """Persist a manager's pre-approval edit as a corrective style rule.
+    Returns the stored event id, or None for trivial / non-content edits."""
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            "SELECT action_type, payload FROM actions WHERE id = $1", action_id
+        )
+    if row is None or (row["action_type"] or "") != "content":
+        return None
+    payload = row["payload"]
+    if isinstance(payload, str):
+        import json
+        payload = json.loads(payload)
+    event = edit_to_event(payload or {}, old_content, new_content)
+    if event is None:
+        return None
     stored = await ingest_many([event], tenant_id)
     return str(stored[0].id) if stored else None
 

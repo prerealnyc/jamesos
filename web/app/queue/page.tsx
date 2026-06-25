@@ -65,10 +65,35 @@ export default function QueuePage() {
   }, []);
 
   async function approve(id: string) {
+    const item = items.find((i) => i.id === id);
+    // Flagged = failed voice-QA. Require an explicit confirm before overriding
+    // the gate, so a "mandatory" rule isn't bypassed with a stray click.
+    let override = false;
+    if (item?.flagged) {
+      const drift = (item.qaDrift || []).join(" · ");
+      if (
+        !window.confirm(
+          "This draft FAILED voice-QA" +
+            (drift ? ` (${drift})` : "") +
+            ".\n\nApprove it anyway?"
+        )
+      )
+        return;
+      override = true;
+    }
     setActing(id);
     try {
-      const item = items.find((i) => i.id === id);
-      await api.approve(id);
+      try {
+        await api.approve(id, "approved via dashboard", override);
+      } catch (e) {
+        // Backend gate fired (e.g. flag set after load) — offer the override.
+        const msg = e instanceof Error ? e.message : "";
+        if (msg.includes("qa_flagged") && window.confirm("This draft failed voice-QA. Approve anyway?")) {
+          await api.approve(id, "approved via dashboard", true);
+        } else {
+          throw e;
+        }
+      }
       if (item && isVideoItem(item)) {
         setToast({
           message: "Approved — find the download in Output Library.",
@@ -79,6 +104,8 @@ export default function QueuePage() {
         setToast({ message: "Approved.", href: undefined, hrefLabel: undefined });
       }
       await load();
+    } catch (e) {
+      setToast({ message: e instanceof Error ? e.message : "Approve failed" });
     } finally {
       setActing(null);
     }
@@ -117,9 +144,19 @@ export default function QueuePage() {
     if (ids.length === 0) return;
     setBatchBusy(true);
     try {
-      for (const id of ids) await api.approve(id).catch(() => {});
+      // Bulk approve can't safely override the voice-QA gate, so flagged items
+      // 409 and are skipped — count real successes instead of claiming all N.
+      let ok = 0;
+      for (const id of ids) {
+        try { await api.approve(id); ok++; } catch { /* flagged → skipped */ }
+      }
       setSelected(new Set());
-      setToast({ message: `Approved ${ids.length} item${ids.length === 1 ? "" : "s"}.` });
+      setToast({
+        message:
+          ok === ids.length
+            ? `Approved ${ids.length} item${ids.length === 1 ? "" : "s"}.`
+            : `Approved ${ok} of ${ids.length} — ${ids.length - ok} flagged, approve those individually.`,
+      });
       await load();
     } finally { setBatchBusy(false); }
   }
@@ -329,6 +366,11 @@ export default function QueuePage() {
                 <span className="text-xs text-muted-foreground">
                   {video ? "🎬 video" : it.format}
                 </span>
+                {it.flagged && it.status === "pending" && (
+                  <span title={(it.qaDrift || []).join(" · ") || "failed voice-QA"}>
+                    <Badge tone="destructive">⚠ failed voice-QA</Badge>
+                  </span>
+                )}
                 <span className="ml-auto">
                   <Badge
                     tone={

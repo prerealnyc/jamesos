@@ -165,6 +165,9 @@ export type QueueItem = {
   content: string;
   caption: string;
   voiceScore: number | null;
+  flagged?: boolean;       // failed voice-QA — needs override to approve
+  qaDrift?: string[];      // voice-QA drift notes
+
   imageUrl?: string | null;   // post-image attachments
   mediaUrl?: string | null;   // rendered video URL (Creatomate / Backblaze)
   proposedBy: string;
@@ -1274,8 +1277,8 @@ export const api = {
   checkIntegrations: () => jget<IntegrationCheck>("/api/integrations/check"),
   queue: () => jget<QueueItem[]>("/api/queue"),
   queueStats: () => jget<QueueStats>("/api/queue/stats"),
-  approve: (id: string, reason = "approved via dashboard") =>
-    jpost(`/api/queue/${id}/approve`, { reason }),
+  approve: (id: string, reason = "approved via dashboard", override = false) =>
+    jpost(`/api/queue/${id}/approve`, { reason, override }),
   reject: (id: string, reason = "rejected via dashboard") =>
     jpost<{ ok: boolean; learned: boolean; guardrail_id: string | null }>(
       `/api/queue/${id}/reject`,

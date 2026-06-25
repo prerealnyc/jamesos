@@ -419,6 +419,10 @@ def _action_to_queue_item(row: dict) -> dict:
         "content": body,
         "caption": body,
         "voiceScore": payload.get("voice_score"),
+        # Voice-QA verdict — a flagged draft failed the gate and needs an
+        # explicit override to approve (see approve_item).
+        "flagged": payload.get("flagged") is True or payload.get("qa_passed") is False,
+        "qaDrift": payload.get("qa_drift") or [],
         "imageUrl": payload.get("image_url"),
         "mediaUrl": payload.get("media_url"),
         "proposedBy": row["proposed_by"],
@@ -455,7 +459,29 @@ async def queue_stats() -> dict:
 
 @router.post("/queue/{item_id}/approve")
 async def approve_item(item_id: UUID, body: dict = Body(default={})) -> dict:
+    override = bool(body.get("override"))
     async with acquire() as conn:
+        # Hard gate: a draft that FAILED voice-QA (a frustration / voice-rule
+        # violation) must not approve with one click — require an explicit
+        # override so a "mandatory" rule actually bites. Only applies while
+        # the item is still pending; non-pending items fall through unchanged.
+        gate_row = await conn.fetchrow(
+            "SELECT payload FROM actions WHERE id=$1 AND status='pending'", item_id
+        )
+        if gate_row is not None and not override:
+            gp = gate_row["payload"]
+            if isinstance(gp, str):
+                gp = json.loads(gp)
+            gp = gp or {}
+            if gp.get("flagged") is True or gp.get("qa_passed") is False:
+                raise HTTPException(
+                    status_code=409,
+                    detail="qa_flagged: this draft failed voice-QA — approve "
+                    "again with override to publish it anyway.",
+                )
+        reason = body.get("reason", "approved via dashboard")
+        if override:
+            reason = f"[QA-OVERRIDE] {reason}"
         # asyncpg's execute() returns the command tag, e.g. 'UPDATE 1' /
         # 'UPDATE 0' — the count is the second token. We can't lie to the
         # caller about a write that affected nothing.
@@ -463,7 +489,7 @@ async def approve_item(item_id: UUID, body: dict = Body(default={})) -> dict:
             "UPDATE actions SET status='approved', approval_reason=$2, "
             "decided_at=now() WHERE id=$1",
             item_id,
-            body.get("reason", "approved via dashboard"),
+            reason,
         )
     if not tag.endswith(" 1"):
         raise HTTPException(status_code=404, detail=f"action {item_id} not found")
@@ -529,15 +555,35 @@ async def edit_item(item_id: UUID, body: dict = Body(default={})) -> dict:
     if not new_content:
         raise HTTPException(status_code=400, detail="content required")
     async with acquire() as conn:
+        # Capture the original text BEFORE overwriting — the before→after delta
+        # is the learning signal (see record_edit).
+        old_content = await conn.fetchval(
+            "SELECT coalesce(payload->>'content', payload->>'text') FROM actions "
+            "WHERE id = $1 AND status = 'pending'",
+            item_id,
+        )
+        # Clear the voice-QA flag: an edit IS the human review, so the edited
+        # draft re-enters the normal approve path instead of being stuck behind
+        # the flagged gate forever (the edit exists precisely to remediate it).
         tag = await conn.execute(
-            "UPDATE actions SET payload = jsonb_set("
+            "UPDATE actions SET payload = jsonb_set(jsonb_set(jsonb_set("
             "coalesce(payload,'{}'::jsonb), '{content}', to_jsonb($2::text), true), "
+            "'{flagged}', 'false'::jsonb, true), "
+            "'{qa_passed}', 'true'::jsonb, true), "
             "updated_at = now() WHERE id = $1 AND status = 'pending'",
             item_id, new_content,
         )
     if not tag.endswith(" 1"):
         raise HTTPException(status_code=404, detail="pending action not found")
-    return {"ok": True, "id": str(item_id), "content": new_content}
+    # Learn from the edit: 'engine wrote X → human changed to Y' becomes a
+    # corrective style rule. Best-effort — never fail the edit if it hiccups.
+    learned = False
+    try:
+        from .learning import record_edit
+        learned = bool(await record_edit(item_id, old_content or "", new_content))
+    except Exception:  # noqa: BLE001
+        learned = False
+    return {"ok": True, "id": str(item_id), "content": new_content, "learned": learned}
 
 
 @router.post("/queue/{item_id}/schedule")

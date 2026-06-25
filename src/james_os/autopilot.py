@@ -217,10 +217,30 @@ async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
             _seen.add(u)
             xpoz_posts.append(p)
 
+    # The brand's OWN top-performing posts (from analytics) — so ideation can
+    # replicate the hooks/angles that already worked HERE, not just competitor
+    # virality. Best-effort: empty when no brand accounts/scrapes exist yet.
+    self_top: list[dict] = []
+    try:
+        from .analytics import list_posts
+        top = await list_posts(sort="outlier", days=90, limit=6, tenant_id=tenant_id)
+        self_top = [
+            {
+                "caption": (p.get("caption") or "")[:200],
+                "platform": p.get("platform") or "",
+                "outlier_score": float(p.get("outlier_score") or 0.0),
+                "views": int(p.get("views") or 0),
+            }
+            for p in top
+            if (p.get("caption") or "").strip()
+        ]
+    except Exception:  # noqa: BLE001
+        self_top = []
+
     provider = get_research_provider()
     if provider.name == "stub":
         # No Perplexity — but Xpoz alone is a valid viral signal.
-        if not xpoz_posts:
+        if not xpoz_posts and not self_top:
             return None
         return {
             "provider": "xpoz", "subject": subject, "summary": "", "findings": [],
@@ -228,6 +248,7 @@ async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
             "trends": [], "xpoz_trending": xpoz_posts,
             "xpoz_keywords": xpoz_intel.trending_keywords(xpoz_posts),
             "cohort_creators": [], "cohort_trends": [],
+            "self_top": self_top,
         }
 
     focus = (cfg.get("research_focus") or "").strip() or _VIRALITY_FOCUS
@@ -268,6 +289,7 @@ async def _gather_intel(cfg: dict, tenant_id: UUID | None) -> dict | None:
         "xpoz_keywords": xpoz_intel.trending_keywords(xpoz_posts),
         "cohort_creators": cohort["creators"],
         "cohort_trends": cohort["trends"],
+        "self_top": self_top,
     }
 
 
@@ -473,6 +495,22 @@ async def generate_ideas(
         "the story; never keyword-stuff): " + ", ".join(kw) + "\n"
     ) if kw else ""
 
+    # The brand's OWN best-performing posts — the strongest signal of what
+    # actually lands with THIS audience. Bias ideas toward these proven
+    # hooks/angles (replicate the structure, never copy the words).
+    self_top = intel.get("self_top") or []
+    self_lines = [
+        f"[{p.get('platform','?')} · {float(p.get('outlier_score') or 0):.1f}x median] "
+        f"{(p.get('caption') or '').strip()}"
+        for p in self_top[:6] if (p.get("caption") or "").strip()
+    ]
+    self_section = (
+        "\nYOUR OWN TOP PERFORMERS (what already worked for THIS brand — these "
+        "beat the account's median; replicate the hook shape, angle, and energy, "
+        "do NOT copy the words):\n"
+        + "\n".join(f"- {ln}" for ln in self_lines) + "\n"
+    ) if self_lines else ""
+
     ctx = (
         f"{gl_section}"
         f"{quota_section}"
@@ -482,6 +520,7 @@ async def generate_ideas(
         f"KEY FINDINGS (what's working now):\n{findings or '(none)'}\n\n"
         f"SCRAPED TRENDS:\n{trends or '(none — research only)'}\n"
         f"{xpoz_section}"
+        f"{self_section}"
         f"{keyword_section}"
         f"{cohort_section}\n"
         f"BRAND VOICE (write in this voice):\n{voice}"

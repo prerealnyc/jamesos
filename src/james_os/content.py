@@ -255,7 +255,12 @@ async def _recent_frustrations(
             FROM events
             WHERE payload ->> 'category' = 'frustration'
               AND superseded_by IS NULL
-            ORDER BY created_at DESC LIMIT $1
+            -- Explicit human rejections outrank edit-derived rules so the
+            -- more-frequent edits can never evict a rejection guardrail from
+            -- this capped window; recency breaks ties within each group.
+            ORDER BY (payload ->> 'source' = 'rejection_feedback') DESC,
+                     created_at DESC
+            LIMIT $1
             """,
             limit,
         )
