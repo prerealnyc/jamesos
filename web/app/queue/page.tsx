@@ -390,14 +390,17 @@ export default function QueuePage() {
                   manager reviews everything at a glance, not text alone. */}
               <div className="flex gap-4">
                 {video && it.mediaUrl ? (
-                  <div className="shrink-0 bg-black rounded-md overflow-hidden w-[150px]" style={{ aspectRatio: "9 / 16" }}>
+                  <div className="shrink-0 self-start bg-black rounded-md overflow-hidden w-[150px]" style={{ aspectRatio: "9 / 16" }}>
                     <video src={it.mediaUrl} controls preload="metadata" className="w-full h-full" />
                   </div>
                 ) : it.imageUrl ? (
                   // Portrait (4:5) box, top-aligned cover so the subject's head
                   // is always visible — a square crop used to lop it off.
+                  // self-start keeps the 4:5 ratio: without it the flex row
+                  // stretches the box to the full text height, and object-cover
+                  // then slices a designed card's centered text off both sides.
                   <div
-                    className="shrink-0 bg-black rounded-md overflow-hidden border border-border w-[150px]"
+                    className="shrink-0 self-start bg-black rounded-md overflow-hidden border border-border w-[150px]"
                     style={{ aspectRatio: "4 / 5" }}
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
