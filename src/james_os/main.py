@@ -1015,6 +1015,142 @@ async def post_soul_image_get(job_id: str) -> dict:
     return {"job_id": job_id, **j}
 
 
+# Multi-format "designed image" — an LLM art director picks a format (quote
+# card / top-bottom meme), generates a TEXT-FREE background, and Pillow overlays
+# crisp text + branding. Backgrounded (bg render is slow); start → poll.
+_DESIGNED_JOBS: dict[str, dict] = {}
+
+
+async def _generate_designed_post_image(action_id, topic: str, draft_text: str, tenant_id) -> str:
+    """Art-director → text-free background (Soul James or cinematic scene) →
+    Pillow-composited quote card / meme → persist + attach to the action."""
+    import httpx
+
+    from .brand_kit import get_brand_kit
+    from .hero_context import get_hero_photo_files
+    from .image_compose import meme_card, quote_card
+    from .imagegen import direct_designed_image, generate_post_image
+    from .media import create_media
+    from .media import storage as media_storage
+
+    spec = await direct_designed_image(draft_text or "", topic or "")
+    fmt = spec.get("format") or "quote"
+    bg_prompt = (spec.get("bg_prompt") or topic or "cinematic golden-hour scene").strip()
+    bg_kind = spec.get("bg_kind") or "scene"
+
+    bg_bytes: bytes | None = None
+    soul = (settings.higgsfield_soul_id or "").strip()
+    if bg_kind == "james" and soul:
+        from . import higgsfield_souls as hs
+        sub = await hs.generate_character_image(
+            custom_reference_id=soul, prompt=bg_prompt, aspect_ratio="4:5", strength=0.85,
+        )
+        rid = sub.get("request_id")
+        url = ""
+        if rid:
+            for _ in range(45):
+                p = await hs.poll_request(rid)
+                if p.get("status") == "completed" and p.get("image_url"):
+                    url = p["image_url"]
+                    break
+                if p.get("status") in ("failed", "nsfw", "canceled"):
+                    break
+                await asyncio.sleep(4)
+        if url:
+            async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
+                r = await c.get(url)
+                r.raise_for_status()
+                bg_bytes = r.content
+    if bg_bytes is None:
+        png, _meta, err = await generate_post_image(
+            topic=bg_prompt + " — photoreal cinematic scene, absolutely no text, "
+            "no words, no letters, no signs",
+            platform="instagram", aspect="4:5", style="cinematic_real",
+            tenant_id=tenant_id,
+        )
+        if not png:
+            raise RuntimeError(err or "background generation failed")
+        bg_bytes = png
+
+    kit = await get_brand_kit(tenant_id)
+    handle = (kit.get("handle") or "").strip()
+    profile_bytes = None
+    try:
+        refs = await get_hero_photo_files(tenant_id=tenant_id)
+        if refs:
+            profile_bytes = refs[0][1]
+    except Exception:  # noqa: BLE001
+        profile_bytes = None
+
+    if fmt == "meme":
+        out = meme_card(bg_bytes, spec.get("top_text") or topic, spec.get("bottom_text") or "", handle)
+    else:
+        quote = (spec.get("quote") or "").strip() or (draft_text or topic or "").split(". ")[0]
+        out = quote_card(bg_bytes, quote, handle, profile_bytes)
+
+    tenant = str(tenant_id or settings.default_tenant_id)
+    served_uri, file_path = await asyncio.to_thread(
+        media_storage().save, tenant, out, f"designed-{fmt}.png"
+    )
+    try:
+        await create_media(
+            role="post_image", source_type="upload", uri=served_uri, file_path=file_path,
+            title=(topic or fmt)[:120], platform="instagram", mime="image/png",
+            tags=[f"style:designed_{fmt}", "designed"],
+            notes=(spec.get("quote") or spec.get("top_text") or "")[:300], tenant_id=tenant_id,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    async with acquire(tenant_id) as conn:
+        await conn.execute(
+            "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1",
+            action_id,
+            json.dumps({"image_url": served_uri, "media_url": served_uri, "has_image": True}),
+        )
+    return served_uri
+
+
+@app.post("/post/designed-image", status_code=202)
+async def post_designed_image_start(req: SoulImageRequest, background: BackgroundTasks) -> dict:
+    """Render a striking multi-format DESIGNED image (quote card / meme) and
+    attach it to a queued post. Backgrounded — poll GET /post/designed-image/{id}."""
+    from uuid import uuid4
+
+    from .db import _request_tenant
+    try:
+        tid = _request_tenant.get()
+    except LookupError:
+        tid = None
+    tid = tid or settings.default_tenant_id
+    job_id = str(uuid4())
+    _DESIGNED_JOBS[job_id] = {"status": "running", "image_url": None, "error": None}
+    while len(_DESIGNED_JOBS) > 30:
+        _DESIGNED_JOBS.pop(next(iter(_DESIGNED_JOBS)))
+
+    async def _run() -> None:
+        try:
+            url = await _generate_designed_post_image(
+                req.action_id, req.topic, req.draft_text, tid,
+            )
+            _DESIGNED_JOBS[job_id] = {
+                "status": "done", "image_url": url,
+                "error": None if url else "render produced no image",
+            }
+        except Exception as e:  # noqa: BLE001
+            _DESIGNED_JOBS[job_id] = {"status": "failed", "image_url": None, "error": str(e)}
+
+    background.add_task(_run)
+    return {"job_id": job_id, "status": "running"}
+
+
+@app.get("/post/designed-image/{job_id}")
+async def post_designed_image_get(job_id: str) -> dict:
+    j = _DESIGNED_JOBS.get(job_id)
+    if not j:
+        raise HTTPException(status_code=404, detail="job not found (expired or unknown)")
+    return {"job_id": job_id, **j}
+
+
 # Batch post creation (text + image per topic) — powers per-card "Create post"
 # (one topic) and "Create all kept" (many). Backgrounded: text + Soul renders
 # are slow, so kick it and let it fill the Approval Queue.

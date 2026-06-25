@@ -73,7 +73,7 @@ function PostImageMode() {
 
   // Image source: a REAL hero photo (default, guaranteed likeness) OR a NEW
   // AI render from the trained Higgsfield Soul ID.
-  const [imageMode, setImageMode] = useState<"photo" | "soul">("photo");
+  const [imageMode, setImageMode] = useState<"photo" | "soul" | "designed">("photo");
   const [heroPhotos, setHeroPhotos] = useState<string[]>([]);
   const [selectedPhoto, setSelectedPhoto] = useState<string>("");
 
@@ -194,7 +194,9 @@ function PostImageMode() {
     const { job_id } = await api.startCreateBatch({
       topics: topics.map((t) => ({ topic: t.topic, pillar: t.pillar })),
       platform,
-      image_mode: imageMode,
+      // Batch create supports photo/soul; "designed" isn't a batch mode yet,
+      // so it falls back to a hero photo for bulk creation.
+      image_mode: imageMode === "designed" ? "photo" : imageMode,
       image_url: imageMode === "photo" ? imageUrl : "",
     });
     // Soul renders are ~30-60s each (2 at a time) — poll generously.
@@ -288,7 +290,11 @@ function PostImageMode() {
         await api.setPostImage({ action_id: d.action_id, image_url: selectedPhoto });
         setImageUrl(selectedPhoto);
       } else {
-        const { job_id } = await api.startSoulImage({
+        // soul → render James; designed → art-directed quote/meme card.
+        const start =
+          imageMode === "designed" ? api.startDesignedImage : api.startSoulImage;
+        const poll = imageMode === "designed" ? api.getDesignedImage : api.getSoulImage;
+        const { job_id } = await start({
           action_id: d.action_id,
           topic,
           draft_text: d.draft || topic,
@@ -297,17 +303,17 @@ function PostImageMode() {
         let done = false;
         for (let i = 0; i < 60 && !done; i++) {
           await new Promise((r) => setTimeout(r, 3000));
-          const r = await api.getSoulImage(job_id);
+          const r = await poll(job_id);
           if (r.status === "done") {
             setImageUrl(r.image_url);
             if (!r.image_url && r.error) setImageErr(r.error);
             done = true;
           } else if (r.status === "failed") {
-            setImageErr(r.error || "Soul render failed");
+            setImageErr(r.error || "image render failed");
             done = true;
           }
         }
-        if (!done) setImageErr("Soul render timed out — try again.");
+        if (!done) setImageErr("Render timed out — try again.");
       }
     } catch (e) {
       setImageErr(e instanceof Error ? e.message : "could not attach image");
@@ -529,9 +535,27 @@ function PostImageMode() {
             >
               ✨ AI (Soul ID)
             </button>
+            <button
+              type="button"
+              onClick={() => setImageMode("designed")}
+              className={`text-[12px] px-3 py-1.5 rounded-full border transition-colors ${
+                imageMode === "designed"
+                  ? "border-primary text-primary bg-primary/10"
+                  : "border-border text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              🎨 Designed (quote / meme)
+            </button>
           </div>
 
-          {imageMode === "photo" ? (
+          {imageMode === "designed" ? (
+            <p className="text-[12px] text-muted-foreground">
+              An art director picks the best striking format for this post — a
+              bold quote card or a top/bottom meme — generates a cinematic
+              background and overlays crisp, perfectly-spelled text + your
+              @handle. ~30–60s.
+            </p>
+          ) : imageMode === "photo" ? (
             heroPhotos.length === 0 ? (
               <p className="text-[12px] text-muted-foreground">
                 No hero photos yet. Upload some on the{" "}
@@ -579,6 +603,8 @@ function PostImageMode() {
           <Button onClick={run} disabled={busy || imgBusy || !topic.trim()}>
             {busy ? (
               <Spinner />
+            ) : imageMode === "designed" ? (
+              "Generate post + designed image"
             ) : imageMode === "soul" ? (
               "Generate post + Soul image"
             ) : selectedPhoto ? (
@@ -612,13 +638,17 @@ function PostImageMode() {
           </div>
           <div className="grid gap-3 md:grid-cols-2">
             <DraftCard draft={draft} />
-            {((imageMode === "photo" && selectedPhoto) || imageUrl || imgBusy || imageErr) && (
+            {((imageMode === "photo" && selectedPhoto) || imageMode === "soul" || imageMode === "designed" || imageUrl || imgBusy || imageErr) && (
               <Card>
-                <CardTitle>{imageMode === "soul" ? "James (Soul ID)" : "James's photo"}</CardTitle>
+                <CardTitle>
+                  {imageMode === "designed" ? "Designed image" : imageMode === "soul" ? "James (Soul ID)" : "James's photo"}
+                </CardTitle>
                 {imgBusy ? (
                   <div className="flex items-center gap-2 text-[13px] text-muted-foreground py-3">
                     <Spinner />{" "}
-                    {imageMode === "soul"
+                    {imageMode === "designed"
+                      ? "Designing the card (background + text + branding) — ~30–60s…"
+                      : imageMode === "soul"
                       ? "Rendering James from your Soul ID — ~30–60s…"
                       : "Attaching the photo…"}
                   </div>
@@ -632,7 +662,9 @@ function PostImageMode() {
                       />
                     </a>
                     <p className="text-[11px] text-muted-foreground mt-2">
-                      {imageMode === "soul"
+                      {imageMode === "designed"
+                        ? "Designed quote/meme card with your branding, attached to the queued post."
+                        : imageMode === "soul"
                         ? "Fresh render from your Higgsfield Soul ID, attached to the queued post."
                         : "Your real hero photo, attached to the queued post."}
                     </p>

@@ -1226,6 +1226,21 @@ export const api = {
       image_url: string | null;
       error: string | null;
     }>(`/post/soul-image/${id}`),
+  // Multi-format DESIGNED image — art director picks quote card / meme,
+  // generates a text-free background, Pillow overlays crisp text + branding.
+  startDesignedImage: (body: {
+    action_id: string;
+    topic?: string;
+    draft_text?: string;
+    aspect?: string;
+  }) => jpost<{ job_id: string; status: string }>("/post/designed-image", body),
+  getDesignedImage: (id: string) =>
+    jget<{
+      job_id: string;
+      status: "running" | "done" | "failed";
+      image_url: string | null;
+      error: string | null;
+    }>(`/post/designed-image/${id}`),
   // Create posts (text + image) for one or more topics in the background.
   startCreateBatch: (body: {
     topics: { topic: string; pillar?: string }[];

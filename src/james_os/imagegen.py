@@ -217,6 +217,74 @@ async def direct_image_scene(story: str, fallback_topic: str = "") -> str:
         return fallback_topic
 
 
+_DESIGN_DIRECTOR_SYSTEM = (
+    "You are the art director for a scroll-stopping Instagram IMAGE that "
+    "accompanies a personal-brand post by a real-estate broker who teaches "
+    "mindset, ownership and accountability. Pick the single best visual "
+    "FORMAT for THIS post and extract the on-image text. The text is overlaid "
+    "later in perfect type — so NEVER put any words in bg_prompt.\n\n"
+    "Return STRICT JSON:\n"
+    "{\n"
+    '  "format": "quote" | "meme",\n'
+    '  "quote": "<quote format: ONE punchy, scroll-stopping line in the '
+    "author's voice, <= 14 words, no hashtags, no surrounding quote marks>\",\n"
+    '  "top_text": "<meme format: the SETUP line, <= 8 words>",\n'
+    '  "bottom_text": "<meme format: the PUNCHLINE / truth turn, <= 8 words>",\n'
+    '  "bg_prompt": "<a TEXT-FREE photoreal cinematic background scene to '
+    "generate — describe a real scene/mood; absolutely NO text, words, "
+    'letters, signs or logos>",\n'
+    '  "bg_kind": "scene" | "james"\n'
+    "}\n\n"
+    "Rules: use 'meme' ONLY when the post has a clear expectation-vs-reality "
+    "or before/after turn; otherwise 'quote'. bg_kind 'james' only if James "
+    "himself should be the visual, else 'scene'. Match the author's voice; no "
+    "clichés, no hype words."
+)
+
+
+async def direct_designed_image(draft_text: str, topic: str = "") -> dict:
+    """LLM art director → {format, quote, top_text, bottom_text, bg_prompt,
+    bg_kind} for the multi-format image machine. Best-effort: falls back to a
+    quote built from the draft's first line so the machine never hard-depends
+    on the LLM."""
+    text = (draft_text or topic or "").strip()
+    fallback = {
+        "format": "quote",
+        "quote": (text.split(". ")[0] if text else (topic or "")).strip()[:140],
+        "top_text": "", "bottom_text": "",
+        "bg_prompt": (topic or "cinematic golden-hour scene").strip(),
+        "bg_kind": "scene",
+    }
+    if not text:
+        return fallback
+    try:
+        from .llm import get_llm
+
+        out = await get_llm().complete_json(
+            system=_DESIGN_DIRECTOR_SYSTEM,
+            messages=[{"role": "user", "content": text[:2000]}],
+            max_tokens=400, temperature=0.7,
+        )
+        out = out or {}
+        fmt = "meme" if str(out.get("format", "")).lower() == "meme" else "quote"
+        spec = {
+            "format": fmt,
+            "quote": str(out.get("quote") or "").strip(),
+            "top_text": str(out.get("top_text") or "").strip(),
+            "bottom_text": str(out.get("bottom_text") or "").strip(),
+            "bg_prompt": str(out.get("bg_prompt") or "").strip() or fallback["bg_prompt"],
+            "bg_kind": "james" if str(out.get("bg_kind", "")).lower() == "james" else "scene",
+        }
+        # Guard: a quote format with no quote, or a meme with no lines, falls back.
+        if fmt == "quote" and not spec["quote"]:
+            spec["quote"] = fallback["quote"]
+        if fmt == "meme" and not (spec["top_text"] or spec["bottom_text"]):
+            return fallback
+        return spec
+    except Exception:  # noqa: BLE001
+        return fallback
+
+
 async def _brand_visual_directive(tenant_id) -> str:
     """Pull the brand's visual/style guidelines from memory so generated
     POST images follow them (colours, imagery, layout, look). Returns ""
