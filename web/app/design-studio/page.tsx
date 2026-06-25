@@ -103,6 +103,10 @@ function PostImageMode() {
   const pollRef = useRef<{ cancelled: boolean } | null>(null);
   // Flips true on unmount so in-flight create-batch polling loops bail.
   const createCancel = useRef(false);
+  // The draft + image result row — we scroll it into view on generate so the
+  // user always SEES the post + the designed image render (it lives below the
+  // Generate button and was easy to miss off-screen).
+  const resultRef = useRef<HTMLDivElement>(null);
 
   async function loadIdeas() {
     if (pollRef.current) pollRef.current.cancelled = true;
@@ -271,6 +275,11 @@ function PostImageMode() {
         extra_instructions: extra,
       });
       setDraft(d);
+      // Take the user to the result so they watch the draft + image appear
+      // (the image render runs for ~30–60s right below this).
+      requestAnimationFrame(() =>
+        resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+      );
     } catch (e) {
       setErr(e instanceof Error ? e.message : "generation failed");
       setBusy(false);
@@ -629,6 +638,7 @@ function PostImageMode() {
         )}
       </Card>
 
+      <div ref={resultRef} />
       {draft && (
         <>
           <div className="text-[12px] text-muted-foreground flex items-center gap-2">

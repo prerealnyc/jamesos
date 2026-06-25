@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -370,7 +371,9 @@ Avoid only:
   * Anything that's literally <20s or >60s of usable content.
 
 For each candidate return:
-  * start_s, end_s — decimal seconds. Window must be 25-55 seconds.
+  * start_s, end_s — decimal seconds (25-55s window). Start at the TOP of
+    a sentence and set end_s where a sentence FINISHES — the clip must end
+    on a complete thought, never mid-sentence.
   * hook_quote   — the literal opening line (≤ 80 chars).
   * summary      — one sentence describing what's in this clip and
                    why it works as a Reel (≤ 140 chars).
@@ -432,7 +435,7 @@ async def find_candidates(
         "tokens": tokens,
     }
     cleaned = await _llm_pick_candidates(
-        _CANDIDATE_SYSTEM, payload, duration_s,
+        _CANDIDATE_SYSTEM, payload, duration_s, words,
     )
     # Fallback: if the strict pass found nothing on a source long
     # enough to obviously contain reel-worthy moments, try a loosened
@@ -440,7 +443,7 @@ async def find_candidates(
     # podcasts; "anything usable" beats zero every time.
     if not cleaned and duration_s >= 120:
         loose = await _llm_pick_candidates(
-            _CANDIDATE_SYSTEM_LOOSE, payload, duration_s,
+            _CANDIDATE_SYSTEM_LOOSE, payload, duration_s, words,
         )
         if loose:
             print(
@@ -457,8 +460,134 @@ async def find_candidates(
     return cleaned[:15]
 
 
+# ── snapping clips to natural sentence / thought boundaries ───────────
+#
+# The LLM marks roughly where a clip should start and end, but its raw
+# timestamps (and the fixed-window snap below) land on arbitrary seconds
+# — which chops clips off mid-sentence. We snap the START to the top of a
+# sentence (so the hook is clean) and the END to the close of a complete
+# sentence or a clear spoken pause (so the speaker finishes their thought
+# instead of being cut off). Word-level Whisper timestamps make this
+# exact; with no timestamps we fall back to the old fixed-window snap.
+
+_REEL_MIN_S = 24.0          # never ship a clip shorter than this
+_REEL_TARGET_S = 38.0       # the sweet spot we aim the end toward
+_REEL_HARD_MAX_S = 58.0     # allow stretching to finish a thought, but cap < 60
+_PAUSE_GAP_S = 0.45         # silence between words that reads as a thought break
+_SENTENCE_FINAL = ".!?…"
+
+
+def _is_sentence_final(token: str) -> bool:
+    """True if a word token closes a sentence (ignoring trailing quotes)."""
+    t = (token or "").rstrip("\"'”’)]")
+    return bool(t) and t[-1] in _SENTENCE_FINAL
+
+
+def _thought_starts(words) -> list[float]:
+    """Start times of words that begin a sentence or follow a clear pause."""
+    out: list[float] = []
+    for i, w in enumerate(words):
+        if not (w.word or "").strip():
+            continue
+        if i == 0:
+            out.append(w.start)
+            continue
+        prev = words[i - 1]
+        if _is_sentence_final(prev.word) or (w.start - prev.end) >= _PAUSE_GAP_S:
+            out.append(w.start)
+    return out
+
+
+def _thought_ends(words) -> list[tuple[float, bool]]:
+    """(end_time, is_sentence) for every natural cut point: a word that
+    closes a sentence (strong) or sits right before a clear pause (soft)."""
+    out: list[tuple[float, bool]] = []
+    n = len(words)
+    for i, w in enumerate(words):
+        if not (w.word or "").strip():
+            continue
+        strong = _is_sentence_final(w.word)
+        gap = (words[i + 1].start - w.end) if i + 1 < n else 99.0
+        if strong or gap >= _PAUSE_GAP_S:
+            out.append((w.end, strong))
+    return out
+
+
+def _finalize_window(start: float, end: float, words, duration_s: float):
+    """Snap the LLM's rough [start, end] so the clip BEGINS at a sentence
+    start and ENDS on a complete sentence / thought — targeting ~30-45s but
+    never chopping a thought mid-word. Falls back to a fixed-window snap
+    when there are no usable word timestamps."""
+    ends = _thought_ends(words) if words else []
+
+    # Fallback: no usable word timestamps → original behaviour (extend a
+    # short clip to 30s around the anchor; trim a long one to 45s).
+    if not ends:
+        dur = end - start
+        if dur < 30.0:
+            slack = (30.0 - dur) / 2.0
+            start = max(0.0, start - slack)
+            end = min(duration_s, start + 30.0)
+            if end - start < 30.0:
+                start = max(0.0, end - 30.0)
+        elif dur > 45.0:
+            end = start + 45.0
+        return round(start, 2), round(end, 2)
+
+    starts = _thought_starts(words)
+
+    # START → snap to a sentence/thought start near the anchor. Prefer
+    # snapping BACK to the top of the sentence the hook sits in (up to ~6s)
+    # so the whole opening line is kept; only nudge forward a little.
+    s = max(0.0, start)
+    near = [t for t in starts if -1.5 <= (start - t) <= 6.0]
+    if near:
+        s = max(0.0, min(near, key=lambda t: abs(t - start)))
+
+    # END → a thought close that lands the clip on a complete idea, within
+    # [min, hard_max] of the start and nearest the LLM's end (but at least
+    # ~target long). Sentence (strong) boundaries win over mere pauses.
+    lo = s + _REEL_MIN_S
+    hi = min(s + _REEL_HARD_MAX_S, duration_s)
+    target = min(max(end, s + _REEL_TARGET_S), hi)
+    fits = [(t, strong) for (t, strong) in ends if lo <= t <= hi]
+    chosen = None
+    if fits:
+        strong_ends = [t for (t, st) in fits if st]
+        pool = strong_ends or [t for (t, _st) in fits]
+        # nearest to target; ties → the later (more complete) boundary
+        chosen = min(pool, key=lambda t: (abs(t - target), -t))
+    if chosen is None:
+        # Window held no boundary — relax the minimum and take the nearest
+        # SENTENCE end we can. A slightly short clip that ends cleanly beats
+        # a full-length one chopped mid-thought.
+        relaxed = [t for (t, st) in ends if st and (s + 12.0) <= t <= hi]
+        if relaxed:
+            chosen = min(relaxed, key=lambda t: abs(t - target))
+    if chosen is None:
+        # Still nothing usable — at least land on a word end so the cut
+        # never falls mid-word.
+        word_ends = [w.end for w in words if lo <= w.end <= hi]
+        chosen = (
+            min(word_ends, key=lambda t: abs(t - target))
+            if word_ends else min(target, duration_s)
+        )
+    e = min(duration_s, chosen + 0.30)   # tiny tail so the last word breathes
+    if e - s < _REEL_MIN_S:
+        # The end hit the source's end before reaching the minimum length —
+        # anchor the window to the TAIL by pulling the START back to a thought
+        # start ~target before the end, so a near-end candidate still ships a
+        # full clip instead of a sliver (mirrors the no-timestamp fallback).
+        want = max(0.0, e - _REEL_TARGET_S)
+        prior = [t for t in starts if t <= want + 2.0]
+        s = min(prior, key=lambda t: abs(t - want)) if prior else want
+        s = max(0.0, min(s, e - _REEL_MIN_S))
+    return round(s, 2), round(e, 2)
+
+
 async def _llm_pick_candidates(
     system: str, payload: dict, duration_s: float,
+    words: list["TranscribedWord"] | None = None,
 ) -> list[dict]:
     """Single LLM call + parse + clamp. Shared by the strict and loose
     candidate passes. Returns up to 15 cleaned candidates sorted by
@@ -494,22 +623,20 @@ async def _llm_pick_candidates(
         # that are too long. Only reject if the timestamps are wildly
         # out of range (negative, past the source, or > 90 s — a sign
         # the LLM hallucinated).
+        if not (math.isfinite(start) and math.isfinite(end)):
+            continue
         if dur <= 0 or dur > 90.0:
             continue
         if start < 0 or end > duration_s + 0.5:
             continue
-        # Snap to the rendering target [30, 45]:
-        #   short → extend symmetrically around the LLM's anchor
-        #   too long → trim from the tail to keep the hook at the start
-        if dur < 30.0:
-            slack = (30.0 - dur) / 2.0
-            start = max(0.0, start - slack)
-            end = min(duration_s, start + 30.0)
-            # If we ran off the end of the source, pull start back.
-            if end - start < 30.0:
-                start = max(0.0, end - 30.0)
-        elif dur > 45.0:
-            end = start + 45.0
+        # Snap the rough window to natural sentence / thought boundaries so
+        # the clip starts clean and the speaker finishes their thought
+        # rather than getting cut off mid-sentence.
+        start, end = _finalize_window(start, end, words, duration_s)
+        # Re-validate the RESHAPED window — never persist a sliver or an
+        # out-of-range clip if the snapping degenerated near a source edge.
+        if not (12.0 <= (end - start) and end <= duration_s + 0.5 and start >= 0):
+            continue
         cleaned.append({
             "start_s": round(start, 2),
             "end_s": round(end, 2),
@@ -690,7 +817,12 @@ async def reanalyze_source(
         TranscribedWord(
             word=str(w.get("word") or w.get("w") or ""),
             start=float(w.get("start") or w.get("t") or 0.0),
-            end=float(w.get("end") or w.get("t1") or w.get("start") or 0.0),
+            # Stored words use "e" for the end timestamp; fall back to the
+            # start so a missing end never collapses the word to t=0 (which
+            # would blind the sentence/pause snapping).
+            end=float(
+                w.get("end") or w.get("e") or w.get("start") or w.get("t") or 0.0
+            ),
         )
         for w in (raw_words or []) if isinstance(w, dict)
     ]
