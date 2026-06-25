@@ -299,16 +299,21 @@ def _constrain_styled_to_split(styled: list[dict], layout: str) -> None:
             e["x_anchor"] = "50%"
             e["width"] = "32%"
         return
-    # horizontal — group by start time so stacked hook lines move together.
+    # horizontal — group by start time so stacked hook lines move together,
+    # and drop the block into the LOWER THIRD (78%, in the B-roll bottom half)
+    # instead of the 50% seam, which sat right on the speaker's face. Manager
+    # direction: captions never on the author's face.
     groups: dict[float, list[dict]] = {}
     for e in texts:
         groups.setdefault(round(float(e.get("time") or 0.0), 2), []).append(e)
     for group in groups.values():
         ys = [_pct(e.get("y")) for e in group]
-        shift = 50.0 - sum(ys) / len(ys)
+        shift = 78.0 - sum(ys) / len(ys)
         for e, y in zip(group, ys, strict=True):
             e["y"] = f"{y + shift:.1f}%"
             e["y_anchor"] = "50%"
+            # Also clamp the width so it can't bleed past the 20% side margins.
+            e["width"] = "60%"
 
 
 def _polish_elements(
@@ -812,7 +817,10 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 text=text, start=start, end=end, preset=preset, track=4,
                 role="broll",
             )
-            elem["y"] = "50%"          # centre on the horizontal seam
+            # Lower third (in the B-roll bottom half), NOT the 50% seam — the
+            # seam sat on the speaker's face. caption_element already places at
+            # the role's low band; keep it explicit + anchored on its centre.
+            elem["y"] = "78%"
             elem["y_anchor"] = "50%"
             elements.append(elem)
 

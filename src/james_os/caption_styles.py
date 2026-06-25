@@ -317,9 +317,12 @@ AUTO_PICK_KEY = "auto"      # frontend sentinel meaning "let the LLM pick"
 #     the platform UI no-zone and gets covered or cut.
 SAFE_TOP_PCT = 12.0
 SAFE_BOTTOM_PCT = 86.0
-CAPTION_MAX_WIDTH = "68%"   # centered → spans x 16-84 (16% margin/side, no edge bleed)
+# HARD horizontal cap: the whole caption stays within 20% margins each side,
+# i.e. width <= 60% centered (x 20-80). Manager direction: "the whole caption
+# can't go beyond the safe space — 20% from each margin left and right."
+CAPTION_MAX_WIDTH = "60%"
 HOOK_BLOCK_CENTER = 22.0    # hook/title block centre (top of safe zone)
-SUBTITLE_Y = "50%"          # just-below-the-head band (was 55% = mid-torso)
+SUBTITLE_Y = "78%"          # lower third — well below the face (manager: "30% below, not on the face")
 
 
 # ── safe-zone layout ──────────────────────────────────────────────────
@@ -340,54 +343,26 @@ SUBTITLE_Y = "50%"          # just-below-the-head band (was 55% = mid-torso)
 # tuples — ranked from preferred to fallback. Overlays pick the first
 # band that fits them.
 
+# Every role parks captions in the LOWER THIRD, well clear of the speaker's
+# face (face ~25-50% from top). Manager direction, repeated: captions must
+# sit ~30% below centre, NEVER on the author's face. The y is the block's
+# vertical CENTRE (caption_element sets y_anchor=50%), so 78% keeps a ~9vh
+# block inside the 86% bottom-safe line.
 SAFE_ZONES: dict[str, list[tuple[str, float]]] = {
-    "avatar": [
-        # Just-below-the-head band — the position the manager asked for:
-        # "place the font right below the speaker's head", not mid-torso.
-        # Face sits ~25-50% from top, so ~50% lands just under the chin.
-        ("50%", 11.0),
-        # Slightly lower fallback for tall caption blocks (still above the
-        # hands/torso clutter, well inside the safe zone).
-        ("60%", 10.0),
-    ],
-    "broll": [
-        # Lower-third INSIDE the safe zone.
-        ("66%", 14.0),
-        # Mid-screen — fallback when the still has empty middle (rare).
-        ("55%", 12.0),
-    ],
-    "default": [
-        ("62%", 14.0),
-        ("55%", 12.0),
-    ],
+    "avatar": [("78%", 11.0), ("82%", 9.0)],
+    "broll": [("78%", 12.0), ("72%", 12.0)],
+    "default": [("78%", 12.0), ("72%", 12.0)],
 }
 
 
 def caption_y_for_role(preset: dict, role: str) -> str:
-    """Pick the caption y for this beat's role.
-
-    Logic: each preset defines its preferred y in its own dict. If the
-    beat is an avatar beat AND the preset's preferred y would land in
-    the avatar's visual zone (25-78%), we override to the role's safe
-    band. B-roll beats trust the preset's preferred y because photoreal
-    stills are composed differently.
-    """
-    preferred = preset.get("y_position", "62%")
-    # Parse "NN%" → int. Robust to whitespace.
-    try:
-        pref_pct = int(str(preferred).strip().rstrip("%"))
-    except (TypeError, ValueError):
-        pref_pct = 62
-    # Clamp every caption into the platform safe zone (y 12-86; keep a
-    # few vh of headroom for the text block itself).
-    pref_pct = max(int(SAFE_TOP_PCT) + 4, min(80, pref_pct))
-    if role == "avatar":
-        # On-camera beats ALWAYS snap to the just-below-the-head band,
-        # regardless of the preset's own y — otherwise a low preset (e.g.
-        # magenta_blocks at 70%) sits mid-torso ("too low") or rides the
-        # face. (Was: only when pref_pct < 48, which almost never fired.)
-        return SAFE_ZONES["avatar"][0][0]
-    return f"{pref_pct}%"
+    """Captions ALWAYS sit in the lower third, off the speaker's face — for
+    EVERY role and EVERY preset. The preset's own y_position is intentionally
+    ignored for body captions so a high/centre preset can never ride the face
+    (this was the recurring 'captions on his face' bug). Manager direction:
+    '30% below, not in the author's face'."""
+    bands = SAFE_ZONES.get(role) or SAFE_ZONES["default"]
+    return bands[0][0]
 
 
 def get_preset(name: str | None) -> dict:
@@ -406,6 +381,19 @@ def list_presets() -> list[dict]:
         {"name": name, "label": p["label"], "description": p["description"]}
         for name, p in CAPTION_PRESETS.items()
     ]
+
+
+def _fit_caption_vh(text: str, base_vh: float, font_family: str = "") -> float:
+    """Largest font (vh) at which the LONGEST word fits inside the 60% caption
+    box on a 9:16 canvas. A single word can't wrap, so without this a long word
+    ('UNCOMFORTABLE') bleeds past the side margins even in a narrow box. Short
+    captions keep the preset size; only long-word flashes shrink to fit."""
+    longest = max((len(w) for w in (text or "").split()), default=1)
+    em = 0.42 if "anton" in (font_family or "").lower() else 0.60
+    # 9:16: frame 1080px wide, 1 vh = 19.2 px tall; glyph advance ≈ em·font_px.
+    box_px = 0.60 * 1080.0
+    max_vh = box_px / (max(1, longest) * em * 19.2)
+    return round(max(3.0, min(float(base_vh), max_vh * 0.94)), 1)
 
 
 def caption_element(
@@ -439,7 +427,8 @@ def caption_element(
         "x_alignment": preset["x_alignment"],
         "font_family": preset["font_family"],
         "font_weight": preset["font_weight"],
-        "font_size": f"{preset['font_size_vh']} vh",
+        # Shrink-to-fit so a long word can never bleed past the 60% box.
+        "font_size": f"{_fit_caption_vh(text, preset['font_size_vh'], preset.get('font_family', ''))} vh",
         "fill_color": preset["fill_color"],
     }
     if preset.get("stroke_color") and preset["stroke_color"] != "transparent":
