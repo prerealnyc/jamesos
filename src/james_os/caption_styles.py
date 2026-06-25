@@ -317,9 +317,9 @@ AUTO_PICK_KEY = "auto"      # frontend sentinel meaning "let the LLM pick"
 #     the platform UI no-zone and gets covered or cut.
 SAFE_TOP_PCT = 12.0
 SAFE_BOTTOM_PCT = 86.0
-CAPTION_MAX_WIDTH = "76%"   # centered → spans x 12-88
+CAPTION_MAX_WIDTH = "68%"   # centered → spans x 16-84 (16% margin/side, no edge bleed)
 HOOK_BLOCK_CENTER = 22.0    # hook/title block centre (top of safe zone)
-SUBTITLE_Y = "55%"          # near-chin subtitle band
+SUBTITLE_Y = "50%"          # just-below-the-head band (was 55% = mid-torso)
 
 
 # ── safe-zone layout ──────────────────────────────────────────────────
@@ -342,12 +342,13 @@ SUBTITLE_Y = "55%"          # near-chin subtitle band
 
 SAFE_ZONES: dict[str, list[tuple[str, float]]] = {
     "avatar": [
-        # Near-chin band — the creator-guidance position: text under the
-        # face keeps eyes on the speaker. (The old 88% bottom band sat
-        # inside the platform UI no-zone and got covered.)
-        ("55%", 12.0),
-        # Chest band — fallback for tall caption blocks.
-        ("78%", 10.0),
+        # Just-below-the-head band — the position the manager asked for:
+        # "place the font right below the speaker's head", not mid-torso.
+        # Face sits ~25-50% from top, so ~50% lands just under the chin.
+        ("50%", 11.0),
+        # Slightly lower fallback for tall caption blocks (still above the
+        # hands/torso clutter, well inside the safe zone).
+        ("60%", 10.0),
     ],
     "broll": [
         # Lower-third INSIDE the safe zone.
@@ -380,9 +381,11 @@ def caption_y_for_role(preset: dict, role: str) -> str:
     # Clamp every caption into the platform safe zone (y 12-86; keep a
     # few vh of headroom for the text block itself).
     pref_pct = max(int(SAFE_TOP_PCT) + 4, min(80, pref_pct))
-    if role == "avatar" and pref_pct < 48:
-        # On-camera beats: don't sit on the FACE (roughly 20-46%); the
-        # guidance position is just under the chin.
+    if role == "avatar":
+        # On-camera beats ALWAYS snap to the just-below-the-head band,
+        # regardless of the preset's own y — otherwise a low preset (e.g.
+        # magenta_blocks at 70%) sits mid-torso ("too low") or rides the
+        # face. (Was: only when pref_pct < 48, which almost never fired.)
         return SAFE_ZONES["avatar"][0][0]
     return f"{pref_pct}%"
 
@@ -429,6 +432,10 @@ def caption_element(
         "duration": max(0.2, end - start),
         "width": CAPTION_MAX_WIDTH,
         "y": caption_y_for_role(preset, role),
+        # Anchor the block on its VERTICAL CENTER so the y band is where the
+        # text actually sits (Creatomate default top-anchors, which pushed
+        # captions lower than the stated % and off the bottom for tall fonts).
+        "y_anchor": "50%",
         "x_alignment": preset["x_alignment"],
         "font_family": preset["font_family"],
         "font_weight": preset["font_weight"],

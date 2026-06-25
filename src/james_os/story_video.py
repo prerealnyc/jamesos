@@ -755,8 +755,11 @@ _SLOT_JITTER = (1.0, 0.75, 1.25)
 # a per-render field if they want to tune; the default matches the
 # explicit ask ("every 5 seconds").
 _INSERT_CADENCE_S = 5.0
-_INSERT_MIN_DUR = 1.5
-_INSERT_MAX_DUR = 2.0
+# Let B-roll BREATHE: the manager flagged "B-roll on screen for half a second
+# — these clips need to breathe." 1.5-2.0s clamped every insert to a strobe;
+# 3-5s holds give each cutaway room to land (matches the illustrative pacing).
+_INSERT_MIN_DUR = 3.0
+_INSERT_MAX_DUR = 5.0
 # Lead-in pad: first slot starts at this offset so viewers see James
 # begin before any cut. 3s = roughly long enough to register the
 # speaker (~10 words at typical pace) without burning the whole first
@@ -1391,7 +1394,15 @@ async def write_image_prompts(
     )
     payload = {
         "brand_context": brand_context[:600],
-        "style_note": POST_STYLES.get(style, POST_STYLES["editorial"])[:240],
+        # No cartoon B-roll: the manager flagged "bad cartoon B-roll — we
+        # don't want cartoon B-roll." The old fallback was `editorial` (flat-
+        # vector illustration); fall back to a photoreal/cinematic look so a
+        # style miss can never produce an illustration.
+        "style_note": (
+            POST_STYLES.get(style)
+            or POST_STYLES.get("cinematic_real")
+            or POST_STYLES["photoreal"]
+        )[:240],
         # Industry + consistent grade so the stills are LITERAL to the
         # brand's world and share one look (the same two editor skills the
         # insert picker uses).

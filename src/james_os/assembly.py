@@ -315,20 +315,22 @@ def _polish_elements(
     brand: dict | None, total: float,
     sfx_hit_url: str = "", sfx_riser_url: str = "",
 ) -> list[dict]:
-    """The shared brand + retention layer appended by every builder."""
+    """The shared brand + retention layer appended by every builder.
+
+    Per repeated human video feedback, three elements were removed because
+    they read as AI/template clutter:
+      * the intro name/company plate ("no need for James name and company to
+        pop in the beginning"),
+      * the "FOLLOW FOR MORE" end card ("no follow-for-more text at the end"),
+      * the start/end SFX ("static sound shows up at the beginning and end —
+        no need for those sound effects").
+    The subtle corner watermark + progress bar stay. (sfx_* params kept for
+    call-site signature compatibility; intentionally unused now.)
+    """
     b = brand or {}
     out: list[dict] = []
-    out += _nameplate_elements(b.get("display_name", ""), b.get("tagline", ""))
     out += _watermark_element(b.get("logo_url", ""), total)
-    out += _endcard_elements(b.get("handle", ""), b.get("logo_url", ""), total)
     out += _progress_bar_element(total)
-    if (sfx_hit_url or "").startswith("http"):
-        out.append({"type": "audio", "source": sfx_hit_url, "track": 11,
-                    "time": 0.1, "duration": 1.0, "volume": 65})
-    if (sfx_riser_url or "").startswith("http") and total > 10:
-        out.append({"type": "audio", "source": sfx_riser_url, "track": 11,
-                    "time": round(max(0.0, total - 3.4), 2), "duration": 3.0,
-                    "volume": 55})
     return out
 
 

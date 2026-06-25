@@ -522,6 +522,24 @@ async def reject_item(item_id: UUID, body: dict = Body(default={})) -> dict:
     from .learning import record_rejection
 
     learned_id = await record_rejection(item_id, reason)
+    # If this queued item is a finished VIDEO, ALSO feed the renderer's own
+    # learning loop (video_feedback category) — not just the text frustration
+    # ledger — so caption/B-roll/audio/pacing notes actually steer the next
+    # render. Without this, video feedback given in the queue only taught the
+    # script engine and the same render issues recurred. The production links
+    # back via video_productions.queued_action_id. Best-effort: never fail the
+    # rejection over feedback routing.
+    try:
+        from .video_feedback import record_video_feedback
+        async with acquire() as conn:
+            prod_id = await conn.fetchval(
+                "SELECT id FROM video_productions WHERE queued_action_id=$1",
+                item_id,
+            )
+        if prod_id:
+            await record_video_feedback(prod_id, reason, status="rejected")
+    except Exception:  # noqa: BLE001
+        pass
     # Auto-refresh the "What's changing next" board with this feedback.
     from .feedback_interpreter import kick_interpret_background
     kick_interpret_background()
