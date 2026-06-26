@@ -547,6 +547,67 @@ def _hook_window(hook: list[dict], body: list[dict]) -> tuple[float, float]:
     return hook_start, hook_end
 
 
+# Dedicated high tracks for the persistent below-face hook title so it never
+# collides with captions (3), polish layers (6-11) or the viral_hook block.
+_HOOK_TITLE_TRACK = 20
+
+
+def hook_title_elements(text: str, total: float) -> list[dict]:
+    """A persistent BIG hook/title BELOW the speaker's face — tells the viewer
+    what the reel is about (a top human-feedback ask).
+
+    Geometry: y center starts at ~59% (below the 25-50% face zone, above the
+    78% spoken-caption band), width 60% (the hard 20%-each-side safe margin),
+    and the font auto-fits via _fit_hook_vh so the longest line never wraps or
+    runs off-screen — 'big but not disproportionate or out of frame'. Each line
+    is its own element/track (Creatomate renders one element per track per
+    instant). Held the whole clip so a late viewer still gets the hook."""
+    t = (text or "").strip().strip('"').strip("“”")
+    if not t or total <= 0:
+        return []
+    # Show the WHOLE hook as 1-3 balanced lines (never cut mid-phrase).
+    lines = [ln for ln, _ in _hook_lines(t)]
+    if not lines:
+        return []
+    longest = max(len(ln) for ln in lines)
+    # Exact-fit font for a 60% box (20% margin each side), Montserrat-800
+    # (em ~0.64). NO high floor — guarantees the longest line never wraps or
+    # runs off-screen; short hooks read big, long ones shrink to fit.
+    box_px = 0.60 * 1080.0
+    max_vh = box_px / (max(1, longest) * 0.64 * 19.2)
+    vh = min(6.5, max(2.6, max_vh * 0.92))
+    if vh > max_vh:                      # a long line: keep the true fit
+        vh = max_vh * 0.92
+    vh = round(vh, 1)
+    # Center the block below the face: face ≈ 25-50% from top, captions ≈ 78%.
+    gap, center = 8.0, 61.0
+    first = center - (len(lines) - 1) * gap / 2.0
+    out: list[dict] = []
+    for i, line in enumerate(lines):
+        out.append({
+            "type": "text",
+            "text": line.upper(),
+            "track": _HOOK_TITLE_TRACK + i,
+            "time": 0,
+            "duration": round(total, 2),
+            "width": "60%",
+            "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
+            "y": f"{first + i * gap:.1f}%", "y_anchor": "50%",
+            "font_family": "Montserrat",
+            "font_weight": "800",
+            "font_size": f"{vh} vh",
+            "fill_color": "#FFFFFF",
+            "background_color": "rgba(0,0,0,0.42)",
+            "background_x_padding": "6%",
+            "background_y_padding": "3%",
+            "shadow_color": "rgba(0,0,0,0.7)",
+            "shadow_blur": "1.3 vh",
+            "shadow_y": "0.4 vh",
+            "letter_spacing": "0.5%",
+        })
+    return out
+
+
 def viral_hook_elements(captions: list[dict], track: int = 3) -> list[dict]:
     """Build the full two-phase caption track for the 'viral_hook' style.
 

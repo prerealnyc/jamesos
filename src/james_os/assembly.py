@@ -580,6 +580,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         brand: dict | None = None,             # brand kit (nameplate/watermark/endcard)
         sfx_hit_url: str = "",
         sfx_riser_url: str = "",
+        hook_title: str | None = None,         # persistent below-face hook/title
     ) -> dict:
         """engaging_avatar layout. The avatar video carries its own
         audio across the whole timeline; B-roll images overlay on top
@@ -605,6 +606,12 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 "track": 1, "time": 0, "duration": total, "fit": "cover",
                 **_zoom_punch_props(total),
             })
+
+        # Persistent hook/title BELOW the face — tells the viewer what the reel
+        # is about (top human-feedback ask). Off the face, within safe margins.
+        if hook_title:
+            from .caption_styles import hook_title_elements
+            elements.extend(hook_title_elements(hook_title, total))
 
         # track 2 — insert overlays with short fade in/out. Prefer the
         # Runway-animated video clip when available so the cutaway has
@@ -1088,6 +1095,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         inserts: list[dict], captions: list[dict],
         aspect: str, music_mood: str = "none",
         caption_style: str | None = None,
+        hook_title: str | None = None,
     ) -> RenderResult:
         """Submit an engaging_avatar render. Same poll contract."""
         if not (avatar_video_url or "").startswith("http"):
@@ -1098,6 +1106,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             inserts=inserts, captions=captions,
             aspect=aspect, music_mood=music_mood,
             caption_style=caption_style,
+            hook_title=hook_title,
             music_track_url=await resolve_music_url(music_mood),
             sfx_url=await resolve_sfx_url("whoosh"),
             brand=await get_brand_kit(),

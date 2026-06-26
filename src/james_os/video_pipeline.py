@@ -1243,6 +1243,8 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
         aspect=row["aspect"],
         music_mood=(row["music_mood"] or "calm"),
         caption_style=cstyle,
+        # On-screen hook below the face — what the reel is about (feedback ask).
+        hook_title=(meta.get("hook_quote") or row["title"] or "")[:120],
     )
     if res.status == "processing":
         for _ in range(_MAX_POLLS):

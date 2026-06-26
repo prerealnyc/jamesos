@@ -1062,16 +1062,20 @@ async def animate_inserts(
             # is being said at this moment, on Higgsfield and Runway alike.
             scene = (insert.image_prompt or insert.text or "").strip()
 
-            # B-roll library reuse — a strongly matching clip we already paid
-            # to render (or the user uploaded) is reused instead of spending
-            # Runway/Higgsfield credits again. Conservative matcher; a miss
-            # just falls through to generation.
-            from .broll_library import find_reusable_clip, mark_reused
-            reused = await find_reusable_clip(scene, aspect, tenant_id)
-            if reused:
-                insert.video_url = reused["url"]
-                await mark_reused(reused["media_id"], tenant_id)
-                return
+            # B-roll library auto-reuse is OFF by default (settings.
+            # broll_reuse_enabled). Human feedback: the same clips kept
+            # reappearing across videos and drifting off the words being said.
+            # So every reel now generates FRESH, transcript-grounded B-roll —
+            # and each clip is still saved (register_generated_clip below) so
+            # the library grows for deliberate, named reuse later. Flip the
+            # flag to restore credit-saving automatic substitution.
+            if settings.broll_reuse_enabled:
+                from .broll_library import find_reusable_clip, mark_reused
+                reused = await find_reusable_clip(scene, aspect, tenant_id)
+                if reused:
+                    insert.video_url = reused["url"]
+                    await mark_reused(reused["media_id"], tenant_id)
+                    return
             motion_prompt = (
                 "Real cinematic VIDEO with clearly visible motion — this must "
                 "read as live footage, NOT a still photo. Include a noticeable "

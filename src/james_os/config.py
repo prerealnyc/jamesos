@@ -110,6 +110,12 @@ class Settings(BaseSettings):
     # scene's duration to the trimmed length. Eliminates dead air between
     # scenes in Creatomate's stitched output. Disable for raw clips.
     auto_trim_silence: bool = True
+    # Auto-reuse of previously-rendered B-roll across videos. OFF: per human
+    # feedback the same clips kept reappearing and drifting off the spoken
+    # words, so every reel now generates fresh, transcript-grounded B-roll
+    # (still SAVED to the library for deliberate, named reuse later). Flip on
+    # to restore credit-saving automatic substitution.
+    broll_reuse_enabled: bool = False
     # Style prefix applied to every B-roll seed image prompt — pushes the
     # output away from cartoon/illustration toward real-looking footage.
     image_style: str = (
