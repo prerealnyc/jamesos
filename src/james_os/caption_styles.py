@@ -547,9 +547,10 @@ def _hook_window(hook: list[dict], body: list[dict]) -> tuple[float, float]:
     return hook_start, hook_end
 
 
-# Dedicated high tracks for the persistent below-face hook title so it never
-# collides with captions (3), polish layers (6-11) or the viral_hook block.
+# Dedicated high tracks for the below-face hook title so it never collides with
+# captions (3), polish layers (6-11) or the viral_hook block.
 _HOOK_TITLE_TRACK = 20
+_HOOK_TITLE_HOLD_S = 3.0   # the hook grabs attention up front, then clears
 
 
 def hook_title_elements(text: str, total: float) -> list[dict]:
@@ -582,6 +583,9 @@ def hook_title_elements(text: str, total: float) -> list[dict]:
     # Center the block below the face: face ≈ 25-50% from top, captions ≈ 78%.
     gap, center = 8.0, 61.0
     first = center - (len(lines) - 1) * gap / 2.0
+    # The hook only holds for the first few seconds (then it clears so it
+    # doesn't crowd the captions for the whole clip).
+    hold = round(min(float(total), _HOOK_TITLE_HOLD_S), 2)
     out: list[dict] = []
     for i, line in enumerate(lines):
         out.append({
@@ -589,7 +593,8 @@ def hook_title_elements(text: str, total: float) -> list[dict]:
             "text": line.upper(),
             "track": _HOOK_TITLE_TRACK + i,
             "time": 0,
-            "duration": round(total, 2),
+            "duration": hold,
+            "animations": [{"time": 0, "duration": 0.3, "type": "fade"}],
             "width": "60%",
             "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
             "y": f"{first + i * gap:.1f}%", "y_anchor": "50%",
