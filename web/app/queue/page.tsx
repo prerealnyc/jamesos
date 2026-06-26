@@ -219,6 +219,35 @@ export default function QueuePage() {
     } finally { setBatchBusy(false); }
   }
 
+  // Bulk hard-delete — removes the selected rows entirely (vs reject, which
+  // keeps them and teaches the engine). Destructive, so confirm first.
+  async function deleteSelected() {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    if (
+      !window.confirm(
+        `Delete ${ids.length} selected item${ids.length === 1 ? "" : "s"} permanently? ` +
+          "This can't be undone."
+      )
+    )
+      return;
+    setBatchBusy(true);
+    try {
+      let ok = 0;
+      for (const id of ids) {
+        try { await api.deleteQueueItem(id); ok++; } catch { /* skip failures */ }
+      }
+      setSelected(new Set());
+      setToast({
+        message:
+          ok === ids.length
+            ? `Deleted ${ids.length} item${ids.length === 1 ? "" : "s"}.`
+            : `Deleted ${ok} of ${ids.length} — ${ids.length - ok} could not be deleted.`,
+      });
+      await load();
+    } finally { setBatchBusy(false); }
+  }
+
   // Edit the draft text, optionally approving in the same click.
   async function saveEdit(id: string, thenApprove: boolean) {
     setActing(id);
@@ -356,7 +385,15 @@ export default function QueuePage() {
         <div className="flex items-center gap-3 rounded-lg border border-primary/40 bg-primary/5 px-4 py-2.5">
           <span className="text-[13px] font-medium">{selected.size} selected</span>
           <button onClick={() => setSelected(new Set())} className="text-[12px] text-muted-foreground hover:text-foreground">clear</button>
-          <Button className="ml-auto" onClick={approveSelected} disabled={batchBusy}>
+          <button
+            onClick={deleteSelected}
+            disabled={batchBusy}
+            className="ml-auto text-[13px] text-red-400 hover:text-red-300 disabled:opacity-50"
+            title="Delete the selected items permanently"
+          >
+            🗑 Delete {selected.size}
+          </button>
+          <Button onClick={approveSelected} disabled={batchBusy}>
             {batchBusy ? <Spinner /> : `Approve ${selected.size} selected`}
           </Button>
         </div>
