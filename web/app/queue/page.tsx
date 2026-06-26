@@ -553,6 +553,18 @@ export default function QueuePage() {
                   ) : (
                     <p className="text-[15px] leading-relaxed whitespace-pre-wrap">{it.content}</p>
                   )}
+                  {/* A video's generated social caption, shown beside the
+                      player (its `content` is just the short title/hook). */}
+                  {video && editing !== it.id && it.caption && it.caption !== it.content && (
+                    <div className="mt-2.5 rounded-md border border-border/60 bg-muted/30 px-3 py-2">
+                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
+                        Caption
+                      </div>
+                      <p className="text-[13px] leading-relaxed whitespace-pre-wrap text-foreground/90">
+                        {it.caption}
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="mt-3 pt-3 border-t border-border flex items-center gap-4 text-[12px] text-muted-foreground">

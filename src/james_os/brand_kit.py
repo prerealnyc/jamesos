@@ -27,6 +27,8 @@ DEFAULT_BRAND_KIT = {
     "tagline": "PreReal",
     "handle": "",
     "logo_url": "",
+    # Fixed closing line appended to every generated caption (posts + videos).
+    "caption_signoff": "We are ALL one",
 }
 
 _KEYS = set(DEFAULT_BRAND_KIT)

@@ -1255,6 +1255,14 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
     if res.status != "succeeded" or not res.url:
         return await _fail(pid, res.error or "long_form_reel assembly failed", tenant_id)
 
+    # A relevant social caption from the reel's actual spoken words (+ brand
+    # sign-off) — shown beside the video in the Approval Queue.
+    from .content import gen_video_caption
+    _spoken = " ".join((c.get("text") or "") for c in (assets.captions or [])).strip()
+    social_caption = await gen_video_caption(
+        _spoken or meta.get("hook_quote", ""), row["platform"], tenant_id,
+    )
+
     async with acquire(tenant_id) as conn:
         action_id = await conn.fetchval(
             """INSERT INTO actions (proposed_by, action_type, payload, status)
@@ -1262,7 +1270,7 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
             json.dumps({
                 "platform": row["platform"], "format": "video",
                 "content": row["title"] or meta.get("hook_quote", "")[:120],
-                "caption": meta.get("hook_quote", "")[:160],
+                "caption": social_caption or meta.get("hook_quote", "")[:160],
                 "media_url": res.url,
                 "stub": res.url.startswith("stub://"),
                 "mode": "long_form_reel",

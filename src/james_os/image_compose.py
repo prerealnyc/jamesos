@@ -104,20 +104,37 @@ def _circle(b: bytes, d: int) -> Image.Image:
     return out
 
 
+def _logo_badge(b: bytes, d: int) -> Image.Image:
+    """The brand logo FILLING the circular profile slot. The logo is composited
+    onto a dark disc first (so a transparent PNG still has a solid backing),
+    then cover-fit to fill the whole circle edge-to-edge — the emblem reads
+    full-size, not a small mark floating in padding."""
+    src = Image.open(BytesIO(b)).convert("RGBA")
+    backing = Image.new("RGBA", src.size, (18, 20, 28, 255))
+    flat = Image.alpha_composite(backing, src)
+    filled = ImageOps.fit(flat, (d, d), method=Image.LANCZOS, centering=(0.5, 0.5))
+    mask = Image.new("L", (d, d), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, d, d), fill=255)
+    out = Image.new("RGBA", (d, d), (0, 0, 0, 0))
+    out.paste(filled.convert("RGBA"), (0, 0), mask)
+    return out
+
+
 def _png(img: Image.Image) -> bytes:
     buf = BytesIO()
     img.convert("RGB").save(buf, format="PNG")
     return buf.getvalue()
 
 
-def _brand_footer(img: Image.Image, handle: str, profile_bytes: bytes | None) -> None:
-    """Profile circle + @handle centered near the bottom (on a dark scene)."""
+def _brand_footer(img: Image.Image, handle: str, profile_bytes: bytes | None,
+                  profile_is_logo: bool = False) -> None:
+    """Profile circle (or brand logo badge) + @handle centered near the bottom."""
     draw = ImageDraw.Draw(img)
     cx = W // 2
     base_y = H - 150
     if profile_bytes:
         d = 88
-        circ = _circle(profile_bytes, d)
+        circ = _logo_badge(profile_bytes, d) if profile_is_logo else _circle(profile_bytes, d)
         img.paste(circ, (cx - d // 2, base_y - d - 6), circ)
     if handle:
         h = handle if handle.startswith("@") else "@" + handle
@@ -127,7 +144,8 @@ def _brand_footer(img: Image.Image, handle: str, profile_bytes: bytes | None) ->
 
 
 def quote_card(bg_bytes: bytes, quote: str, handle: str = "",
-               profile_bytes: bytes | None = None) -> bytes:
+               profile_bytes: bytes | None = None,
+               profile_is_logo: bool = False) -> bytes:
     """Full-bleed scene + dark scrim + big centered quote + @handle footer."""
     base = _cover(_open_rgb(bg_bytes), W, H).convert("RGBA")
     scrim = Image.new("RGBA", (W, H), (8, 10, 20, 145))
@@ -139,7 +157,7 @@ def quote_card(bg_bytes: bytes, quote: str, handle: str = "",
     top = (H - total_h) / 2 - 40
     _draw_centered(draw, lines, font, W // 2, top, fill=_QUOTE_FILL,
                    stroke_fill=(0, 0, 0), stroke_w=3)
-    _brand_footer(base, handle, profile_bytes)
+    _brand_footer(base, handle, profile_bytes, profile_is_logo)
     return _png(base)
 
 
@@ -172,7 +190,8 @@ def meme_card(bg_bytes: bytes, top_text: str, bottom_text: str, handle: str = ""
 
 
 def statement_card(bg_bytes: bytes, statement: str, handle: str = "",
-                   profile_bytes: bytes | None = None) -> bytes:
+                   profile_bytes: bytes | None = None,
+                   profile_is_logo: bool = False) -> bytes:
     """Brad-Lea style: an IG-post header (profile + @handle) + a bold black
     STATEMENT on white + a full-width image of James below (rendered from the
     Soul ID by the caller)."""
@@ -181,10 +200,10 @@ def statement_card(bg_bytes: bytes, statement: str, handle: str = "",
     pad = 56
     y = 40
 
-    # IG-post-style header: profile circle + @handle.
+    # IG-post-style header: profile circle (or brand logo badge) + @handle.
     if profile_bytes:
         d = 72
-        circ = _circle(profile_bytes, d)
+        circ = _logo_badge(profile_bytes, d) if profile_is_logo else _circle(profile_bytes, d)
         canvas.paste(circ, (pad, y), circ)
         if handle:
             h = handle if handle.startswith("@") else "@" + handle

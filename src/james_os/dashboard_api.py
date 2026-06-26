@@ -417,7 +417,9 @@ def _action_to_queue_item(row: dict) -> dict:
         "pillar": payload.get("pillar", "—"),
         "format": payload.get("format", row["action_type"]),
         "content": body,
-        "caption": body,
+        # A distinct social caption when one was generated (videos get a real
+        # caption separate from their short title); falls back to the body.
+        "caption": payload.get("caption") or body,
         "voiceScore": payload.get("voice_score"),
         # Voice-QA verdict — a flagged draft failed the gate and needs an
         # explicit override to approve (see approve_item).

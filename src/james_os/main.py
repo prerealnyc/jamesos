@@ -1089,13 +1089,36 @@ async def _generate_designed_post_image(
 
     kit = await get_brand_kit(tenant_id)
     handle = (kit.get("handle") or "").strip()
+    # Profile mark next to the @handle: prefer the brand LOGO (PreReal emblem,
+    # uploaded on the Brand page → brand_kit.logo_url); fall back to James's
+    # hero photo only when no logo is configured.
     profile_bytes = None
-    try:
-        refs = await get_hero_photo_files(tenant_id=tenant_id)
-        if refs:
-            profile_bytes = refs[0][1]
-    except Exception:  # noqa: BLE001
-        profile_bytes = None
+    profile_is_logo = False
+    logo_url = (kit.get("logo_url") or "").strip()
+    if logo_url.startswith("http"):
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
+                r = await c.get(logo_url)
+                r.raise_for_status()
+            # Validate it decodes as a raster image BEFORE committing — an SVG
+            # (the brand page accepts svg), an HTML/redirect body, or an empty
+            # response would otherwise crash the whole card render in Pillow.
+            from io import BytesIO as _BIO
+
+            from PIL import Image as _PILImage
+            _PILImage.open(_BIO(r.content)).convert("RGBA")
+            profile_bytes = r.content
+            profile_is_logo = True
+        except Exception:  # noqa: BLE001 — bad/non-raster logo → fall back to hero
+            profile_bytes = None
+            profile_is_logo = False
+    if profile_bytes is None:
+        try:
+            refs = await get_hero_photo_files(tenant_id=tenant_id)
+            if refs:
+                profile_bytes = refs[0][1]
+        except Exception:  # noqa: BLE001
+            profile_bytes = None
 
     if fmt == "meme":
         out = meme_card(bg_bytes, spec.get("top_text") or topic, spec.get("bottom_text") or "", handle)
@@ -1103,11 +1126,11 @@ async def _generate_designed_post_image(
         out = statement_card(
             bg_bytes,
             spec.get("statement") or spec.get("quote") or topic,
-            handle, profile_bytes,
+            handle, profile_bytes, profile_is_logo,
         )
     else:
         quote = (spec.get("quote") or "").strip() or (draft_text or topic or "").split(". ")[0]
-        out = quote_card(bg_bytes, quote, handle, profile_bytes)
+        out = quote_card(bg_bytes, quote, handle, profile_bytes, profile_is_logo)
 
     tenant = str(tenant_id or settings.default_tenant_id)
     served_uri, file_path = await asyncio.to_thread(

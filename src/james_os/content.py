@@ -38,6 +38,7 @@ import json
 import time
 from uuid import UUID
 
+from .brand_kit import get_brand_kit
 from .config import settings
 from .db import acquire
 from .llm import get_llm
@@ -293,6 +294,60 @@ def _coerce_ids(raw: object) -> list[UUID]:
     return out
 
 
+def apply_caption_signoff(text: str, signoff: str) -> str:
+    """Append the brand caption sign-off as a final line — idempotently, so a
+    re-run or an already-signed draft never doubles it. Empty text/sign-off is
+    a no-op."""
+    t = (text or "").rstrip()
+    s = (signoff or "").strip()
+    if not t or not s:
+        return text
+    # Idempotent across any trailing punctuation/quotes ('one?', 'one…', 'one"').
+    _trail = " .!?…\"'’"
+    if t.lower().rstrip(_trail).endswith(s.lower().rstrip(_trail)):
+        return t
+    return f"{t}\n\n{s}"
+
+
+_VIDEO_CAPTION_SYSTEM = (
+    "You write the SOCIAL CAPTION that accompanies a short video by a "
+    "real-estate broker who teaches mindset, ownership and accountability. "
+    "Given the video's spoken content, write ONE scroll-stopping caption in "
+    "his first-person voice: a strong opening line, 1-3 short sentences total, "
+    "no emoji spam, at most a couple of relevant hashtags, no surrounding "
+    "quotes. Do NOT add a sign-off line — that is appended separately.\n\n"
+    'Return STRICT JSON: {"caption": "<the caption>"}'
+)
+
+
+async def gen_video_caption(
+    source_text: str, platform: str = "instagram", tenant_id: UUID | None = None
+) -> str:
+    """A relevant social caption for a finished VIDEO, derived from its spoken
+    content/hook and ending with the brand sign-off. Best-effort: falls back to
+    the first line of the source + sign-off if the LLM is unavailable."""
+    kit = await get_brand_kit(tenant_id)
+    signoff = kit.get("caption_signoff") or ""
+    src = (source_text or "").strip()
+    base = ""
+    if src:
+        try:
+            out = await get_llm().complete_json(
+                system=_VIDEO_CAPTION_SYSTEM,
+                messages=[{
+                    "role": "user",
+                    "content": f"Platform: {platform}\nVideo content:\n{src[:1800]}",
+                }],
+                max_tokens=300, temperature=0.6,
+            )
+            base = str((out or {}).get("caption") or "").strip().strip('"')
+        except Exception:  # noqa: BLE001 — fall back to a trimmed source line
+            base = ""
+    if not base:
+        base = (src.split(". ")[0] if src else "").strip()[:180]
+    return apply_caption_signoff(base, signoff)
+
+
 async def generate_content(
     brief: ContentBrief, tenant_id: UUID | None = None
 ) -> ContentDraft:
@@ -384,6 +439,15 @@ async def generate_content(
     passed = bool(qa_raw.get("passed", score >= floor)) and score >= floor
     qa = QAVerdict(voice_score=score, passed=passed, drift=drift)
     status = "generated" if passed else "flagged"
+
+    # Brand caption sign-off — every caption ends on the same note. Applied
+    # AFTER voice-QA so the boilerplate never sways the voice score, and it
+    # flows into content, caption and the returned draft below.
+    try:
+        _kit = await get_brand_kit(tenant_id)
+        draft_text = apply_caption_signoff(draft_text, _kit.get("caption_signoff"))
+    except Exception:  # noqa: BLE001 — never lose the draft over a brand read
+        pass
 
     # ── queue as a pending action (the human gate) ──
     payload = {
