@@ -1261,6 +1261,24 @@ export const api = {
       results: { topic: string; action_id: string | null; image_url: string | null; format?: string | null; error: string | null }[];
       error?: string | null;
     }>(`/post/create-batch/${id}`),
+  // Backfill images for queued posts that don't have one yet (designed cards,
+  // hero-photo fallback). Re-runnable; skips posts that already have an image.
+  startBackfillImages: (body?: { mode?: "designed" | "photo"; limit?: number }) =>
+    jpost<{ job_id: string; status: string; total: number }>(
+      "/post/backfill-images",
+      { mode: "designed", limit: 60, ...(body || {}) }
+    ),
+  getBackfillImages: (id: string) =>
+    jget<{
+      job_id: string;
+      status: "running" | "done" | "failed";
+      total: number;
+      done: number;
+      generated: number;
+      failed: number;
+      skipped?: number;
+      error?: string | null;
+    }>(`/post/backfill-images/${id}`),
   // Suggested post topics, steered from live data (same engine as video
   // 'Generate 10 scripts'): tracked creators + trends + James's real topics,
   // pillar-quota'd. Backgrounded (intel is 30-60s, would time out a sync call):

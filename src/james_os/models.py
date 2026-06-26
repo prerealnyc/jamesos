@@ -197,6 +197,16 @@ class CreateBatchRequest(BaseModel):
     image_url: str = ""          # photo mode: a specific photo; "" → rotate hero library
 
 
+class BackfillImagesRequest(BaseModel):
+    """Generate an image for every QUEUED (pending) post that doesn't have one
+    yet. 'designed' runs the art-director card machine (with a hero-photo
+    fallback if a render fails, so no post is left imageless); 'photo' just
+    attaches rotated hero photos. Re-runnable: posts that already have an image
+    are skipped, so it doubles as a retry for any that failed."""
+    mode: str = "designed"   # designed | photo
+    limit: int = 50
+
+
 class IdeaStatusRequest(BaseModel):
     """Curate a saved post-topic suggestion: keep (accepted), drop (rejected),
     or reset (pending)."""

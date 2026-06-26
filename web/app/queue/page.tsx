@@ -45,6 +45,64 @@ export default function QueuePage() {
   const [batchBusy, setBatchBusy] = useState(false);
   const [scheduling, setScheduling] = useState<string | null>(null);
   const [scheduleVal, setScheduleVal] = useState("");
+  const [backfill, setBackfill] = useState<{ running: boolean; done: number; total: number } | null>(null);
+
+  // Generate a designed image for every queued post that's missing one (with a
+  // hero-photo fallback so none is left blank). Re-runnable; retries failures.
+  // Drains in rounds of 60 so a backlog larger than one batch is fully cleared.
+  async function runBackfillImages() {
+    if (backfill?.running) return;
+    setBackfill({ running: true, done: 0, total: 0 });
+    let generated = 0;
+    let failed = 0;
+    let stillRunning = false;
+    let errored = "";
+    try {
+      for (let round = 0; round < 12; round++) {
+        const { job_id } = await api.startBackfillImages({ mode: "designed", limit: 60 });
+        let r: Awaited<ReturnType<typeof api.getBackfillImages>> | null = null;
+        let timedOut = true;
+        // ~20 min/round — a designed render with a Soul image can run ~3 min.
+        for (let i = 0; i < 400; i++) {
+          await new Promise((res) => setTimeout(res, 3000));
+          r = await api.getBackfillImages(job_id);
+          setBackfill({ running: true, done: r.done, total: r.total });
+          if (r.status !== "running") {
+            timedOut = false;
+            break;
+          }
+        }
+        if (!r || timedOut) {
+          stillRunning = true;
+          break;
+        }
+        if (r.status === "failed") {
+          errored = r.error || "backfill failed";
+          break;
+        }
+        generated += r.generated;
+        failed += r.failed;
+        // Stop when nothing was left, or a round made no progress (avoids a
+        // loop when the only remaining posts can't get an image).
+        if (r.total === 0 || r.generated === 0) break;
+      }
+      setToast({
+        message: errored
+          ? errored
+          : stillRunning
+          ? "Still generating images in the background — refresh in a minute."
+          : generated === 0 && failed === 0
+          ? "Every queued post already has an image."
+          : `Generated images for ${generated} post${generated === 1 ? "" : "s"}` +
+            (failed ? ` · ${failed} couldn't be generated` : ""),
+      });
+    } catch (e) {
+      setToast({ message: e instanceof Error ? e.message : "backfill failed" });
+    } finally {
+      setBackfill((b) => (b ? { ...b, running: false } : null));
+      load();
+    }
+  }
 
   async function load() {
     try {
@@ -254,8 +312,12 @@ export default function QueuePage() {
         const inStatus = filter === "total" ? items : items.filter((it) => it.status === filter);
         const nVideos = inStatus.filter(isVideoItem).length;
         const nPosts = inStatus.length - nVideos;
+        // Pending posts with no image yet — the backfill targets these.
+        const missingImages = items.filter(
+          (it) => !isVideoItem(it) && it.status === "pending" && !it.imageUrl
+        ).length;
         return (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             {(["videos", "posts", "all"] as const).map((k) => {
               const active = kind === k;
               const count = k === "videos" ? nVideos : k === "posts" ? nPosts : inStatus.length;
@@ -270,6 +332,22 @@ export default function QueuePage() {
                 </FilterChip>
               );
             })}
+            {(missingImages > 0 || backfill?.running) && (
+              <Button
+                className="ml-auto"
+                onClick={runBackfillImages}
+                disabled={backfill?.running}
+                title="Generate a designed image for every queued post that's missing one"
+              >
+                {backfill?.running ? (
+                  <>
+                    <Spinner /> Generating images {backfill.done}/{backfill.total || "…"}
+                  </>
+                ) : (
+                  `🎨 Generate ${missingImages} missing image${missingImages === 1 ? "" : "s"}`
+                )}
+              </Button>
+            )}
           </div>
         );
       })()}

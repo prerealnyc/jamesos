@@ -56,6 +56,7 @@ from .models import (
     MediaLinkRequest,
     MediaUpdate,
     AttachPostImageRequest,
+    BackfillImagesRequest,
     CreateBatchRequest,
     IdeaStatusRequest,
     MultiGenerateRequest,
@@ -1326,6 +1327,148 @@ async def post_create_batch(req: CreateBatchRequest, background: BackgroundTasks
 @app.get("/post/create-batch/{job_id}")
 async def post_create_batch_get(job_id: str) -> dict:
     j = _CREATE_BATCHES.get(job_id)
+    if not j:
+        raise HTTPException(status_code=404, detail="job not found (expired or unknown)")
+    return {"job_id": job_id, **j}
+
+
+# Backfill: give every queued post that's missing an image one. Designed cards
+# preferred; a rotated hero photo is the fallback so NO post is left imageless.
+# Re-runnable (skips posts that already have an image), so it doubles as a retry
+# for any render that failed.
+_BACKFILL_JOBS: dict[str, dict] = {}
+# Action ids currently being rendered by ANY backfill run in this process — a
+# cheap in-process guard so two overlapping runs (second tab, or a backfill
+# overlapping a single-post designed render) don't both pay for the same image.
+_BACKFILL_INFLIGHT: set = set()
+
+
+@app.post("/post/backfill-images", status_code=202)
+async def post_backfill_images(
+    req: BackfillImagesRequest, background: BackgroundTasks,
+) -> dict:
+    from uuid import uuid4
+
+    from .db import _request_tenant
+    try:
+        tid = _request_tenant.get()
+    except LookupError:
+        tid = None
+    tid = tid or settings.default_tenant_id
+
+    limit = max(1, min(int(req.limit or 50), 100))
+    mode = req.mode if req.mode in ("designed", "photo") else "designed"
+    async with acquire(tid) as conn:
+        rows = await conn.fetch(
+            """SELECT id, payload->>'topic' AS topic, payload->>'content' AS content
+                 FROM actions
+                WHERE tenant_id = current_setting('app.current_tenant', true)::uuid
+                  AND action_type = 'content' AND status = 'pending'
+                  AND coalesce(payload->>'image_url', '') = ''
+                ORDER BY created_at DESC
+                LIMIT $1""",
+            limit,
+        )
+    targets = [(r["id"], r["topic"] or "", r["content"] or "") for r in rows]
+
+    job_id = str(uuid4())
+    job = {
+        "status": "running", "total": len(targets), "done": 0,
+        "generated": 0, "failed": 0, "skipped": 0,
+    }
+    _BACKFILL_JOBS[job_id] = job
+    finished = [k for k, v in _BACKFILL_JOBS.items() if v.get("status") != "running"]
+    while len(_BACKFILL_JOBS) > 20 and finished:
+        _BACKFILL_JOBS.pop(finished.pop(0), None)
+
+    if not targets:
+        job["status"] = "done"
+        return {"job_id": job_id, "status": "done", "total": 0}
+
+    soul_id = (settings.higgsfield_soul_id or "").strip()  # noqa: F841 (read in render)
+
+    async def _attach_photo(action_id, url: str) -> None:
+        async with acquire(tid) as conn:
+            await conn.execute(
+                "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1",
+                action_id,
+                json.dumps({"image_url": url, "media_url": url, "has_image": True}),
+            )
+
+    async def _run() -> None:
+        sem = asyncio.Semaphore(2)
+        hero_urls: list[str] = []
+        try:
+            from .hero_context import get_hero_context
+            ctx = await get_hero_context(tid)
+            hero_urls = list(ctx.photo_urls) if ctx else []
+        except Exception:  # noqa: BLE001
+            hero_urls = []
+
+        counts: dict[str, int] = {}
+
+        def _avoid_fmt() -> str:
+            if not counts:
+                return ""
+            top = max(counts, key=lambda k: counts[k])
+            return top if counts[top] >= 2 else ""
+
+        async def _one(idx: int, action_id, topic: str, content: str) -> None:
+            async with sem:
+                # Skip if it already has an image (filled since our query) or is
+                # being rendered by an overlapping run in this process.
+                async with acquire(tid) as conn:
+                    existing = await conn.fetchval(
+                        "SELECT coalesce(payload->>'image_url','') FROM actions WHERE id = $1",
+                        action_id,
+                    )
+                if existing or action_id in _BACKFILL_INFLIGHT:
+                    job["skipped"] += 1
+                    job["done"] += 1
+                    return
+                _BACKFILL_INFLIGHT.add(action_id)
+                ok = False
+                try:
+                    # Designed when asked — and also as the only option when there
+                    # are no hero photos to fall back to (so 'photo' mode on a
+                    # tenant with no http hero URLs still produces an image).
+                    if mode == "designed" or not hero_urls:
+                        try:
+                            url, fmt = await _generate_designed_post_image(
+                                action_id, topic, content or topic, tid, avoid=_avoid_fmt(),
+                            )
+                            if url:
+                                ok = True
+                                if fmt:
+                                    counts[fmt] = counts.get(fmt, 0) + 1
+                        except Exception:  # noqa: BLE001 — fall back to a photo below
+                            ok = False
+                    if not ok and hero_urls:
+                        # Photo mode, or designed failed → never leave it imageless.
+                        await _attach_photo(action_id, hero_urls[idx % len(hero_urls)])
+                        ok = True
+                finally:
+                    _BACKFILL_INFLIGHT.discard(action_id)
+                job["generated" if ok else "failed"] += 1
+                job["done"] += 1
+
+        try:
+            await asyncio.gather(
+                *[_one(i, a, t, c) for i, (a, t, c) in enumerate(targets)],
+                return_exceptions=True,
+            )
+            job["status"] = "done"
+        except Exception as e:  # noqa: BLE001
+            job["status"] = "failed"
+            job["error"] = str(e)
+
+    background.add_task(_run)
+    return {"job_id": job_id, "status": "running", "total": len(targets)}
+
+
+@app.get("/post/backfill-images/{job_id}")
+async def post_backfill_images_get(job_id: str) -> dict:
+    j = _BACKFILL_JOBS.get(job_id)
     if not j:
         raise HTTPException(status_code=404, detail="job not found (expired or unknown)")
     return {"job_id": job_id, **j}
