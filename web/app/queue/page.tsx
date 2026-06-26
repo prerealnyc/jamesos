@@ -46,6 +46,16 @@ export default function QueuePage() {
   const [scheduling, setScheduling] = useState<string | null>(null);
   const [scheduleVal, setScheduleVal] = useState("");
   const [backfill, setBackfill] = useState<{ running: boolean; done: number; total: number } | null>(null);
+  // Click a post image to view it full-size in an overlay.
+  const [lightbox, setLightbox] = useState<string | null>(null);
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setLightbox(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightbox]);
 
   // Generate a designed image for every queued post that's missing one (with a
   // hero-photo fallback so none is left blank). Re-runnable; retries failures.
@@ -514,9 +524,12 @@ export default function QueuePage() {
                   // self-start keeps the 4:5 ratio: without it the flex row
                   // stretches the box to the full text height, and object-cover
                   // then slices a designed card's centered text off both sides.
-                  <div
-                    className="shrink-0 self-start bg-black rounded-md overflow-hidden border border-border w-[150px]"
+                  <button
+                    type="button"
+                    onClick={() => setLightbox(it.imageUrl!)}
+                    className="shrink-0 self-start bg-black rounded-md overflow-hidden border border-border w-[150px] cursor-zoom-in group relative"
                     style={{ aspectRatio: "4 / 5" }}
+                    title="Click to expand"
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
@@ -524,7 +537,10 @@ export default function QueuePage() {
                       alt="generated post image"
                       className="w-full h-full object-cover object-top"
                     />
-                  </div>
+                    <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-white opacity-0 group-hover:opacity-100 transition-opacity">
+                      ⤢ expand
+                    </span>
+                  </button>
                 ) : null}
                 <div className="min-w-0 flex-1">
                   {editing === it.id ? (
@@ -774,6 +790,31 @@ export default function QueuePage() {
           hrefLabel={toast.hrefLabel}
           onClose={() => setToast(null)}
         />
+      )}
+
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-6"
+          onClick={() => setLightbox(null)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <button
+            type="button"
+            onClick={() => setLightbox(null)}
+            className="absolute top-4 right-5 text-white/80 hover:text-white text-2xl leading-none"
+            aria-label="Close"
+          >
+            ✕
+          </button>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={lightbox}
+            alt="expanded post image"
+            className="max-h-[90vh] max-w-[92vw] rounded-lg object-contain shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
       )}
     </div>
   );
