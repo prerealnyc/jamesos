@@ -56,6 +56,11 @@ DEFAULT_CONFIG = {
     #              (auto-pick only when the template has none).
     "caption_mode": "rotate",
     "caption_rotation_offset": 0,
+    # HeyGen-avatar videos in bulk batches. OFF by default — those are
+    # unapproved, and autopilot can't produce the upload+B-roll+caption reel
+    # type itself (that needs an uploaded source). When off, each video slot
+    # becomes a reel SCRIPT draft to render from real footage instead.
+    "avatar_videos": False,
     "last_run_date": "",   # YYYY-MM-DD of the last completed run
 }
 

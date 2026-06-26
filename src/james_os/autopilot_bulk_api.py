@@ -39,17 +39,20 @@ class BulkGenerateRequest(BaseModel):
 
 _NOTES = {
     "mixed": (
-        "Bulk generation running in the background. Text+image posts "
-        "appear in the Approval Queue shortly; video reels land there "
-        "as each render finishes (a few minutes each)."
+        "Bulk generation running in the background. Text+image posts (a mix of "
+        "James photos and designed cards) appear in the Approval Queue shortly; "
+        "each video slot becomes a reel SCRIPT draft (HeyGen avatar videos are "
+        "off) to render from your own footage."
     ),
     "video": (
-        "Video generation running in the background. Each reel lands in "
-        "the Approval Queue as its render finishes (a few minutes each)."
+        "Reel SCRIPTS are generating in the background and landing in the "
+        "Approval Queue (HeyGen avatar videos are off — unapproved). Render each "
+        "into a reel from your uploaded footage on the Long-form page."
     ),
     "text": (
-        "Post generation running in the background. Text+image posts "
-        "appear in the Approval Queue shortly."
+        "Post generation running in the background. Text+image posts — a mix of "
+        "James photos and designed quote/meme/statement cards — appear in the "
+        "Approval Queue shortly."
     ),
 }
 

@@ -13,12 +13,12 @@ const BULK_SIZES = [5, 7, 10, 14, 30];
 
 type Mix = "video" | "text" | "mixed";
 const MIXES: { value: Mix; label: string; desc: string }[] = [
-  { value: "video", label: "🎬 Videos", desc: "Reels with voice, captions & B-roll" },
-  { value: "text", label: "📝 Text posts", desc: "Written posts with an AI image" },
-  { value: "mixed", label: "⚡ Mix", desc: "Half videos, half text posts" },
+  { value: "video", label: "🎬 Reel scripts", desc: "Scripts to render from your footage (avatar videos off)" },
+  { value: "text", label: "📝 Text posts", desc: "Mix of James photos & designed quote/meme cards" },
+  { value: "mixed", label: "⚡ Mix", desc: "Half text posts, half reel scripts" },
 ];
 function generateLabel(mix: Mix, n: number) {
-  if (mix === "video") return `Generate ${n} video${n === 1 ? "" : "s"}`;
+  if (mix === "video") return `Generate ${n} reel script${n === 1 ? "" : "s"}`;
   if (mix === "text") return `Generate ${n} post${n === 1 ? "" : "s"}`;
   return `Generate ${n} pieces (mix)`;
 }

@@ -180,10 +180,23 @@ async def _attach_image_to_action(
     return served_uri
 
 
+# Image-type rotation across a text+image batch: 'james' = a real/Soul James
+# photo (the existing hero path); 'designed' = the quote/meme/statement card
+# machine (which itself rotates the three formats). Gives a real mix of looks
+# instead of every post being a James photo. ~3-in-5 designed.
+_IMAGE_MIX = ["designed", "james", "designed", "designed", "james"]
+
+
 async def _make_text_post(
-    idea: dict, platform: str, tenant_id: UUID | None
+    idea: dict, platform: str, tenant_id: UUID | None,
+    image_kind: str = "james", avoid_fmt: str = "",
 ) -> dict:
-    """One text+image post: on-voice draft → queue → attach hero image."""
+    """One text+image post: on-voice draft → queue → attach an image.
+
+    image_kind 'james' attaches a real/Soul James photo (the existing hero
+    path); 'designed' runs the quote/meme/statement card machine and, on any
+    failure, falls back to the James photo so a post is never left imageless.
+    Returns the chosen designed format (or None) so the batch can vary them."""
     draft = await generate_content(
         ContentBrief(
             platform=platform,
@@ -199,10 +212,21 @@ async def _make_text_post(
         raise RuntimeError(draft.note or "content engine queued nothing")
 
     image_url = None
+    fmt: str | None = None
     try:
-        image_url = await _attach_image_to_action(
-            draft.action_id, idea, platform, draft.draft, tenant_id
-        )
+        if image_kind == "designed":
+            try:
+                from .main import _generate_designed_post_image
+                image_url, fmt = await _generate_designed_post_image(
+                    draft.action_id, idea.get("topic", ""),
+                    draft.draft or idea.get("topic", ""), tenant_id, avoid=avoid_fmt,
+                )
+            except Exception:  # noqa: BLE001 — designed failed → James photo below
+                image_url, fmt = None, None
+        if not image_url:
+            image_url = await _attach_image_to_action(
+                draft.action_id, idea, platform, draft.draft, tenant_id
+            )
     except Exception:  # noqa: BLE001 — image is additive; keep the queued text
         image_url = None
 
@@ -214,6 +238,36 @@ async def _make_text_post(
         "voice_score": draft.voice_score,
         "status": draft.status,
         "image": bool(image_url),
+        "format": fmt if (image_url and fmt) else None,
+    }
+
+
+async def _make_reel_script(
+    idea: dict, platform: str, tenant_id: UUID | None
+) -> dict:
+    """A reel SCRIPT draft (text) — lands in the Approval Queue. HeyGen-avatar
+    videos are off and autopilot can't cut the upload+B-roll+caption reel
+    itself, so we hand off a ready script to render from real footage via the
+    Long-form cutter."""
+    draft = await generate_content(
+        ContentBrief(
+            platform=platform,
+            format="reel_script",
+            pillar=idea.get("pillar", ""),
+            topic=idea["topic"],
+            extra_instructions=_TEXT_STEER + trend_steer(idea),
+        ),
+        tenant_id,
+    )
+    if not draft.action_id:
+        raise RuntimeError(draft.note or "content engine queued nothing")
+    return {
+        "kind": "reel_script",
+        "title": idea.get("title", ""),
+        "platform": draft.platform,
+        "action_id": str(draft.action_id),
+        "voice_score": draft.voice_score,
+        "status": draft.status,
     }
 
 
@@ -395,59 +449,90 @@ async def generate_bulk(
 
     text_queued = 0
     video_queued = 0
+    script_queued = 0
 
-    # ── Text+image posts ──
+    # ── Text+image posts — rotate the image TYPE across the batch (James photo
+    # vs designed quote/meme/statement card) so it's a real mix of looks, not
+    # five James photos. The designed machine rotates its three formats too. ──
+    _fmt_counts: dict[str, int] = {}
+
+    def _avoid_fmt() -> str:
+        if not _fmt_counts:
+            return ""
+        top = max(_fmt_counts, key=lambda k: _fmt_counts[k])
+        return top if _fmt_counts[top] >= 2 else ""
+
     for i in range(n_text):
         try:
-            await _make_text_post(_idea_at(i), platform, tenant_id)
+            kind = _IMAGE_MIX[i % len(_IMAGE_MIX)] if _IMAGE_MIX else "james"
+            r = await _make_text_post(
+                _idea_at(i), platform, tenant_id,
+                image_kind=kind, avoid_fmt=_avoid_fmt() if kind == "designed" else "",
+            )
+            f = r.get("format")
+            if f:
+                _fmt_counts[f] = _fmt_counts.get(f, 0) + 1
             text_queued += 1
         except Exception as e:  # noqa: BLE001 — one bad post can't kill the batch
             errors.append(f"text {i + 1}/{n_text}: {e}")
 
-    # ── Video reels (fire-and-forget renders) ──
-    # Each reel in the batch gets a DISTINCT style from the template library
-    # (cycling when the batch has more videos than styles). Empty library or
-    # flag off → chosen is [] and every reel uses the standard look.
-    use_tpls = bool(cfg.get("use_style_templates", True))
-    broll_engine = str(cfg.get("broll_engine", "") or "").strip().lower()
-    caption_mode = str(cfg.get("caption_mode", "rotate") or "rotate").strip().lower()
-    rotate_captions = caption_mode == "rotate"
-    smart_captions = caption_mode == "smart"
-    rot_offset = int(cfg.get("caption_rotation_offset", 0) or 0)
-    chosen = await pick_distinct_templates(n_video, tenant_id) if use_tpls else []
+    # ── Video slots ──
+    # HeyGen-avatar videos are OFF by default (unapproved). Autopilot can't cut
+    # the upload+B-roll+caption reel type itself, so each video slot becomes a
+    # reel SCRIPT draft to render from real footage. Flip cfg.avatar_videos on
+    # to restore avatar renders.
+    avatar_videos = bool(cfg.get("avatar_videos", False))
     video_results: list[dict] = []
-    for j in range(n_video):
-        try:
-            tpl = chosen[j] if j < len(chosen) else None
-            cap_style = (
-                _CAPTION_ROTATION[(rot_offset + j) % len(_CAPTION_ROTATION)]
-                if rotate_captions else ""
-            )
-            # Alternate the two saved reel templates per video: even = full-frame
-            # avatar (magenta-on-black), odd = split 50/50 (magenta-on-white).
-            video_template = "split" if (j % 2) else "full"
-            video_results.append(
-                await _make_video(
-                    _idea_at(n_text + j), platform, tenant_id,
-                    template=tpl, broll_engine=broll_engine,
-                    caption_style=cap_style, smart_captions=smart_captions,
-                    video_template=video_template,
+    if not avatar_videos:
+        for j in range(n_video):
+            try:
+                await _make_reel_script(_idea_at(n_text + j), platform, tenant_id)
+                script_queued += 1
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"script {j + 1}/{n_video}: {e}")
+    else:
+        # Each reel in the batch gets a DISTINCT style from the template library
+        # (cycling when the batch has more videos than styles). Empty library or
+        # flag off → chosen is [] and every reel uses the standard look.
+        use_tpls = bool(cfg.get("use_style_templates", True))
+        broll_engine = str(cfg.get("broll_engine", "") or "").strip().lower()
+        caption_mode = str(cfg.get("caption_mode", "rotate") or "rotate").strip().lower()
+        rotate_captions = caption_mode == "rotate"
+        smart_captions = caption_mode == "smart"
+        rot_offset = int(cfg.get("caption_rotation_offset", 0) or 0)
+        chosen = await pick_distinct_templates(n_video, tenant_id) if use_tpls else []
+        for j in range(n_video):
+            try:
+                tpl = chosen[j] if j < len(chosen) else None
+                cap_style = (
+                    _CAPTION_ROTATION[(rot_offset + j) % len(_CAPTION_ROTATION)]
+                    if rotate_captions else ""
                 )
-            )
-            video_queued += 1
-        except Exception as e:  # noqa: BLE001
-            errors.append(f"video {j + 1}/{n_video}: {e}")
+                # Alternate the two saved reel templates per video: even = full-frame
+                # avatar (magenta-on-black), odd = split 50/50 (magenta-on-white).
+                video_template = "split" if (j % 2) else "full"
+                video_results.append(
+                    await _make_video(
+                        _idea_at(n_text + j), platform, tenant_id,
+                        template=tpl, broll_engine=broll_engine,
+                        caption_style=cap_style, smart_captions=smart_captions,
+                        video_template=video_template,
+                    )
+                )
+                video_queued += 1
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"video {j + 1}/{n_video}: {e}")
 
-    # Advance the rotation so the NEXT batch continues where this one stopped
-    # (otherwise every batch would re-show the same first daily_count styles).
-    if rotate_captions and n_video:
-        try:
-            await set_config(
-                {"caption_rotation_offset": (rot_offset + n_video) % len(_CAPTION_ROTATION)},
-                tenant_id, internal=True,
-            )
-        except Exception:  # noqa: BLE001 — provenance only, never fail the batch
-            pass
+        # Advance the rotation so the NEXT batch continues where this one stopped
+        # (otherwise every batch would re-show the same first daily_count styles).
+        if rotate_captions and n_video:
+            try:
+                await set_config(
+                    {"caption_rotation_offset": (rot_offset + n_video) % len(_CAPTION_ROTATION)},
+                    tenant_id, internal=True,
+                )
+            except Exception:  # noqa: BLE001 — provenance only, never fail the batch
+                pass
 
     # Backstop: re-interpret any feedback given since the last batch so the
     # "What's changing next" board is at-least-daily current even if no
@@ -459,6 +544,8 @@ async def generate_bulk(
         "requested": requested,
         "text_queued": text_queued,
         "video_queued": video_queued,
+        # Reel SCRIPT drafts emitted when avatar videos are off (the default).
+        "script_queued": script_queued,
         # Per-video style provenance — which template each reel was produced in.
         "videos": [
             {
