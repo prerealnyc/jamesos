@@ -172,6 +172,7 @@ export default function BrandPage() {
 function BrandKitCard() {
   const [kit, setKit] = useState<{ display_name: string; tagline: string; handle: string; logo_url: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [logoBusy, setLogoBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const logoRef = useRef<HTMLInputElement>(null);
@@ -197,17 +198,18 @@ function BrandKitCard() {
 
   async function onLogo(files: FileList | null) {
     if (!files || files.length === 0 || !kit) return;
-    setBusy(true);
+    setLogoBusy(true);
     setErr(null);
+    setMsg(null);
     try {
       const m = await api.uploadMedia(files[0], "brand_logo", { title: files[0].name });
       const updated = await api.putBrandKit({ logo_url: m.uri });
       setKit(updated);
-      setMsg("logo uploaded — watermark + end card will use it");
+      setMsg("logo uploaded — designed cards, watermark + end card will use it");
     } catch (e) {
       setErr(e instanceof Error ? e.message : "logo upload failed");
     } finally {
-      setBusy(false);
+      setLogoBusy(false);
       if (logoRef.current) logoRef.current.value = "";
     }
   }
@@ -235,21 +237,37 @@ function BrandKitCard() {
           <Input value={kit.handle} onChange={(e) => setKit({ ...kit, handle: e.target.value })} placeholder="@jamesprendamano" />
         </div>
       </div>
-      <div className="flex items-center gap-4 mt-3 flex-wrap">
-        <div className="flex items-center gap-3">
+      {/* Brand logo — its own clearly-labelled block (it powers the designed
+          post cards, the video watermark and the end card). */}
+      <div className="mt-4 pt-3 border-t border-border">
+        <Label>Brand logo (PreReal emblem)</Label>
+        <p className="text-[11px] text-muted-foreground mt-0.5 mb-2">
+          Shown on designed post cards next to your @handle, plus the video
+          watermark + end card. Use a <b>PNG, JPG or WEBP</b> (transparent PNG
+          ideal) — <b>not SVG</b>.
+        </p>
+        <div className="flex items-center gap-3 flex-wrap">
           {kit.logo_url ? (
-            <img src={mediaUrl(kit.logo_url)} alt="brand logo" className="h-10 w-auto rounded bg-secondary p-1" />
+            <img src={mediaUrl(kit.logo_url)} alt="brand logo" className="h-14 w-auto rounded bg-secondary p-1.5" />
           ) : (
-            <span className="text-[11px] text-muted-foreground">no logo yet — watermark + end-card logo are skipped</span>
+            <span className="text-[12px] text-muted-foreground rounded-md border border-dashed border-border px-3 py-2">
+              no logo yet
+            </span>
           )}
+          <Button variant="secondary" onClick={() => logoRef.current?.click()} disabled={logoBusy}>
+            {logoBusy ? <span className="flex items-center gap-2"><Spinner /> uploading…</span>
+              : kit.logo_url ? "Replace logo" : "Upload logo"}
+          </Button>
           <input
             ref={logoRef}
             type="file"
-            accept="image/png,image/webp,image/svg+xml,image/jpeg"
+            accept="image/png,image/webp,image/jpeg,image/svg+xml"
             onChange={(e) => onLogo(e.target.files)}
-            className="text-[12px] text-muted-foreground file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-primary file:text-primary-foreground file:cursor-pointer"
+            className="hidden"
           />
         </div>
+      </div>
+      <div className="flex items-center gap-4 mt-4 flex-wrap">
         <Button onClick={save} disabled={busy}>
           {busy ? <span className="flex items-center gap-2"><Spinner /> saving…</span> : "Save brand kit"}
         </Button>
