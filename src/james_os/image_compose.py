@@ -192,41 +192,51 @@ def meme_card(bg_bytes: bytes, top_text: str, bottom_text: str, handle: str = ""
 def statement_card(bg_bytes: bytes, statement: str, handle: str = "",
                    profile_bytes: bytes | None = None,
                    profile_is_logo: bool = False) -> bytes:
-    """Brad-Lea style: an IG-post header (profile + @handle) + a bold black
-    STATEMENT on white + a full-width image of James below (rendered from the
-    Soul ID by the caller)."""
+    """Brad-Lea style, art-directed: an IG-post header (profile + @handle), a
+    bold black STATEMENT optically centered in its own zone, and James framed
+    (inset + rounded corners) at the bottom so the whole card breathes."""
     canvas = Image.new("RGB", (W, H), (255, 255, 255))
     draw = ImageDraw.Draw(canvas)
-    pad = 56
-    y = 40
+    M = 78                       # generous outer margin (~7%) — room to breathe
+    content_w = W - 2 * M
 
-    # IG-post-style header: profile circle (or brand logo badge) + @handle.
+    # ── IG-post header: profile circle (or brand logo badge) + @handle ──
+    y = M
     if profile_bytes:
-        d = 72
+        d = 82
         circ = _logo_badge(profile_bytes, d) if profile_is_logo else _circle(profile_bytes, d)
-        canvas.paste(circ, (pad, y), circ)
+        canvas.paste(circ, (M, y), circ)
         if handle:
             h = handle if handle.startswith("@") else "@" + handle
-            hf = _font(_ARCHIVO, 28)
-            draw.text((pad + d + 18, y + (d - 28) // 2 - 4), h, font=hf, fill=_INK)
-        y += d + 22
+            hf = _font(_ARCHIVO, 30)
+            draw.text((M + d + 22, y + (d - 30) // 2 - 4), h, font=hf, fill=_INK)
+        header_bottom = y + d
     elif handle:
         h = handle if handle.startswith("@") else "@" + handle
-        hf = _font(_ARCHIVO, 28)
-        draw.text((pad, y), h, font=hf, fill=_INK)
-        y += 50
+        hf = _font(_ARCHIVO, 30)
+        draw.text((M, y), h, font=hf, fill=_INK)
+        header_bottom = y + 42
+    else:
+        header_bottom = y
 
-    # Bold statement (uppercase), centered, auto-fit.
-    sf, sl = _fit(draw, (statement or "").upper(), _ARCHIVO, W - 2 * pad, 430, start=84, minimum=36)
-    sy = _draw_centered(draw, sl, sf, W // 2, y, fill=_INK)
+    # ── James, framed at the bottom: inset by the margin, rounded corners,
+    # face-biased crop — so there's clean space on every outside edge. ──
+    img_h = 624
+    img_top = H - M - img_h
+    photo = ImageOps.fit(_open_rgb(bg_bytes), (content_w, img_h),
+                         method=Image.LANCZOS, centering=(0.5, 0.22))
+    rmask = Image.new("L", (content_w, img_h), 0)
+    ImageDraw.Draw(rmask).rounded_rectangle((0, 0, content_w, img_h), radius=34, fill=255)
+    canvas.paste(photo, (M, img_top), rmask)
 
-    # Full-width image of James below the statement. Bias the crop high so his
-    # head/face is always kept (never cropped to the torso).
-    img_top = int(sy + 28)
-    if H - img_top > 200:
-        panel = ImageOps.fit(_open_rgb(bg_bytes), (W, H - img_top),
-                             method=Image.LANCZOS, centering=(0.5, 0.22))
-        canvas.paste(panel, (0, img_top))
+    # ── Bold statement, optically centered in the zone between header & photo ──
+    zone_top = header_bottom + 26
+    zone_bottom = img_top - 30
+    sf, sl = _fit(draw, (statement or "").upper(), _ARCHIVO, content_w,
+                  max(140, zone_bottom - zone_top), start=104, minimum=40)
+    total_h = _line_h(draw, sf) * len(sl)
+    sy = zone_top + max(0.0, (zone_bottom - zone_top - total_h) / 2.0)
+    _draw_centered(draw, sl, sf, W // 2, sy, fill=_INK)
     return _png(canvas)
 
 
