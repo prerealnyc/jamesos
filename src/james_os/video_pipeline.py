@@ -1120,7 +1120,10 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
     async with acquire(tenant_id) as conn:
         await _set(conn, pid, status="planning")
 
-    with tempfile.TemporaryDirectory() as td:
+    # Re-fetched source can be multi-GB — keep it on the mounted volume
+    # (BIG_FILE_TMP) so it doesn't fill the container's ephemeral disk.
+    from .drive import big_file_tmp_dir
+    with tempfile.TemporaryDirectory(dir=big_file_tmp_dir()) as td:
         src_path = f"{td}/source.mp4"
         out_path = f"{td}/cut.mp4"
         # Prefer Drive when drive_file_id is set on the row — re-fetch

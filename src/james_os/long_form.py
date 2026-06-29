@@ -61,6 +61,10 @@ from .transcription import (
 _CHUNK_SECONDS = 600
 # Lower-quality audio extract — STT-only, listener never hears it.
 _LOWBIT_BITRATE = "32k"
+# Hard cap on a source video, checked before download. The big-file temp dir
+# is the mounted volume (BIG_FILE_TMP=/data, ~50 GB); cap under that to leave
+# room for ffmpeg output.
+_MAX_SOURCE_BYTES = 40 * 1024**3   # 40 GB
 
 
 def _row(r) -> dict:
@@ -156,9 +160,21 @@ async def fetch_from_drive_then_ingest(
     import tempfile
     from pathlib import Path as _P
 
-    from .drive import fetch_drive_file_to_path
+    from .drive import big_file_tmp_dir, drive_file_size, fetch_drive_file_to_path
 
-    with tempfile.TemporaryDirectory() as td:
+    # Reject a too-big import BEFORE streaming gigabytes onto disk. The temp
+    # files live on the mounted volume (BIG_FILE_TMP, e.g. /data, ~50 GB), so
+    # cap a bit under that to leave headroom for ffmpeg output.
+    size = await drive_file_size(drive_file_id)
+    if size and size > _MAX_SOURCE_BYTES:
+        return await _fail(
+            source_id,
+            f"Video is {size / 1024**3:.1f} GB — over the "
+            f"{_MAX_SOURCE_BYTES // 1024**3} GB import limit.",
+            tenant_id,
+        )
+
+    with tempfile.TemporaryDirectory(dir=big_file_tmp_dir()) as td:
         local_path = f"{td}/{filename}"
         try:
             await fetch_drive_file_to_path(drive_file_id, local_path)
@@ -696,9 +712,11 @@ async def ingest_source(source_id: UUID, tenant_id: UUID | None = None) -> None:
     # Drive sources land here only via a re-analyze on an already-
     # ingested row. Refetch from Drive in that case rather than from
     # the (non-existent) Supabase URL.
+    from .drive import big_file_tmp_dir
+
     if drive_file_id:
         from .drive import fetch_drive_file_to_path
-        with tempfile.TemporaryDirectory() as td:
+        with tempfile.TemporaryDirectory(dir=big_file_tmp_dir()) as td:
             local_path = f"{td}/source.mp4"
             try:
                 await fetch_drive_file_to_path(drive_file_id, local_path)
@@ -711,7 +729,7 @@ async def ingest_source(source_id: UUID, tenant_id: UUID | None = None) -> None:
     if not source_url or not source_url.startswith("http"):
         return await _fail(source_id, "source_url is not a real URL", tenant_id)
 
-    with tempfile.TemporaryDirectory() as td:
+    with tempfile.TemporaryDirectory(dir=big_file_tmp_dir()) as td:
         src_path = f"{td}/source.mp4"
         try:
             async with httpx.AsyncClient(

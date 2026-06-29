@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 from uuid import UUID
 
 from .config import settings
@@ -129,6 +130,27 @@ def _file_metadata_sync(file_id: str) -> dict:
         fields="id, name, mimeType, size",
         **_SHARED_DRIVE,
     ).execute()
+
+
+async def drive_file_size(file_id: str) -> int:
+    """Size of a Drive file in bytes (0 if unknown). Lets callers reject a
+    too-big import BEFORE streaming gigabytes onto disk."""
+    try:
+        meta = await asyncio.to_thread(_file_metadata_sync, file_id)
+        return int(meta.get("size") or 0)
+    except Exception:  # noqa: BLE001 — best-effort guard
+        return 0
+
+
+def big_file_tmp_dir() -> str | None:
+    """Directory for multi-GB source temp files — the mounted disk volume
+    (env BIG_FILE_TMP, e.g. /data) so a big Drive import/cut doesn't fill the
+    container's small ephemeral disk. Returns None (tempfile's default /tmp)
+    when the volume isn't configured/writable, so dev + small files still work."""
+    d = (os.environ.get("BIG_FILE_TMP") or "").strip()
+    if d and os.path.isdir(d) and os.access(d, os.W_OK):
+        return d
+    return None
 
 
 # Drive sharable URL → file id. Covers every shape Google produces:
