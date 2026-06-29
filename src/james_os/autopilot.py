@@ -42,10 +42,12 @@ DEFAULT_CONFIG = {
     # style from the Style Template library (cycling). Empty library →
     # silently falls back to the standard engaging_avatar look.
     "use_style_templates": True,
-    # B-roll animator for every reel in the batch: '' = system default,
-    # 'runway', or 'higgsfield' (image→video). Lets daily batches run on a
-    # chosen engine without touching the global provider.
-    "broll_engine": "",
+    # B-roll animator for every reel: '' = system default, 'runway', or
+    # 'higgsfield' (image→video). Defaults to Higgsfield.
+    "broll_engine": "higgsfield",
+    # Default caption style for reels (the white reels look). 'bold_pop' = big
+    # bold white with a black outline; 'clean_white' = lighter mixed-case white.
+    "default_caption_style": "bold_pop",
     # How batch reels choose their caption style:
     #   "rotate" — each video gets the next style in the showcase rotation
     #              (compare looks on real renders, finalise favourites);

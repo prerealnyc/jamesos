@@ -264,24 +264,18 @@ export default function AutopilotPage() {
           </span>
         </div>
 
-        <Label>Caption mode</Label>
+        <Label>Caption style</Label>
         <div className="flex items-center gap-3">
           <Select
-            value={cfg.caption_mode || "rotate"}
-            onChange={(e) => patch({ caption_mode: e.target.value })}
+            value={cfg.default_caption_style || "bold_pop"}
+            onChange={(e) => patch({ default_caption_style: e.target.value })}
           >
-            <option value="rotate">Rotate styles (compare)</option>
-            <option value="smart">AI best-fit per video</option>
-            <option value="template">Template default</option>
+            <option value="bold_pop">Bold white (recommended)</option>
+            <option value="clean_white">Clean white</option>
           </Select>
           <span className="text-[11px] text-muted-foreground">
-            <b>Rotate</b>: each reel gets the next style (viral hook → magenta blocks →
-            editorial serif → mint scatter → TikTok yellow → highlight box → karaoke
-            green, continuing across batches) — compare on real renders, finalise
-            favourites. <b>AI best-fit</b>: the editor LLM reads each script and picks
-            the style that matches it (how-to hook → viral hook, hot take → magenta
-            blocks, launch → editorial serif…). <b>Template default</b>: the replicated
-            style template&apos;s analysed preset decides.
+            The default caption look for every reel — big bold white, kept off
+            the face. (Other styles are still available per-render.)
           </span>
         </div>
 

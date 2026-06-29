@@ -304,7 +304,7 @@ CAPTION_PRESETS: dict[str, dict] = {
     },
 }
 
-DEFAULT_CAPTION_STYLE = "magenta_blocks"
+DEFAULT_CAPTION_STYLE = "bold_pop"
 AUTO_PICK_KEY = "auto"      # frontend sentinel meaning "let the LLM pick"
 
 
@@ -571,17 +571,18 @@ def hook_title_elements(text: str, total: float) -> list[dict]:
     if not lines:
         return []
     longest = max(len(ln) for ln in lines)
-    # Exact-fit font for a 60% box (20% margin each side), Montserrat-800
-    # (em ~0.64). NO high floor — guarantees the longest line never wraps or
-    # runs off-screen; short hooks read big, long ones shrink to fit.
-    box_px = 0.60 * 1080.0
-    max_vh = box_px / (max(1, longest) * 0.64 * 19.2)
-    vh = min(6.5, max(2.6, max_vh * 0.92))
+    # Big, bold WHITE with a black outline — the scroll-stopping reels hook look
+    # (Archivo Black, em ~0.74). Exact-fit to a 76% box so it reads large but
+    # never wraps or runs off-screen; short punchy hooks land biggest.
+    box_px = 0.76 * 1080.0
+    max_vh = box_px / (max(1, longest) * 0.74 * 19.2)
+    vh = min(9.0, max(3.2, max_vh * 0.94))
     if vh > max_vh:                      # a long line: keep the true fit
-        vh = max_vh * 0.92
+        vh = max_vh * 0.94
     vh = round(vh, 1)
     # Center the block below the face: face ≈ 25-50% from top, captions ≈ 78%.
-    gap, center = 8.0, 61.0
+    gap = round(vh + 1.6, 1)             # line spacing scales with the font
+    center = 60.0
     first = center - (len(lines) - 1) * gap / 2.0
     # The hook only holds for the first few seconds (then it clears so it
     # doesn't crowd the captions for the whole clip).
@@ -594,19 +595,18 @@ def hook_title_elements(text: str, total: float) -> list[dict]:
             "track": _HOOK_TITLE_TRACK + i,
             "time": 0,
             "duration": hold,
-            "animations": [{"time": 0, "duration": 0.3, "type": "fade"}],
-            "width": "60%",
+            "animations": [{"time": 0, "duration": 0.25, "type": "fade"}],
+            "width": "82%",
             "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
             "y": f"{first + i * gap:.1f}%", "y_anchor": "50%",
-            "font_family": "Montserrat",
-            "font_weight": "800",
+            "font_family": "Archivo Black",
+            "font_weight": "900",
             "font_size": f"{vh} vh",
             "fill_color": "#FFFFFF",
-            "background_color": "rgba(0,0,0,0.42)",
-            "background_x_padding": "6%",
-            "background_y_padding": "3%",
-            "shadow_color": "rgba(0,0,0,0.7)",
-            "shadow_blur": "1.3 vh",
+            "stroke_color": "#000000",
+            "stroke_width": "0.55 vh",
+            "shadow_color": "rgba(0,0,0,0.55)",
+            "shadow_blur": "1.1 vh",
             "shadow_y": "0.4 vh",
             "letter_spacing": "0.5%",
         })

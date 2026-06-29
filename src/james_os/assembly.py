@@ -171,15 +171,10 @@ def _zoom_punch_props(total: float, period: float = 7.0, hold: float = 2.6) -> d
 
 
 def _watermark_element(logo_url: str, total: float, track: int = 8) -> list[dict]:
-    """Small brand logo pinned top-right for the whole video."""
-    if not (logo_url or "").startswith("http"):
-        return []
-    return [{
-        "type": "image", "source": logo_url,
-        "track": track, "time": 0, "duration": total,
-        "width": "12%", "x": "88%", "y": "12%",
-        "x_anchor": "100%", "y_anchor": "0%", "fit": "contain",
-    }]
+    """Brand logo watermark — DISABLED for video. The logo belongs on designed
+    image cards only (image_compose), not burned into reels. Kept as a no-op so
+    every render builder that calls it needs no change."""
+    return []
 
 
 def _nameplate_elements(name: str, tagline: str) -> list[dict]:
@@ -1277,15 +1272,8 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                     "volume": 60,
                 })
 
-            # Logo overlay — per-scene (so it can come/go per segment).
-            if s.get("branding_logo") and settings.brand_logo_url:
-                pos = _logo_position(s.get("branding_position"))
-                if pos:
-                    elements.append({
-                        "type": "image", "source": settings.brand_logo_url,
-                        "track": 3, "time": t, "duration": dur,
-                        "width": "14%", **pos,
-                    })
+            # Logo overlay disabled for video — the brand logo lives on designed
+            # image cards only, not burned into renders.
 
             if not first_mood:
                 first_mood = (s.get("audio_music") or "").lower()

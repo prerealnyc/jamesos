@@ -348,6 +348,36 @@ async def gen_video_caption(
     return apply_caption_signoff(base, signoff)
 
 
+_VIDEO_HOOK_SYSTEM = (
+    "You write the 3-second ON-SCREEN HOOK for a short reel — the big bold text "
+    "that stops the scroll. Given the video's spoken content, return ONE punchy "
+    "hook of AT MOST 7 words: a bold question or claim that creates curiosity. "
+    "No hashtags, no emoji, no surrounding quotes, no trailing period. Plain "
+    "words.\n\n"
+    'Return STRICT JSON: {"hook": "<the hook>"}'
+)
+
+
+async def gen_video_hook(source_text: str, tenant_id: UUID | None = None) -> str:
+    """A SHORT punchy on-screen hook (<= 7 words) for a reel, from its spoken
+    content. Best-effort: falls back to the first few words of the source."""
+    src = (source_text or "").strip()
+    if not src:
+        return ""
+    try:
+        out = await get_llm().complete_json(
+            system=_VIDEO_HOOK_SYSTEM,
+            messages=[{"role": "user", "content": src[:1500]}],
+            max_tokens=60, temperature=0.7,
+        )
+        hook = str((out or {}).get("hook") or "").strip().strip('"').rstrip(".")
+        if hook:
+            return " ".join(hook.split()[:8])
+    except Exception:  # noqa: BLE001 — fall back to a trimmed source line
+        pass
+    return " ".join(src.split()[:6])
+
+
 async def generate_content(
     brief: ContentBrief, tenant_id: UUID | None = None
 ) -> ContentDraft:

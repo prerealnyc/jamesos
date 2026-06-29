@@ -1224,10 +1224,20 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
     except (KeyError, TypeError):
         cstyle = ""
     if not cstyle:
-        # Template 1 (upload-clip / long-form) locks to magenta-on-black
-        # captions by default — that's the brand-defined look for this format.
-        # An explicit caption_style on the row still overrides.
-        cstyle = "magenta_blocks"
+        # Clean WHITE captions are the default reel look (configurable via the
+        # Autopilot "Caption style" setting). An explicit caption_style on the
+        # row still overrides.
+        try:
+            from .autopilot import get_config
+            cstyle = (await get_config(tenant_id)).get("default_caption_style") or "bold_pop"
+        except Exception:  # noqa: BLE001
+            cstyle = "bold_pop"
+
+    # Short, punchy on-screen HOOK (big bold white) generated from the spoken
+    # words — not the long run-on opening line.
+    from .content import gen_video_hook
+    _hook_src = " ".join((c.get("text") or "") for c in (assets.captions or [])).strip()
+    short_hook = await gen_video_hook(_hook_src or meta.get("hook_quote", ""), tenant_id)
 
     asm = get_assembly_provider()
     if not hasattr(asm, "render_engaging_avatar"):
@@ -1243,8 +1253,8 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
         aspect=row["aspect"],
         music_mood=(row["music_mood"] or "calm"),
         caption_style=cstyle,
-        # On-screen hook below the face — what the reel is about (feedback ask).
-        hook_title=(meta.get("hook_quote") or row["title"] or "")[:120],
+        # Short bold-white hook for the first ~3s (what the reel is about).
+        hook_title=short_hook or (meta.get("hook_quote") or row["title"] or "")[:80],
     )
     if res.status == "processing":
         for _ in range(_MAX_POLLS):

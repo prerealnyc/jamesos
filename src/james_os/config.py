@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     # `runway` once the key is verified. Higgsfield is wired; MiniMax is
     # intentionally NOT wired — no usable public REST API / no key — and
     # is not faked.
-    video_provider: str = "stub"  # runway | higgsfield | stub
+    video_provider: str = "higgsfield"  # runway | higgsfield | stub
     runway_model: str = "gen4_turbo"          # gen4_turbo | gen3a_turbo
     runway_api_version: str = "2024-11-06"    # X-Runway-Version header
     runway_video_ratio: str = "1280:720"

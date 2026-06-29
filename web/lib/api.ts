@@ -566,6 +566,7 @@ export type AutopilotConfig = {
   use_style_templates?: boolean;   // video reels cycle distinct library styles
   broll_engine?: string;           // '' | 'runway' | 'higgsfield' for B-roll
   caption_mode?: string;           // 'rotate' | 'smart' | 'template'
+  default_caption_style?: string;  // reel caption look, e.g. 'bold_pop' (white)
   last_run_date: string;
 };
 

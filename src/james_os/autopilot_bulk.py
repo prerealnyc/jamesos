@@ -62,11 +62,10 @@ _VIDEO_MODE = "engaging_avatar"
 # When cfg['rotate_captions'] is on, video j in a batch gets
 # rotation[(offset + j) % len], and the offset persists across batches so
 # every style gets seen on real renders, not just the first daily_count.
-# Magenta is the chosen default look (2026-06-15). Autopilot no longer
-# rotates through hook/face-covering styles — every batch reel uses the
-# magenta per-phrase captions. Other styles remain available for manual
-# selection; they're just not the autopilot default anymore.
-_CAPTION_ROTATION = ("magenta_blocks",)
+# Bold WHITE captions are the chosen default look (2026-06-28). Single-element
+# rotation = no rotation; every batch reel uses the clean white reels caption.
+# Other styles remain available for manual selection.
+_CAPTION_ROTATION = ("bold_pop",)
 _VIDEO_ASPECT = "9:16"
 
 # Short, punchy steer for the video script writer. Reels want a spoken
@@ -306,14 +305,14 @@ async def _make_video(
 
     # Reel FORMAT template (the two saved looks). When set it drives the
     # layout + caption style, overriding any style-template/rotation defaults:
-    #   "split" → avatar-top / B-roll-bottom 50/50, magenta-on-white captions
-    #   "full"  → full-frame avatar + B-roll cutaways, magenta-on-black captions
+    #   "split" → avatar-top / B-roll-bottom 50/50, white captions
+    #   "full"  → full-frame avatar + B-roll cutaways, white captions
     # A style template (Design Inspector) still supplies image_style/music/etc.
     forced_mode = forced_caption = ""
     if video_template == "split":
-        forced_mode, forced_caption = "split_horizontal", "magenta_white"
+        forced_mode, forced_caption = "split_horizontal", "bold_pop"
     elif video_template == "full":
-        forced_mode, forced_caption = "engaging_avatar", "magenta_blocks"
+        forced_mode, forced_caption = "engaging_avatar", "bold_pop"
 
     title = (idea.get("title") or "")[:120]
     if template and template.get("template"):
