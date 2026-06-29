@@ -81,18 +81,14 @@ export default function LongFormPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [renderingId, setRenderingId] = useState<string | null>(null);
-  // Caption style for the next render — '' means auto-pick. Loaded
-  // from /video/caption-styles so the dropdown stays in sync with
-  // whatever presets the backend ships.
-  const [captionStyle, setCaptionStyle] = useState("");
+  // Caption style for the next render — bold WHITE is the default look.
+  const [captionStyle, setCaptionStyle] = useState("bold_pop");
   const [captionStyles, setCaptionStyles] = useState<
     { name: string; label: string; description: string }[]
   >([]);
   const [renderingWhole, setRenderingWhole] = useState(false);
-  // B-roll engine for the next render — '' = system default. Runway is
-  // the engine with keys configured today; if the chosen engine's keys
-  // are missing, inserts keep their stills (the render never fails).
-  const [brollEngine, setBrollEngine] = useState("runway");
+  // B-roll engine for the next render — Higgsfield is the default.
+  const [brollEngine, setBrollEngine] = useState("higgsfield");
   // B-roll pacing — how long cutaways hold while James keeps talking.
   const [brollPacing, setBrollPacing] = useState("illustrative");
   const [toast, setToast] = useState<{ message: string; href?: string; hrefLabel?: string } | null>(null);
@@ -561,18 +557,9 @@ export default function LongFormPage() {
                 onChange={(e) => setCaptionStyle(e.target.value)}
                 className="text-[12px] px-2 py-1 rounded border border-border bg-background"
               >
-                <option value="">Auto-pick (AI chooses)</option>
-                {captionStyles.map((p) => (
-                  <option key={p.name} value={p.name}>
-                    {p.label}
-                  </option>
-                ))}
+                <option value="bold_pop">Bold white (default)</option>
+                <option value="clean_white">Clean white</option>
               </select>
-              {captionStyle && captionStyles.find((p) => p.name === captionStyle) && (
-                <span className="text-[11px] text-muted-foreground">
-                  — {captionStyles.find((p) => p.name === captionStyle)?.description}
-                </span>
-              )}
               <span className="text-[12px] text-muted-foreground ml-2">
                 B-roll engine
               </span>
@@ -582,9 +569,8 @@ export default function LongFormPage() {
                 className="text-[12px] px-2 py-1 rounded border border-border bg-background"
                 title="Which engine animates the B-roll cutaways. If the chosen engine's keys/credits are missing, those inserts keep their still image — the render never fails."
               >
+                <option value="higgsfield">Higgsfield (default)</option>
                 <option value="runway">Runway</option>
-                <option value="higgsfield">Higgsfield</option>
-                <option value="">System default</option>
               </select>
               <span className="text-[12px] text-muted-foreground ml-2">
                 Pacing
