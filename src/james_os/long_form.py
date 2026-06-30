@@ -368,24 +368,30 @@ a 30+ minute podcast, find 20-40. Real podcasts don't have all perfect
 moments — your job is to surface every one that's RELATIVELY strong, not
 only the perfect ones.
 
-A great candidate has:
-  * A strong HOOK in the first 1-2 seconds — a question, a claim,
-    a surprising statement, a vivid image, the start of a story.
-  * A self-contained idea inside 30-45 seconds — a take, a story,
-    a reveal, a memorable line. It doesn't need the rest of the
-    podcast to land.
-  * Energy — specificity, emotional weight, a real point of view.
+PRIORITISE WHAT KEEPS PEOPLE WATCHING + DRIVES COMMENTS. The strongest
+reels are CONTROVERSIAL, contrarian, or emotionally charged — the moments
+that make someone stop scrolling, react, and tag a friend:
+  * A hot take / contrarian opinion that challenges conventional wisdom.
+  * A controversial or taboo statement (politics, money, religion, status)
+    said with conviction — the stuff that sparks debate in the comments.
+  * Raw emotion — anger, passion, vulnerability, a blunt truth, profanity.
+  * A surprising claim or shocking stat that makes you go "wait, what?"
+  * A vivid story or reveal with a clear turn.
 
-A decent candidate (still worth picking) has:
-  * A reasonable hook even if not killer.
-  * A complete thought inside the window even if it's not a
-    standalone banger.
-  * Something a creator could caption and post.
+A great candidate has:
+  * A HOOK in the first 1-2 seconds — a provocative question or claim that
+    creates an open loop you NEED resolved.
+  * A self-contained idea in 30-60 seconds that lands without the rest of
+    the podcast.
+  * Strong point of view — the more debate-worthy / polarising, the better.
+
+A decent candidate (still worth picking) has a reasonable hook and a
+complete thought a creator could caption and post.
 
 Avoid only:
   * "Thanks for having me" / introductions / outros.
   * Long stretches of "yeah, mm-hmm" backchanneling.
-  * Anything that's literally <20s or >60s of usable content.
+  * Anything that's literally <25s or >60s of usable content.
 
 For each candidate return:
   * start_s, end_s — decimal seconds (30-60s window). Start at the TOP of
@@ -394,9 +400,10 @@ For each candidate return:
   * hook_quote   — the literal opening line (≤ 80 chars).
   * summary      — one sentence describing what's in this clip and
                    why it works as a Reel (≤ 140 chars).
-  * score        — 1-10. 9-10 = obvious banger, 6-7 = solid pick,
-                   4-5 = decent fallback, <4 = skip. RETURN scores
-                   4 and up — don't self-censor; the user can
+  * score        — 1-10, weighted toward ENGAGEMENT: 9-10 = controversial /
+                   highly emotional / debate-sparking banger; 6-7 = strong
+                   opinion or story; 4-5 = decent fallback; <4 = skip.
+                   RETURN scores 4 and up — don't self-censor; the user can
                    dismiss weak ones.
 
 Return STRICT JSON:
@@ -431,50 +438,86 @@ Return STRICT JSON in the same shape:
 """
 
 
+# Window scan: a single LLM pass over a 50-min transcript only surfaces its
+# top ~10 picks. To harvest the MAX clips across the WHOLE video we scan in
+# overlapping windows and pick from each, then de-dupe.
+_SCAN_WINDOW_S = 480.0   # 8-min windows
+_SCAN_OVERLAP_S = 60.0   # so a moment on a boundary isn't missed
+_MAX_CANDIDATES = 40
+
+
+def _payload_for(words: list[TranscribedWord], full_text: str, duration_s: float) -> dict:
+    """Compact {t, w} token payload the LLM grounds its start_s/end_s on."""
+    return {
+        "duration_s": round(duration_s, 1),
+        "transcript_text": (full_text or " ".join(w.word for w in words))[:60000],
+        "word_count": len(words),
+        "tokens": [{"t": round(w.start, 2), "w": w.word} for w in words],
+    }
+
+
+def _dedupe_candidates(cands: list[dict]) -> list[dict]:
+    """Highest-score-first, dropping any window that overlaps an already-kept
+    one by >50% of the shorter clip (windows overlap, so neighbours collide)."""
+    out: list[dict] = []
+    for c in sorted(cands, key=lambda x: x.get("score", 0), reverse=True):
+        s, e = c["start_s"], c["end_s"]
+        if any(
+            max(0.0, min(e, k["end_s"]) - max(s, k["start_s"]))
+            > 0.5 * min(e - s, k["end_s"] - k["start_s"])
+            for k in out
+        ):
+            continue
+        out.append(c)
+    return out
+
+
 async def find_candidates(
     *, full_text: str, words: list[TranscribedWord], duration_s: float,
 ) -> list[dict]:
-    """Send the transcript + word timestamps to the LLM, return the
-    list of candidate dicts. Honest fallback: empty list on LLM
-    failure — the source row goes to status='ready' but the user
-    sees no candidates and is prompted to retry."""
+    """Pick reel candidates across the WHOLE source. Long sources are scanned
+    in overlapping windows (so we don't just get the LLM's top-10 from one
+    giant pass); short ones use a single pass. Honest fallback: empty list on
+    LLM failure — the row goes to status='ready' and the user can retry."""
     if not full_text or duration_s <= 30:
         return []
-    # Word timestamps are how the LLM grounds its start_s/end_s in real
-    # transcript time. We compact to {t: float, w: str} so the call
-    # fits comfortably in the context window — a 60 min podcast can
-    # easily run to ~8k words.
-    tokens = [{"t": round(w.start, 2), "w": w.word} for w in words]
-    payload = {
-        "duration_s": round(duration_s, 1),
-        "transcript_text": full_text[:60000],
-        "word_count": len(words),
-        "tokens": tokens,
-    }
-    cleaned = await _llm_pick_candidates(
-        _CANDIDATE_SYSTEM, payload, duration_s, words,
-    )
-    # Fallback: if the strict pass found nothing on a source long
-    # enough to obviously contain reel-worthy moments, try a loosened
-    # second pass. The LLM is often over-cautious on imperfect
-    # podcasts; "anything usable" beats zero every time.
+
+    # ── Long source: scan in overlapping windows, pick from each, de-dupe ──
+    if words and duration_s > _SCAN_WINDOW_S * 1.6:
+        collected: list[dict] = []
+        start = 0.0
+        while start < duration_s:
+            end = min(duration_s, start + _SCAN_WINDOW_S)
+            seg = [w for w in words if start <= w.start < end]
+            if len(seg) >= 5:
+                collected.extend(await _llm_pick_candidates(
+                    _CANDIDATE_SYSTEM,
+                    _payload_for(seg, "", duration_s),
+                    duration_s, words,
+                ))
+            if end >= duration_s:
+                break
+            start += _SCAN_WINDOW_S - _SCAN_OVERLAP_S
+        deduped = _dedupe_candidates(collected)
+        if deduped:
+            print(f"[long_form] windowed scan: {len(collected)} raw → "
+                  f"{len(deduped)} candidates across {duration_s / 60:.0f} min")
+            return deduped[:_MAX_CANDIDATES]
+        # windows found nothing → fall through to a single loose pass
+
+    # ── Short source (or scan came up empty): single pass ──
+    payload = _payload_for(words, full_text, duration_s)
+    cleaned = await _llm_pick_candidates(_CANDIDATE_SYSTEM, payload, duration_s, words)
     if not cleaned and duration_s >= 120:
-        loose = await _llm_pick_candidates(
+        cleaned = await _llm_pick_candidates(
             _CANDIDATE_SYSTEM_LOOSE, payload, duration_s, words,
         )
-        if loose:
-            print(
-                f"[long_form] strict pass returned 0; loose pass found "
-                f"{len(loose)} candidates"
-            )
-        cleaned = loose
     if not cleaned:
-        # Honest signal so the user can read it in the row's error.
         print(
             f"[long_form] zero candidates for source duration={duration_s:.1f}s "
             f"transcript={len(full_text)}c — picker prompt may need tuning"
         )
-    return cleaned[:40]
+    return _dedupe_candidates(cleaned)[:_MAX_CANDIDATES]
 
 
 # ── snapping clips to natural sentence / thought boundaries ───────────
