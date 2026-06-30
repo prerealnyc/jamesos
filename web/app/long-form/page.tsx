@@ -252,12 +252,15 @@ export default function LongFormPage() {
         video_engine: brollEngine,
         broll_pacing: brollPacing,
       });
-      // Optimistically link production_id locally
+      // Optimistically link the new production (and clear any prior 'failed'
+      // status) so the row flips to "rendering →" right away.
       if (selected) {
         setSelected({
           ...selected,
           candidates: selected.candidates.map((x) =>
-            x.id === c.id ? { ...x, production_id: prod.id } : x,
+            x.id === c.id
+              ? { ...x, production_id: prod.id, production_status: "queued" }
+              : x,
           ),
         });
       }
@@ -620,20 +623,38 @@ export default function LongFormPage() {
                       {fmtRange(c.start_s, c.end_s)}
                     </span>
                     <div className="ml-auto flex gap-2">
-                      {c.production_id ? (
+                      {c.production_id && c.production_status !== "failed" ? (
                         <Link
                           href="/queue"
-                          className="text-[12px] text-primary hover:underline"
+                          className={
+                            "text-[12px] hover:underline " +
+                            (c.production_status === "succeeded"
+                              ? "text-accent"
+                              : "text-primary")
+                          }
                         >
-                          rendering →
+                          {c.production_status === "succeeded"
+                            ? "done ↗"
+                            : "rendering →"}
                         </Link>
                       ) : (
                         <Button
                           onClick={() => renderCandidate(c)}
                           disabled={renderingId === c.id}
                           className="text-[12px] !px-3 !py-1"
+                          title={
+                            c.production_status === "failed"
+                              ? "The last render was interrupted — render again"
+                              : undefined
+                          }
                         >
-                          {renderingId === c.id ? <Spinner /> : "Render reel"}
+                          {renderingId === c.id ? (
+                            <Spinner />
+                          ) : c.production_status === "failed" ? (
+                            "Re-render"
+                          ) : (
+                            "Render reel"
+                          )}
                         </Button>
                       )}
                       <button

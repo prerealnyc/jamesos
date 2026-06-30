@@ -814,9 +814,11 @@ async def get_source_with_candidates(
         if src is None:
             return None
         cands = await conn.fetch(
-            """SELECT * FROM reel_candidates
-               WHERE source_id = $1 AND dismissed = false
-               ORDER BY score DESC, start_s ASC""",
+            """SELECT c.*, vp.status AS production_status
+                 FROM reel_candidates c
+                 LEFT JOIN video_productions vp ON vp.id = c.production_id
+                WHERE c.source_id = $1 AND c.dismissed = false
+                ORDER BY c.score DESC, c.start_s ASC""",
             source_id,
         )
     src_d = _row(src)

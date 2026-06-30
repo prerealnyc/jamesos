@@ -552,6 +552,7 @@ export type ReelCandidate = {
   summary: string;
   score: number;
   production_id: string | null;
+  production_status?: string | null;   // queued|processing|succeeded|failed
   dismissed: boolean;
   created_at: string;
 };
