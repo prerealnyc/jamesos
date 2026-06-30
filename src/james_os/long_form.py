@@ -850,6 +850,14 @@ async def reanalyze_source(
         words=words_list,
         duration_s=float(row["duration_s"] or 0.0),
     )
+    # Replace the un-rendered picks with the fresh batch so re-analyze yields a
+    # clean set (no duplicate pile-up). Anything already rendered (production_id
+    # set) is kept so its history/link survives.
+    async with acquire(tenant_id) as conn:
+        await conn.execute(
+            "DELETE FROM reel_candidates WHERE source_id = $1 AND production_id IS NULL",
+            source_id,
+        )
     await save_candidates(source_id, new, tenant_id)
     return len(new)
 
