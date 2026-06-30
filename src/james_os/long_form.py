@@ -362,10 +362,11 @@ transcript of a long-form podcast or interview. Your job is to find
 the BEST 30-45 second clips inside this transcript that would work
 as Instagram / TikTok Reels.
 
-PICK GENEROUSLY. From any source over 5 minutes, you should be able
-to find at least 5 candidates. From a 30+ minute source, find 10-15.
-Real podcasts don't have all perfect moments — your job is to surface
-the ones that are RELATIVELY strongest, not only the perfect ones.
+PICK GENEROUSLY — surface AS MANY strong standalone moments as exist,
+not a fixed few. From any source over 5 minutes, find at least 5. From
+a 30+ minute podcast, find 20-40. Real podcasts don't have all perfect
+moments — your job is to surface every one that's RELATIVELY strong, not
+only the perfect ones.
 
 A great candidate has:
   * A strong HOOK in the first 1-2 seconds — a question, a claim,
@@ -387,7 +388,7 @@ Avoid only:
   * Anything that's literally <20s or >60s of usable content.
 
 For each candidate return:
-  * start_s, end_s — decimal seconds (25-55s window). Start at the TOP of
+  * start_s, end_s — decimal seconds (30-60s window). Start at the TOP of
     a sentence and set end_s where a sentence FINISHES — the clip must end
     on a complete thought, never mid-sentence.
   * hook_quote   — the literal opening line (≤ 80 chars).
@@ -402,9 +403,9 @@ Return STRICT JSON:
 {"candidates": [{"start_s": float, "end_s": float, "hook_quote": str,
                  "summary": str, "score": int}, ...]}
 
-Aim for 5-12 entries on a typical source. NEVER return an empty
-array — pick the relatively best moments even if nothing is perfect.
-Highest-score-first.
+Return as MANY entries as the source genuinely supports (a long podcast
+can be 20-40). NEVER return an empty array — pick the relatively best
+moments even if nothing is perfect. Highest-score-first.
 """
 
 
@@ -415,8 +416,8 @@ _CANDIDATE_SYSTEM_LOOSE = """You are a short-form Reels editor. The
 strict pass found nothing — that almost always means you were too
 picky.
 
-This time, pick the 5-10 best 25-55-second moments from this
-transcript, even if none of them are perfect. Every podcast has
+This time, pick the best 30-60-second moments from this transcript (as
+many as exist), even if none of them are perfect. Every podcast has
 quotable moments; surface them. Use your judgement — a moment that
 expresses a real opinion or tells a real micro-story is enough.
 
@@ -473,7 +474,7 @@ async def find_candidates(
             f"[long_form] zero candidates for source duration={duration_s:.1f}s "
             f"transcript={len(full_text)}c — picker prompt may need tuning"
         )
-    return cleaned[:15]
+    return cleaned[:40]
 
 
 # ── snapping clips to natural sentence / thought boundaries ───────────
@@ -486,9 +487,9 @@ async def find_candidates(
 # instead of being cut off). Word-level Whisper timestamps make this
 # exact; with no timestamps we fall back to the old fixed-window snap.
 
-_REEL_MIN_S = 24.0          # never ship a clip shorter than this
-_REEL_TARGET_S = 38.0       # the sweet spot we aim the end toward
-_REEL_HARD_MAX_S = 58.0     # allow stretching to finish a thought, but cap < 60
+_REEL_MIN_S = 28.0          # never ship a clip shorter than this (~30s floor)
+_REEL_TARGET_S = 42.0       # the sweet spot we aim the end toward (30-45-60)
+_REEL_HARD_MAX_S = 62.0     # allow stretching to finish a thought, up to ~60s
 _PAUSE_GAP_S = 0.45         # silence between words that reads as a thought break
 _SENTENCE_FINAL = ".!?…"
 
