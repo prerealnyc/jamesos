@@ -394,9 +394,14 @@ Avoid only:
   * Anything that's literally <25s or >60s of usable content.
 
 For each candidate return:
-  * start_s, end_s — decimal seconds (30-60s window). Start at the TOP of
-    a sentence and set end_s where a sentence FINISHES — the clip must end
-    on a complete thought, never mid-sentence.
+  * start_s — decimal seconds at the TOP of the opening sentence (the hook).
+  * end_s — decimal seconds at the END of the strongest CLOSING line: the
+    punchline / the line that LANDS the point (often a question or a hard
+    statement). STOP there. Do NOT include the next sentence if it starts a
+    NEW topic, a tangent, or trails off ("so with the…", "anyway…", "and the
+    other thing…") — a tight clip that ENDS on the point outperforms a longer
+    one that drifts. Aim for a 30-60s window, but a clean 32s ending beats a
+    padded 50s one.
   * hook_quote   — the literal opening line (≤ 80 chars).
   * summary      — one sentence describing what's in this clip and
                    why it works as a Reel (≤ 140 chars).
@@ -604,12 +609,14 @@ def _finalize_window(start: float, end: float, words, duration_s: float):
     if near:
         s = max(0.0, min(near, key=lambda t: abs(t - start)))
 
-    # END → a thought close that lands the clip on a complete idea, within
-    # [min, hard_max] of the start and nearest the LLM's end (but at least
-    # ~target long). Sentence (strong) boundaries win over mere pauses.
+    # END → land on the sentence boundary nearest WHERE THE LLM CHOSE TO END
+    # (the LLM is the only layer with editor sense — it knows the punchline).
+    # We only floor at the minimum length, so a short hook-only mark still gets
+    # extended, but a clip the LLM ended on its closing beat is NOT dragged
+    # toward a fixed duration (which used to pull in the next, off-topic line).
     lo = s + _REEL_MIN_S
     hi = min(s + _REEL_HARD_MAX_S, duration_s)
-    target = min(max(end, s + _REEL_TARGET_S), hi)
+    target = min(max(end, s + _REEL_MIN_S), hi)
     fits = [(t, strong) for (t, strong) in ends if lo <= t <= hi]
     chosen = None
     if fits:
