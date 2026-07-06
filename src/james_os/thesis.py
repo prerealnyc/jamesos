@@ -77,10 +77,14 @@ async def _extract_claims(text: str) -> dict:
 
 async def develop_thesis(
     doc_id: UUID, tenant_id: UUID | None = None,
-    on_stage=None,
+    on_stage=None, full: bool = False,
 ) -> dict:
-    """The full pipeline. `on_stage(stage: str)` is called as each stage
-    starts so the job wrapper can surface progress."""
+    """The pipeline. `on_stage(stage: str)` is called as each stage starts.
+
+    `full=True` is the CEO's one button — after the white paper lands it
+    ALSO fans out the content pack (posts + reels via the autopilot
+    machinery) and narrates a podcast episode, so one dropped thesis
+    becomes the whole week's output in the Approval Queue."""
     def _stage(s: str) -> None:
         if on_stage:
             on_stage(s)
@@ -110,7 +114,7 @@ async def develop_thesis(
         thesis_doc_id=doc_id,
     )
 
-    return {
+    result: dict = {
         "thesis_doc_id": str(doc_id),
         "thesis_filename": row["filename"],
         "theme": theme,
@@ -130,6 +134,34 @@ async def develop_thesis(
             "low_grounding": paper.get("low_grounding"),
         },
     }
+    if not full:
+        return result
+
+    # ── the rest of the week: content pack + podcast, best-effort each ──
+    pack_source = (paper.get("file") or {}).get("id") or doc_id
+    _stage("content")
+    try:
+        from .content_pack import generate_content_pack
+        result["content_pack"] = await generate_content_pack(
+            UUID(str(pack_source)), tenant_id)
+    except Exception as e:  # noqa: BLE001 — the paper already landed; report
+        result["content_pack"] = {"error": str(e)[:300]}
+
+    _stage("podcast")
+    try:
+        from .tts import tts_configured
+        if not tts_configured():
+            result["podcast"] = {
+                "skipped": "brand voice not configured — set the ElevenLabs "
+                           "API key + voice id in Settings"}
+        else:
+            from .podcast import generate_podcast
+            result["podcast"] = await generate_podcast(
+                UUID(str(pack_source)), tenant_id)
+    except Exception as e:  # noqa: BLE001
+        result["podcast"] = {"error": str(e)[:300]}
+
+    return result
 
 
 # ── background job wrapper (mirrors whitepaper's start/poll pattern) ──
@@ -147,7 +179,9 @@ def _prune_jobs() -> None:
         _DEV_JOBS.pop(k, None)
 
 
-def start_develop_job(doc_id: UUID, tenant_id: UUID | None = None) -> str:
+def start_develop_job(
+    doc_id: UUID, tenant_id: UUID | None = None, full: bool = False,
+) -> str:
     """Kick a detached thesis-development run; returns a job id to poll.
     Tenant is resolved HERE (request context still alive) and bound into the
     job — detached tasks must never rely on the contextvar surviving."""
@@ -160,7 +194,7 @@ def start_develop_job(doc_id: UUID, tenant_id: UUID | None = None) -> str:
             return jid
     job_id = _uuid.uuid4().hex[:12]
     _DEV_JOBS[job_id] = {"status": "running", "stage": "reading",
-                         "doc_id": str(doc_id)}
+                         "doc_id": str(doc_id), "full": full}
     _prune_jobs()
 
     def _on_stage(stage: str) -> None:
@@ -170,7 +204,8 @@ def start_develop_job(doc_id: UUID, tenant_id: UUID | None = None) -> str:
 
     async def _run() -> None:
         try:
-            result = await develop_thesis(doc_id, tenant_id, on_stage=_on_stage)
+            result = await develop_thesis(doc_id, tenant_id,
+                                          on_stage=_on_stage, full=full)
             _DEV_JOBS[job_id] = {"status": "done", "doc_id": str(doc_id),
                                  "result": result}
         except Exception as e:  # noqa: BLE001 — surfaced via the poll

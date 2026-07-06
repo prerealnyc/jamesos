@@ -40,13 +40,39 @@ export type ThesisDevelopResult = {
     document_id: string | null;
     low_grounding?: boolean;
   };
+  // Present only on full-week runs:
+  content_pack?: ContentPackResult;
+  podcast?: {
+    title?: string; audio_url?: string; duration_s?: number;
+    skipped?: string; error?: string;
+  };
 };
 
 export type ThesisDevelopJob = {
   status: "running" | "done" | "failed";
-  stage?: "reading" | "researching" | "writing";
+  stage?: "reading" | "researching" | "writing" | "content" | "podcast";
   doc_id?: string;
+  full?: boolean;
   result?: ThesisDevelopResult;
+  error?: string;
+};
+
+/** A content pack fanned out from a white paper (posts + reels). */
+export type ContentPackResult = {
+  source_filename?: string;
+  posts_queued: number;
+  reels_started: number;
+  posts?: { title: string }[];
+  reels?: { title: string; template?: string }[];
+  errors?: string[];
+  error?: string;
+};
+
+export type ContentPackJob = {
+  status: "running" | "done" | "failed";
+  stage?: "angles" | "posts" | "reels";
+  doc_id?: string;
+  result?: ContentPackResult;
   error?: string;
 };
 
@@ -1293,10 +1319,18 @@ export const api = {
     jget<{ url: string }>(`/knowledge/documents/${id}/download`),
 
   // Weekly thesis → intelligence → white paper (background job + poll).
-  developThesis: (docId: string) =>
+  // full=true is the ONE BUTTON: continues into content pack + podcast.
+  developThesis: (docId: string, full = false) =>
     jpost<{ job_id: string; status: string }>(
-      `/knowledge/thesis/${docId}/develop`, {},
+      `/knowledge/thesis/${docId}/develop${full ? "?full=1" : ""}`, {},
     ),
+  // White paper → content pack (N posts + M reels via autopilot machinery).
+  startContentPack: (docId: string, posts = 3, reels = 2) =>
+    jpost<{ job_id: string; status: string }>(
+      "/knowledge/content-pack", { doc_id: docId, posts, reels },
+    ),
+  contentPackStatus: (jobId: string) =>
+    jget<ContentPackJob>(`/knowledge/content-pack/${jobId}`),
   thesisDevelopStatus: (jobId: string) =>
     jget<ThesisDevelopJob>(`/knowledge/thesis/develop/${jobId}`),
 

@@ -551,7 +551,7 @@ export const TUTORIALS: Record<string, Tutorial> = {
     when: "Use this weekly. Everything it produces lands back in the Knowledge Base and the Approval Queue, so the thesis becomes content everywhere else.",
     steps: [
       "Drop the thesis: hit 🎙 \"Record voice memo\" and just talk (stop → it uploads), or upload an audio/video/doc file, or paste text and \"Save thesis\". It's transcribed and filed into memory automatically.",
-      "Click \"Develop →\" on the thesis. Watch the stages: Reading (extracts your theme + 3-5 claims) → Researching (a fresh web sweep on the theme; every brief is filed into memory; 2-5 min) → Writing (a white paper that ARGUES your thesis — your words are its primary source, facts cite the corpus; 1-2 min).",
+      "Click \"⚡ Full week →\" — THE one button. Stages: Reading (theme + claims) → Researching (web sweep, briefs filed; 2-5 min) → Writing (a white paper that ARGUES your thesis; 1-2 min) → Content (3 posts + 2 reels fanned from the paper's angles, straight into the Approval Queue) → Podcast (episode narrated in the cloned voice). \"Paper only\" stops after the white paper.",
       "When it's done, review the result card: your theme and claims, how many research briefs were filed, and the paper. \"⬇ Download paper\" for the document, \"→ Create post from it\" to queue content.",
       "Click 🎙 \"Make podcast\": an episode script is written in the brand voice, narrated with the cloned voice, and the finished episode appears with a play button — it also lands in the Approval Queue.",
       "Scroll to \"Podcast episodes\" to replay any past episode with its show notes.",

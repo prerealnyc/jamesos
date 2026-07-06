@@ -316,6 +316,8 @@ function WhitepaperCard({ onSaved }: { onSaved: () => void }) {
   const [openSection, setOpenSection] = useState<number | null>(null);
   const [composing, setComposing] = useState(false);
   const [composed, setComposed] = useState(false);
+  const [packState, setPackState] = useState<"idle" | "running" | "done" | "failed">("idle");
+  const [packNote, setPackNote] = useState("");
   const [err, setErr] = useState("");
 
   async function generate() {
@@ -367,6 +369,37 @@ function WhitepaperCard({ onSaved }: { onSaved: () => void }) {
       setErr(e instanceof Error ? e.message : "compose failed");
     } finally {
       setComposing(false);
+    }
+  }
+
+  async function toPack() {
+    const docId = paper?.file?.id;
+    if (!docId || packState === "running") return;
+    setPackState("running");
+    setPackNote("");
+    try {
+      const { job_id } = await api.startContentPack(docId);
+      // Poll to completion (angles → posts → reels; a few minutes).
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 5000));
+        const s = await api.contentPackStatus(job_id);
+        if (s.status === "done") {
+          const r = s.result!;
+          setPackState("done");
+          setPackNote(`${r.posts_queued} posts + ${r.reels_started} reels → Approval Queue`);
+          return;
+        }
+        if (s.status === "failed") {
+          setPackState("failed");
+          setPackNote(s.error || "pack failed");
+          return;
+        }
+        setPackNote(s.stage === "reels" ? "starting reels…"
+          : s.stage === "posts" ? "writing posts…" : "extracting angles…");
+      }
+    } catch (e) {
+      setPackState("failed");
+      setPackNote(e instanceof Error ? e.message : "pack failed");
     }
   }
 
@@ -460,6 +493,21 @@ function WhitepaperCard({ onSaved }: { onSaved: () => void }) {
             <Button onClick={toContent} disabled={composing || composed}>
               {composing ? <Spinner /> : composed ? "✓ Post queued" : "→ Create post from this paper"}
             </Button>
+            {paper.file?.id && (
+              <Button
+                variant="secondary"
+                onClick={toPack}
+                disabled={packState === "running" || packState === "done"}
+                title="Fan this paper into a series: 3 posts + 2 reels, each from a different angle, all into the Approval Queue"
+              >
+                {packState === "running" ? <span className="inline-flex items-center gap-1"><Spinner /> {packNote || "building pack…"}</span>
+                  : packState === "done" ? `✓ ${packNote}`
+                  : "⚡ Content pack (3 posts + 2 reels)"}
+              </Button>
+            )}
+            {packState === "failed" && (
+              <span className="text-[11px] text-destructive">✗ {packNote}</span>
+            )}
             {composed && (
               <Link href="/queue" className="text-[12px] text-primary hover:underline">
                 Review it in the Approval Queue ↗

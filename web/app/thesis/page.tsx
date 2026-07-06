@@ -20,6 +20,8 @@ const STAGE_LABEL: Record<string, string> = {
   reading: "Reading the thesis — extracting theme & claims…",
   researching: "Researching the theme — web sweep + briefs (2-5 min)…",
   writing: "Writing the white paper (1-2 min)…",
+  content: "Fanning out the content pack — posts + reels (2-4 min)…",
+  podcast: "Writing & narrating the podcast episode (2-4 min)…",
 };
 
 function fmtDate(iso: string | null | undefined): string {
@@ -186,13 +188,13 @@ export default function ThesisPage() {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
   }
 
-  async function develop(docId: string) {
+  async function develop(docId: string, full = false) {
     setErr(null);
     try {
-      const { job_id } = await api.developThesis(docId);
+      const { job_id } = await api.developThesis(docId, full);
       setJobs((prev) => ({
         ...prev,
-        [docId]: { status: "running", stage: "reading", job_id },
+        [docId]: { status: "running", stage: "reading", job_id, full },
       }));
     } catch (e) {
       setErr(e instanceof Error ? e.message : "develop failed");
@@ -333,20 +335,31 @@ export default function ThesisPage() {
                       </div>
                     </div>
                     {!job || job.status === "failed" ? (
-                      <Button
-                        onClick={() => develop(d.id)}
-                        // 'failed' = text extracted but embedding failed —
-                        // develop only needs the text, so allow it.
-                        disabled={d.indexing_status === "skipped" || d.indexing_status === "pending"}
-                        title={d.indexing_status === "skipped"
-                          ? `No readable text/transcript${d.indexing_error ? ` — ${d.indexing_error}` : ""}`
-                          : d.indexing_status === "pending"
-                            ? "Still indexing — refresh in a moment"
-                            : "Research the theme + write a white paper arguing this thesis"}
-                        className="text-[12px] !px-3 !py-1"
-                      >
-                        Develop →
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          onClick={() => develop(d.id, true)}
+                          // 'failed' = text extracted but embedding failed —
+                          // develop only needs the text, so allow it.
+                          disabled={d.indexing_status === "skipped" || d.indexing_status === "pending"}
+                          title={d.indexing_status === "skipped"
+                            ? `No readable text/transcript${d.indexing_error ? ` — ${d.indexing_error}` : ""}`
+                            : d.indexing_status === "pending"
+                              ? "Still indexing — refresh in a moment"
+                              : "THE one button: research → white paper → 3 posts + 2 reels → podcast, all into your Approval Queue (~10-15 min)"}
+                          className="text-[12px] !px-3 !py-1"
+                        >
+                          ⚡ Full week →
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          onClick={() => develop(d.id, false)}
+                          disabled={d.indexing_status === "skipped" || d.indexing_status === "pending"}
+                          title="Research the theme + write the white paper only"
+                          className="text-[12px] !px-3 !py-1"
+                        >
+                          Paper only
+                        </Button>
+                      </div>
                     ) : job.status === "running" ? (
                       <Badge tone="accent">Developing…</Badge>
                     ) : (
@@ -447,6 +460,42 @@ export default function ThesisPage() {
                           </div>
                           <audio controls src={podJobs[d.id].result!.audio_url} className="w-full max-w-md" />
                         </div>
+                      )}
+
+                      {/* full-week extras: content pack + podcast from the run itself */}
+                      {job.result.content_pack && (
+                        <div className="text-[12px]">
+                          {job.result.content_pack.error ? (
+                            <span className="text-destructive">✗ content pack: {job.result.content_pack.error}</span>
+                          ) : (
+                            <>
+                              <span className="font-medium">Content pack:</span>{" "}
+                              {job.result.content_pack.posts_queued} post{job.result.content_pack.posts_queued === 1 ? "" : "s"} queued
+                              {" "}+ {job.result.content_pack.reels_started} reel{job.result.content_pack.reels_started === 1 ? "" : "s"} rendering
+                              {" "}· <Link href="/queue" className="text-primary hover:underline">Approval Queue ↗</Link>
+                              {(job.result.content_pack.errors?.length ?? 0) > 0 && (
+                                <span className="text-muted-foreground"> · {job.result.content_pack.errors!.length} item(s) failed</span>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      )}
+                      {job.result.podcast && (
+                        job.result.podcast.audio_url ? (
+                          <div className="flex flex-col gap-1">
+                            <div className="text-[12px] font-medium">
+                              🎙 {job.result.podcast.title}
+                              {(job.result.podcast.duration_s ?? 0) > 0 && (
+                                <span className="text-muted-foreground font-normal"> · {fmtDur(job.result.podcast.duration_s!)}</span>
+                              )}
+                            </div>
+                            <audio controls src={job.result.podcast.audio_url} className="w-full max-w-md" />
+                          </div>
+                        ) : (
+                          <div className="text-[12px] text-muted-foreground">
+                            🎙 podcast: {job.result.podcast.skipped || job.result.podcast.error || "not generated"}
+                          </div>
+                        )
                       )}
                     </div>
                   )}

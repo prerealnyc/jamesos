@@ -642,13 +642,49 @@ async def knowledge_whitepaper_status(job_id: str) -> dict[str, Any]:
 
 
 @app.post("/knowledge/thesis/{doc_id}/develop", status_code=202)
-async def knowledge_thesis_develop(doc_id: UUID) -> dict[str, Any]:
+async def knowledge_thesis_develop(doc_id: UUID, full: bool = False) -> dict[str, Any]:
     """Develop the CEO's weekly thesis: extract its theme + claims → run
     topic intelligence on the theme (briefs filed into memory) → write a
-    white paper that ARGUES the thesis. Runs in the background — poll
-    GET /knowledge/thesis/develop/{job_id}. Idempotent while running."""
+    white paper that ARGUES the thesis. `?full=1` is the ONE BUTTON: it
+    continues into the content pack (posts + reels) and a podcast episode —
+    a whole week's output from one dropped thesis. Runs in the background —
+    poll GET /knowledge/thesis/develop/{job_id}. Idempotent while running."""
     from .thesis import start_develop_job
-    return {"job_id": start_develop_job(doc_id), "status": "running"}
+    return {"job_id": start_develop_job(doc_id, full=full), "status": "running"}
+
+
+@app.post("/knowledge/content-pack", status_code=202)
+async def knowledge_content_pack(body: dict = Body(default={})) -> dict[str, Any]:
+    """Fan a white paper (or any research doc) into a content PACK: N posts
+    + M reels, each from a different angle of the paper, all through the
+    autopilot machinery into the Approval Queue. Poll
+    GET /knowledge/content-pack/{job_id}."""
+    from .content_pack import start_content_pack_job
+    doc_id = (body or {}).get("doc_id")
+    if not doc_id:
+        raise HTTPException(status_code=400, detail="doc_id is required")
+    try:
+        job_id = start_content_pack_job(
+            UUID(str(doc_id)),
+            posts=int((body or {}).get("posts") or 3),
+            reels=int((body or {}).get("reels") or 2),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="invalid doc_id") from e
+    return {"job_id": job_id, "status": "running"}
+
+
+@app.get("/knowledge/content-pack/{job_id}")
+async def knowledge_content_pack_status(job_id: str) -> dict[str, Any]:
+    """Poll: {status, stage?: angles|posts|reels, result?, error?}."""
+    from .content_pack import get_content_pack_job
+    job = get_content_pack_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="job not found (server may have restarted — queued items "
+                   "are in the Approval Queue)")
+    return job
 
 
 @app.get("/knowledge/thesis/develop/{job_id}")
