@@ -119,6 +119,10 @@ MANAGED_FIELDS: list[ManagedField] = [
         secret=False, placeholder="1AbCdEf…",
     ),
     ManagedField("elevenlabs_api_key", "ElevenLabs API key", "Video & media"),
+    ManagedField(
+        "elevenlabs_voice_id", "ElevenLabs voice id (brand's cloned voice — podcasts)",
+        "Video & media", secret=False,
+    ),
     ManagedField("minimax_api_key", "MiniMax API key", "Video & media"),
     # Publishing & social
     ManagedField("postproxy_api_key", "PostProxy API key", "Publishing & social"),

@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
-  api, type KnowledgeDoc, type KnowledgeIngestResult, type AskResponse,
+  api, type KnowledgeDoc, type KnowledgeIngestResult, type AskTurn,
   type Whitepaper, type IntelBrief, type Commitment,
 } from "@/lib/api";
 import { Button, Card, CardTitle, Badge, Spinner, PageHeader } from "@/components/ui";
@@ -43,10 +43,11 @@ export default function KnowledgePage() {
   const [err, setErr] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Ask-your-docs
+  // Ask-your-docs — a conversation, not a one-shot: prior turns ride along
+  // so follow-up questions ("what about the second one?") work.
   const [q, setQ] = useState("");
   const [asking, setAsking] = useState(false);
-  const [answer, setAnswer] = useState<AskResponse | null>(null);
+  const [thread, setThread] = useState<(AskTurn & { citations?: number })[]>([]);
 
   async function load() {
     try {
@@ -114,13 +115,23 @@ export default function KnowledgePage() {
   }
 
   async function ask() {
-    if (!q.trim()) return;
+    const question = q.trim();
+    if (!question || asking) return;   // Enter must not bypass the guard
     setAsking(true);
-    setAnswer(null);
+    const history: AskTurn[] = thread.map(({ role, content }) => ({ role, content }));
+    setThread((t) => [...t, { role: "user", content: question }]);
+    setQ("");
     try {
-      setAnswer(await api.ask(q.trim()));
+      const r = await api.ask(question, history);
+      setThread((t) => [...t, {
+        role: "assistant",
+        content: r.response || "(no answer)",
+        citations: r.citations?.length ?? 0,
+      }]);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "ask failed");
+      setThread((t) => t.slice(0, -1));   // question failed — let them retry
+      setQ(question);
     } finally {
       setAsking(false);
     }
@@ -178,29 +189,58 @@ export default function KnowledgePage() {
       </Card>
 
       <Card>
-        <CardTitle>Ask your documents</CardTitle>
-        <div className="flex gap-2 mt-2">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle>Ask your documents</CardTitle>
+          {thread.length > 0 && (
+            <button
+              onClick={() => setThread([])}
+              className="text-[12px] text-muted-foreground hover:text-foreground"
+              title="Start a fresh conversation"
+            >
+              Clear chat
+            </button>
+          )}
+        </div>
+        {thread.length > 0 && (
+          <div className="mt-3 flex flex-col gap-2">
+            {thread.map((m, i) => (
+              <div
+                key={i}
+                className={
+                  m.role === "user"
+                    ? "self-end max-w-[85%] text-[13px] leading-relaxed whitespace-pre-wrap rounded-md px-3 py-2 bg-primary text-primary-foreground"
+                    : "self-start max-w-[85%] text-[13px] leading-relaxed whitespace-pre-wrap rounded-md px-3 py-2 border border-border"
+                }
+              >
+                {m.content}
+                {m.role === "assistant" && (m.citations ?? 0) > 0 && (
+                  <div className="text-[11px] text-muted-foreground mt-1.5">
+                    {m.citations} citation{m.citations === 1 ? "" : "s"} from your memory
+                  </div>
+                )}
+              </div>
+            ))}
+            {asking && (
+              <div className="self-start text-[12px] text-muted-foreground inline-flex items-center gap-2 px-1">
+                <Spinner /> thinking…
+              </div>
+            )}
+          </div>
+        )}
+        <div className="flex gap-2 mt-3">
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") ask(); }}
-            placeholder="e.g. What were the key terms in the Main St contract?"
+            placeholder={thread.length
+              ? "Ask a follow-up…"
+              : "e.g. What were the key terms in the Main St contract?"}
             className="flex-1 text-[13px] px-3 py-2 rounded-md border border-border bg-background"
           />
           <Button onClick={ask} disabled={asking || !q.trim()}>
             {asking ? <Spinner /> : "Ask"}
           </Button>
         </div>
-        {answer && (
-          <div className="mt-3 text-[13px] leading-relaxed whitespace-pre-wrap border border-border rounded-md p-3">
-            {answer.response}
-            {answer.citations?.length > 0 && (
-              <div className="text-[11px] text-muted-foreground mt-2">
-                {answer.citations.length} citation{answer.citations.length === 1 ? "" : "s"} from your memory
-              </div>
-            )}
-          </div>
-        )}
       </Card>
 
       <WhitepaperCard onSaved={load} />

@@ -18,6 +18,61 @@ export type SavedPost = {
   created_at: string;
 };
 
+/** One prior turn in a conversational Ask thread. */
+export type AskTurn = { role: "user" | "assistant"; content: string };
+
+/** Result of developing a weekly thesis (intelligence + white paper). */
+export type ThesisDevelopResult = {
+  thesis_doc_id: string;
+  thesis_filename: string;
+  theme: string;
+  claims: string[];
+  intelligence: {
+    topic: string | null;
+    coverage?: unknown;
+    briefs_saved: number;
+    synthesis_file: string | null;
+  };
+  whitepaper: {
+    title: string | null;
+    sections: number;
+    filename: string | null;
+    document_id: string | null;
+    low_grounding?: boolean;
+  };
+};
+
+export type ThesisDevelopJob = {
+  status: "running" | "done" | "failed";
+  stage?: "reading" | "researching" | "writing";
+  doc_id?: string;
+  result?: ThesisDevelopResult;
+  error?: string;
+};
+
+/** A generated podcast episode (narrated with the brand's cloned voice). */
+export type PodcastEpisode = {
+  id: string;
+  status: string;               // pending | approved | rejected …
+  created_at: string | null;
+  title: string;
+  description: string;
+  audio_url: string;
+  duration_s: number;
+  source_filename: string;
+};
+
+export type PodcastJob = {
+  status: "running" | "done" | "failed";
+  stage?: "scripting" | "narrating" | "publishing";
+  doc_id?: string;
+  result?: {
+    title: string; description: string; audio_url: string;
+    duration_s: number; action_id: string; source_filename: string;
+  };
+  error?: string;
+};
+
 export type AskResponse = {
   response: string;
   citations: Citation[];
@@ -1218,6 +1273,22 @@ export const api = {
   knowledgeDownloadUrl: (id: string) =>
     jget<{ url: string }>(`/knowledge/documents/${id}/download`),
 
+  // Weekly thesis → intelligence → white paper (background job + poll).
+  developThesis: (docId: string) =>
+    jpost<{ job_id: string; status: string }>(
+      `/knowledge/thesis/${docId}/develop`, {},
+    ),
+  thesisDevelopStatus: (jobId: string) =>
+    jget<ThesisDevelopJob>(`/knowledge/thesis/develop/${jobId}`),
+
+  // Podcast: thesis / white paper → narrated episode (background job).
+  startPodcast: (docId: string) =>
+    jpost<{ job_id: string; status: string }>("/knowledge/podcast", { doc_id: docId }),
+  podcastStatus: (jobId: string) =>
+    jget<PodcastJob>(`/knowledge/podcast/${jobId}`),
+  listPodcasts: () =>
+    jget<{ episodes: PodcastEpisode[] }>("/knowledge/podcasts"),
+
   // Generation takes 1-2 min → background job + poll.
   startWhitepaper: (body: { topic: string; audience?: string; goal?: string }) =>
     jpost<{ job_id: string; status: string }>("/knowledge/whitepaper", body),
@@ -1618,7 +1689,8 @@ export const api = {
     jget<{ name: string; email: string; brand: string }>("/api/profile"),
   setProfile: (p: { name: string; email: string; brand: string }) =>
     jpost<{ ok: boolean }>("/api/profile", p),
-  ask: (question: string) => jpost<AskResponse>("/ask", { question }),
+  ask: (question: string, history?: AskTurn[]) =>
+    jpost<AskResponse>("/ask", { question, ...(history?.length ? { history } : {}) }),
   research: (subject: string, focus = "") =>
     jpost<ResearchResponse>("/research", { subject, focus }),
   listPlugIns: () => jget<PlugIn[]>("/plug-ins"),

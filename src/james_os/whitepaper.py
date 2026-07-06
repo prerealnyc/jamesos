@@ -141,17 +141,36 @@ async def generate_whitepaper(
     audience: str = "",
     goal: str = "",
     tenant_id: UUID | None = None,
+    thesis_doc_id: UUID | None = None,
 ) -> dict:
     """Generate a grounded, cited white paper from the tenant's Knowledge
     Base. Returns the full paper + sources + provenance, and persists it as
     a Markdown Knowledge-Base document (category='research') so memory, Ask,
-    and the content engine can immediately use it."""
+    and the content engine can immediately use it.
+
+    When `thesis_doc_id` is set, that document (the author's weekly thesis)
+    becomes the paper's PRIMARY SOURCE: the paper argues the thesis's point
+    of view, grounding supporting facts in the corpus."""
     topic = (topic or "").strip()
     if not topic:
         raise ValueError("topic is required")
     audience = (audience or "").strip() or (
         "executives, partners, and prospective stakeholders")
     goal = (goal or "").strip() or "inform strategy and support decision-making"
+
+    thesis_name, thesis_text = "", ""
+    if thesis_doc_id:
+        from .db import acquire
+        async with acquire(tenant_id) as conn:
+            trow = await conn.fetchrow(
+                "SELECT filename, extracted_text, sensitivity "
+                "FROM document_metadata WHERE id=$1", thesis_doc_id)
+        # NDA-Protected text must never be reproduced into a persisted
+        # research doc (same rule drop_nda_protected enforces on the corpus).
+        if (trow and (trow["extracted_text"] or "").strip()
+                and (trow["sensitivity"] or "") != "NDA-Protected"):
+            thesis_name = trow["filename"]
+            thesis_text = trow["extracted_text"].strip()[:9000]
 
     # ── 1. Retrieve grounding corpus from the tenant's memory ──
     hits = await search(topic, tenant_id=tenant_id, top_k_per_index=VECTOR_K)
@@ -193,11 +212,19 @@ async def generate_whitepaper(
     )
     brand = await _brand_label(tenant_id)
     guidelines = await _guidelines_block(tenant_id)
+    thesis_block = (
+        f'\n\nTHE AUTHOR\'S THESIS (cite as [T] — this paper ARGUES this '
+        f'point of view; where the thesis asserts an opinion, present it as '
+        f'the paper\'s position; ground every supporting FACT in the corpus '
+        f'[n]):\n<thesis filename="{thesis_name}">\n{thesis_text}\n</thesis>'
+        if thesis_text else ""
+    )
     system = (
         _WRITER_SYSTEM.format(brand=brand)
         + guidelines
         + "\n\nSTRUCTURAL GUIDANCE (how the best white papers in this space are built):\n"
         + structure_text
+        + thesis_block
         + "\n\nCORPUS (cite as [n]):\n" + corpus_block
     )
     user = (f"TOPIC: {topic}\nAUDIENCE: {audience}\nGOAL: {goal}\n\n"
@@ -233,8 +260,11 @@ async def generate_whitepaper(
         *[f"\n## {s['heading']}\n{s['body']}" for s in sections],
         ("\n## Key Takeaways\n" + "\n".join(f"- {t}" for t in takeaways))
         if takeaways else "",
-        ("\n## Sources\n" + "\n".join(
-            f"{d['n']}. {d['filename']}" for d in corpus)) if corpus else "",
+        ("\n## Sources\n"
+         + (f"T. {thesis_name} (author's thesis)\n" if thesis_text else "")
+         + "\n".join(
+            f"{d['n']}. {d['filename']}" for d in corpus))
+        if (corpus or thesis_text) else "",
         ("\n## Structural references\n" + "\n".join(
             f"{i + 1}. [{(c.get('title') or c['url'])}]({c['url']})"
             for i, c in enumerate(exemplars))) if exemplars else "",
@@ -277,6 +307,7 @@ async def generate_whitepaper(
         "structure_summary": structure_text[:1200],
         "exemplars": exemplars,
         "sources": [{"n": d["n"], "filename": d["filename"]} for d in corpus],
+        "thesis": thesis_name or None,
         "markdown": md,
         "file": file_info,
     }

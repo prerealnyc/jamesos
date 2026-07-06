@@ -41,6 +41,7 @@ const NAV: Group[] = [
     items: [
       { href: "/", label: "Ask the memory", sub: "Grounded, cited Q&A", icon: "ask", live: true },
       { href: "/knowledge", label: "Knowledge Base", sub: "Company docs → private, askable memory", icon: "ask", live: true },
+      { href: "/thesis", label: "Weekly Thesis", sub: "Drop the thesis → research + white paper", icon: "market", live: true },
     ],
   },
   {

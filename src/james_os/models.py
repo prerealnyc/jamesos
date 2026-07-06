@@ -100,6 +100,11 @@ class Citation(BaseModel):
     confidence: float
 
 
+class AskTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class AskRequest(BaseModel):
     question: str
     user_id: UUID | None = None
@@ -111,6 +116,12 @@ class AskRequest(BaseModel):
     # Literal so a typo ('public_facing') is rejected instead of silently
     # degrading to the more permissive internal policy.
     audience: Literal["internal", "public"] = "internal"
+    # Conversational follow-ups (intelligence parity): the PRIOR turns,
+    # oldest first — `question` stays the latest user question. History is
+    # context for generation; retrieval condenses a follow-up into a
+    # standalone query so "what about the second one?" still finds the
+    # right passages. Size-capped in ask().
+    history: list[AskTurn] = []
 
 
 class AskResponse(BaseModel):

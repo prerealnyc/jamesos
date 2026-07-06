@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     # into the next speaker's turn. Empty = fall back to Whisper (no speakers).
     assemblyai_api_key: str = ""   # ASSEMBLYAI_API_KEY
     elevenlabs_api_key: str = ""   # voice synthesis / cloning
+    elevenlabs_voice_id: str = ""  # the brand's cloned voice (podcast narration)
+    podcast_words_target: int = 1100   # ~7-8 min episode at speaking pace
     heygen_api_key: str = ""       # avatar video
     heygen_avatar_id: str = ""     # default avatar for renders
     xpoz_api_key: str = ""         # Xpoz social data API (X/IG/TikTok/Reddit)

@@ -617,6 +617,73 @@ async def knowledge_whitepaper_status(job_id: str) -> dict[str, Any]:
     return job
 
 
+@app.post("/knowledge/thesis/{doc_id}/develop", status_code=202)
+async def knowledge_thesis_develop(doc_id: UUID) -> dict[str, Any]:
+    """Develop the CEO's weekly thesis: extract its theme + claims → run
+    topic intelligence on the theme (briefs filed into memory) → write a
+    white paper that ARGUES the thesis. Runs in the background — poll
+    GET /knowledge/thesis/develop/{job_id}. Idempotent while running."""
+    from .thesis import start_develop_job
+    return {"job_id": start_develop_job(doc_id), "status": "running"}
+
+
+@app.get("/knowledge/thesis/develop/{job_id}")
+async def knowledge_thesis_develop_status(job_id: str) -> dict[str, Any]:
+    """Poll: {status: running|done|failed, stage?: reading|researching|writing,
+    result?, error?}."""
+    from .thesis import get_develop_job
+    job = get_develop_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="job not found (server may have restarted — the artifacts "
+                   "of a finished run are saved in the Knowledge Base)")
+    return job
+
+
+@app.post("/knowledge/podcast", status_code=202)
+async def knowledge_podcast(body: dict = Body(default={})) -> dict[str, Any]:
+    """Turn a Knowledge-Base document (weekly thesis or white paper) into a
+    podcast episode: script in the brand voice → narrated with the brand's
+    cloned ElevenLabs voice → mp3 in the media store + approval-queue entry.
+    Poll GET /knowledge/podcast/{job_id}."""
+    from .podcast import start_podcast_job
+    from .tts import tts_configured
+    doc_id = (body or {}).get("doc_id")
+    if not doc_id:
+        raise HTTPException(status_code=400, detail="doc_id is required")
+    if not tts_configured():
+        raise HTTPException(
+            status_code=400,
+            detail="brand voice not configured — set the ElevenLabs API key "
+                   "and voice id in Settings first")
+    try:
+        return {"job_id": start_podcast_job(UUID(str(doc_id))), "status": "running"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="invalid doc_id") from e
+
+
+@app.get("/knowledge/podcasts")
+async def knowledge_podcasts() -> dict[str, Any]:
+    """Every generated episode (newest first) with its review status."""
+    from .podcast import list_podcasts
+    return {"episodes": await list_podcasts()}
+
+
+@app.get("/knowledge/podcast/{job_id}")
+async def knowledge_podcast_status(job_id: str) -> dict[str, Any]:
+    """Poll: {status: running|done|failed, stage?: scripting|narrating|
+    publishing, result?, error?}."""
+    from .podcast import get_podcast_job
+    job = get_podcast_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="job not found (server may have restarted — finished "
+                   "episodes are listed under /knowledge/podcasts)")
+    return job
+
+
 # ── Knowledge governance: vocab, silos, entities ──
 
 @app.get("/knowledge/vocab")

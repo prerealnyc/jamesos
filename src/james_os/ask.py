@@ -33,13 +33,36 @@ async def ask(req: AskRequest, tenant_id: UUID | None = None) -> AskResponse:
     def _mark(label: str, t0: float) -> None:
         timings[label] = int((time.perf_counter() - t0) * 1000)
 
+    # Conversational follow-ups: keep the recent turns, refuse politely when
+    # the thread outgrows what we can prompt with (mirror of the intelligence
+    # platform's clear-the-chat-to-continue behavior).
+    history = [t_ for t_ in (req.history or []) if (t_.content or "").strip()][-12:]
+    if sum(len(t_.content) for t_ in history) > 24_000:
+        return AskResponse(
+            response="This conversation is too long to keep in context — "
+                     "clear the chat and ask again.",
+            citations=[], refused=True, refusal_reason="conversation_too_long",
+            confidence=0.0, retrieved_event_ids=[],
+            model=get_llm().model_name,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+        )
+
     # The system prompt only needs the tenant's guidelines, not the retrieved
     # events — so build it CONCURRENTLY with retrieval+rerank instead of after.
     system_task = asyncio.create_task(build_system_prompt(tenant_id))
 
+    # A follow-up like "what about the second one?" retrieves nothing on its
+    # own — condense it against the conversation into a standalone query
+    # (retrieval only; generation still sees the true history).
+    retrieval_q = req.question
+    if history:
+        t = time.perf_counter()
+        retrieval_q = await _standalone_question(req.question, history) or req.question
+        _mark("condense", t)
+
     t = time.perf_counter()
     candidates = await search(
-        req.question,
+        retrieval_q,
         tenant_id=tenant_id,
         event_types=req.event_types,
         since=req.since,
@@ -47,7 +70,7 @@ async def ask(req: AskRequest, tenant_id: UUID | None = None) -> AskResponse:
     )
     _mark("search", t)
     t = time.perf_counter()
-    retrieved = await rerank(req.question, candidates)
+    retrieved = await rerank(retrieval_q, candidates)
     _mark("rerank", t)
 
     if not retrieved:
@@ -82,7 +105,8 @@ async def ask(req: AskRequest, tenant_id: UUID | None = None) -> AskResponse:
         if retrieved:
             system = f"{system}\n\n{policy_for(getattr(req, 'audience', 'internal'))}"
         t = time.perf_counter()
-        answer = await _generate(req.question, retrieved, system, sens_map)
+        answer = await _generate(req.question, retrieved, system, sens_map,
+                                 history=history)
         _mark("generate", t)
     except LLMParseError as e:
         # The model produced unparseable output (most often: hit max_tokens
@@ -121,16 +145,46 @@ async def ask(req: AskRequest, tenant_id: UUID | None = None) -> AskResponse:
     return response
 
 
+async def _standalone_question(question: str, history: list) -> str:
+    """Rewrite a follow-up into one self-contained retrieval question.
+    Best-effort — empty string on any failure, caller falls back to the
+    raw question."""
+    convo = "\n".join(f"{t.role}: {t.content[:600]}" for t in history[-6:])
+    try:
+        out = await get_llm().complete_json(
+            system=(
+                "Given a conversation and the user's next question, rewrite "
+                "that question as ONE standalone search query that contains "
+                "every entity/topic it implicitly refers to. Return STRICT "
+                'JSON: {"question": str}'
+            ),
+            messages=[{"role": "user",
+                       "content": f"<conversation>\n{convo}\n</conversation>\n\n"
+                                  f"<next_question>\n{question}\n</next_question>"}],
+            max_tokens=200,
+        )
+        return str(out.get("question") or "").strip()[:500]
+    except Exception:  # noqa: BLE001 — condensation must never break Ask
+        return ""
+
+
 async def _generate(
     question: str, retrieved: list[RetrievedEvent], system: str,
     sensitivity_map: dict | None = None,
+    history: list | None = None,
 ) -> dict:
     memory = format_memory_block(retrieved, sensitivity_map)
+    follow_up_rule = (
+        "\n\n(Consider the prior conversation for what the question refers "
+        "to, but ground every NEW claim in the memory passages above.)"
+        if history else ""
+    )
     messages = [
+        *({"role": t.role, "content": t.content} for t in (history or [])),
         {
             "role": "user",
-            "content": f"{memory}\n\n<question>\n{question}\n</question>",
-        }
+            "content": f"{memory}\n\n<question>\n{question}\n</question>{follow_up_rule}",
+        },
     ]
     # 2000 gives headroom for a grounded answer + claims list without
     # truncating the JSON (the historical 1024 default chopped rich answers
