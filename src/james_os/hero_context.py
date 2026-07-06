@@ -273,9 +273,11 @@ async def get_hero_photo_files(
                 shrunk = _shrink_image(r.content)
                 if shrunk is None:
                     continue
-                # Always emit as .png filename — gpt-image-1 reads bytes
-                # not extensions, but a clean filename helps logs.
-                out.append((f"hero-{i + 1}.png", shrunk))
+                # The ref NAME is the source URL — the stable identity the
+                # photo-reuse ledger keys on (same photo must share ONE key
+                # whether used as bytes or by URL). Callers that need a
+                # cosmetic filename synthesize one.
+                out.append((url, shrunk))
             except Exception:  # noqa: BLE001
                 continue
 

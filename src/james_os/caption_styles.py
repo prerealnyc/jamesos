@@ -612,7 +612,9 @@ def _hook_window(hook: list[dict], body: list[dict]) -> tuple[float, float]:
 # Dedicated high tracks for the below-face hook title so it never collides with
 # captions (3), polish layers (6-11) or the viral_hook block.
 _HOOK_TITLE_TRACK = 20
-_HOOK_TITLE_HOLD_S = 3.0   # the hook grabs attention up front, then clears
+# 2.6s: grab attention, then CLEAR. James's rejection ("hook stays on screen
+# the whole time") — err toward shorter; the caption track takes over after.
+_HOOK_TITLE_HOLD_S = 2.6
 
 
 def hook_hold_seconds(total: float) -> float:
@@ -640,10 +642,34 @@ def hook_title_elements(text: str, total: float) -> list[dict]:
     t = (text or "").strip().strip('"').strip("“”")
     if not t or total <= 0:
         return []
-    # Show the WHOLE hook as 1-3 balanced lines (never cut mid-phrase).
+    # Balanced lines, but HARD-CAPPED at 2: a 3-line pill (up to ~9vh/line +
+    # padding) centered at 57% can reach down into the caption band (~72%+)
+    # — James's rejection: "captions and hook text are overlapping".
     lines = [ln for ln, _ in _hook_lines(t)]
     if not lines:
         return []
+    if len(lines) > 2:
+        # Re-split the SAME words into 2 balanced lines (never just drop the
+        # payoff third). If even the best 2-line split would clamp under the
+        # no-wrap font floor (~26 chars/line), shed trailing WHOLE words
+        # until it fits and end on an ellipsis — never cut mid-word.
+        def _best_split(ws: list[str]) -> tuple[int, list[str]]:
+            best: tuple[int, list[str]] = (10 ** 9, [" ".join(ws)])
+            for cut in range(1, len(ws)):
+                l1, l2 = " ".join(ws[:cut]), " ".join(ws[cut:])
+                m = max(len(l1), len(l2))
+                if m < best[0]:
+                    best = (m, [l1, l2])
+            return best
+        words = " ".join(lines).split()
+        longest, lines = _best_split(words)
+        shed = False
+        while longest > 26 and len(words) > 3:
+            words = words[:-1]
+            shed = True
+            longest, lines = _best_split(words)
+        if shed:
+            lines[-1] = lines[-1].rstrip(" .,;:") + "…"
     longest = max(len(ln) for ln in lines)
     # Big, bold WHITE with a thin black edge — scroll-stopping reels hook look
     # (Archivo Black, em ~0.74). Fit the TEXT to 76% — deliberately tighter than

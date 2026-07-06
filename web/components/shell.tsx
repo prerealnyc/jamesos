@@ -40,8 +40,6 @@ const NAV: Group[] = [
     title: "Memory",
     items: [
       { href: "/", label: "Ask the memory", sub: "Grounded, cited Q&A", icon: "ask", live: true },
-      { href: "/knowledge", label: "Knowledge Base", sub: "Company docs → private, askable memory", icon: "ask", live: true },
-      { href: "/thesis", label: "Weekly Thesis", sub: "Drop the thesis → research + white paper", icon: "market", live: true },
     ],
   },
   {
@@ -71,6 +69,15 @@ const NAV: Group[] = [
     title: "Brand",
     items: [
       { href: "/brand", label: "Brand", sub: "Voice rules, voice studio & health", icon: "voice", live: true, match: BRAND_SUBROUTES },
+    ],
+  },
+  // Newest features live at the BOTTOM of the rail while they're still
+  // being polished — promote them up once they've been battle-tested.
+  {
+    title: "New",
+    items: [
+      { href: "/knowledge", label: "Knowledge Base", sub: "Company docs → private, askable memory", icon: "ask", live: true },
+      { href: "/thesis", label: "Weekly Thesis", sub: "Drop the thesis → research + white paper", icon: "market", live: true },
     ],
   },
 ];

@@ -922,6 +922,11 @@ For each slot you choose to cut on, return ONE insert:
   * uses_hero: true ONLY when the anchor phrase is about the brand hero
     himself (e.g. "I watched my mentor" = uses_hero; "the calendar" = no).{fig_field_doc}
   * text: short label of the anchor word(s), max 4 words.
+  * RELEVANCE IS A HARD GATE: if you cannot visualize the SPECIFIC thing
+    said in the slot, SKIP the slot (stay on the speaker) — never invent a
+    loosely-thematic scene. (Human rejection: "broll doesn't make sense
+    and doesn't fit the video.")
+  * {"Do not REPEAT a scene already shown — HOLD & EVOLVE arcs (2-3 CONSECUTIVE shots advancing the SAME subject) are encouraged, but NON-consecutive inserts must depict different subjects." if cinematic else "NEVER show the same scene/subject twice in one video — every insert must depict a DIFFERENT subject than all earlier inserts."} (Human rejection: "some broll is repetitive.")
 
 {density_rule}
 
@@ -1146,8 +1151,67 @@ async def pick_insert_points(
             uses_recurring_figure=_is_cinematic and bool(entry.get("uses_recurring_figure")),
         ))
         last_end = end
+    # Boilerplate the picker was TOLD to append (grade/look tails) must not
+    # count toward scene similarity — in cinematic mode every prompt shares
+    # the same grade, which would falsely mark distinct scenes as dupes.
+    _boiler = _scene_words(_CINEMATIC_BROLL_GRADE) | _scene_words(color_grade)
+    _dedupe_insert_scenes(inserts, boilerplate=_boiler,
+                          allow_consecutive=_is_cinematic)
     _enforce_shot_rotation(inserts)
     return inserts
+
+
+def _scene_words(prompt: str) -> set[str]:
+    """Content words of an image prompt (shot-size/grade boilerplate ignored)
+    for near-duplicate detection."""
+    stop = {
+        "a", "an", "the", "of", "on", "in", "at", "with", "and", "or", "to",
+        "shot", "wide", "medium", "close", "closeup", "close-up", "extreme",
+        "establishing", "view", "frame", "cinematic", "color", "grade",
+        "lighting", "light", "warm", "moody", "film", "grain", "shallow",
+        "depth", "field",
+    }
+    return {w for w in re.findall(r"[a-z]+", (prompt or "").lower())
+            if len(w) > 2 and w not in stop}
+
+
+def _dedupe_insert_scenes(
+    inserts: list["Insert"], *,
+    boilerplate: set[str] = frozenset(),
+    allow_consecutive: bool = False,
+) -> None:
+    """Drop inserts whose SCENE near-duplicates an earlier one in the SAME
+    video — each per-slot LLM pick is independent, so without this the same
+    b-roll can appear twice (human rejection: 'some broll is repetitive').
+    Keeps the earlier occurrence; the freed slot just stays on the speaker.
+
+    `boilerplate`: grade/look words every prompt was TOLD to share — removed
+    before comparing so a mandated tail can't fake similarity.
+    `allow_consecutive`: cinematic HOLD & EVOLVE arcs intentionally advance
+    the SAME subject across neighbouring shots — exempt the immediate
+    predecessor from the comparison in that mode."""
+    kept: list[Insert] = []
+    seen: list[set[str]] = []
+    dropped = 0
+    for ins in inserts:
+        words = _scene_words(ins.image_prompt) - boilerplate
+        dup = False
+        prev_pool = seen[:-1] if (allow_consecutive and seen) else seen
+        for prev in prev_pool:
+            inter = len(words & prev)
+            if inter and inter >= 0.7 * min(len(words), len(prev)) and inter >= 4:
+                dup = True
+                break
+        if dup:
+            dropped += 1
+            continue
+        seen.append(words)
+        kept.append(ins)
+    if dropped:
+        print(f"[story_video] dropped {dropped} near-duplicate b-roll scene(s)")
+        inserts[:] = kept
+        for i, ins in enumerate(inserts):
+            ins.index = i
 
 
 # ── Shot-size rotation, enforced in code ─────────────────────────────

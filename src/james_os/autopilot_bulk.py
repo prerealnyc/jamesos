@@ -131,8 +131,13 @@ async def _attach_image_to_action(
     if not urls:
         # No real hero photo → leave the post image-less rather than invent one.
         return None
-    idx = int(hashlib.md5(str(action_id).encode()).hexdigest(), 16) % len(urls)
-    served_uri = urls[idx]
+    # Reuse-gated pick (James: "photo has been used before"): prefer the
+    # least-recently-used photo across ALL recent posts, not an id-hash that
+    # is blind to what other posts already used.
+    from .photo_pick import pick_hero_url
+    served_uri = await pick_hero_url(urls, tenant_id)
+    if not served_uri:
+        return None
 
     # Patch the real photo onto the pending action. jsonb `||` merges the keys
     # without disturbing the rest. No image_prompt — there is no AI prompt.
@@ -145,6 +150,7 @@ async def _attach_image_to_action(
                     "image_url": served_uri,
                     "media_url": served_uri,
                     "has_image": True,
+                    "hero_photo_key": served_uri,
                 }
             ),
         )
@@ -168,12 +174,13 @@ async def _make_text_post(
     'designed' runs the branded card machine and, on any failure, falls back to
     a real hero photo so a post is never left with an AI scene or imageless.
     Returns the chosen designed format (or None) so the batch can vary them."""
+    from .content import strip_internal_labels
     draft = await generate_content(
         ContentBrief(
             platform=platform,
             format="post",
             pillar=idea.get("pillar", ""),
-            topic=idea["topic"],
+            topic=strip_internal_labels(idea["topic"]),
             extra_instructions=_TEXT_STEER + trend_steer(idea),
         ),
         tenant_id,

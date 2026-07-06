@@ -69,7 +69,11 @@ def _wrap(draw, text: str, font, max_w: int) -> list[str]:
 
 def _fit(draw, text: str, font_path: str, max_w: int, max_h: int,
          start: int, minimum: int = 30) -> tuple[ImageFont.FreeTypeFont, list[str]]:
-    """Largest font size at which the wrapped text fits within max_w × max_h."""
+    """Largest font size at which the wrapped text fits within max_w × max_h.
+
+    HARD GUARANTEE: even at the minimum size, the returned lines never
+    exceed max_h — overflow lines are dropped and the last kept line ends
+    on an ellipsis (human rejection: "text on image cuts off")."""
     size = start
     while size >= minimum:
         font = _font(font_path, size)
@@ -79,7 +83,12 @@ def _fit(draw, text: str, font_path: str, max_w: int, max_h: int,
             return font, lines
         size -= 4
     font = _font(font_path, minimum)
-    return font, _wrap(draw, text, font, max_w)
+    lines = _wrap(draw, text, font, max_w)
+    keep = max(1, int(max_h // max(1, _line_h(draw, font))))
+    if len(lines) > keep:
+        lines = lines[:keep]
+        lines[-1] = lines[-1].rstrip(" .,;:") + "…"
+    return font, lines
 
 
 def _draw_centered(draw, lines, font, cx: int, top: float, fill,
@@ -100,6 +109,32 @@ def _draw_centered(draw, lines, font, cx: int, top: float, fill,
 def _cover(img: Image.Image, w: int, h: int) -> Image.Image:
     # Bias the crop slightly upward so a subject's head/upper-third is kept.
     return ImageOps.fit(img, (w, h), method=Image.LANCZOS, centering=(0.5, 0.4))
+
+
+def _cover_safe(img: Image.Image, w: int, h: int,
+                centering: tuple[float, float]) -> Image.Image:
+    """Cover-crop — but when the crop would discard a LARGE share of the
+    photo (extreme aspect mismatch is exactly how James's head/body gets
+    awkwardly cut off), fall back to contain-on-a-blurred-fill so the
+    subject is always fully visible. (Human rejection: "image of james
+    gets cut off. in this picture it looks awkward.")"""
+    iw, ih = img.size
+    if iw <= 0 or ih <= 0:
+        return ImageOps.fit(img, (w, h), method=Image.LANCZOS, centering=centering)
+    scale = max(w / iw, h / ih)
+    discard_w = max(0.0, 1.0 - w / (iw * scale))
+    discard_h = max(0.0, 1.0 - h / (ih * scale))
+    # Axis-aware, genuinely-extreme-only gate: VERTICAL discard is what cuts
+    # off a head/body; horizontal discard of a centered subject is normally
+    # fine. Ordinary portrait photos must keep the designed cover crop.
+    if discard_h <= 0.58 and discard_w <= 0.80:
+        return ImageOps.fit(img, (w, h), method=Image.LANCZOS, centering=centering)
+    bg = (ImageOps.fit(img, (w, h), method=Image.LANCZOS, centering=centering)
+          .filter(ImageFilter.GaussianBlur(26)))
+    fg = img.copy()
+    fg.thumbnail((w, h), Image.LANCZOS)
+    bg.paste(fg, ((w - fg.width) // 2, (h - fg.height) // 2))
+    return bg
 
 
 def _circle(b: bytes, d: int) -> Image.Image:
@@ -230,8 +265,8 @@ def statement_card(bg_bytes: bytes, statement: str, handle: str = "",
     # face-biased crop — so there's clean space on every outside edge. ──
     img_h = 624
     img_top = H - M - img_h
-    photo = ImageOps.fit(_open_rgb(bg_bytes), (content_w, img_h),
-                         method=Image.LANCZOS, centering=(0.5, 0.22))
+    photo = _cover_safe(_open_rgb(bg_bytes), content_w, img_h,
+                        centering=(0.5, 0.22))
     rmask = Image.new("L", (content_w, img_h), 0)
     ImageDraw.Draw(rmask).rounded_rectangle((0, 0, content_w, img_h), radius=34, fill=255)
     canvas.paste(photo, (M, img_top), rmask)
@@ -407,8 +442,8 @@ def hero_quote_card(quote: str, hero_bytes: bytes, brand_kit: dict | None = None
     # ── hero photo on the right; its LEFT edge fades into navy so the seam is
     #    invisible and the whole text column stays on clean navy ──
     if hero_bytes:
-        photo = ImageOps.fit(_open_rgb(hero_bytes), (pw, H),
-                             method=Image.LANCZOS, centering=(0.5, 0.26))
+        photo = _cover_safe(_open_rgb(hero_bytes), pw, H,
+                            centering=(0.5, 0.26))
         grad = Image.new("L", (pw, 1), 0)
         for x in range(pw):
             # transparent across the left ~40% of the panel, then ramp to opaque

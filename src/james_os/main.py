@@ -1386,12 +1386,16 @@ async def _generate_designed_post_image(
     # scenes. hero_quote & statement place James's real uploaded photo; a random
     # one is picked for variety (and to fit different concepts across a batch).
     hero_bytes: bytes | None = None
+    hero_key: str | None = None
     if fmt in ("hero_quote", "statement"):
         try:
             _refs = await get_hero_photo_files(tenant_id=tenant_id)
-            if _refs:
-                import random as _random
-                hero_bytes = _random.choice(_refs)[1]
+            # Gated pick (James's rejections): skip blurry photos, prefer the
+            # least-recently-used one instead of random choice.
+            from .photo_pick import pick_hero_bytes
+            _picked = await pick_hero_bytes(_refs, tenant_id)
+            if _picked:
+                hero_key, hero_bytes = _picked
         except Exception:  # noqa: BLE001
             hero_bytes = None
 
@@ -1508,7 +1512,13 @@ async def _generate_designed_post_image(
         await conn.execute(
             "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1",
             action_id,
-            json.dumps({"image_url": served_uri, "media_url": served_uri, "has_image": True}),
+            json.dumps({
+                "image_url": served_uri, "media_url": served_uri,
+                "has_image": True,
+                # Reuse memory: which hero photo this post consumed, so the
+                # picker can rotate away from it on the next posts.
+                **({"hero_photo_key": hero_key} if hero_key else {}),
+            }),
         )
     return served_uri, fmt
 

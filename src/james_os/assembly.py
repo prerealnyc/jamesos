@@ -1007,10 +1007,24 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 "fit": "cover", **BOTTOM,
             }
             if video_url.startswith("http"):
+                # loop: a ~5s generated clip stretched across a longer tile
+                # window otherwise RUNS OUT and the element goes transparent —
+                # the dark backing shows through as a "random blank screen"
+                # (James's rejection on the split template).
                 elements.append({"type": "video", "source": video_url,
-                                 "volume": 0, **common})
+                                 "volume": 0, "loop": True, **common})
             else:
                 elements.append({"type": "image", "source": image_url, **common})
+
+        # No usable B-roll at all → NEVER leave the bottom half as a dark
+        # panel for the whole video; mirror the speaker (muted, cover-cropped)
+        # so the split still reads as a designed layout.
+        if not usable and total > 0:
+            elements.append({
+                "type": "video", "source": avatar_video_url, "volume": 0,
+                "loop": True, "track": 3, "time": 0,
+                "duration": round(total, 2), "fit": "cover", **BOTTOM,
+            })
 
         # track 3 — captions centred on the seam between the top speaker and the
         # bottom B-roll. This split FORCES the magenta-on-white look (magenta
@@ -1188,8 +1202,10 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 ],
             }
             if video_url.startswith("http"):
+                # loop for the same reason as the horizontal split: a clip
+                # shorter than its window must not run out into transparency.
                 elements.append({"type": "video", "source": video_url,
-                                 "volume": 0, **common})
+                                 "volume": 0, "loop": True, **common})
             else:
                 elements.append({"type": "image", "source": image_url, **common})
 

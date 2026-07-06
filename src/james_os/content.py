@@ -35,6 +35,7 @@ Honesty rules baked in:
 """
 
 import json
+import re
 import time
 from uuid import UUID
 
@@ -51,6 +52,39 @@ from .prompts import (
 )
 from .rerank import rerank
 from .retrieval import search
+
+# Internal vocabulary that must NEVER reach audience-facing copy. James:
+# "'just james clip' is a vertical of content we talk about in the backend —
+# not something james says out loud to the audience." Catches separated,
+# token and CONCATENATED/hashtag forms (#JustJamesClip) — but the bare
+# spoken bigram "James clips …" only when it carries a label signal
+# (quotes / colon / hashtag), so verb phrases are never mangled.
+_INTERNAL_LABEL_RE = re.compile(
+    r"""
+      [\(\[\"'“”‘’#]*\b(?:
+          just[\s_-]*james[\s_-]*clips?     # Just James Clip / JustJamesClip
+        | james[_-]clips?                   # james_clip / james-clip tokens
+        | jamesclips?                       # JamesClip / jamesclip run-together
+      )\b[\)\]\"'“”‘’]*[:,]?
+    | [\(\[\"'“”‘’]\s*james\s+clips?\s*[\)\]\"'“”‘’][:,]?   # “James Clips”
+    | \bjames\s+clips?\s*:                                    # James Clips: prefix
+    | \#\s*james\s+clips?\b                                   # '# james clip'
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def strip_internal_labels(text: str) -> str:
+    """Remove backend/vertical labels from audience-facing copy and tidy the
+    whitespace/punctuation the removal leaves behind."""
+    if not text:
+        return text
+    out = _INTERNAL_LABEL_RE.sub(" ", text)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r" +([,.!?;:])", r"\1", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
+
 
 # event payload.category (and event_type) → memory bucket.
 _VOICE_CATS = {"voice_corpus", "guideline"}
@@ -345,7 +379,7 @@ async def gen_video_caption(
             base = ""
     if not base:
         base = (src.split(". ")[0] if src else "").strip()[:180]
-    return apply_caption_signoff(base, signoff)
+    return apply_caption_signoff(strip_internal_labels(base), signoff)
 
 
 _VIDEO_HOOK_SYSTEM = (
@@ -371,11 +405,12 @@ async def gen_video_hook(source_text: str, tenant_id: UUID | None = None) -> str
             max_tokens=60, temperature=0.7,
         )
         hook = str((out or {}).get("hook") or "").strip().strip('"').rstrip(".")
+        hook = strip_internal_labels(hook)
         if hook:
             return " ".join(hook.split()[:8])
     except Exception:  # noqa: BLE001 — fall back to a trimmed source line
         pass
-    return " ".join(src.split()[:6])
+    return strip_internal_labels(" ".join(src.split()[:6]))
 
 
 async def generate_content(
@@ -425,7 +460,7 @@ async def generate_content(
         f"platform: {brief.platform}\n"
         f"format: {brief.format}\n"
         f"pillar: {brief.pillar or '(none specified)'}\n"
-        f"topic: {brief.topic}\n"
+        f"topic: {strip_internal_labels(brief.topic)}\n"
         f"extra_instructions: {brief.extra_instructions or '(none)'}\n"
         f"</brief>"
     )
@@ -479,6 +514,10 @@ async def generate_content(
     except Exception:  # noqa: BLE001 — never lose the draft over a brand read
         pass
 
+    # Hard firewall: internal vocabulary must never reach the audience, no
+    # matter which input carried it in (topic, memory, or the model itself).
+    draft_text = strip_internal_labels(draft_text)
+
     # ── queue as a pending action (the human gate) ──
     payload = {
         "platform": brief.platform,
@@ -486,7 +525,7 @@ async def generate_content(
         "format": brief.format,
         "content": draft_text,
         "caption": draft_text,
-        "topic": brief.topic,
+        "topic": strip_internal_labels(brief.topic),
         "angle": angle,
         "voice_score": round(score, 3),
         "self_voice_score": gen.get("self_voice_score"),

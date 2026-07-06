@@ -467,10 +467,12 @@ async def generate_post_image_with_refs(
     )[:1000]
     # OpenAI's SDK accepts file-like inputs for images.edit. BytesIO
     # works directly; gpt-image-1 reads bytes regardless of extension.
+    # Ref names are source URLs (reuse-ledger identity) — synthesize a
+    # clean multipart filename here.
     from io import BytesIO
     image_files = [
-        (name, BytesIO(data), "image/png")
-        for name, data in references
+        (f"hero-{i + 1}.png", BytesIO(data), "image/png")
+        for i, (_name, data) in enumerate(references)
     ]
     try:
         res = await client.images.edit(

@@ -13,6 +13,21 @@ export type Tutorial = {
 };
 
 export const TUTORIALS: Record<string, Tutorial> = {
+  "/": {
+    title: "Ask the memory",
+    what: "The front door to your brand's memory: ask anything and get a grounded, cited answer built ONLY from what the system actually knows — your documents, meetings, research, and learned rules.",
+    when: "Use this for quick one-shot questions from anywhere. For a back-and-forth conversation over your company documents (with follow-up questions), use the Ask box on the Knowledge Base page.",
+    steps: [
+      "Type a question about your business — e.g. \"What do we know about the spaceport project?\" — and hit Ask.",
+      "Read the answer, then check the citation cards under it: each one quotes the exact memory passage the claim came from, with a confidence score. That's your proof the answer isn't made up.",
+      "If it answers \"I don't have anything in memory on that topic\", that's honest behavior — the system refuses rather than inventing. Upload the relevant documents on the Knowledge Base page and ask again.",
+    ],
+    tips: [
+      "Every answer passes a second verification pass before you see it — if the answer can't be re-grounded in the sources, the system refuses instead of guessing.",
+      "Sensitivity rules are enforced at answer time: NDA-protected material never leaves its tier.",
+      "The more you upload to the Knowledge Base, the smarter this gets — answers can only cite what's in memory.",
+    ],
+  },
   "/analytics": {
     title: "Analytics",
     what: "A performance dashboard that shows how your brand's own social accounts are doing — total followers, posts, and engagement across every platform you've connected.",
@@ -78,10 +93,12 @@ export const TUTORIALS: Record<string, Tutorial> = {
       "Fill in your Brand Kit at the top: your display name, tagline, and social handle, then upload a logo image — these become the name plate, watermark, and 'Follow for more' end card on every video. Click Save brand kit.",
       "To add a written rule, scroll to 'Add a voice rule', pick a Type (identity, guideline, protocol, framework, or frustration), give it a short Name, type the actual rule in Content, and click 'Add to brand rules'.",
       "To teach from a document, drag a file into the 'Ingest a brand document' box (or click to browse) — it accepts .txt, .md, .pdf, .docx, and audio like .mp3/.m4a/.wav. The file is read and folded into your brand voice automatically.",
-      "Check the 'Rules governing the voice now' list at the bottom to confirm everything you added is active.",
+      "Check \"The brain behind the voice\" at the bottom: the count chips show EVERYTHING steering generation — your manual rules, the rules the system learned on its own from your rejections and edits, the voice exemplars it has absorbed, and the knowledge memory behind facts.",
+      "Click \"Show the latest learned rules\" to open the ledger: each entry is a permanent 'never do this again' rule the system taught itself from a real rejection or edit in the Approval Queue, with the platform and date it was learned.",
     ],
     tips: [
       "Everything on this page is loaded into the AI on every single answer and cannot be overridden by a prompt — so only put rules here you truly want enforced every time.",
+      "You don't have to write many manual rules — the system learns automatically: every rejection and every edit in the Approval Queue becomes a learned rule, and every approval becomes a voice exemplar.",
       "Leave a Brand Kit field empty to skip that element; with no logo uploaded, the watermark and end-card logo are simply left off your videos.",
       "Audio files are transcribed (via Whisper) before being added, so an uploaded voice memo or recording becomes searchable brand memory just like a text document.",
       "Use the 'frustration' type for things to NOT do or past mistakes — it's the spot for 'never say this' kinds of rules.",
@@ -104,6 +121,38 @@ export const TUTORIALS: Record<string, Tutorial> = {
       "Naming matters: the reuse matcher and the timeline editor's search both read the file's title, so vague names like 'clip1.mp4' make a clip hard to find and reuse.",
       "Good names save money — when a future video needs a matching shot, the system reuses a clip from here instead of paying credits to generate a new one (that's what the 'reused' count tracks).",
       "Delete is immediate and removes the clip from the shared pool — there's no undo, so only delete footage you're sure you won't need in future videos.",
+    ],
+  },
+  "/content-library": {
+    title: "Content Library",
+    what: "The clipper's dashboard: every piece of long footage you've uploaded, the clippable moments the AI found inside each, and — at the top — the TOPICS the system suggests it can build into reels, including edits stitched from moments across different videos.",
+    when: "Come here when you want reels out of existing footage without searching or editing yourself. To add new footage, upload it on the Long-form page first.",
+    steps: [
+      "Look at \"Topics to build\" at the top: the AI has read every transcript and grouped the strongest moments into named, buildable reels — each with the hook it opens on, why it should perform, a 1-10 score, and which footage its segments come from.",
+      "Click \"Build\" on a topic. The clipper cuts every segment, stitches them into one edit, adds B-roll, captions, and music, and drops the finished reel in your Approval Queue. The badge tracks it: Ready to build → Building… → Built ✓ (then \"View ↗\" jumps to the queue).",
+      "Hit \"Find topics\" any time to re-scan all footage for fresh suggestions — it also refreshes automatically whenever new footage finishes processing. Click ✕ on a topic to dismiss it.",
+      "Below the topics, each source lists its individual clippable moments with a score and timestamps. Click \"Clip\" on any single moment to render just that one, or \"Auto-clip top\" on a source to render its best few in one go.",
+      "Watch the status chips: clippable (found, not yet rendered) → clipping… (render in progress) → Clipped ✓ (finished — \"View ↗\" opens the queue). A failed render flips back to clippable so you can retry.",
+    ],
+    tips: [
+      "Every render costs money (B-roll generation + assembly), so Build/Clip deliberately — the top-scoring moments are already auto-clipped for you when footage is ingested.",
+      "Topics can stitch moments from DIFFERENT videos into one narrative — the segment list under each topic shows exactly which footage it pulls from.",
+      "The page refreshes itself every few seconds, so statuses move on their own — no need to reload.",
+    ],
+  },
+  "/create": {
+    title: "Create",
+    what: "The one front door for making content: pick Batch (Autopilot fills your calendar for you), a single video, or a single post-plus-image — plus two locked video templates with a fixed, on-brand look.",
+    when: "Start here whenever you want to make something and aren't sure which tool to use. If you just want the week filled, Batch is the answer.",
+    steps: [
+      "For a week of content in one click, choose \"Batch (Autopilot)\": pick how many videos/posts, and it invents on-brand ideas, drafts everything, and queues it all for your approval.",
+      "For one video, choose \"A video\" — the Video Studio groups its modes by what you HAVE (a long recording to cut, a script for an avatar video, or nothing but a topic for a faceless story).",
+      "For one post, choose \"A post (text + image)\" — it writes the post in your voice AND composes a matching cinematic image, queued together as one item.",
+      "Or pick a locked Template: Template 1 (your own clip full-frame with B-roll layered on top, magenta-on-black captions) or Template 2 (avatar top half, B-roll bottom half, magenta-on-white captions).",
+    ],
+    tips: [
+      "Everything you create lands in the Approval Queue first — nothing publishes without your sign-off.",
+      "The brand voice, learned rules, and knowledge memory steer every draft automatically — you don't need to re-explain the brand each time.",
     ],
   },
   "/design-studio": {
@@ -251,6 +300,25 @@ export const TUTORIALS: Record<string, Tutorial> = {
       "It intentionally hides views, follower growth, and reach. The system isn't wired to a social-metrics source yet, and it won't make up performance numbers.",
       "If a section shows dashes or stays empty, that means nothing is connected or set up yet — it's not an error.",
       "A blank or '—' Last ingest event just means no content has been pulled in yet.",
+    ],
+  },
+  "/knowledge": {
+    title: "Knowledge Base",
+    what: "The common entry point for your company documents: everything you drop here is preserved, read (PDF, Word, PowerPoint, Excel, audio, images…), auto-filed by an AI clerk, and indexed into private brand memory you can question and build white papers from.",
+    when: "Use this to feed the system facts — contracts, decks, meeting transcripts, research. For voice/style rules, use the Brand page instead; for the weekly thesis, use Weekly Thesis.",
+    steps: [
+      "Upload documents in \"Add documents\" — single files or a whole ZIP (up to 60 docs). Pick a category (company document, thesis, guideline, reference) and add an optional note. Audio/video is transcribed; images are OCR'd; unreadable files are still stored, never lost.",
+      "Watch the result line: each file is auto-classified — named to the company convention and filed with a business unit, entity, project silo, and sensitivity tier. Anything uncertain is flagged for review instead of guessed.",
+      "Test \"Ask your documents\": ask a question, get a cited answer, then keep going — follow-up questions carry the conversation, and \"Clear chat\" starts fresh.",
+      "Generate a white paper: enter a topic (plus optional audience/goal) in the White paper card. It grounds every claim in your documents (1-2 min), renders the sections inline, saves the paper back into memory, and \"→ Create post\" turns it into content.",
+      "Run Topic intelligence on a thin topic: the system detects the coverage gap, researches the live web from multiple angles, files every brief into memory, and writes a synthesis.",
+      "Check the Commitments card: action items mined automatically from meeting-like documents, with owner and due date — click a status to advance it.",
+      "In the Documents list, use ⬇ to download any original via a secure link, and the chips to see how each doc was filed.",
+    ],
+    tips: [
+      "Duplicate filenames are version-bumped automatically (v2, v3…) — you never overwrite an original.",
+      "Sensitivity matters: NDA-Protected documents are readable by Ask but are never reproduced into generated papers or public-facing output.",
+      "Generated white papers and research briefs are saved back INTO the knowledge base — the system's intelligence compounds week over week.",
     ],
   },
   "/library": {
@@ -475,6 +543,24 @@ export const TUTORIALS: Record<string, Tutorial> = {
       "Only uploaded clips can become templates. Reference videos added by URL can't be inspected, and \"inspection failed\" can appear, just click Inspect again to retry.",
       "Nothing is final on this screen. \"Produce video\" sends the render to your Output Library, and the panel will list what it could only \"approximate\" from the original. Deleting a template keeps the underlying reference video safe.",
       "If your chosen aspect ratio differs from how the reference was filmed, the style is still reproduced. A note tells you the shape will change but the layout, captions, and pacing carry over.",
+    ],
+  },
+  "/thesis": {
+    title: "Weekly Thesis",
+    what: "The CEO's front door: speak, upload, or paste this week's thesis — then one click develops it into researched intelligence, a white paper that argues your position, and a podcast episode narrated in the brand's cloned voice.",
+    when: "Use this weekly. Everything it produces lands back in the Knowledge Base and the Approval Queue, so the thesis becomes content everywhere else.",
+    steps: [
+      "Drop the thesis: hit 🎙 \"Record voice memo\" and just talk (stop → it uploads), or upload an audio/video/doc file, or paste text and \"Save thesis\". It's transcribed and filed into memory automatically.",
+      "Click \"Develop →\" on the thesis. Watch the stages: Reading (extracts your theme + 3-5 claims) → Researching (a fresh web sweep on the theme; every brief is filed into memory; 2-5 min) → Writing (a white paper that ARGUES your thesis — your words are its primary source, facts cite the corpus; 1-2 min).",
+      "When it's done, review the result card: your theme and claims, how many research briefs were filed, and the paper. \"⬇ Download paper\" for the document, \"→ Create post from it\" to queue content.",
+      "Click 🎙 \"Make podcast\": an episode script is written in the brand voice, narrated with the cloned voice, and the finished episode appears with a play button — it also lands in the Approval Queue.",
+      "Scroll to \"Podcast episodes\" to replay any past episode with its show notes.",
+    ],
+    tips: [
+      "Podcasts need one-time setup: the ElevenLabs voice id (the cloned voice) in Settings → Video & media. Without it the podcast button will tell you exactly what's missing.",
+      "A failed upload never loses a recording — a \"Retry upload\" button appears with your memo intact.",
+      "Developing a thesis spends real research + writing credits (roughly a few dollars per run) — it's built to be run once per thesis, and clicking Develop twice won't double-charge.",
+      "NDA-protected documents can't be developed into papers — that's deliberate, so restricted material never leaks into shareable artifacts.",
     ],
   },
   "/updates": {
