@@ -46,7 +46,7 @@ approve 3 pieces end-to-end in Spaceport's identity.
 | 2.2 | Peer-set benchmarking job: tracked peer accounts → cadence/format/topic stats | influencer tracking + Xpoz exist; add aggregation |
 | 2.3 | **Weekly Prescription**: quantified plan (volumes per format/platform, topic-mix gaps vs pillars, 10+ suggested pieces, growth actions incl. podcast ladder) with per-line evidence | the flagship feature |
 | 2.4 | One-click "Accept plan" → autopilot fills the queue to prescription; partial accept | autopilot batch exists |
-| 2.5 | Prescription review UI (the operator's Monday morning page) | |
+| 2.5 | **Morning Brief** — the operator's daily page: today's priorities, content gaps, trending topics, competitor moves, recommended actions (adopted from the companion vision PRD) | prescriptions render here |
 
 **Exit test:** James's tenant receives a Monday prescription whose every
 line cites evidence; accepting it queues the week.
@@ -69,6 +69,8 @@ line cites evidence; accepting it queues the week.
 | 4.3 | Performance feedback into prescriptions ("your carousels outperform 3:1") | closes the R2 loop |
 | 4.4 | **Credit metering**: per-generation provider-cost records, per-tenant caps + usage dashboard | prereq for pricing |
 | 4.5 | Promote-spend suggestions (top performers flagged with budget rationale) | suggestions only |
+| 4.6 | **Authority Score** — composite per-brand metric (press signals + search presence + engagement trend) surfaced on the Morning Brief | adopted from vision PRD |
+| 4.7 | Content recycling/repurposing (top performers → new formats) + A/B variants on posts | adopted from vision PRD |
 
 ## M5 — Packaging & authority (target: Sep 15) — R8, R9
 
@@ -80,6 +82,7 @@ line cites evidence; accepting it queues the week.
 | 5.4 | Wikipedia-readiness workflow (notability dossier from the press ledger) | human submits |
 | 5.5 | Prediction-ledger authority feature | James's prediction videos |
 | 5.6 | Turtleback tenant onboarded via the templated flow (proof of generalization) | third test case |
+| 5.7 | Clip thumbnails in the video pipeline; multi-language groundwork | backlog from vision PRD |
 
 ## Dependencies & critical path
 
