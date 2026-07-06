@@ -84,6 +84,25 @@ export type AskResponse = {
   latency_ms: number;
 };
 
+/** The full picture of what steers generation — shown on /brand so the
+ *  "what's the brain behind this?" question always has a real answer. */
+export type BrandBrain = {
+  counts: {
+    manual_rules: number;
+    learned_rules: number;
+    voice_exemplars: number;
+    knowledge_docs: number;
+    knowledge_chunks: number;
+  };
+  learned: {
+    id: string;
+    reason: string;
+    platform: string;
+    topic: string;
+    created_at: string | null;
+  }[];
+};
+
 export type PlugIn = {
   id: string;
   slot: string;
@@ -1694,6 +1713,7 @@ export const api = {
   research: (subject: string, focus = "") =>
     jpost<ResearchResponse>("/research", { subject, focus }),
   listPlugIns: () => jget<PlugIn[]>("/plug-ins"),
+  brandBrain: () => jget<BrandBrain>("/plug-ins/brain"),
   addPlugIn: (slot: string, name: string, rule: string) =>
     jpost<PlugIn>("/plug-ins", { slot, name, content: { rule }, applies_to: [] }),
   async uploadDocument(file: File, category = "reference") {

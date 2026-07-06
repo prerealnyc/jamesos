@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { api, mediaUrl, type PlugIn } from "@/lib/api";
+import { api, mediaUrl, type BrandBrain, type PlugIn } from "@/lib/api";
 import { Button, Card, CardTitle, Input, Textarea, Select, Label, Badge, Spinner } from "@/components/ui";
 import { HelpButton } from "@/components/help-drawer";
 
@@ -19,6 +19,8 @@ export default function BrandPage() {
   const [content, setContent] = useState("");
   const [saving, setSaving] = useState(false);
   const [items, setItems] = useState<PlugIn[]>([]);
+  const [brain, setBrain] = useState<BrandBrain | null>(null);
+  const [showLearned, setShowLearned] = useState(false);
   const [drop, setDrop] = useState<{ msg: string; tone: "muted" | "ok" | "bad" }>({ msg: "", tone: "muted" });
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -28,6 +30,11 @@ export default function BrandPage() {
       setItems(await api.listPlugIns());
     } catch {
       /* empty state handles it */
+    }
+    try {
+      setBrain(await api.brandBrain());
+    } catch {
+      /* chips just don't render */
     }
   }
   useEffect(() => {
@@ -136,10 +143,52 @@ export default function BrandPage() {
       </Card>
 
       <Card>
-        <CardTitle>Rules governing the voice now</CardTitle>
+        <CardTitle>The brain behind the voice</CardTitle>
+        <p className="text-muted-foreground text-[13px] mt-1 mb-2">
+          Every generation is steered by ALL of this — not just the manual
+          rules below. The system also learns on its own: every rejection and
+          edit in the Approval Queue becomes a permanent &ldquo;never do this
+          again&rdquo; rule.
+        </p>
+        {brain && (
+          <div className="flex gap-2 flex-wrap text-[13px] mb-3">
+            <Badge tone="primary">{brain.counts.manual_rules} manual rule{brain.counts.manual_rules === 1 ? "" : "s"}</Badge>
+            <Badge tone="primary">{brain.counts.learned_rules} learned rules (from rejections &amp; edits)</Badge>
+            <Badge tone="primary">{brain.counts.voice_exemplars} voice exemplars</Badge>
+            <Badge tone="primary">{brain.counts.knowledge_docs} knowledge docs · {brain.counts.knowledge_chunks} memory chunks</Badge>
+          </div>
+        )}
+        {brain && brain.learned.length > 0 && (
+          <div className="mb-3">
+            <button
+              type="button"
+              onClick={() => setShowLearned((s) => !s)}
+              className="text-[13px] text-primary hover:underline"
+            >
+              {showLearned ? "▲ Hide" : "▼ Show"} the latest learned rules ({brain.learned.length} most recent)
+            </button>
+            {showLearned && (
+              <div className="flex flex-col gap-1.5 mt-2">
+                {brain.learned.map((g) => (
+                  <div key={g.id} className="bg-background border border-border rounded-md px-3 py-2">
+                    <div className="text-[13px] whitespace-pre-wrap">{g.reason || "(no reason recorded)"}</div>
+                    <div className="text-[11px] text-muted-foreground mt-0.5">
+                      learned from a rejection/edit
+                      {g.platform && <> · {g.platform}</>}
+                      {g.topic && <> · “{g.topic}”</>}
+                      {g.created_at && <> · {new Date(g.created_at).toLocaleDateString()}</>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        <CardTitle>Manual rules</CardTitle>
         {items.length === 0 ? (
           <p className="text-muted-foreground text-sm">
-            Nothing yet. Add a rule or ingest a document above.
+            No manual rules yet — add one above. (The learned rules and voice
+            exemplars above are already steering every draft.)
           </p>
         ) : (
           <div className="flex flex-col gap-2">

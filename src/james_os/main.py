@@ -461,6 +461,30 @@ async def create_plug_in(payload: PlugInCreate) -> PlugIn:
     return _row_to_plug_in(row)
 
 
+@app.get("/plug-ins/brain")
+async def plug_ins_brain() -> dict[str, Any]:
+    """The full 'what is the brain behind this' picture for the Brand page:
+    every source that steers generation, with counts + the learned-rules
+    ledger. Manual plug-ins are just ONE of the inputs — the page must never
+    look empty while 100+ learned rules and 1,000+ voice exemplars are live."""
+    from .learning import recent_guardrails
+    async with acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT
+                 (SELECT count(*) FROM plug_ins WHERE active = true) AS manual_rules,
+                 (SELECT count(*) FROM events
+                   WHERE payload->>'category' = 'frustration') AS learned_rules,
+                 (SELECT count(*) FROM events
+                   WHERE payload->>'category' = 'voice_corpus') AS voice_exemplars,
+                 (SELECT count(*) FROM document_metadata) AS knowledge_docs,
+                 (SELECT count(*) FROM events
+                   WHERE source->>'dedupe_key' LIKE 'kb-%') AS knowledge_chunks""")
+    return {
+        "counts": dict(row) if row else {},
+        "learned": await recent_guardrails(limit=25),
+    }
+
+
 @app.get("/plug-ins", response_model=list[PlugIn])
 async def list_plug_ins(slot: str | None = None) -> list[PlugIn]:
     sql = "SELECT * FROM plug_ins WHERE active = true"
