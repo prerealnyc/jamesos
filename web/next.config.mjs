@@ -92,9 +92,10 @@ const nextConfig = {
       { source: "/speakers", destination: `${BACKEND}/speakers` },
       { source: "/speakers/:path*", destination: `${BACKEND}/speakers/:path*` },
       // Brand identity (the Intake's output) + proactive suggestions.
-      // /intake is a Next PAGE; the APIs live on their own paths.
+      // /intake is a Next PAGE; the agentic-intake APIs are sub-paths.
       { source: "/brand-profile", destination: `${BACKEND}/brand-profile` },
       { source: "/suggestions/:path*", destination: `${BACKEND}/suggestions/:path*` },
+      { source: "/intake/:path*", destination: `${BACKEND}/intake/:path*` },
     ];
   },
 };

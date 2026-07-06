@@ -658,6 +658,82 @@ async def knowledge_thesis_develop(doc_id: UUID, full: bool = False) -> dict[str
     return {"job_id": start_develop_job(doc_id, full=full), "status": "running"}
 
 
+@app.post("/intake/research")
+async def intake_research(body: dict = Body(default={})) -> dict[str, Any]:
+    """The 'is this your brand?' step: type a name (+ optional hints) and
+    the Researcher agent pulls what's online into a PROPOSED profile with
+    sources. Nothing is saved until the operator accepts."""
+    from .intake_agent import research_brand
+    try:
+        return await research_brand(
+            str((body or {}).get("name") or ""),
+            str((body or {}).get("hints") or ""),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.get("/intake/questions")
+async def intake_questions(status: str = "") -> dict[str, Any]:
+    """The deep-interview ledger: research-answered ones first (confirm
+    them), then open ones (answer or leave for the Researcher)."""
+    from .intake_agent import interview_stats, list_questions
+    return {"questions": await list_questions(status=status),
+            "stats": await interview_stats()}
+
+
+@app.post("/intake/questions/{question_id}/confirm")
+async def intake_question_confirm(
+    question_id: UUID, body: dict = Body(default={}),
+) -> dict[str, Any]:
+    """Confirm a research answer as-is, or supply/correct the answer —
+    either way it becomes citable brand memory."""
+    from .intake_agent import confirm_answer
+    try:
+        return await confirm_answer(
+            question_id, (body or {}).get("answer"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.post("/intake/questions/{question_id}/dismiss")
+async def intake_question_dismiss(question_id: UUID) -> dict[str, Any]:
+    from .db import acquire as _acq
+    async with _acq() as conn:
+        tag = await conn.execute(
+            "UPDATE brand_questions SET status='dismissed' WHERE id=$1",
+            question_id)
+    if not tag.endswith("1"):
+        raise HTTPException(status_code=404, detail="question not found")
+    return {"ok": True}
+
+
+@app.post("/intake/interview/run", status_code=202)
+async def intake_interview_run() -> dict[str, Any]:
+    """Run one interview cycle NOW (the scheduler also runs it every 12h
+    once intake is done): Interviewer tops up questions, Researcher answers
+    what it can."""
+    import asyncio as _aio
+
+    from .db import _request_tenant
+    tid = _request_tenant.get() or settings.default_tenant_id
+    from .intake_agent import run_brand_interview
+
+    async def _run() -> None:
+        try:
+            # Manual runs skip the intake_done gate via a direct cycle.
+            from .intake_agent import generate_questions, research_answers
+            await generate_questions(tid)
+            await research_answers(tid)
+        except Exception as e:  # noqa: BLE001
+            print(f"[intake_agent] manual run failed: {e}")
+
+    task = _aio.create_task(_run())
+    _SUGGESTION_TASKS.add(task)
+    task.add_done_callback(_SUGGESTION_TASKS.discard)
+    return {"started": True}
+
+
 @app.get("/brand-profile")
 async def brand_profile_get() -> dict[str, Any]:
     """The tenant's brand identity (the Intake's output) — or intake_done:

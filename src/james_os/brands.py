@@ -75,13 +75,17 @@ async def upsert_brand_profile(
         if fields.get("intake_done"):
             tid = await conn.fetchval(
                 "SELECT current_setting('app.current_tenant', true)::uuid")
-            await conn.execute(
-                """INSERT INTO scheduled_jobs (tenant_id, kind, cadence_hours)
-                   VALUES ($1, 'daily_brand_research', 24)
-                   ON CONFLICT (tenant_id, kind)
-                   DO UPDATE SET enabled = true""",
-                tid,
-            )
+            # The brand manager starts working the moment it knows who the
+            # brand is: daily research + the continuous deep interview.
+            for kind, cadence in (("daily_brand_research", 24),
+                                  ("brand_interview", 12)):
+                await conn.execute(
+                    """INSERT INTO scheduled_jobs (tenant_id, kind, cadence_hours)
+                       VALUES ($1, $2, $3)
+                       ON CONFLICT (tenant_id, kind)
+                       DO UPDATE SET enabled = true""",
+                    tid, kind, cadence,
+                )
     prof = await get_brand_profile(tenant_id)
     return prof or {}
 

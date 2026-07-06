@@ -27,8 +27,10 @@ _MAX_CONCURRENT = 3          # recurring jobs are background work, not a race
 async def _registry() -> dict:
     # Imported lazily so module import order can't bite at startup.
     from .brand_research import run_daily_brand_research
+    from .intake_agent import run_brand_interview
     return {
         "daily_brand_research": run_daily_brand_research,
+        "brand_interview": run_brand_interview,
     }
 
 

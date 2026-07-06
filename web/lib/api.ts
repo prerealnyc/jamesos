@@ -36,6 +36,37 @@ export type BrandProfile = {
   updated_at?: string;
 };
 
+/** The Researcher agent's "is this your brand?" proposal. */
+export type BrandResearchProposal = {
+  proposal: {
+    kind: BrandProfile["kind"];
+    identity: { name: string; mission: string; positioning: string; audience: string };
+    goals: string[];
+    pillars: string[];
+    peers: string[];
+  };
+  summary: string;
+  sources: string[];
+};
+
+/** One deep-interview question (Interviewer asks, Researcher answers,
+ *  the human confirms). */
+export type BrandQuestion = {
+  id: string;
+  dimension: string;
+  question: string;
+  answer: string | null;
+  source: "open" | "user" | "research";
+  confidence: number;
+  sources: string[];
+  status: "open" | "answered" | "confirmed" | "dismissed";
+};
+
+export type InterviewStats = {
+  open: number; answered: number; confirmed: number;
+  dismissed: number; total: number;
+};
+
 /** A piece the brand manager proposes on its own (daily research etc.). */
 export type ContentSuggestion = {
   id: string;
@@ -1345,6 +1376,22 @@ export const api = {
     jdel<{ ok: boolean; id: string }>(`/knowledge/documents/${id}`),
   knowledgeDownloadUrl: (id: string) =>
     jget<{ url: string }>(`/knowledge/documents/${id}/download`),
+
+  // ── Agentic intake (Researcher + Interviewer agents) ──
+  researchBrand: (name: string, hints = "") =>
+    jpost<BrandResearchProposal>("/intake/research", { name, hints }),
+  listIntakeQuestions: (status = "") =>
+    jget<{ questions: BrandQuestion[]; stats: InterviewStats }>(
+      `/intake/questions?status=${status}`,
+    ),
+  confirmIntakeQuestion: (id: string, answer?: string) =>
+    jpost<{ id: string; status: string }>(
+      `/intake/questions/${id}/confirm`, answer ? { answer } : {},
+    ),
+  dismissIntakeQuestion: (id: string) =>
+    jpost<{ ok: boolean }>(`/intake/questions/${id}/dismiss`, {}),
+  runInterview: () =>
+    jpost<{ started: boolean }>("/intake/interview/run", {}),
 
   // ── Brand identity (Intake) + proactive suggestions ──
   getBrandProfile: () => jget<BrandProfile>("/brand-profile"),

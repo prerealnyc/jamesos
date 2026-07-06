@@ -13,8 +13,11 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type BrandProfile } from "@/lib/api";
-import { Button, Card, CardTitle, Spinner, PageHeader } from "@/components/ui";
+import {
+  api, type BrandProfile, type BrandQuestion, type BrandResearchProposal,
+  type InterviewStats,
+} from "@/lib/api";
+import { Button, Card, CardTitle, Badge, Spinner, PageHeader } from "@/components/ui";
 
 const KINDS = [
   ["person", "A person / influencer"],
@@ -143,6 +146,20 @@ export default function IntakePage() {
         </Card>
       )}
 
+      {/* ── "Just type your name — we'll do the rest" ── */}
+      {!intakeDone && (
+        <ResearchMyBrand onAccept={(p) => {
+          setKind(p.kind);
+          setName(p.identity.name || "");
+          setMission(p.identity.mission || "");
+          setPositioning(p.identity.positioning || "");
+          setAudience(p.identity.audience || "");
+          if (p.goals.length) setGoals(p.goals);
+          if (p.pillars.length) setPillars(p.pillars);
+          if (p.peers.length) setPeers(p.peers);
+        }} />
+      )}
+
       <Card className="flex flex-col gap-4">
         <CardTitle>1 · Who is this brand?</CardTitle>
         <div className="flex flex-col gap-1">
@@ -227,6 +244,235 @@ export default function IntakePage() {
         {saved && <span className="text-[12px] text-accent">✓ saved</span>}
         {err && <span className="text-[12px] text-destructive">✗ {err}</span>}
       </div>
+
+      {intakeDone && <DeepInterview />}
     </div>
+  );
+}
+
+/** The Researcher agent's front door: name in → "is this your brand?" out. */
+function ResearchMyBrand({
+  onAccept,
+}: { onAccept: (p: BrandResearchProposal["proposal"]) => void }) {
+  const [name, setName] = useState("");
+  const [hints, setHints] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [prop, setProp] = useState<BrandResearchProposal | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [accepted, setAccepted] = useState(false);
+
+  async function research() {
+    if (!name.trim() || busy) return;
+    setBusy(true);
+    setErr(null);
+    setProp(null);
+    try {
+      setProp(await api.researchBrand(name.trim(), hints.trim()));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "research failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="flex flex-col gap-3">
+      <CardTitle>Skip the typing — let the brand manager research you</CardTitle>
+      <p className="text-[12px] text-muted-foreground">
+        Type the brand&apos;s name (a website or handle helps) and the Researcher
+        agent pulls what&apos;s online into a draft profile. You just confirm.
+      </p>
+      <div className="flex gap-2 flex-wrap">
+        <input value={name} onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") research(); }}
+          placeholder="Brand name — e.g. Spaceport America"
+          className="flex-1 min-w-[220px] text-[13px] px-3 py-2 rounded-md border border-border bg-background" />
+        <input value={hints} onChange={(e) => setHints(e.target.value)}
+          placeholder="Optional: website / @handle / city"
+          className="flex-1 min-w-[180px] text-[13px] px-3 py-2 rounded-md border border-border bg-background" />
+        <Button onClick={research} disabled={busy || !name.trim()}>
+          {busy ? <span className="inline-flex items-center gap-1"><Spinner /> researching…</span> : "🔍 Research my brand"}
+        </Button>
+      </div>
+      {err && <p className="text-[12px] text-destructive">✗ {err}</p>}
+      {prop && (
+        <div className="border border-border rounded-md p-3 flex flex-col gap-2">
+          <div className="text-[13px] font-semibold">Is this your brand?</div>
+          {prop.summary && (
+            <p className="text-[13px] leading-relaxed whitespace-pre-wrap">{prop.summary}</p>
+          )}
+          <div className="text-[12px] text-muted-foreground">
+            {prop.proposal.identity.mission && <>Mission: {prop.proposal.identity.mission}<br /></>}
+            {prop.proposal.pillars.length > 0 && <>Topics: {prop.proposal.pillars.join(" · ")}<br /></>}
+            {prop.proposal.peers.length > 0 && <>Peers: {prop.proposal.peers.join(", ")}</>}
+          </div>
+          {prop.sources.length > 0 && (
+            <div className="text-[11px] text-muted-foreground">
+              Sources: {prop.sources.slice(0, 4).map((s, i) => (
+                <a key={i} href={s} target="_blank" rel="noreferrer" className="text-primary hover:underline mr-2">
+                  [{i + 1}]
+                </a>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <Button onClick={() => { onAccept(prop.proposal); setAccepted(true); }} disabled={accepted}>
+              {accepted ? "✓ Filled in below — review & complete" : "Yes — fill the form for me"}
+            </Button>
+            <span className="text-[11px] text-muted-foreground">
+              Everything stays editable below before anything is saved.
+            </span>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/** The 10,000-question interview: Interviewer asks, Researcher answers,
+ *  the human confirms — every confirmation becomes brand memory. */
+function DeepInterview() {
+  const [questions, setQuestions] = useState<BrandQuestion[]>([]);
+  const [stats, setStats] = useState<InterviewStats | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [running, setRunning] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function load() {
+    try {
+      const r = await api.listIntakeQuestions();
+      setQuestions(r.questions.filter((q) => q.status === "answered" || q.status === "open"));
+      setStats(r.stats);
+    } catch { /* table empty until first run */ }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function runNow() {
+    setRunning(true);
+    setErr(null);
+    try {
+      await api.runInterview();
+      for (let i = 0; i < 18; i++) {
+        await new Promise((r) => setTimeout(r, 10000));
+        await load();
+      }
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function confirm(q: BrandQuestion, answer?: string) {
+    setBusy(q.id);
+    setErr(null);
+    try {
+      await api.confirmIntakeQuestion(q.id, answer);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "failed");
+    } finally {
+      setBusy((p) => (p === q.id ? null : p));
+    }
+  }
+
+  async function dismiss(id: string) {
+    setBusy(id);
+    try {
+      await api.dismissIntakeQuestion(id);
+      setQuestions((prev) => prev.filter((q) => q.id !== id));
+    } finally {
+      setBusy((p) => (p === id ? null : p));
+    }
+  }
+
+  const answered = questions.filter((q) => q.status === "answered");
+  const open = questions.filter((q) => q.status === "open").slice(0, 6);
+
+  return (
+    <Card className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div>
+          <CardTitle>The deep interview</CardTitle>
+          <div className="text-[11px] text-muted-foreground mt-0.5">
+            Two agents build your brand&apos;s intelligence: one asks the questions
+            a great brand manager would ask, one researches the answers. You
+            just confirm — every confirmation becomes permanent brand memory.
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {stats && (
+            <Badge tone="primary">
+              {stats.confirmed} confirmed · {stats.answered} awaiting you · {stats.open} researching
+            </Badge>
+          )}
+          <Button variant="secondary" onClick={runNow} disabled={running}
+            className="text-[12px] !px-3 !py-1"
+            title="Generate the next batch of questions and research answers now (also runs automatically every 12h)">
+            {running ? <span className="inline-flex items-center gap-1"><Spinner /> agents working…</span> : "▶ Run agents now"}
+          </Button>
+        </div>
+      </div>
+      {err && <p className="text-[12px] text-destructive">✗ {err}</p>}
+
+      {answered.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <div className="text-[12px] font-medium">The Researcher answered these — confirm or correct:</div>
+          {answered.slice(0, 5).map((q) => (
+            <div key={q.id} className="border border-border rounded-md p-3 flex flex-col gap-1.5">
+              <div className="text-[12px] text-muted-foreground">[{q.dimension}] {q.question}</div>
+              <div className="text-[13px] whitespace-pre-wrap">{q.answer}</div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <Button onClick={() => confirm(q)} disabled={busy === q.id} className="text-[12px] !px-3 !py-1">
+                  {busy === q.id ? <Spinner /> : "✓ Correct"}
+                </Button>
+                <input
+                  value={drafts[q.id] ?? ""}
+                  onChange={(e) => setDrafts((d) => ({ ...d, [q.id]: e.target.value }))}
+                  placeholder="…or type the correction and press Enter"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && (drafts[q.id] || "").trim()) confirm(q, drafts[q.id].trim());
+                  }}
+                  className="flex-1 min-w-[220px] text-[12px] px-3 py-1.5 rounded-md border border-border bg-background"
+                />
+                <button onClick={() => dismiss(q.id)} disabled={busy === q.id}
+                  className="text-[12px] text-muted-foreground hover:text-destructive">✕</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {open.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <div className="text-[12px] font-medium">Only you can answer these:</div>
+          {open.map((q) => (
+            <div key={q.id} className="flex items-start gap-2 py-1">
+              <div className="flex-1 min-w-0">
+                <div className="text-[12px] text-muted-foreground">[{q.dimension}]</div>
+                <div className="text-[13px]">{q.question}</div>
+                <input
+                  value={drafts[q.id] ?? ""}
+                  onChange={(e) => setDrafts((d) => ({ ...d, [q.id]: e.target.value }))}
+                  placeholder="Answer in a sentence or two — Enter to save"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && (drafts[q.id] || "").trim()) confirm(q, drafts[q.id].trim());
+                  }}
+                  className="w-full mt-1 text-[12px] px-3 py-1.5 rounded-md border border-border bg-background"
+                />
+              </div>
+              <button onClick={() => dismiss(q.id)} disabled={busy === q.id}
+                className="text-[12px] text-muted-foreground hover:text-destructive mt-5">✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {answered.length === 0 && open.length === 0 && (
+        <p className="text-[12px] text-muted-foreground">
+          No questions yet — hit &ldquo;Run agents now&rdquo; and the interview begins.
+          It also runs automatically every 12 hours.
+        </p>
+      )}
+    </Card>
   );
 }
