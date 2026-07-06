@@ -23,6 +23,7 @@ import {
 } from "@/components/ui";
 import VideoEditor from "@/components/video-editor";
 import { RenderTracker } from "@/components/render-tracker";
+import { TrimBox } from "@/components/trim-box";
 
 export default function VideoStudio() {
   const [mode, setMode] = useState<"composer" | "producer" | "clip">("composer");
@@ -64,7 +65,12 @@ function Tab({ active, onClick, children }: { active: boolean; onClick: () => vo
 const STAGE_TONE: Record<string, "muted" | "accent" | "ok" | "destructive"> = {
   queued: "muted", planning: "accent", rendering_clips: "accent",
   assembling: "accent", succeeded: "ok", failed: "destructive",
+  canceled: "muted",
 };
+
+// A render is DONE (no spinner, no cancel) once it reaches any terminal state.
+const isTerminalStatus = (s: string) =>
+  s === "succeeded" || s === "failed" || s === "canceled";
 
 function Producer() {
   const [script, setScript] = useState("");
@@ -110,7 +116,7 @@ function Producer() {
         const u = await api.getProduction(p.id).catch(() => null);
         if (u) {
           setProd(u);
-          if (u.status === "succeeded" || u.status === "failed") {
+          if (isTerminalStatus(u.status)) {
             if (pollRef.current) clearInterval(pollRef.current);
             loadList();
           }
@@ -121,7 +127,17 @@ function Producer() {
     }
   }
 
-  const active = prod && prod.status !== "succeeded" && prod.status !== "failed";
+  async function cancel(id: string) {
+    try {
+      await api.cancelProduction(id);
+      setProd((cur) => (cur && cur.id === id ? { ...cur, status: "canceled" } : cur));
+      await loadList();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "cancel failed");
+    }
+  }
+
+  const active = prod ? !isTerminalStatus(prod.status) : false;
   // Keep the open production view live off the 4s list poll (so a render
   // selected from the list, or kicked elsewhere, updates without its own poll).
   const liveProd = prod ? productions.find((x) => x.id === prod.id) || prod : null;
@@ -162,7 +178,7 @@ function Producer() {
       {liveProd && <ProductionView prod={liveProd} />}
 
       {productions.length > 0 && (() => {
-        const activeProds = productions.filter((p) => p.status !== "succeeded" && p.status !== "failed");
+        const activeProds = productions.filter((p) => !isTerminalStatus(p.status));
         return (
           <Card>
             <div className="flex items-center justify-between gap-2">
@@ -175,14 +191,23 @@ function Producer() {
             </div>
             <div className="flex flex-col gap-2 mt-2">
               {productions.map((p) => {
-                const isActive = p.status !== "succeeded" && p.status !== "failed";
+                const isActive = !isTerminalStatus(p.status);
                 return (
                   <div key={p.id} className="border border-border rounded-md p-2.5 flex flex-col gap-2">
                     <div className="flex items-center gap-2 text-[13px]">
-                      <Badge tone={STAGE_TONE[p.status]}>{p.status}</Badge>
+                      <Badge tone={STAGE_TONE[p.status] ?? "muted"}>{p.status}</Badge>
                       <span className="flex-1 truncate">{p.title || p.script.slice(0, 60)}</span>
                       <span className="text-muted-foreground text-[11px]">{p.scenes?.length || 0} scenes</span>
                       <button className="text-primary text-[12px]" onClick={() => setProd(p)}>view</button>
+                      {isActive && (
+                        <button
+                          className="text-destructive text-[12px]"
+                          onClick={() => cancel(p.id)}
+                          title="Stop this render at its next stage (before the next paid step)"
+                        >
+                          cancel
+                        </button>
+                      )}
                     </div>
                     {isActive && <RenderTracker prod={p} compact />}
                   </div>
@@ -244,7 +269,13 @@ function ProductionView({ prod }: { prod: Production }) {
             Stub render complete (no real mp4). Add HeyGen <code>voice_id</code> + a Creatomate key to produce a real cut.
           </div>
         ) : (
-          <video src={mediaUrl(prod.final_url)} controls className="w-full rounded-md mb-3" />
+          <>
+            <video src={mediaUrl(prod.final_url)} controls className="w-full rounded-md mb-3" />
+            <div className="mb-3">
+              <TrimBox id={prod.id} url={mediaUrl(prod.final_url)}
+                onDone={() => window.location.reload()} />
+            </div>
+          </>
         )
       )}
 

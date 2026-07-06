@@ -249,7 +249,8 @@ async def _process_local_video(
             duration_s=duration_s or await probe_duration(video_path),
             full_text=full_text[:200_000],
             words=json.dumps([
-                {"w": w.word, "t": round(w.start, 3), "e": round(w.end, 3)}
+                {"w": w.word, "t": round(w.start, 3), "e": round(w.end, 3),
+                 **({"sp": w.speaker} if w.speaker else {})}
                 for w in words
             ]),
         )
@@ -261,6 +262,19 @@ async def _process_local_video(
 
     async with acquire(tenant_id) as conn:
         await _set(conn, source_id, status="ready", error=None)
+
+    # The clipper works on its own: auto-render the top candidates into finished
+    # reels (approval queue) so nobody has to search + click Render themselves.
+    try:
+        await auto_clip_source(source_id, tenant_id)
+    except Exception as e:  # noqa: BLE001 — auto-clip must never fail the ingest
+        print(f"[auto-clip] skipped for {source_id}: {e}")
+
+    # New footage changes what's buildable — refresh the topic suggestions.
+    try:
+        refresh_topics_detached(tenant_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"[topics] refresh skipped for {source_id}: {e}")
 
 
 async def _set(conn, source_id: UUID, **cols) -> None:
@@ -330,6 +344,19 @@ async def transcribe_long(
     if total_duration <= 0:
         return "", [], 0.0
 
+    # Diarized path: when AssemblyAI is configured, transcribe the WHOLE audio
+    # in one job with SPEAKER LABELS (no 25 MB chunking) so the cutter knows
+    # who said what. Best-effort — fall back to Whisper on any failure.
+    if (settings.assemblyai_api_key or "").strip():
+        try:
+            from .transcription import transcribe_assemblyai
+            r = await transcribe_assemblyai(Path(audio_path).read_bytes())
+            if r.words:
+                return r.text, r.words, (r.duration or total_duration)
+            print("[long_form] AssemblyAI returned no words; falling back to Whisper")
+        except Exception as e:  # noqa: BLE001 — fall back to Whisper
+            print(f"[long_form] AssemblyAI failed ({e}); falling back to Whisper")
+
     # If the whole file fits under Whisper's cap, do it in one shot —
     # no chunking overhead. 60 min at 32 kbps is ~14 MB so this is the
     # usual path; chunking is the fallback for unusually long or
@@ -393,15 +420,26 @@ Avoid only:
   * Long stretches of "yeah, mm-hmm" backchanneling.
   * Anything that's literally <25s or >60s of usable content.
 
+SPEAKERS: when the transcript is diarized it is broken into turns marked
+`[12.3s SPEAKER A] …`. Each clip must capture ONE speaker's point. END the clip
+on that speaker's OWN closing line — never let end_s spill into the NEXT
+speaker's turn (the other person's reply, question-back, or "so with the…"
+follow-up belongs to a DIFFERENT clip). A reply from the other speaker is the
+single most common way a clip drifts; cut before it. (Short "yeah / right"
+backchannels inside one person's turn are fine to keep.)
+
 For each candidate return:
-  * start_s — decimal seconds at the TOP of the opening sentence (the hook).
+  * start_s — the EXACT second the hook's FIRST WORD is spoken. The clip MUST
+    open ON the hook — no preamble, no "so", no throat-clearing, no setup
+    sentence before it. If there's a lead-in, skip it and start on the hook
+    word (the 3-second rule: the first line has to grab the scroller).
   * end_s — decimal seconds at the END of the strongest CLOSING line: the
     punchline / the line that LANDS the point (often a question or a hard
     statement). STOP there. Do NOT include the next sentence if it starts a
-    NEW topic, a tangent, or trails off ("so with the…", "anyway…", "and the
-    other thing…") — a tight clip that ENDS on the point outperforms a longer
-    one that drifts. Aim for a 30-60s window, but a clean 32s ending beats a
-    padded 50s one.
+    NEW topic, a tangent, trails off ("so with the…", "anyway…", "and the
+    other thing…"), OR is the NEXT SPEAKER talking — a tight clip that ENDS on
+    the point outperforms a longer one that drifts. Aim for a 30-60s window,
+    but a clean 32s ending beats a padded 50s one.
   * hook_quote   — the literal opening line (≤ 80 chars).
   * summary      — one sentence describing what's in this clip and
                    why it works as a Reel (≤ 140 chars).
@@ -451,13 +489,48 @@ _SCAN_OVERLAP_S = 60.0   # so a moment on a boundary isn't missed
 _MAX_CANDIDATES = 40
 
 
+def _diarized_text(words: list[TranscribedWord]) -> str:
+    """Transcript with `[SPEAKER A]` turn markers + start-time stamps, so the
+    LLM can SEE where one person stops and the next begins and keep each clip
+    inside a single speaker's point. Empty string when not diarized."""
+    if not any(w.speaker for w in words):
+        return ""
+    lines: list[str] = []
+    cur: str | None = None
+    buf: list[str] = []
+    t0 = 0.0
+    for w in words:
+        tok = (w.word or "").strip()
+        if not tok:
+            continue
+        if w.speaker != cur:
+            if buf:
+                lines.append(f"[{t0:.1f}s SPEAKER {cur or '?'}] " + " ".join(buf))
+            cur, buf, t0 = w.speaker, [tok], w.start
+        else:
+            buf.append(tok)
+    if buf:
+        lines.append(f"[{t0:.1f}s SPEAKER {cur or '?'}] " + " ".join(buf))
+    return "\n".join(lines)
+
+
 def _payload_for(words: list[TranscribedWord], full_text: str, duration_s: float) -> dict:
-    """Compact {t, w} token payload the LLM grounds its start_s/end_s on."""
+    """Compact {t, w} token payload the LLM grounds its start_s/end_s on.
+    When the transcript is diarized, the speaker label rides on each token and
+    a turn-marked transcript is supplied so the LLM keeps clips single-speaker."""
+    diar = _diarized_text(words)
     return {
         "duration_s": round(duration_s, 1),
-        "transcript_text": (full_text or " ".join(w.word for w in words))[:60000],
+        "diarized": bool(diar),
+        # Prefer the turn-marked transcript when we have speakers; it's what
+        # lets the LLM end a clip on the right person's closing line.
+        "transcript_text": (diar or full_text or " ".join(w.word for w in words))[:60000],
         "word_count": len(words),
-        "tokens": [{"t": round(w.start, 2), "w": w.word} for w in words],
+        "tokens": [
+            {"t": round(w.start, 2), "w": w.word,
+             **({"sp": w.speaker} if w.speaker else {})}
+            for w in words
+        ],
     }
 
 
@@ -539,6 +612,10 @@ _REEL_MIN_S = 28.0          # never ship a clip shorter than this (~30s floor)
 _REEL_TARGET_S = 42.0       # the sweet spot we aim the end toward (30-45-60)
 _REEL_HARD_MAX_S = 62.0     # allow stretching to finish a thought, up to ~60s
 _PAUSE_GAP_S = 0.45         # silence between words that reads as a thought break
+# When the transcript is diarized, how long a DIFFERENT speaker must hold the
+# floor before we treat it as a real hand-off (so a clip won't trail into the
+# next person). Short "yeah / mm-hmm" backchannels stay under this and don't cap.
+_SPEAKER_TURN_MIN_S = 1.3
 _SENTENCE_FINAL = ".!?…"
 
 
@@ -578,6 +655,34 @@ def _thought_ends(words) -> list[tuple[float, bool]]:
     return out
 
 
+def _speaker_cap(words, start_s: float, hi: float) -> float:
+    """Diarized clips should stay within ONE speaker's point. Find the first
+    SUSTAINED hand-off to a different speaker after the clip starts and cap the
+    end at the primary speaker's last word before it — so a clip never trails
+    into the next person's sentence (the "...so with the 6-out-of-10 people"
+    problem). No-op when the transcript carries no speaker labels.
+
+    Short backchannels ("yeah", "right") from another voice DON'T cap: the
+    other speaker must hold the floor for >= _SPEAKER_TURN_MIN_S to count."""
+    seg = [w for w in words if start_s <= w.start <= hi and (w.word or "").strip()]
+    labeled = [w for w in seg if w.speaker]
+    if len(labeled) < 2:
+        return hi                       # not diarized / single speaker → no cap
+    primary = labeled[0].speaker
+    last_primary_end = labeled[0].end
+    run_start: float | None = None      # start of the current other-speaker run
+    for w in labeled:
+        if w.speaker == primary:
+            last_primary_end = w.end
+            run_start = None
+            continue
+        if run_start is None:
+            run_start = w.start
+        if (w.end - run_start) >= _SPEAKER_TURN_MIN_S:
+            return last_primary_end      # real hand-off → end on primary's words
+    return hi
+
+
 def _finalize_window(start: float, end: float, words, duration_s: float):
     """Snap the LLM's rough [start, end] so the clip BEGINS at a sentence
     start and ENDS on a complete sentence / thought — targeting ~30-45s but
@@ -601,11 +706,13 @@ def _finalize_window(start: float, end: float, words, duration_s: float):
 
     starts = _thought_starts(words)
 
-    # START → snap to a sentence/thought start near the anchor. Prefer
-    # snapping BACK to the top of the sentence the hook sits in (up to ~6s)
-    # so the whole opening line is kept; only nudge forward a little.
+    # START → snap to a sentence/thought start near the anchor, but only a
+    # SMALL correction. The LLM's start_s is already the hook; snapping BACK far
+    # (the old ~6s) buried the hook behind setup and broke the 3-second rule.
+    # Cap the backward snap at ~1s so the clip OPENS on the hook, and still allow
+    # a small forward nudge onto the exact sentence top.
     s = max(0.0, start)
-    near = [t for t in starts if -1.5 <= (start - t) <= 6.0]
+    near = [t for t in starts if -1.5 <= (start - t) <= 1.0]
     if near:
         s = max(0.0, min(near, key=lambda t: abs(t - start)))
 
@@ -616,6 +723,10 @@ def _finalize_window(start: float, end: float, words, duration_s: float):
     # toward a fixed duration (which used to pull in the next, off-topic line).
     lo = s + _REEL_MIN_S
     hi = min(s + _REEL_HARD_MAX_S, duration_s)
+    # Diarization cap: never let the end cross into the next speaker's turn.
+    # Floor at s+12 so a quick hand-off still yields a (short) clean clip
+    # rather than a sliver; the re-validate step downstream drops true slivers.
+    hi = max(s + 12.0, min(hi, _speaker_cap(words, s, hi)))
     target = min(max(end, s + _REEL_MIN_S), hi)
     fits = [(t, strong) for (t, strong) in ends if lo <= t <= hi]
     chosen = None
@@ -894,6 +1005,9 @@ async def reanalyze_source(
             end=float(
                 w.get("end") or w.get("e") or w.get("start") or w.get("t") or 0.0
             ),
+            # Diarization label persisted as "sp"; absent on Whisper-era rows
+            # (re-analyze then simply has no speaker cap — same as before).
+            speaker=str(w.get("speaker") or w.get("sp") or ""),
         )
         for w in (raw_words or []) if isinstance(w, dict)
     ]
@@ -984,6 +1098,570 @@ async def reap_orphaned_sources(tenant_id: UUID | None = None) -> int:
     return len(rows)
 
 
+async def get_source(source_id: UUID, tenant_id: UUID | None = None) -> dict | None:
+    """One source row (incl. its speaker_tags assignment), JSON-safe."""
+    async with acquire(tenant_id) as conn:
+        r = await conn.fetchrow("SELECT * FROM long_sources WHERE id=$1", source_id)
+    if r is None:
+        return None
+    d = _row(r)
+    st = d.get("speaker_tags")
+    if isinstance(st, str):
+        try:
+            d["speaker_tags"] = json.loads(st)
+        except Exception:  # noqa: BLE001
+            d["speaker_tags"] = []
+    elif not isinstance(st, list):
+        d["speaker_tags"] = []
+    return d
+
+
+async def set_speaker_tags(
+    source_id: UUID, tags: list[dict], tenant_id: UUID | None = None,
+) -> bool:
+    """Save the per-source speaker assignment ([{face_x,handle,subtitle}])."""
+    clean = [
+        {
+            "face_x": float(t.get("face_x", 0.5)),
+            "handle": str(t.get("handle") or "").strip(),
+            "subtitle": str(t.get("subtitle") or "").strip(),
+        }
+        for t in (tags or [])
+        if isinstance(t, dict) and (t.get("handle") or "").strip()
+    ]
+    async with acquire(tenant_id) as conn:
+        st = await conn.execute(
+            "UPDATE long_sources SET speaker_tags=$2::jsonb, updated_at=now() "
+            "WHERE id=$1",
+            source_id, json.dumps(clean),
+        )
+    return st.rsplit(" ", 1)[-1] != "0"
+
+
+async def detect_speakers_for_source(
+    source_id: UUID, tenant_id: UUID | None = None,
+) -> list[dict]:
+    """Download the source and enumerate its distinct on-camera speakers for the
+    'who is this?' step. Returns [{face_x, label, preview_url}] (best-effort)."""
+    src = await get_source(source_id, tenant_id)
+    if not src:
+        return []
+    url = (src.get("source_url") or "").strip()
+    if not url.startswith("http"):
+        return []
+    import httpx
+
+    from .perception import detect_source_speakers
+    with tempfile.TemporaryDirectory() as td:
+        vp = f"{td}/src.mp4"
+        cap = 220 * 1024 * 1024   # ~220MB — enough to enumerate the speakers
+        try:
+            async with httpx.AsyncClient(timeout=240.0, follow_redirects=True) as c:
+                async with c.stream("GET", url) as resp:
+                    resp.raise_for_status()
+                    written = 0
+                    with open(vp, "wb") as fh:
+                        async for chunk in resp.aiter_bytes():
+                            fh.write(chunk)
+                            written += len(chunk)
+                            if written >= cap:
+                                break
+        except Exception as e:  # noqa: BLE001
+            print(f"[speaker-detect] source download failed: {e}")
+            return []
+        return await detect_source_speakers(vp, tenant_id)
+
+
+_IN_PROGRESS = ("queued", "planning", "rendering_clips", "assembling")
+
+
+def _candidate_state(production_id, production_status: str | None) -> str:
+    """Map a candidate → its clip lifecycle state for the content library."""
+    if not production_id:
+        return "clippable"
+    st = (production_status or "").lower()
+    if st in _IN_PROGRESS:
+        return "clipping"
+    if st == "succeeded":
+        return "clipped"
+    return "clippable"   # failed/canceled/missing → re-clippable
+
+
+async def content_library(tenant_id: UUID | None = None) -> dict:
+    """The unified Content Library: every uploaded source with the clippable
+    topic-reels found inside it + each one's live status (clippable / clipping /
+    clipped). This is the 'what can be clipped, and what's been done' dashboard —
+    the display layer over the auto-clipper."""
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            """SELECT s.id AS source_id, s.title, s.status AS source_status,
+                      s.duration_s, s.created_at,
+                      c.id AS cand_id, c.hook_quote, c.summary, c.score,
+                      c.start_s, c.end_s, c.production_id,
+                      vp.status AS production_status, vp.final_url,
+                      vp.review_status
+                 FROM long_sources s
+                 LEFT JOIN reel_candidates c
+                        ON c.source_id = s.id AND c.dismissed = false
+                 LEFT JOIN video_productions vp ON vp.id = c.production_id
+                ORDER BY s.created_at DESC, c.score DESC NULLS LAST"""
+        )
+        trows = await conn.fetch(
+            """SELECT t.id, t.title, t.hook, t.why, t.score, t.segments,
+                      t.production_id,
+                      vp.status AS production_status, vp.final_url
+                 FROM clip_topics t
+                 LEFT JOIN video_productions vp ON vp.id = t.production_id
+                WHERE t.status <> 'dismissed'
+                ORDER BY t.score DESC, t.created_at DESC"""
+        )
+    by_source: dict[str, dict] = {}
+    counts = {"clippable": 0, "clipping": 0, "clipped": 0}
+    for r in rows:
+        sid = str(r["source_id"])
+        src = by_source.get(sid)
+        if src is None:
+            src = by_source[sid] = {
+                "id": sid,
+                "title": r["title"] or "(untitled)",
+                "status": r["source_status"],
+                "duration_s": float(r["duration_s"] or 0),
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                "candidates": [],
+            }
+        if r["cand_id"] is None:
+            continue   # source with no (non-dismissed) candidates yet
+        state = _candidate_state(r["production_id"], r["production_status"])
+        counts[state] = counts.get(state, 0) + 1
+        src["candidates"].append({
+            "id": str(r["cand_id"]),
+            "hook_quote": r["hook_quote"] or "",
+            "summary": r["summary"] or "",
+            "score": int(r["score"] or 0),
+            "start_s": float(r["start_s"] or 0),
+            "end_s": float(r["end_s"] or 0),
+            "state": state,
+            "production_id": str(r["production_id"]) if r["production_id"] else None,
+            "final_url": r["final_url"] if state == "clipped" else None,
+            "review_status": r["review_status"],
+        })
+    sources = list(by_source.values())
+    topics: list[dict] = []
+    for t in trows:
+        segs = t["segments"]
+        if isinstance(segs, str):
+            segs = json.loads(segs)
+        tstate = _topic_state(t["production_id"], t["production_status"])
+        topics.append({
+            "id": str(t["id"]),
+            "title": t["title"] or "",
+            "hook": t["hook"] or "",
+            "why": t["why"] or "",
+            "score": int(t["score"] or 0),
+            "segments": segs or [],
+            "state": tstate,
+            "production_id": str(t["production_id"]) if t["production_id"] else None,
+            "final_url": t["final_url"] if tstate == "built" else None,
+        })
+    return {
+        "summary": {
+            "sources": len(sources),
+            "clippable": counts["clippable"],
+            "clipping": counts["clipping"],
+            "clipped": counts["clipped"],
+        },
+        "sources": sources,
+        "topics": topics,
+        # Same key derivation as refresh_topics_detached, so the spinner
+        # tracks exactly the passes that helper starts.
+        "topics_mining": _mining_key(tenant_id) in _TOPIC_MINING,
+    }
+
+
+_AUTOCLIP_TASKS: set = set()   # strong refs so detached auto-clip renders aren't GC'd
+
+
+async def auto_clip_source(
+    source_id: UUID, tenant_id: UUID | None = None, top_n: int | None = None,
+) -> int:
+    """The clipper working ON ITS OWN: auto-render a source's top-N scored
+    candidates into reels (they land in the approval queue) — no manual click.
+    Skips candidates already linked to a production. Returns how many renders it
+    kicked. Best-effort — never raises into the ingest flow."""
+    from .config import settings
+    if not settings.auto_clip_enabled:
+        return 0
+    n = settings.auto_clip_top_n if top_n is None else top_n
+    if n <= 0:
+        return 0
+    src = await get_source_with_candidates(source_id, tenant_id)
+    if not src:
+        return 0
+    cands = [c for c in (src.get("candidates") or []) if not c.get("production_id")]
+    cands.sort(key=lambda c: (c.get("score") or 0), reverse=True)
+    picks = cands[:n]
+    if not picks:
+        return 0
+
+    import asyncio
+
+    from .video_pipeline import run_production, start_production
+    kicked = 0
+    for cand in picks:
+        try:
+            payload = [{
+                "source_id": str(cand.get("source_id") or source_id),
+                "candidate_id": str(cand["id"]),
+                "source_url": src.get("source_url") or "",
+                "drive_file_id": src.get("drive_file_id") or "",
+                "start_s": cand["start_s"], "end_s": cand["end_s"],
+                "hook_quote": cand.get("hook_quote") or "",
+                "summary": cand.get("summary") or "",
+            }]
+            prod = await start_production(
+                (cand.get("hook_quote") or "")[:200],
+                "instagram", "9:16",
+                (cand.get("summary") or "Reel from long-form")[:120],
+                payload, "long_form_reel",
+                settings.auto_clip_caption_style or "",
+                "",  # image_style
+                broll_style=settings.auto_clip_broll_style or "",
+                tenant_id=tenant_id,
+            )
+            await link_candidate_to_production(
+                UUID(str(cand["id"])), UUID(str(prod["id"])),
+            )
+            task = asyncio.create_task(run_production(UUID(str(prod["id"])), tenant_id))
+            _AUTOCLIP_TASKS.add(task)
+            task.add_done_callback(_AUTOCLIP_TASKS.discard)
+            kicked += 1
+        except Exception as e:  # noqa: BLE001 — one bad clip can't block the rest
+            print(f"[auto-clip] candidate {cand.get('id')}: {e}")
+    if kicked:
+        print(f"[auto-clip] source {source_id}: kicked {kicked} render(s)")
+    return kicked
+
+
+# ── topic suggestions: what should the clipper build next? ────────────
+#
+# Candidates are per-source. Topics sit ABOVE them: an LLM pass over every
+# candidate across ALL footage groups the strongest moments into named,
+# buildable reels — including multi-segment edits stitched across sources.
+# They render in the Content Library as "here's what I can make for you".
+
+_TOPIC_SYSTEM = """You are the content strategist for a short-form clipping
+system. You are given every clip candidate the system has found across ALL
+of the user's long-form footage (podcasts, interviews, talks). Each
+candidate has an id, its source title, a hook quote, a summary, and an
+engagement score 1-10.
+
+Group them into TOPIC suggestions — the reels the system should build next.
+A topic is a specific, punchy angle, not a category: "Why NYC landlords are
+trapped by their own leases", never "Real estate".
+
+Rules:
+* 5-10 topics, strongest expected engagement first.
+* Each topic cites 1-4 candidate ids as its segments. One GREAT segment is
+  a valid topic. Use multiple segments ONLY when they genuinely build one
+  narrative (setup → escalation → payoff) — order them for storytelling,
+  not chronology. Segments MAY come from different footages.
+* Never reuse the same candidate id in two topics.
+* Prefer candidates not already clipped (already_clipped=false), but a
+  brilliant already-clipped moment can anchor a NEW angle.
+* Judge virality like a clipper: controversy, strong opinions, specific
+  numbers, stories with stakes, contrarian takes, emotional moments.
+* title — what the reel IS (≤ 70 chars, punchy internal label).
+* hook — the literal opening line the reel should lead with (lift it from
+  a segment's hook quote, lightly trimmed).
+* why — one sentence on why this will perform (≤ 140 chars).
+* score — 1-10 expected engagement.
+
+Return STRICT JSON:
+{"topics": [{"title": str, "hook": str, "why": str, "score": int,
+             "segment_ids": [str, ...]}, ...]}
+"""
+
+_TOPIC_TASKS: set = set()        # strong refs so detached mining isn't GC'd
+_TOPIC_MINING: set[str] = set()  # tenant ids with a mining pass in flight
+_TOPIC_RERUN: set[str] = set()   # tenants that asked again mid-pass → run once more
+_TOPIC_BUILDING: set[str] = set()  # topic ids with a build claim in flight
+
+
+async def mine_clip_topics(tenant_id: UUID | None = None) -> int:
+    """One LLM pass over every (non-dismissed) candidate across all ready
+    sources → replace the current 'suggested' topics with a fresh ranked
+    list. Topics already tied to a render (production_id) are kept."""
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            """SELECT c.id, c.hook_quote, c.summary, c.score, c.start_s,
+                      c.end_s, c.production_id,
+                      s.id AS source_id, s.title AS source_title
+                 FROM reel_candidates c
+                 JOIN long_sources s ON s.id = c.source_id
+                WHERE c.dismissed = false AND s.status = 'ready'
+                ORDER BY c.score DESC, c.created_at DESC
+                LIMIT 120"""
+        )
+    if not rows:
+        # No live candidates → any remaining suggestions cite dead ids.
+        async with acquire(tenant_id) as conn:
+            await conn.execute(
+                "DELETE FROM clip_topics "
+                "WHERE status = 'suggested' AND production_id IS NULL"
+            )
+        return 0
+    by_id = {str(r["id"]): r for r in rows}
+    payload = {"candidates": [
+        {"id": str(r["id"]),
+         "source": (r["source_title"] or "")[:120],
+         "hook": (r["hook_quote"] or "")[:200],
+         "summary": (r["summary"] or "")[:280],
+         "score": int(r["score"] or 0),
+         "dur_s": round(float(r["end_s"] or 0) - float(r["start_s"] or 0), 1),
+         "already_clipped": bool(r["production_id"])}
+        for r in rows
+    ]}
+    out = await get_llm().complete_json(
+        system=_TOPIC_SYSTEM,
+        messages=[{"role": "user", "content": json.dumps(payload)}],
+        max_tokens=2500, temperature=0.5,
+    )
+    raw = out.get("topics") if isinstance(out, dict) else out
+    if not isinstance(raw, list):
+        raw = []
+    used_ids: set[str] = set()
+    cleaned: list[dict] = []
+    for t in raw:
+        if not isinstance(t, dict):
+            continue
+        seg_ids = [str(s) for s in (t.get("segment_ids") or [])
+                   if str(s) in by_id and str(s) not in used_ids][:4]
+        if not seg_ids or not (t.get("title") or "").strip():
+            continue
+        used_ids.update(seg_ids)
+        segments = [{
+            "candidate_id": sid,
+            "source_id": str(by_id[sid]["source_id"]),
+            "start_s": float(by_id[sid]["start_s"] or 0),
+            "end_s": float(by_id[sid]["end_s"] or 0),
+            "quote": (by_id[sid]["hook_quote"] or "")[:200],
+            "source_title": (by_id[sid]["source_title"] or "")[:120],
+        } for sid in seg_ids]
+        try:
+            score = max(1, min(10, int(t.get("score") or 5)))
+        except (TypeError, ValueError):
+            score = 5
+        cleaned.append({
+            "title": str(t["title"]).strip()[:140],
+            "hook": str(t.get("hook") or "").strip()[:240],
+            "why": str(t.get("why") or "").strip()[:280],
+            "score": score,
+            "segments": segments,
+        })
+        if len(cleaned) >= 10:
+            break
+    if not cleaned:
+        # A garbage-but-parseable LLM response must not wipe the board —
+        # keep whatever suggestions the user already has.
+        print(f"[topics] LLM returned no usable topics from {len(rows)} "
+              f"candidates — keeping existing suggestions")
+        return 0
+    async with acquire(tenant_id) as conn:
+        # Fresh suggestions replace stale ones; anything the user already
+        # built (or is building — claim in flight, production_id not yet
+        # written) keeps its row + history.
+        building = [UUID(x) for x in _TOPIC_BUILDING]
+        await conn.execute(
+            "DELETE FROM clip_topics "
+            "WHERE status = 'suggested' AND production_id IS NULL "
+            "AND NOT (id = ANY($1::uuid[]))",
+            building,
+        )
+        for t in cleaned:
+            await conn.execute(
+                """INSERT INTO clip_topics (title, hook, why, score, segments)
+                   VALUES ($1, $2, $3, $4, $5::jsonb)""",
+                t["title"], t["hook"], t["why"], t["score"],
+                json.dumps(t["segments"]),
+            )
+    print(f"[topics] mined {len(cleaned)} topic suggestion(s) "
+          f"from {len(rows)} candidates")
+    return len(cleaned)
+
+
+def _mining_key(tenant_id: UUID | None) -> str:
+    """Same tenant resolution as db.acquire (explicit → request contextvar →
+    default), so the in-flight flag tracks the tenant that actually mines."""
+    from .db import _request_tenant
+    return str(tenant_id or _request_tenant.get() or settings.default_tenant_id)
+
+
+def refresh_topics_detached(tenant_id: UUID | None = None) -> bool:
+    """Kick a topic-mining pass in the background (one per tenant at a
+    time). A refresh requested while a pass is running is coalesced into
+    ONE follow-up pass (new footage mid-pass isn't silently dropped).
+    Returns False when a pass was already running."""
+    tid = _mining_key(tenant_id)
+    if tid in _TOPIC_MINING:
+        _TOPIC_RERUN.add(tid)
+        return False
+    _TOPIC_MINING.add(tid)
+
+    async def _run() -> None:
+        try:
+            await mine_clip_topics(tenant_id)
+        except Exception as e:  # noqa: BLE001 — mining must never crash a caller
+            print(f"[topics] mining failed: {e}")
+        finally:
+            _TOPIC_MINING.discard(tid)
+            if tid in _TOPIC_RERUN:
+                _TOPIC_RERUN.discard(tid)
+                refresh_topics_detached(tenant_id)
+
+    task = asyncio.create_task(_run())
+    _TOPIC_TASKS.add(task)
+    task.add_done_callback(_TOPIC_TASKS.discard)
+    return True
+
+
+def _topic_state(production_id, production_status: str | None) -> str:
+    """suggested → building → built, mirroring _candidate_state; a failed or
+    canceled render flips the topic back to buildable."""
+    if not production_id:
+        return "suggested"
+    st = (production_status or "").lower()
+    if st in _IN_PROGRESS:
+        return "building"
+    if st == "succeeded":
+        return "built"
+    return "suggested"
+
+
+async def build_topic(topic_id: UUID, tenant_id: UUID | None = None) -> dict | None:
+    """Click a topic → the clipper builds it: one long_form_reel production
+    whose payload carries EVERY segment (the renderer cuts each window and
+    stitches them before the engaging treatment).
+
+    Double-build protection is two-layer: an in-process claim set (fast
+    path) plus a `production_id IS NULL` guard on the DB claim, so a racer
+    that slips past the first never starts a second paid render."""
+    key = str(topic_id)
+    if key in _TOPIC_BUILDING:
+        return {"production_id": None, "state": "building"}
+    _TOPIC_BUILDING.add(key)
+    try:
+        async with acquire(tenant_id) as conn:
+            row = await conn.fetchrow(
+                """SELECT t.id, t.title, t.hook, t.why, t.segments,
+                          t.production_id,
+                          vp.status AS production_status
+                     FROM clip_topics t
+                     LEFT JOIN video_productions vp ON vp.id = t.production_id
+                    WHERE t.id = $1 AND t.status <> 'dismissed'""",
+                topic_id,
+            )
+        if not row:
+            return None
+        state = _topic_state(row["production_id"], row["production_status"])
+        if state in ("building", "built"):
+            return {"production_id": str(row["production_id"]), "state": state}
+
+        segments = row["segments"]
+        if isinstance(segments, str):
+            segments = json.loads(segments)
+        if not segments:
+            return None
+        src_ids = {s["source_id"] for s in segments if s.get("source_id")}
+        async with acquire(tenant_id) as conn:
+            srcs = await conn.fetch(
+                "SELECT id, source_url, drive_file_id FROM long_sources "
+                "WHERE id = ANY($1::uuid[])",
+                [UUID(s) for s in src_ids],
+            )
+        src_by_id = {str(r["id"]): r for r in srcs}
+        payload: list[dict] = []
+        for seg in segments:
+            src = src_by_id.get(str(seg.get("source_id") or ""))
+            if not src:
+                continue
+            payload.append({
+                "source_id": str(src["id"]),
+                "candidate_id": str(seg.get("candidate_id") or ""),
+                "source_url": src["source_url"] or "",
+                "drive_file_id": src["drive_file_id"] or "",
+                "start_s": float(seg["start_s"]),
+                "end_s": float(seg["end_s"]),
+                "hook_quote": (row["hook"] or seg.get("quote") or "")[:200],
+                "summary": (row["why"] or "")[:280],
+            })
+        if not payload:
+            return None
+        if len(payload) < len(segments):
+            print(f"[topics] build {topic_id}: {len(segments) - len(payload)} "
+                  f"segment(s) dropped — source deleted since mining")
+
+        from .video_pipeline import run_production, start_production
+        prod = await start_production(
+            (row["hook"] or row["title"] or "")[:200],   # script slot
+            "instagram", "9:16",
+            (row["title"] or "Topic reel")[:120],        # title slot
+            payload, "long_form_reel",
+            settings.auto_clip_caption_style or "",
+            "",  # image_style
+            broll_style=settings.auto_clip_broll_style or "",
+            tenant_id=tenant_id,
+        )
+        prod_id = UUID(str(prod["id"]))
+        async with acquire(tenant_id) as conn:
+            tag = await conn.execute(
+                "UPDATE clip_topics SET production_id=$2, updated_at=now() "
+                "WHERE id=$1 AND production_id IS NULL",
+                topic_id, prod_id,
+            )
+        if not tag.endswith("1"):
+            # Lost the claim to a concurrent build — never render twice.
+            async with acquire(tenant_id) as conn:
+                await conn.execute(
+                    "DELETE FROM video_productions WHERE id=$1", prod_id)
+                winner = await conn.fetchrow(
+                    """SELECT t.production_id, vp.status AS production_status
+                         FROM clip_topics t
+                         LEFT JOIN video_productions vp ON vp.id = t.production_id
+                        WHERE t.id = $1""", topic_id)
+            wid = winner["production_id"] if winner else None
+            return {
+                "production_id": str(wid) if wid else None,
+                "state": _topic_state(wid, winner["production_status"] if winner else None),
+            }
+
+        # Mark every cited candidate as rendered by this production so the
+        # dedupe contract holds everywhere (mining's already_clipped flag,
+        # auto-clip's skip, content-library counts, re-analyze retention).
+        for seg in payload:
+            if seg["candidate_id"]:
+                try:
+                    await link_candidate_to_production(
+                        UUID(seg["candidate_id"]), prod_id, tenant_id)
+                except Exception as e:  # noqa: BLE001 — linking is best-effort
+                    print(f"[topics] candidate link failed: {e}")
+
+        task = asyncio.create_task(run_production(prod_id, tenant_id))
+        _AUTOCLIP_TASKS.add(task)
+        task.add_done_callback(_AUTOCLIP_TASKS.discard)
+        return {"production_id": str(prod_id), "state": "building"}
+    finally:
+        _TOPIC_BUILDING.discard(key)
+
+
+async def dismiss_topic(topic_id: UUID, tenant_id: UUID | None = None) -> bool:
+    async with acquire(tenant_id) as conn:
+        res = await conn.execute(
+            "UPDATE clip_topics SET status='dismissed', updated_at=now() "
+            "WHERE id=$1", topic_id,
+        )
+    return res.endswith("1")
+
+
 __all__ = [
     "create_source", "create_source_placeholder", "set_source_url",
     "ingest_source", "fetch_from_drive_then_ingest",
@@ -991,4 +1669,8 @@ __all__ = [
     "link_candidate_to_production", "dismiss_candidate",
     "find_candidates", "transcribe_long", "reap_orphaned_sources",
     "create_whole_source_candidate", "reanalyze_source",
+    "get_source", "set_speaker_tags", "detect_speakers_for_source",
+    "auto_clip_source", "content_library",
+    "mine_clip_topics", "refresh_topics_detached", "build_topic",
+    "dismiss_topic",
 ]

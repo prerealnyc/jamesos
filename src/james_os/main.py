@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .ask import ask
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .config import settings
 from .dashboard_api import router as dashboard_api_router
@@ -65,6 +65,11 @@ from .models import (
     PostImageRequest,
     SetPostImageRequest,
     SoulImageRequest,
+    SpeakerCreate,
+    SpeakerUpdate,
+    SpeakerTagsRequest,
+    VideoTrimRequest,
+    WhitepaperRequest,
     PlugInCreate,
     ResearchRequest,
     ResearchResponse,
@@ -507,6 +512,245 @@ async def ingest_document(
         "superseded_chunks": superseded,
         "event_ids": [str(e.id) for e in stored],
     }
+
+
+# ────────────────────────────────────────────── Knowledge Base ──
+# The common entry point for a brand's company documents (intelligence
+# parity, Phase 1): upload files or a ZIP → full-format extraction →
+# tenant-isolated memory → immediately askable + groundable.
+
+@app.post("/knowledge/ingest", status_code=201)
+async def knowledge_ingest(
+    file: UploadFile = File(...),
+    category: str = Form("company_doc"),
+    notes: str = Form(""),
+    auto_classify: str = Form("1"),
+) -> dict[str, Any]:
+    """Ingest a company document — or a whole ZIP of them (≤60 files/50 MB,
+    junk entries filtered, per-file results). Every file is PRESERVED and
+    filed even when no text is extractable; readable ones are chunked +
+    embedded into the tenant's memory so Ask answers from them at once."""
+    from .knowledge import ingest_knowledge_document, ingest_zip, is_zip
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty file")
+    name = file.filename or "upload.bin"
+    classify = auto_classify not in ("0", "false", "no", "off")
+    try:
+        if is_zip(name, file.content_type or ""):
+            return await ingest_zip(
+                data=data, category=category, notes=notes,
+                auto_classify=classify,
+            )
+        result = await ingest_knowledge_document(
+            data=data, original_name=name,
+            mime=file.content_type or "", category=category, notes=notes,
+            auto_classify=classify,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {
+        "ok": result.get("ok", False), "expanded": False, "total": 1,
+        "filed": 1 if result.get("ok") else 0,
+        "skipped": 1 if result.get("skipped") else 0,
+        "failed": 0 if (result.get("ok") or result.get("skipped")) else 1,
+        "results": [result],
+    }
+
+
+@app.get("/knowledge/documents")
+async def knowledge_documents() -> dict[str, Any]:
+    """The tenant's document ledger — every filed company doc + its
+    extraction/indexing status."""
+    from .knowledge import list_documents
+    return {"documents": await list_documents()}
+
+
+@app.delete("/knowledge/documents/{doc_id}")
+async def knowledge_delete(doc_id: UUID) -> dict[str, Any]:
+    """Remove a document everywhere: ledger, stored file, and its memory chunks."""
+    from .knowledge import delete_document
+    ok = await delete_document(doc_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="document not found")
+    return {"ok": True, "id": str(doc_id)}
+
+
+@app.get("/knowledge/documents/{doc_id}/download")
+async def knowledge_download(doc_id: UUID) -> dict[str, Any]:
+    """Signed, time-limited download URL (knowledge storage is private)."""
+    from .knowledge import document_download_url
+    url = await document_download_url(doc_id)
+    if not url:
+        raise HTTPException(status_code=404, detail="document or file not found")
+    return {"url": url}
+
+
+@app.post("/knowledge/whitepaper", status_code=202)
+async def knowledge_whitepaper(req: WhitepaperRequest) -> dict[str, Any]:
+    """Generate a publication-grade white paper GROUNDED in the tenant's own
+    Knowledge Base (retrieve → rerank → learn the best-in-class structure via
+    live research → write with [n] citations). Generation takes 1-2 minutes,
+    so it runs in the background — poll GET /knowledge/whitepaper/{job_id}.
+    The finished paper is saved back into the Knowledge Base
+    (category='research'), so Ask cites it and the content engine grounds
+    posts/reels on it — thesis → paper → content."""
+    from .whitepaper import start_whitepaper_job
+    if not (req.topic or "").strip():
+        raise HTTPException(status_code=400, detail="topic is required")
+    job_id = start_whitepaper_job(
+        topic=req.topic, audience=req.audience, goal=req.goal,
+    )
+    return {"job_id": job_id, "status": "running"}
+
+
+@app.get("/knowledge/whitepaper/{job_id}")
+async def knowledge_whitepaper_status(job_id: str) -> dict[str, Any]:
+    """Poll a white-paper job: {status: running|done|failed, result?, error?}."""
+    from .whitepaper import get_whitepaper_job
+    job = get_whitepaper_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="job not found (server may have restarted — check the "
+                   "Knowledge Base ledger; a finished paper is saved there)")
+    return job
+
+
+# ── Knowledge governance: vocab, silos, entities ──
+
+@app.get("/knowledge/vocab")
+async def knowledge_vocab() -> dict[str, Any]:
+    """Controlled vocabularies (BUs, asset classes, doc types, statuses,
+    sensitivity tiers + their plain-English meaning, entity type codes)."""
+    from . import vocab
+    return {
+        "business_units": vocab.BUSINESS_UNITS,
+        "asset_classes": vocab.ASSET_CLASSES,
+        "doc_type_groups": vocab.DOC_TYPE_GROUPS,
+        "statuses": vocab.STATUSES,
+        "sensitivities": vocab.SENSITIVITIES,
+        "sensitivity_info": vocab.SENSITIVITY_INFO,
+        "default_sensitivity": vocab.DEFAULT_SENSITIVITY,
+        "entity_types": vocab.ENTITY_TYPES,
+    }
+
+
+@app.get("/knowledge/silos")
+async def knowledge_silos(stats: bool = False) -> dict[str, Any]:
+    from .silos import list_silos
+    return {"silos": await list_silos(stats=stats)}
+
+
+class _SiloCreate(BaseModel):
+    name: str
+    id: str = ""
+    description: str = ""
+
+
+@app.post("/knowledge/silos", status_code=201)
+async def knowledge_silo_create(req: _SiloCreate) -> dict[str, Any]:
+    from .silos import create_silo
+    try:
+        return {"ok": True, "silo": await create_silo(req.name, req.id, req.description)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.delete("/knowledge/silos/{silo_id}")
+async def knowledge_silo_delete(silo_id: str) -> dict[str, Any]:
+    from .silos import delete_silo
+    ok = await delete_silo(silo_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="silo not found")
+    return {"ok": True, "id": silo_id}
+
+
+@app.get("/knowledge/entities")
+async def knowledge_entities() -> dict[str, Any]:
+    """The entity registry — stable EntityIDs auto-created during ingest."""
+    from .entities import list_entities
+    return {"entities": await list_entities()}
+
+
+# ── Topic Intelligence + cross-silo synthesis (background jobs) ──
+
+class _IntelRequest(BaseModel):
+    topic: str
+    auto_plan: bool = True
+    force: bool = False
+
+
+@app.post("/knowledge/intelligence", status_code=202)
+async def knowledge_intelligence(req: _IntelRequest) -> dict[str, Any]:
+    """Build decision-grade TOPIC INTELLIGENCE: coverage check → AI-planned
+    gap research (parallel web sweeps, each saved as corpus) → connect-the-dots
+    synthesis (also saved). Minutes of work → background job + poll."""
+    from .intelligence import start_intelligence_job
+    if not (req.topic or "").strip():
+        raise HTTPException(status_code=400, detail="topic is required")
+    job_id = start_intelligence_job(
+        topic=req.topic, auto_plan=req.auto_plan, force=req.force,
+    )
+    return {"job_id": job_id, "status": "running"}
+
+
+@app.get("/knowledge/intelligence/{job_id}")
+async def knowledge_intelligence_status(job_id: str) -> dict[str, Any]:
+    from .intelligence import get_intelligence_job
+    job = get_intelligence_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="job not found (server may have restarted — gathered briefs "
+                   "are saved in the Knowledge Base ledger)")
+    return job
+
+
+class _SynthRequest(BaseModel):
+    theme: str = ""
+    silo_ids: list[str] = Field(default_factory=list)
+
+
+@app.post("/knowledge/synthesize")
+async def knowledge_synthesize(req: _SynthRequest) -> dict[str, Any]:
+    """Cross-silo portfolio synthesis: the patterns / synergies / tensions /
+    risks / opportunities that only emerge ACROSS project silos."""
+    from .intelligence import synthesize_portfolio
+    try:
+        return await synthesize_portfolio(
+            theme=req.theme, silo_ids=req.silo_ids or None,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+# ── Commitments (action items mined from docs) ──
+
+@app.get("/knowledge/commitments")
+async def knowledge_commitments(status: str = "") -> dict[str, Any]:
+    from .commitments import list_commitments
+    return {"commitments": await list_commitments(status=status)}
+
+
+class _CommitmentStatus(BaseModel):
+    status: str
+
+
+@app.patch("/knowledge/commitments/{commitment_id}")
+async def knowledge_commitment_update(
+    commitment_id: UUID, req: _CommitmentStatus,
+) -> dict[str, Any]:
+    from .commitments import update_commitment_status
+    try:
+        ok = await update_commitment_status(commitment_id, req.status)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not ok:
+        raise HTTPException(status_code=404, detail="commitment not found")
+    return {"ok": True, "id": str(commitment_id), "status": req.status}
 
 
 # ──────────────────────────────────────────────────────────────────── ask ──
@@ -1035,7 +1279,9 @@ async def _generate_designed_post_image(
 
     from .brand_kit import get_brand_kit
     from .hero_context import get_hero_photo_files
-    from .image_compose import meme_card, quote_card, statement_card
+    from .image_compose import (
+        brand_quote_card, hero_quote_card, meme_card, quote_card, statement_card,
+    )
     from .imagegen import direct_designed_image, generate_post_image
     from .media import create_media
     from .media import storage as media_storage
@@ -1045,9 +1291,24 @@ async def _generate_designed_post_image(
     bg_prompt = (spec.get("bg_prompt") or topic or "cinematic golden-hour scene").strip()
     bg_kind = spec.get("bg_kind") or "scene"
 
+    # Designed images use REAL photos or clean type only — NO AI-generated
+    # scenes. hero_quote & statement place James's real uploaded photo; a random
+    # one is picked for variety (and to fit different concepts across a batch).
+    hero_bytes: bytes | None = None
+    if fmt in ("hero_quote", "statement"):
+        try:
+            _refs = await get_hero_photo_files(tenant_id=tenant_id)
+            if _refs:
+                import random as _random
+                hero_bytes = _random.choice(_refs)[1]
+        except Exception:  # noqa: BLE001
+            hero_bytes = None
+
     bg_bytes: bytes | None = None
     soul = (settings.higgsfield_soul_id or "").strip()
-    if bg_kind == "james" and soul:
+    if fmt in ("brand_quote", "hero_quote", "statement"):
+        pass                                  # real photo / type only; no AI gen
+    elif bg_kind == "james" and soul:
         from . import higgsfield_souls as hs
         # Make sure James's FACE renders clearly and isn't cropped — these
         # cards lean on his likeness, so frame him face-forward.
@@ -1076,7 +1337,7 @@ async def _generate_designed_post_image(
                 r = await c.get(url)
                 r.raise_for_status()
                 bg_bytes = r.content
-    if bg_bytes is None:
+    if bg_bytes is None and fmt not in ("brand_quote", "hero_quote", "statement"):
         png, _meta, err = await generate_post_image(
             topic=bg_prompt + " — photoreal cinematic scene, absolutely no text, "
             "no words, no letters, no signs",
@@ -1120,17 +1381,24 @@ async def _generate_designed_post_image(
         except Exception:  # noqa: BLE001
             profile_bytes = None
 
-    if fmt == "meme":
-        out = meme_card(bg_bytes, spec.get("top_text") or topic, spec.get("bottom_text") or "", handle)
-    elif fmt == "statement":
+    _q = (spec.get("quote") or "").strip() or (draft_text or topic or "").split(". ")[0]
+    _emph = (spec.get("emphasis") or "").strip()
+    if fmt == "brand_quote":
+        out = brand_quote_card(_q, kit, _emph)
+    elif fmt == "hero_quote":
+        # Needs James's photo; if we couldn't fetch one, fall back to the
+        # text-only branded card so the render never fails.
+        out = (hero_quote_card(_q, hero_bytes, kit, emphasis=_emph)
+               if hero_bytes else brand_quote_card(_q, kit, _emph))
+    elif fmt == "statement" and hero_bytes:
         out = statement_card(
-            bg_bytes,
+            hero_bytes,
             spec.get("statement") or spec.get("quote") or topic,
             handle, profile_bytes, profile_is_logo,
         )
     else:
-        quote = (spec.get("quote") or "").strip() or (draft_text or topic or "").split(". ")[0]
-        out = quote_card(bg_bytes, quote, handle, profile_bytes, profile_is_logo)
+        # statement with no hero photo → render the line on a clean navy card
+        out = brand_quote_card((spec.get("statement") or "").strip() or _q, kit, _emph)
 
     tenant = str(tenant_id or settings.default_tenant_id)
     served_uri, file_path = await asyncio.to_thread(
@@ -1811,6 +2079,30 @@ async def video_reject(
     }
 
 
+@app.post("/video/productions/{production_id}/cancel")
+async def video_cancel(production_id: UUID) -> dict:
+    """Cancel an in-flight render. Marks it 'canceled'; the worker stops at its
+    next stage checkpoint (before the next paid provider call). Renders that
+    already finished are left untouched (ok=False with their real status)."""
+    from .video_pipeline import cancel_production
+    res = await cancel_production(production_id)
+    if res.get("status") is None:
+        raise HTTPException(status_code=404, detail="production not found")
+    return res
+
+
+@app.post("/video/productions/{production_id}/trim")
+async def video_trim(production_id: UUID, req: VideoTrimRequest) -> dict:
+    """Trim a finished render to [start_s, end_s] and re-host it, pointing the
+    production + its queued item at the trimmed video. Cuts excess head/tail
+    footage. end_s<=0 means 'to the end'."""
+    from .video_pipeline import trim_production
+    res = await trim_production(production_id, req.start_s, req.end_s)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("reason") or "trim failed")
+    return res
+
+
 @app.delete("/video/productions/{production_id}")
 async def video_delete(production_id: UUID) -> dict:
     """Hard-delete a finished video production from the Output Library.
@@ -1820,6 +2112,45 @@ async def video_delete(production_id: UUID) -> dict:
     if not ok:
         raise HTTPException(status_code=404, detail="production not found")
     return {"ok": True, "id": str(production_id)}
+
+
+# ─────────────────────────────────── Speaker directory ──
+
+@app.get("/speakers")
+async def speakers_list() -> list[dict]:
+    """The saved speaker directory (@handle + subtitle) for on-screen name-tags."""
+    from .speakers import list_speakers
+    return await list_speakers()
+
+
+@app.post("/speakers", status_code=201)
+async def speakers_create(req: SpeakerCreate) -> dict:
+    """Add a speaker to the directory (e.g. @j_prendamano · CEO at PreReal Estate)."""
+    from .speakers import create_speaker
+    try:
+        return await create_speaker(req.handle, req.subtitle, req.face_ref)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.patch("/speakers/{speaker_id}")
+async def speakers_update(speaker_id: UUID, req: SpeakerUpdate) -> dict:
+    from .speakers import update_speaker
+    out = await update_speaker(
+        speaker_id, handle=req.handle, subtitle=req.subtitle, face_ref=req.face_ref,
+    )
+    if out is None:
+        raise HTTPException(status_code=404, detail="speaker not found (or no fields)")
+    return out
+
+
+@app.delete("/speakers/{speaker_id}")
+async def speakers_delete(speaker_id: UUID) -> dict:
+    from .speakers import delete_speaker
+    ok = await delete_speaker(speaker_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="speaker not found")
+    return {"ok": True, "id": str(speaker_id)}
 
 
 @app.get("/video/feedback")
@@ -2086,12 +2417,92 @@ async def long_form_reanalyze(source_id: UUID) -> dict:
     return {"source_id": str(source_id), "new_candidates": count}
 
 
+@app.get("/content-library/data")
+async def content_library_get() -> dict:
+    """Unified Content Library: all footage + the clippable topic-reels inside
+    each, with live clip status (clippable / clipping / clipped).
+    Served at /content-library/data — the bare path is the Next.js PAGE, and
+    the browser proxy resolves pages before rewrites (same pattern as
+    /long-form/sources)."""
+    from .long_form import content_library
+    return await content_library()
+
+
+@app.post("/content-library/topics/refresh", status_code=202)
+async def content_library_topics_refresh() -> dict:
+    """Re-mine topic suggestions across ALL footage in the background. The
+    library page's normal 6s poll picks the fresh list up when it lands;
+    `topics_mining` in /content-library/data flips while a pass runs."""
+    from .long_form import refresh_topics_detached
+    return {"started": refresh_topics_detached()}
+
+
+@app.post("/content-library/topics/{topic_id}/build", status_code=202)
+async def content_library_topic_build(topic_id: UUID) -> dict:
+    """Click a topic → the clipper builds it (cuts every segment, stitches,
+    runs the full engaging treatment, lands in the approval queue)."""
+    from .long_form import build_topic
+    res = await build_topic(topic_id)
+    if not res:
+        raise HTTPException(status_code=404, detail="topic not found or empty")
+    return res
+
+
+@app.post("/content-library/topics/{topic_id}/dismiss")
+async def content_library_topic_dismiss(topic_id: UUID) -> dict:
+    from .long_form import dismiss_topic
+    if not await dismiss_topic(topic_id):
+        raise HTTPException(status_code=404, detail="topic not found")
+    return {"ok": True}
+
+
+@app.post("/long-form/{source_id}/auto-clip", status_code=202)
+async def long_form_auto_clip(source_id: UUID, top_n: int = 0) -> dict:
+    """Kick the auto-clipper on a source NOW: render its top scored candidates
+    into reels (they land in the approval queue). `top_n`>0 overrides the config
+    default. Returns how many renders were started."""
+    from .long_form import auto_clip_source
+    kicked = await auto_clip_source(source_id, top_n=top_n or None)
+    return {"source_id": str(source_id), "clips_started": kicked}
+
+
+@app.post("/long-form/{source_id}/detect-speakers", status_code=200)
+async def long_form_detect_speakers(source_id: UUID) -> dict:
+    """Enumerate the distinct on-camera speakers in a source (with a face-crop
+    preview + horizontal position each) for the 'who is this?' step."""
+    from .long_form import detect_speakers_for_source
+    speakers = await detect_speakers_for_source(source_id)
+    return {"source_id": str(source_id), "speakers": speakers}
+
+
+@app.get("/long-form/{source_id}/speaker-tags")
+async def long_form_get_speaker_tags(source_id: UUID) -> dict:
+    """The saved speaker assignment for this source (name-tags)."""
+    from .long_form import get_source
+    src = await get_source(source_id)
+    if src is None:
+        raise HTTPException(status_code=404, detail="source not found")
+    return {"source_id": str(source_id), "speaker_tags": src.get("speaker_tags") or []}
+
+
+@app.put("/long-form/{source_id}/speaker-tags")
+async def long_form_set_speaker_tags(source_id: UUID, req: SpeakerTagsRequest) -> dict:
+    """Save who-is-who for this source; applies to every reel cut from it."""
+    from .long_form import set_speaker_tags
+    tags = [t.model_dump() for t in req.tags]
+    ok = await set_speaker_tags(source_id, tags)
+    if not ok:
+        raise HTTPException(status_code=404, detail="source not found")
+    return {"source_id": str(source_id), "speaker_tags": tags}
+
+
 @app.post("/long-form/candidates/{candidate_id}/render", status_code=201)
 async def long_form_candidate_render(
     candidate_id: UUID, background: BackgroundTasks,
     platform: str = Form("instagram"), aspect: str = Form("9:16"),
     image_style: str = Form(""), caption_style: str = Form(""),
     video_engine: str = Form(""), broll_pacing: str = Form(""),
+    broll_style: str = Form(""),
 ) -> dict:
     """Take a candidate window and produce a Reel — kicks a
     long_form_reel production. Returns the production row so the
@@ -2131,6 +2542,7 @@ async def long_form_candidate_render(
             caption_style, image_style,
             video_engine=video_engine,
             broll_pacing=broll_pacing,
+            broll_style=broll_style,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -2156,6 +2568,7 @@ async def long_form_render_whole(
     platform: str = Form("instagram"), aspect: str = Form("9:16"),
     image_style: str = Form(""), caption_style: str = Form(""),
     video_engine: str = Form(""), broll_pacing: str = Form(""),
+    broll_style: str = Form(""),
 ) -> dict:
     """Render the ENTIRE source as a single reel — for short talking
     clips (1-2 min) where the whole clip already IS the reel and we
@@ -2198,6 +2611,7 @@ async def long_form_render_whole(
             caption_style, image_style,
             video_engine=video_engine,
             broll_pacing=broll_pacing,
+            broll_style=broll_style,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -3102,6 +3516,7 @@ async def media_update(media_id: UUID, req: MediaUpdate) -> dict:
         platform=req.platform,
         tags=req.tags,
         mute_audio=req.mute_audio,
+        source_type=req.source_type,
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="media not found or nothing to update")

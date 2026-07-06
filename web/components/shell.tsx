@@ -40,12 +40,14 @@ const NAV: Group[] = [
     title: "Memory",
     items: [
       { href: "/", label: "Ask the memory", sub: "Grounded, cited Q&A", icon: "ask", live: true },
+      { href: "/knowledge", label: "Knowledge Base", sub: "Company docs → private, askable memory", icon: "ask", live: true },
     ],
   },
   {
     title: "Create",
     items: [
       { href: "/create", label: "Create", sub: "Posts, videos, images & batches — one place", icon: "design", live: true, match: CREATE_SUBROUTES },
+      { href: "/content-library", label: "Content Library", sub: "Footage → clippable reels, auto-clipped to the queue", icon: "clips", live: true },
     ],
   },
   {

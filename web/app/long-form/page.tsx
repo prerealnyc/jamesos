@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   api, mediaUrl, type LongSource, type ReelCandidate,
+  type Speaker, type DetectedSpeaker, type SpeakerTag,
 } from "@/lib/api";
 import {
   Button, Card, CardTitle, Input, Spinner, Badge, PageHeader,
@@ -82,7 +83,7 @@ export default function LongFormPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [renderingId, setRenderingId] = useState<string | null>(null);
   // Caption style for the next render — bold WHITE is the default look.
-  const [captionStyle, setCaptionStyle] = useState("bold_pop");
+  const [captionStyle, setCaptionStyle] = useState("clean_white");
   const [captionStyles, setCaptionStyles] = useState<
     { name: string; label: string; description: string }[]
   >([]);
@@ -91,6 +92,7 @@ export default function LongFormPage() {
   const [brollEngine, setBrollEngine] = useState("higgsfield");
   // B-roll pacing — how long cutaways hold while James keeps talking.
   const [brollPacing, setBrollPacing] = useState("illustrative");
+  const [brollStyle, setBrollStyle] = useState("literal");
   const [toast, setToast] = useState<{ message: string; href?: string; hrefLabel?: string } | null>(null);
   // Tick counter that re-renders every second while a selected source is
   // mid-flight, so the "last update Ns ago" indicator next to the status
@@ -251,6 +253,7 @@ export default function LongFormPage() {
         caption_style: captionStyle,
         video_engine: brollEngine,
         broll_pacing: brollPacing,
+        broll_style: brollStyle,
       });
       // Optimistically link the new production (and clear any prior 'failed'
       // status) so the row flips to "rendering →" right away.
@@ -276,6 +279,26 @@ export default function LongFormPage() {
     }
   }
 
+  // Cancel an in-flight candidate render. The worker stops at its next stage
+  // checkpoint; the row flips to a re-renderable state right away.
+  async function cancelRender(c: ReelCandidate) {
+    if (!c.production_id) return;
+    try {
+      await api.cancelProduction(c.production_id);
+      if (selected) {
+        setSelected({
+          ...selected,
+          candidates: selected.candidates.map((x) =>
+            x.id === c.id ? { ...x, production_status: "canceled" } : x,
+          ),
+        });
+      }
+      setToast({ message: "Render canceled." });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "cancel failed");
+    }
+  }
+
   // Render the ENTIRE source as one reel — for short talking clips
   // where the candidate picker isn't useful. Uses the same caption
   // style the user selected for candidate rendering.
@@ -288,6 +311,7 @@ export default function LongFormPage() {
         caption_style: captionStyle,
         video_engine: brollEngine,
         broll_pacing: brollPacing,
+        broll_style: brollStyle,
       });
       // Production goes straight to the queue; user can poll there.
       await loadSelected(selected.id);
@@ -521,6 +545,7 @@ export default function LongFormPage() {
               Re-analyze
             </Button>
           </div>
+          <SpeakerTagsPanel sourceId={selected.id} />
           <div className="flex items-center gap-2 mt-2 flex-wrap">
             <Badge tone={STATUS_TONE[selected.status] || "muted"}>
               {STATUS_LABEL[selected.status] || selected.status}
@@ -560,8 +585,9 @@ export default function LongFormPage() {
                 onChange={(e) => setCaptionStyle(e.target.value)}
                 className="text-[12px] px-2 py-1 rounded border border-border bg-background"
               >
-                <option value="bold_pop">Bold white (default)</option>
-                <option value="clean_white">Clean white</option>
+                <option value="clean_white">Clean white (default)</option>
+                <option value="bold_pop">Bold white</option>
+                <option value="cinematic_scatter">Cinematic (scatter)</option>
               </select>
               <span className="text-[12px] text-muted-foreground ml-2">
                 B-roll engine
@@ -587,6 +613,18 @@ export default function LongFormPage() {
                 <option value="illustrative">Illustrative (4-5s holds)</option>
                 <option value="punchy">Punchy (1.5-2.5s flashes)</option>
                 <option value="reflective">Reflective (6-8s holds)</option>
+              </select>
+              <span className="text-[12px] text-muted-foreground ml-2">
+                B-roll
+              </span>
+              <select
+                value={brollStyle}
+                onChange={(e) => setBrollStyle(e.target.value)}
+                className="text-[12px] px-2 py-1 rounded border border-border bg-background"
+                title="B-roll art direction. Literal = real scenes from the brand's world (properties, streets, signings). Cinematic storyline = the whole transcript is storyboarded into ONE cohesive mini-film (one world, a recurring figure + motif, an arc), then its shots are cut in as cutaways alongside James — the high-concept 'Agent Opus' look."
+              >
+                <option value="literal">Literal (real scenes)</option>
+                <option value="cinematic">Cinematic storyline (one mini-film)</option>
               </select>
               <Button
                 onClick={renderWholeSource}
@@ -623,34 +661,39 @@ export default function LongFormPage() {
                       {fmtRange(c.start_s, c.end_s)}
                     </span>
                     <div className="ml-auto flex gap-2">
-                      {c.production_id && c.production_status !== "failed" ? (
-                        <Link
-                          href="/queue"
-                          className={
-                            "text-[12px] hover:underline " +
-                            (c.production_status === "succeeded"
-                              ? "text-accent"
-                              : "text-primary")
-                          }
-                        >
-                          {c.production_status === "succeeded"
-                            ? "done ↗"
-                            : "rendering →"}
+                      {c.production_id && c.production_status === "succeeded" ? (
+                        <Link href="/queue" className="text-[12px] hover:underline text-accent">
+                          done ↗
                         </Link>
+                      ) : c.production_id
+                        && c.production_status !== "failed"
+                        && c.production_status !== "canceled" ? (
+                        <>
+                          <Link href="/queue" className="text-[12px] hover:underline text-primary">
+                            rendering →
+                          </Link>
+                          <button
+                            onClick={() => cancelRender(c)}
+                            className="text-[12px] text-muted-foreground hover:text-destructive"
+                            title="Stop this render at its next stage (before the next paid step)"
+                          >
+                            cancel
+                          </button>
+                        </>
                       ) : (
                         <Button
                           onClick={() => renderCandidate(c)}
                           disabled={renderingId === c.id}
                           className="text-[12px] !px-3 !py-1"
                           title={
-                            c.production_status === "failed"
-                              ? "The last render was interrupted — render again"
+                            c.production_status === "failed" || c.production_status === "canceled"
+                              ? "The last render was stopped — render again"
                               : undefined
                           }
                         >
                           {renderingId === c.id ? (
                             <Spinner />
-                          ) : c.production_status === "failed" ? (
+                          ) : c.production_status === "failed" || c.production_status === "canceled" ? (
                             "Re-render"
                           ) : (
                             "Render reel"
@@ -677,6 +720,171 @@ export default function LongFormPage() {
             </div>
           )}
         </Card>
+      )}
+    </div>
+  );
+}
+
+
+/** Per-source "who is this?" + directory: tag each speaker's @handle + title
+ *  so a lower-third name-tag shows for ~2.5s when they first appear. */
+function SpeakerTagsPanel({ sourceId }: { sourceId: string }) {
+  const [open, setOpen] = useState(false);
+  const [dir, setDir] = useState<Speaker[]>([]);
+  const [tags, setTags] = useState<SpeakerTag[]>([]);
+  const [detected, setDetected] = useState<DetectedSpeaker[] | null>(null);
+  const [assign, setAssign] = useState<Record<number, string>>({});
+  const [newHandle, setNewHandle] = useState("");
+  const [newSub, setNewSub] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  async function loadDir() {
+    try { setDir(await api.listSpeakers()); } catch { /* auth/empty */ }
+  }
+  useEffect(() => {
+    loadDir();
+    api.getSpeakerTags(sourceId).then((r) => setTags(r.speaker_tags || [])).catch(() => {});
+    setDetected(null); setAssign({}); setMsg("");
+  }, [sourceId]);
+
+  async function addSpeaker() {
+    const h = newHandle.trim();
+    if (!h) return;
+    try {
+      await api.createSpeaker({ handle: h, subtitle: newSub.trim() });
+      setNewHandle(""); setNewSub(""); await loadDir();
+    } catch (e) { setMsg(e instanceof Error ? e.message : "add failed"); }
+  }
+  async function removeSpeaker(id: string) {
+    try { await api.deleteSpeaker(id); await loadDir(); } catch { /* ignore */ }
+  }
+
+  async function detect() {
+    setBusy(true); setMsg("Analyzing the video for speakers…");
+    try {
+      const r = await api.detectSpeakers(sourceId);
+      setDetected(r.speakers || []);
+      setMsg((r.speakers || []).length ? "" : "No distinct speakers detected — add them by hand above, then re-try.");
+    } catch (e) { setMsg(e instanceof Error ? e.message : "detect failed"); }
+    finally { setBusy(false); }
+  }
+
+  async function save() {
+    const built: SpeakerTag[] = (detected || [])
+      .map((d, i) => {
+        const sp = dir.find((s) => s.id === assign[i]);
+        return sp ? { face_x: d.face_x, handle: sp.handle, subtitle: sp.subtitle } : null;
+      })
+      .filter((t): t is SpeakerTag => !!t);
+    try {
+      const r = await api.setSpeakerTags(sourceId, built);
+      setTags(r.speaker_tags || built);
+      setMsg(`Saved ${built.length} name-tag${built.length === 1 ? "" : "s"} — they'll appear on every reel from this video.`);
+    } catch (e) { setMsg(e instanceof Error ? e.message : "save failed"); }
+  }
+
+  return (
+    <div className="mt-3 border border-border rounded-md">
+      <button
+        type="button"
+        className="w-full flex items-center justify-between px-3 py-2 text-[13px]"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className="font-medium flex items-center gap-2">
+          Speaker name-tags
+          {tags.length > 0 && <Badge tone="primary">{tags.length}</Badge>}
+        </span>
+        <span className="text-muted-foreground">{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div className="px-3 pb-3 flex flex-col gap-3">
+          <p className="text-[12px] text-muted-foreground">
+            Show each speaker&apos;s @handle + title on screen for ~2.5s when they first
+            appear. Tag them once here — it applies to every reel cut from this video.
+          </p>
+
+          {/* Directory */}
+          <div>
+            <div className="text-[12px] font-medium mb-1">Directory</div>
+            <div className="flex flex-col gap-1">
+              {dir.map((s) => (
+                <div key={s.id} className="flex items-center gap-2 text-[12px]">
+                  <span className="font-medium">{s.handle}</span>
+                  <span className="text-muted-foreground flex-1 truncate">{s.subtitle}</span>
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:text-destructive"
+                    onClick={() => removeSpeaker(s.id)}
+                    title="Remove from directory"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              {dir.length === 0 && (
+                <div className="text-[12px] text-muted-foreground">No speakers yet.</div>
+              )}
+            </div>
+            <div className="flex gap-2 mt-2">
+              <Input placeholder="@handle" value={newHandle}
+                onChange={(e) => setNewHandle(e.target.value)} className="text-[12px]" />
+              <Input placeholder="CEO at PreReal Estate" value={newSub}
+                onChange={(e) => setNewSub(e.target.value)} className="text-[12px]" />
+              <Button variant="secondary" onClick={addSpeaker} className="text-[12px] !px-3 !py-1">
+                Add
+              </Button>
+            </div>
+          </div>
+
+          {/* Detect + assign */}
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button variant="secondary" onClick={detect} disabled={busy}
+                className="text-[12px] !px-3 !py-1">
+                {busy ? <Spinner /> : "Identify speakers in this video"}
+              </Button>
+              {tags.length > 0 && (
+                <span className="text-[12px] text-muted-foreground">
+                  Saved: {tags.map((t) => t.handle).join(", ")}
+                </span>
+              )}
+            </div>
+            {detected && detected.length > 0 && (
+              <>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mt-2">
+                  {detected.map((d, i) => (
+                    <div key={i} className="border border-border rounded-md p-2 flex flex-col gap-1">
+                      {d.preview_url ? (
+                        <img src={mediaUrl(d.preview_url)} alt={d.label}
+                          className="w-full aspect-[9/16] object-cover rounded bg-black" />
+                      ) : (
+                        <div className="w-full aspect-[9/16] rounded bg-background" />
+                      )}
+                      <div className="text-[11px] text-muted-foreground truncate">
+                        {d.label || `Speaker ${i + 1}`}
+                      </div>
+                      <select
+                        className="text-[12px] px-2 py-1 rounded border border-border bg-background"
+                        value={assign[i] || ""}
+                        onChange={(e) => setAssign((a) => ({ ...a, [i]: e.target.value }))}
+                      >
+                        <option value="">— who is this? —</option>
+                        {dir.map((s) => (
+                          <option key={s.id} value={s.id}>{s.handle}</option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+                <Button onClick={save} className="text-[12px] !px-3 !py-1 mt-2">
+                  Save name-tags
+                </Button>
+              </>
+            )}
+          </div>
+          {msg && <p className="text-[12px] text-muted-foreground">{msg}</p>}
+        </div>
       )}
     </div>
   );

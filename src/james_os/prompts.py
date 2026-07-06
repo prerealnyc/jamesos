@@ -297,16 +297,26 @@ async def _load_active_guidelines(tenant_id: UUID | None) -> str:
     return "\n".join(lines)
 
 
-def format_memory_block(retrieved: list[RetrievedEvent]) -> str:
+def format_memory_block(
+    retrieved: list[RetrievedEvent],
+    sensitivity_map: dict | None = None,
+) -> str:
+    """Render retrieved memory. `sensitivity_map` (event_id → tier) optionally
+    stamps knowledge-base passages with their travel tier so the sensitivity
+    policy in the system prompt can govern what the answer may REPRODUCE.
+    Omitted → byte-identical to the historical output."""
     if not retrieved:
         return "<memory>\n(no events found)\n</memory>"
 
     lines = ["<memory>"]
     for ev in retrieved:
         text = (ev.raw_content or json.dumps(ev.payload))[:2000]
+        sens = (sensitivity_map or {}).get(str(ev.event_id))
+        sens_attr = f' sensitivity="{sens}"' if sens else ""
         lines.append(
             f'<event id="{ev.event_id}" type="{ev.event_type}" '
-            f'effective_at="{ev.effective_at.isoformat()}" score="{ev.score:.3f}">\n'
+            f'effective_at="{ev.effective_at.isoformat()}" score="{ev.score:.3f}"'
+            f"{sens_attr}>\n"
             f"{text}\n"
             f"</event>"
         )
@@ -315,9 +325,11 @@ def format_memory_block(retrieved: list[RetrievedEvent]) -> str:
 
 
 def build_verification_messages(
-    answer: dict[str, Any], retrieved: list[RetrievedEvent]
+    answer: dict[str, Any], retrieved: list[RetrievedEvent],
+    sensitivity_map: dict | None = None,
 ) -> list[dict[str, str]]:
-    memory = format_memory_block(retrieved)
+    # Same stamped view the generator saw — verifier and writer must agree.
+    memory = format_memory_block(retrieved, sensitivity_map)
     return [
         {
             "role": "user",

@@ -99,6 +99,293 @@ _VISION_SYSTEM = (
 )
 
 
+_FACE_X_SYSTEM = (
+    "You locate the MAIN speaking person in frames sampled from ONE short video "
+    "clip. Return STRICT JSON {\"found\": boolean, \"center_x\": number}. center_x "
+    "is the horizontal center of that person's FACE/HEAD as a fraction from 0.0 "
+    "(far LEFT edge of frame) to 1.0 (far RIGHT edge), AVERAGED across the frames. "
+    "If there is no single clear person (empty frame, crowd, pure B-roll), set "
+    "found=false. This is used to re-center a vertical crop, so be precise."
+)
+
+
+async def detect_speaker_center_x(
+    video_path: str, duration_s: float = 0.0, samples: int = 3,
+) -> float | None:
+    """Best-effort: sample a few mid-clip frames and ask vision for the main
+    speaker's horizontal face-center as a fraction 0..1. ONE vision call.
+
+    Returns None on ANY failure (no key, ffmpeg/vision error, no clear face) so
+    the caller falls back to a centered crop — this must never break a render."""
+    client = _client()
+    if client is None:
+        return None
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            frames = await _extract_center_frames(
+                video_path, Path(td), duration_s, samples,
+            )
+            if not frames:
+                return None
+            content: list[dict] = [{
+                "type": "text",
+                "text": (f"{len(frames)} frames from ONE clip, in order. Give the "
+                         "main speaker's face horizontal center (0=left, 1=right), "
+                         "averaged across them."),
+            }]
+            for f in frames:
+                b64 = base64.b64encode(f.read_bytes()).decode()
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}",
+                                  "detail": "low"},
+                })
+            res = await client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": _FACE_X_SYSTEM},
+                    {"role": "user", "content": content},
+                ],
+                max_tokens=120, temperature=0.0,
+                response_format={"type": "json_object"},
+            )
+            data = json.loads(res.choices[0].message.content or "{}")
+            if not data.get("found"):
+                return None
+            x = float(data.get("center_x"))
+            return x if 0.0 <= x <= 1.0 else None
+    except Exception:  # noqa: BLE001 — detection is best-effort; never break a render
+        return None
+
+
+async def _extract_frames_at(
+    video_path: str, outdir: Path, times: list[float], prefix: str = "fx",
+) -> list[Path]:
+    """Extract ONE JPEG per timestamp in `times` (single-frame ffmpeg seeks —
+    cheap on a local file). Returns the frames that actually extracted."""
+    frames: list[Path] = []
+    for i, t in enumerate(times):
+        p = outdir / f"{prefix}_{i:02d}.jpg"
+        rc, _ = await _run([
+            "ffmpeg", "-y", "-ss", f"{max(0.0, t):.3f}", "-i", str(video_path),
+            "-frames:v", "1", "-q:v", "4", str(p),
+        ])
+        if rc == 0 and p.is_file() and p.stat().st_size > 0:
+            frames.append(p)
+    return frames
+
+
+async def _extract_center_frames(
+    video_path: str, outdir: Path, duration_s: float, samples: int,
+) -> list[Path]:
+    """Pull `samples` JPEG frames spread across the MIDDLE 60% of the clip
+    (skips intro/outro framing)."""
+    if duration_s <= 0:
+        from .audio_trim import probe_duration
+        duration_s = await probe_duration(video_path)
+    if duration_s <= 0:
+        times = [1.0]
+    else:
+        lo, hi = duration_s * 0.2, duration_s * 0.8
+        n = max(1, samples)
+        times = [(lo + hi) / 2.0] if n == 1 else [
+            lo + (hi - lo) * i / (n - 1) for i in range(n)
+        ]
+    return await _extract_frames_at(video_path, outdir, times, prefix="fx")
+
+
+_FACE_MAP_SYSTEM = (
+    "Every frame shows the SAME one person — the person who is speaking. Return "
+    "STRICT JSON {\"found\": boolean, \"center_x\": number}, where center_x is the "
+    "horizontal center of THAT person's face as a fraction from 0.0 (far LEFT of "
+    "the frame) to 1.0 (far RIGHT), averaged across the frames. If there is no "
+    "single clear person, set found=false."
+)
+
+
+async def detect_speaker_face_map(
+    video_path: str, turns: list[dict], *, per_speaker_samples: int = 3,
+) -> dict[str, float] | None:
+    """Map each diarization speaker label → their face's horizontal center
+    (0..1), by sampling frames DURING that speaker's own turns and asking vision
+    where the (single, speaking) person sits. Returns {speaker: center_x} for
+    >=2 confidently-separated speakers, else None (caller falls back to the
+    static single-face pan). ONE vision call per speaker. Never raises."""
+    client = _client()
+    if client is None or not turns:
+        return None
+    try:
+        by_spk: dict[str, list[tuple[float, float]]] = {}
+        for t in turns:
+            spk = str(t.get("speaker") or "")
+            if not spk:
+                continue
+            s = float(t.get("start") or 0.0)
+            e = float(t.get("end") or s)
+            if e - s > 0.4:
+                by_spk.setdefault(spk, []).append((s, e))
+        if len(by_spk) < 2:
+            return None
+        face_map: dict[str, float] = {}
+        with tempfile.TemporaryDirectory() as td:
+            outdir = Path(td)
+            for spk, windows in by_spk.items():
+                windows.sort(key=lambda w: w[1] - w[0], reverse=True)
+                times = [round((s + e) / 2.0, 2) for (s, e) in windows[:per_speaker_samples]]
+                frames = await _extract_frames_at(video_path, outdir, times, prefix=f"sp{spk}")
+                if not frames:
+                    continue
+                content: list[dict] = [{
+                    "type": "text",
+                    "text": (f"{len(frames)} frames, all of the SAME speaking "
+                             "person. Their face's horizontal center 0..1, averaged."),
+                }]
+                for f in frames:
+                    b64 = base64.b64encode(f.read_bytes()).decode()
+                    content.append({"type": "image_url", "image_url": {
+                        "url": f"data:image/jpeg;base64,{b64}", "detail": "low"}})
+                try:
+                    res = await client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[
+                            {"role": "system", "content": _FACE_MAP_SYSTEM},
+                            {"role": "user", "content": content},
+                        ],
+                        max_tokens=120, temperature=0.0,
+                        response_format={"type": "json_object"},
+                    )
+                    data = json.loads(res.choices[0].message.content or "{}")
+                    if data.get("found"):
+                        x = float(data.get("center_x"))
+                        if 0.0 <= x <= 1.0:
+                            face_map[spk] = round(x, 3)
+                except Exception:  # noqa: BLE001 — drop this speaker, keep going
+                    continue
+        if len(face_map) < 2:
+            return None
+        xs = sorted(face_map.values())
+        if xs[-1] - xs[0] < 0.12:            # faces too close → can't separate
+            print(f"[speaker-follow] face-map ambiguous (spread {xs[-1] - xs[0]:.2f}) "
+                  f"→ static pan. map={face_map}")
+            return None
+        print(f"[speaker-follow] face map: {face_map}")
+        return face_map
+    except Exception as e:  # noqa: BLE001 — best-effort, never break a render
+        print(f"[speaker-follow] face-map failed: {e}")
+        return None
+
+
+_SOURCE_SPEAKERS_SYSTEM = (
+    "You are given several frames sampled in order from ONE video (an interview "
+    "or talk). Identify the DISTINCT PEOPLE who appear on camera as speakers "
+    "(hosts/guests). Return STRICT JSON {\"people\": [{\"position\": number, "
+    "\"label\": string, \"frame\": int}]} where: position is that person's typical "
+    "horizontal center, 0.0 (far LEFT) to 1.0 (far RIGHT); label is a 3-6 word "
+    "visual description (e.g. 'blonde woman in black top'); frame is the 0-based "
+    "index of the frame where that person is shown most clearly. List each "
+    "distinct person ONCE, left-to-right. Ignore background/B-roll people. If "
+    "only one person speaks, return exactly one."
+)
+
+
+async def _save_face_crop(frame_path: Path, pos: float, tenant_id, idx: int) -> str:
+    """Crop a portrait slice centred on `pos` from a frame and store it as a
+    speaker-preview image. Returns the served URL, or '' on any failure."""
+    try:
+        import uuid as _uuid
+        from io import BytesIO
+
+        from PIL import Image
+
+        from .config import settings as _settings
+        from .media import storage as media_storage
+
+        img = Image.open(frame_path).convert("RGB")
+        W, H = img.size
+        cw = min(W, max(1, int(H * 9 / 16)))         # 9:16 portrait slice
+        cx = int(min(1.0, max(0.0, pos)) * W)
+        x0 = max(0, min(W - cw, cx - cw // 2))
+        crop = img.crop((x0, 0, x0 + cw, H))
+        crop.thumbnail((420, 760), Image.LANCZOS)
+        buf = BytesIO()
+        crop.save(buf, "JPEG", quality=85)
+        tenant = str(tenant_id or _settings.default_tenant_id)
+        url, _ = await asyncio.to_thread(
+            media_storage().save, tenant, buf.getvalue(),
+            f"speaker-preview-{idx}-{_uuid.uuid4().hex[:8]}.jpg",
+        )
+        return url
+    except Exception as e:  # noqa: BLE001
+        print(f"[speaker-detect] crop failed: {e}")
+        return ""
+
+
+async def detect_source_speakers(
+    video_path: str, tenant_id=None, max_people: int = 4,
+) -> list[dict]:
+    """Enumerate the DISTINCT on-camera speakers in a source video for the
+    'who is this?' step: sample frames → ONE vision call → each person's stable
+    horizontal position + a cropped preview. Returns
+    [{face_x, label, preview_url}] left-to-right, or [] on any failure (no key,
+    ffmpeg/vision error). Position-based so it lines up with the render's
+    per-speaker face map. Never raises."""
+    client = _client()
+    if client is None:
+        return []
+    try:
+        from .audio_trim import probe_duration
+        dur = await probe_duration(video_path)
+        with tempfile.TemporaryDirectory() as td:
+            outdir = Path(td)
+            frames = await _extract_center_frames(video_path, outdir, dur, samples=10)
+            if not frames:
+                return []
+            content: list[dict] = [{
+                "type": "text",
+                "text": f"{len(frames)} frames from ONE video, in order (index 0..{len(frames) - 1}).",
+            }]
+            for f in frames:
+                b64 = base64.b64encode(f.read_bytes()).decode()
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                })
+            resp = await client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": _SOURCE_SPEAKERS_SYSTEM},
+                    {"role": "user", "content": content},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0,
+            )
+            data = json.loads(resp.choices[0].message.content or "{}")
+            people = data.get("people") or []
+            out: list[dict] = []
+            for idx, p in enumerate(people[:max_people]):
+                try:
+                    pos = min(1.0, max(0.0, float(p.get("position", 0.5))))
+                except (TypeError, ValueError):
+                    pos = 0.5
+                try:
+                    fi = int(p.get("frame", 0))
+                except (TypeError, ValueError):
+                    fi = 0
+                fi = min(max(0, fi), len(frames) - 1)
+                preview = await _save_face_crop(frames[fi], pos, tenant_id, idx)
+                out.append({
+                    "face_x": round(pos, 3),
+                    "label": str(p.get("label") or "")[:80],
+                    "preview_url": preview,
+                })
+            # left-to-right for a predictable UI order
+            out.sort(key=lambda d: d["face_x"])
+            return out
+    except Exception as e:  # noqa: BLE001 — detection is best-effort
+        print(f"[speaker-detect] failed: {e}")
+        return []
+
+
 async def _describe(client: AsyncOpenAI, frames: list[Path], transcript: str) -> dict:
     if not frames:
         return {}

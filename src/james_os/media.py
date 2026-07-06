@@ -206,10 +206,16 @@ async def update_media(
     tags: list[str] | None = None,
     platform: str | None = None,
     mute_audio: bool | None = None,
+    source_type: str | None = None,
     tenant_id: UUID | None = None,
 ) -> dict | None:
     sets, args = [], []
-    for col, val in (("title", title), ("notes", notes), ("platform", platform)):
+    # source_type is validated (upload|url|generated) — used to reclassify a
+    # hero asset between the real 'Hero images' and 'Hero AI images' shelves.
+    if source_type is not None and source_type not in ("upload", "url", "generated"):
+        source_type = None
+    for col, val in (("title", title), ("notes", notes),
+                     ("platform", platform), ("source_type", source_type)):
         if val is not None:
             args.append(val)
             sets.append(f"{col} = ${len(args)}")

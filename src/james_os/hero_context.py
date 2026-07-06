@@ -137,10 +137,15 @@ async def get_hero_context(
         return _CACHE[cache_key]
 
     photos = await list_media(role="hero_photo", tenant_id=tenant_id)
+    # ONLY the hero's REAL uploaded photos — never AI-generated ones
+    # (source_type='generated'). Every template + reference that pulls a hero
+    # image goes through here, so this guarantees the authentic likeness is used
+    # (per owner: "all images on all templates use hero's original images").
     photo_urls = [
         (m.get("uri") or "").strip()
         for m in photos
         if (m.get("uri") or "").startswith("http")
+        and (m.get("source_type") or "") != "generated"
     ]
     if not photo_urls:
         return None

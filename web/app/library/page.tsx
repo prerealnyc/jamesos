@@ -28,6 +28,7 @@ import { api, mediaUrl, type Production, type QueueItem } from "@/lib/api";
 import { Button, Card, PageHeader, Badge, Spinner } from "@/components/ui";
 import { SkeletonCard } from "@/components/skeleton";
 import { FilterChip } from "@/components/filter-chip";
+import { TrimBox } from "@/components/trim-box";
 
 const MODE_LABEL: Record<string, string> = {
   long_form_reel: "Long Form Reel",
@@ -509,6 +510,9 @@ export default function LibraryPage() {
                       Open ↗
                     </a>
                   </div>
+                  {p.final_url && (
+                    <TrimBox id={p.id} url={p.final_url} onDone={load} />
+                  )}
                 </Card>
               );
             })}

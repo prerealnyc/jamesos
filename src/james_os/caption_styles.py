@@ -95,6 +95,30 @@ CAPTION_PRESETS: dict[str, dict] = {
         "transform": "uppercase",
         "letter_spacing": "0.5%",
     },
+    "karaoke": {
+        # Word-by-word reveal — ONE word flashes center-screen at a time, timed
+        # to the speech (78.6% of viral clips use word-level animation). The
+        # actual per-word rendering lives in karaoke_elements(); this entry lets
+        # the style be picked + gives the words their look.
+        "label": "Karaoke (word-by-word)",
+        "description": "One word at a time, popping to the beat. Max retention.",
+        "font_family": "Archivo Black",
+        "font_weight": "900",
+        "font_size_vh": 10.0,          # single word → go big
+        "fill_color": "#FFFFFF",
+        "stroke_color": "#000000",
+        "stroke_width": "0.7 vh",
+        "shadow_color": "rgba(0,0,0,0.5)",
+        "shadow_blur": "0.6 vh",
+        "shadow_x": "0",
+        "shadow_y": "0.3 vh",
+        "background_color": "transparent",
+        "y_position": "58%",
+        "x_alignment": "50%",
+        "transform": "uppercase",
+        "letter_spacing": "0.5%",
+        "pop_in": True,
+    },
     "subtle_minimal": {
         # LinkedIn / institutional. Quiet enough to not steal focus from
         # the spoken word — for posts where the script is the substance
@@ -302,9 +326,33 @@ CAPTION_PRESETS: dict[str, dict] = {
         "transform": "uppercase",
         "letter_spacing": "0.5%",
     },
+    "cinematic_scatter": {
+        # Kinetic editorial style — words scattered down the SIDES framing the
+        # subject, serif + gold-italic accents (the cinematic-YouTuber look).
+        # Built by cinematic_scatter_elements(); the fields below are the BODY
+        # fallback (and what list_presets surfaces for the UI selector).
+        "label": "Cinematic scatter",
+        "description": "Words framing the subject — serif + gold italic accents, scattered to the sides.",
+        "font_family": "Playfair Display",
+        "font_weight": "700",
+        "font_size_vh": 5.2,
+        "fill_color": "#FFFFFF",
+        "stroke_color": "transparent",
+        "stroke_width": "0",
+        "shadow_color": "rgba(0,0,0,0.6)",
+        "shadow_blur": "1.1 vh",
+        "shadow_x": "0",
+        "shadow_y": "0.3 vh",
+        "background_color": "transparent",
+        "y_position": "55%",
+        "x_alignment": "50%",
+        "transform": "none",
+        "letter_spacing": "0",
+        "pop_in": False,
+    },
 }
 
-DEFAULT_CAPTION_STYLE = "bold_pop"
+DEFAULT_CAPTION_STYLE = "clean_white"
 AUTO_PICK_KEY = "auto"      # frontend sentinel meaning "let the LLM pick"
 
 
@@ -398,7 +446,7 @@ def _fit_caption_vh(text: str, base_vh: float, font_family: str = "") -> float:
 
 def caption_element(
     *, text: str, start: float, end: float, preset: dict, track: int = 3,
-    role: str = "default",
+    role: str = "default", raw_text: str = "",
 ) -> dict:
     """Build a single Creatomate text element from a preset.
 
@@ -407,11 +455,20 @@ def caption_element(
     overridden to the avatar safe-zone (bottom band) so it can't
     overlap James's face — this is the layout fix the user flagged.
 
+    `raw_text` is the natural-case version of the caption (the flash builder
+    bakes a per-word ALL-CAPS emphasis into `text`, e.g. "the CALENDAR").
+    MIXED-CASE presets (transform != uppercase, e.g. clean_white) must NOT
+    show that highlight — they read as NORMAL captions — so we render the
+    natural `raw_text` (or, if absent, soften the baked emphasis). Uppercase
+    presets are unaffected: the whole line is caps anyway.
+
     Only emits the fields the preset actually configures so we don't
     override Creatomate defaults with empty strings (which it interprets
     as "remove this property" — a subtle bug we hit on an earlier
     iteration).
     """
+    if preset.get("transform") != "uppercase":
+        text = (raw_text or "").strip() or _soften_emphasis(text)
     elem: dict = {
         "type": "text",
         "text": text,
@@ -525,13 +582,18 @@ def _hook_lines(text: str) -> list[tuple[str, bool]]:
 
 
 def _soften_emphasis(text: str) -> str:
-    """Body captions in this style are plain mixed-case ('that good') —
-    undo the ALL-CAPS emphasis word the flash builder injects. Short
-    acronyms (NYC) are left alone."""
-    return " ".join(
-        w.lower() if (w.isalpha() and w.isupper() and len(w) > 3) else w
-        for w in (text or "").split()
-    )
+    """Body captions in mixed-case styles are plain ('that good') — undo the
+    ALL-CAPS emphasis word the flash builder bakes in ('the CALENDAR' → 'the
+    calendar'). Short acronyms (NYC) are left alone. Robust to trailing
+    punctuation: we test the bare alpha core, so 'CALENDAR.' still softens."""
+    out: list[str] = []
+    for w in (text or "").split():
+        core = "".join(c for c in w if c.isalpha())
+        if core and core.isupper() and len(core) > 3:
+            out.append(w.lower())
+        else:
+            out.append(w)
+    return " ".join(out)
 
 
 def _hook_window(hook: list[dict], body: list[dict]) -> tuple[float, float]:
@@ -553,16 +615,28 @@ _HOOK_TITLE_TRACK = 20
 _HOOK_TITLE_HOLD_S = 3.0   # the hook grabs attention up front, then clears
 
 
-def hook_title_elements(text: str, total: float) -> list[dict]:
-    """A persistent BIG hook/title BELOW the speaker's face — tells the viewer
-    what the reel is about (a top human-feedback ask).
+def hook_hold_seconds(total: float) -> float:
+    """How long the below-face hook holds before it clears. The caption track is
+    held back until this point so the boxed hook and the live captions never
+    share the screen (manager: 'captions start after the hook disappears').
+    Returns 0 when there's no clip."""
+    if total <= 0:
+        return 0.0
+    return round(min(float(total), _HOOK_TITLE_HOLD_S), 2)
 
-    Geometry: y center starts at ~59% (below the 25-50% face zone, above the
-    78% spoken-caption band), width 60% (the hard 20%-each-side safe margin),
-    and the font auto-fits via _fit_hook_vh so the longest line never wraps or
-    runs off-screen — 'big but not disproportionate or out of frame'. Each line
-    is its own element/track (Creatomate renders one element per track per
-    instant). Held the whole clip so a late viewer still gets the hook."""
+
+def hook_title_elements(text: str, total: float) -> list[dict]:
+    """A BIG BOXED hook/title BELOW the speaker's face for the first few seconds
+    — tells the viewer what the reel is about, then CLEARS so the live captions
+    own the lower third (they're held until it's gone; see hook_hold_seconds).
+
+    Rendered as ONE multi-line text element with a dark translucent PILL behind
+    it (manager: 'hooks can be boxed … boxed out to help it stand out'), so it
+    reads as a distinct title card and never blends into the caption text. All
+    lines are white (no per-line color needed here, unlike viral_hook), so a
+    single element gives one cohesive box. The font auto-fits so the longest
+    line never wraps/overflows ('big but not disproportionate or out of frame'),
+    and it fades in, then out, within the hold."""
     t = (text or "").strip().strip('"').strip("“”")
     if not t or total <= 0:
         return []
@@ -571,46 +645,113 @@ def hook_title_elements(text: str, total: float) -> list[dict]:
     if not lines:
         return []
     longest = max(len(ln) for ln in lines)
-    # Big, bold WHITE with a black outline — the scroll-stopping reels hook look
-    # (Archivo Black, em ~0.74). Exact-fit to a 76% box so it reads large but
-    # never wraps or runs off-screen; short punchy hooks land biggest.
+    # Big, bold WHITE with a thin black edge — scroll-stopping reels hook look
+    # (Archivo Black, em ~0.74). Fit the TEXT to 76% — deliberately tighter than
+    # the 82% element width below — so the pill's padding (42% of the font each
+    # side) still lands inside the safe margin and the line never wraps. Don't
+    # naively raise 0.76 toward 0.82 or the box can run off-frame.
     box_px = 0.76 * 1080.0
     max_vh = box_px / (max(1, longest) * 0.74 * 19.2)
-    vh = min(9.0, max(3.2, max_vh * 0.94))
-    if vh > max_vh:                      # a long line: keep the true fit
-        vh = max_vh * 0.94
-    vh = round(vh, 1)
-    # Center the block below the face: face ≈ 25-50% from top, captions ≈ 78%.
-    gap = round(vh + 1.6, 1)             # line spacing scales with the font
-    center = 60.0
-    first = center - (len(lines) - 1) * gap / 2.0
-    # The hook only holds for the first few seconds (then it clears so it
-    # doesn't crowd the captions for the whole clip).
-    hold = round(min(float(total), _HOOK_TITLE_HOLD_S), 2)
-    out: list[dict] = []
-    for i, line in enumerate(lines):
-        out.append({
-            "type": "text",
-            "text": line.upper(),
-            "track": _HOOK_TITLE_TRACK + i,
-            "time": 0,
-            "duration": hold,
-            "animations": [{"time": 0, "duration": 0.25, "type": "fade"}],
-            "width": "82%",
-            "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
-            "y": f"{first + i * gap:.1f}%", "y_anchor": "50%",
-            "font_family": "Archivo Black",
-            "font_weight": "900",
-            "font_size": f"{vh} vh",
-            "fill_color": "#FFFFFF",
-            "stroke_color": "#000000",
-            "stroke_width": "0.55 vh",
-            "shadow_color": "rgba(0,0,0,0.55)",
-            "shadow_blur": "1.1 vh",
-            "shadow_y": "0.4 vh",
-            "letter_spacing": "0.5%",
+    vh = round(min(9.0, max(3.2, max_vh * 0.94)), 1)
+    # Holds the first few seconds, then clears; fade in AND out so it doesn't
+    # pop off-screen right as the captions begin. Both fades are bounded by the
+    # hold so they can never overlap on a degenerate ultra-short clip.
+    hold = hook_hold_seconds(total)
+    fade = round(min(0.3, hold / 3.0), 2)
+    fade_in = round(min(0.25, hold / 2.0), 2)
+    return [{
+        "type": "text",
+        # One element, all lines, all white → a single cohesive box.
+        "text": "\n".join(line.upper() for line in lines),
+        "track": _HOOK_TITLE_TRACK,
+        "time": 0,
+        "duration": hold,
+        "animations": [
+            {"time": 0, "duration": fade_in, "type": "fade"},
+            {"time": round(max(0.0, hold - fade), 2), "duration": fade,
+             "type": "fade", "reversed": True},
+        ],
+        "width": "82%",
+        "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
+        # Below the face (face ≈ 25-50% from top). Captions own the 78% band
+        # only AFTER this clears, so the two never overlap.
+        "y": "57%", "y_anchor": "50%",
+        "line_height": "112%",
+        "font_family": "Archivo Black",
+        "font_weight": "900",
+        "font_size": f"{vh} vh",
+        "fill_color": "#FFFFFF",
+        "stroke_color": "#000000",
+        "stroke_width": "0.4 vh",
+        # Dark translucent pill so the hook STANDS OUT and is visually distinct
+        # from the strokeless/boxless captions. padding & radius are % of the
+        # FONT size; background_align_threshold merges the per-line highlights
+        # into one neat block for multi-line hooks.
+        "background_color": "rgba(10,12,20,0.78)",
+        "background_x_padding": "42%",
+        "background_y_padding": "30%",
+        "background_border_radius": "22%",
+        "background_align_threshold": "40%",
+        "shadow_color": "rgba(0,0,0,0.5)",
+        "shadow_blur": "1.1 vh",
+        "shadow_y": "0.4 vh",
+        "letter_spacing": "0.5%",
+    }]
+
+
+_NAMETAG_TRACK = 21           # above the hook/captions
+_NAMETAG_ACCENT = "#EAB308"   # gold sub-bar (the podcast lower-third look)
+
+
+def speaker_nametag_elements(
+    handle: str, subtitle: str, start: float, duration: float,
+    brand: dict | None = None,
+) -> list[dict]:
+    """A lower-third NAME-TAG that introduces a speaker: a white pill with the
+    bold @handle, and (optionally) a gold sub-bar beneath it with their title —
+    shown for `duration` seconds from `start` (the speaker's first appearance),
+    so the audience learns who is who. Left-aligned in the lower third, ABOVE
+    the captions and clear of the face. Fades in and out."""
+    h = (handle or "").strip()
+    if not h or duration <= 0:
+        return []
+    if not h.startswith("@"):
+        h = "@" + h
+    sub = (subtitle or "").strip()
+    accent = (brand or {}).get("nametag_accent") or _NAMETAG_ACCENT
+    fade = round(min(0.3, duration / 4.0), 2)
+    anim = [
+        {"time": 0, "duration": fade, "type": "fade"},
+        {"time": round(max(0.0, duration - fade), 2), "duration": fade,
+         "type": "fade", "reversed": True},
+    ]
+    t0, dur = round(start, 2), round(duration, 2)
+    y_handle = 66.5   # below the hook band (57%), above the captions (~78%)
+    els = [{
+        "type": "text", "text": h,
+        "track": _NAMETAG_TRACK, "time": t0, "duration": dur, "animations": anim,
+        "x": "6%", "x_anchor": "0%", "x_alignment": "0%",
+        "y": f"{y_handle}%", "y_anchor": "50%",
+        "font_family": "Archivo Black", "font_weight": "900",
+        "font_size": "3.2 vh", "fill_color": "#0B0B0B",
+        "background_color": "#FFFFFF",
+        "background_x_padding": "36%", "background_y_padding": "32%",
+        "background_border_radius": "45%",
+        "shadow_color": "rgba(0,0,0,0.35)", "shadow_blur": "1 vh", "shadow_y": "0.35 vh",
+    }]
+    if sub:
+        els.append({
+            "type": "text", "text": sub,
+            "track": _NAMETAG_TRACK, "time": t0, "duration": dur, "animations": anim,
+            "x": "6.5%", "x_anchor": "0%", "x_alignment": "0%",
+            "y": f"{y_handle + 5.2}%", "y_anchor": "50%",
+            "font_family": "Archivo Black", "font_weight": "900",
+            "font_size": "1.9 vh", "fill_color": "#0B0B0B",
+            "background_color": accent,
+            "background_x_padding": "26%", "background_y_padding": "30%",
+            "background_border_radius": "35%",
         })
-    return out
+    return els
 
 
 def viral_hook_elements(captions: list[dict], track: int = 3) -> list[dict]:
@@ -794,6 +935,162 @@ def gradient_mint_elements(captions: list[dict], track: int = 3) -> list[dict]:
     return out
 
 
+# ── cinematic_scatter: kinetic editorial captions that FRAME the subject ──
+#
+# Reference look (cinematic YouTuber style): a phrase's words are laid out as a
+# ragged vertical column down ONE side of the frame (alternating per phrase so
+# text never sits on the face), accumulating word-by-word as spoken, then fading
+# out together before the next phrase. Typographic HIERARCHY carries it:
+#   * tiny connector words ("the", "to", "this")  → small clean sans (Montserrat)
+#   * content words                                → larger serif (Playfair)
+#   * the single strongest word                    → biggest, GOLD Playfair ITALIC
+_SCATTER_GOLD = "#E7B24B"
+# Words kept SMALL (connectors / fillers). Everything else is content-sized; the
+# longest non-small word becomes the gold italic hero.
+_SCATTER_SMALL = frozenset({
+    "the", "a", "an", "and", "or", "but", "of", "in", "on", "at", "to", "for",
+    "with", "you", "your", "my", "we", "i", "is", "was", "are", "were", "be",
+    "been", "will", "this", "that", "it", "as", "by", "from", "if", "so", "no",
+    "not", "they", "them", "he", "she", "have", "has", "had", "just", "too",
+    "only", "do", "did", "up", "out", "than", "then", "into",
+    "don't", "you're", "it's", "i'm", "we're", "that's", "there's", "what's",
+})
+# Dedicated high track block so scattered words never collide with captions (3),
+# polish (6-11), styled hooks (13-16) or the boxed hook title (20). Two blocks
+# alternate per phrase so a lingering phrase can't share a track with the next.
+_SCATTER_TRACK_BASE = 30
+_SCATTER_BLOCK = 8           # max words rendered per phrase (also the block size)
+
+
+def _scatter_bare(w: str) -> str:
+    return "".join(ch for ch in (w or "").lower() if ch.isalpha() or ch == "'")
+
+
+def _fit_word_vh(word: str, base_vh: float, em: float = 0.52,
+                 box_pct: float = 52.0) -> float:
+    """Cap a single word's size so it can't wrap or run past the side margin."""
+    n = max(1, len(word or "x"))
+    max_vh = (box_pct / 100.0 * 1080.0) / (n * em * 19.2)
+    return round(min(float(base_vh), max(2.8, max_vh * 0.96)), 1)
+
+
+def _scatter_phrases(captions: list[dict]) -> list[list[tuple[str, float, float]]]:
+    """Flatten flashes into (word, start, end), interpolating per-word times
+    inside each flash, then group into phrases — break on sentence-final
+    punctuation, a clear pause, or ~7 words (keeps each side-column readable)."""
+    words: list[tuple[str, float, float]] = []
+    for c in captions:
+        raw = (c.get("raw_text") or c.get("text") or "").strip()
+        toks = [w for w in raw.split() if w]
+        if not toks:
+            continue
+        s = float(c.get("start") or 0.0)
+        e = float(c.get("end") or s)
+        step = (e - s) / max(1, len(toks))
+        for i, w in enumerate(toks):
+            words.append((w, round(s + i * step, 3), round(s + (i + 1) * step, 3)))
+    phrases: list[list[tuple[str, float, float]]] = []
+    cur: list[tuple[str, float, float]] = []
+    for i, (w, ws, we) in enumerate(words):
+        cur.append((w, ws, we))
+        ends_sentence = w.rstrip("\"'”’)").endswith((".", "!", "?"))
+        gap_next = (words[i + 1][1] - we) if i + 1 < len(words) else 99.0
+        if ends_sentence or len(cur) >= 7 or gap_next >= 0.8:
+            phrases.append(cur)
+            cur = []
+    if cur:
+        phrases.append(cur)
+    # Avoid orphaned single-word phrases (a lone gold italic word reads as a
+    # mistake) — fold a 1-word phrase into the previous one when there's room.
+    merged: list[list[tuple[str, float, float]]] = []
+    for ph in phrases:
+        if len(ph) == 1 and merged and len(merged[-1]) < _SCATTER_BLOCK:
+            merged[-1].extend(ph)
+        else:
+            merged.append(ph)
+    return merged
+
+
+# Subtle ragged horizontal offsets per stacked line (keeps the column from
+# reading as a rigid list — matches the reference's hand-placed feel).
+_SCATTER_JITTER = (3.0, -2.0, 1.5, -3.0, 2.5, -1.0, 0.5, -2.5)
+
+
+def cinematic_scatter_elements(captions: list[dict], track: int = 3) -> list[dict]:
+    """Kinetic editorial captions framing the subject — see the section header.
+    Word-level placement; ignores `track` (uses its own dedicated block)."""
+    caps = [c for c in (captions or []) if (c.get("text") or c.get("raw_text") or "").strip()]
+    if not caps:
+        return []
+    out: list[dict] = []
+    for p_idx, phrase in enumerate(_scatter_phrases(caps)):
+        words = phrase[:_SCATTER_BLOCK]
+        if not words:
+            continue
+        side_right = (p_idx % 2 == 0)
+        blk = _SCATTER_TRACK_BASE + (p_idx % 2) * _SCATTER_BLOCK   # 30 or 38
+        hold_end = words[-1][2] + 0.5      # hold the full phrase a beat, then fade
+        fade_out = 0.3
+        # Hero = longest non-small word (the gold italic accent).
+        emph_i, emph_len = -1, 0
+        for i, (w, _s, _e) in enumerate(words):
+            b = _scatter_bare(w)
+            if b in _SCATTER_SMALL:
+                continue
+            if len(b) > emph_len:
+                emph_len, emph_i = len(b), i
+        # Per-word (text, start, vh, color, family, style, weight).
+        specs: list[tuple] = []
+        for i, (w, ws, _we) in enumerate(words):
+            b = _scatter_bare(w)
+            if i == emph_i:
+                specs.append((w, ws, _fit_word_vh(w, 6.6, em=0.5), _SCATTER_GOLD,
+                              "Playfair Display", "italic", "700"))
+            elif b in _SCATTER_SMALL:
+                specs.append((w, ws, _fit_word_vh(w, 3.6, em=0.55), "#FFFFFF",
+                              "Montserrat", "normal", "600"))
+            else:
+                specs.append((w, ws, _fit_word_vh(w, 5.2, em=0.5), "#FFFFFF",
+                              "Playfair Display", "normal", "700"))
+        # Stack vertically, centered ~50%, clamped into the safe band.
+        line_h = [vh * 1.16 + 0.8 for (_w, _s, vh, *_r) in specs]
+        total_h = sum(line_h)
+        y0 = max(SAFE_TOP_PCT + 2.0, 50.0 - total_h / 2.0)
+        col_x = 75.0 if side_right else 25.0
+        for i, (w, ws, vh, color, fam, style, weight) in enumerate(specs):
+            cy = y0 + sum(line_h[:i]) + line_h[i] / 2.0
+            if cy > SAFE_BOTTOM_PCT - 2.0:        # ran past the bottom safe line
+                break
+            cx = col_x + _SCATTER_JITTER[i % len(_SCATTER_JITTER)]
+            dur = round(max(0.3, hold_end - ws), 2)
+            out.append({
+                "type": "text",
+                "text": w,
+                "track": blk + i,
+                "time": round(ws, 2),
+                "duration": dur,
+                "width": "48%",
+                "x": f"{cx:.1f}%", "x_anchor": "50%", "x_alignment": "50%",
+                "y": f"{cy:.1f}%", "y_anchor": "50%",
+                "font_family": fam,
+                "font_weight": weight,
+                "font_style": style,
+                "font_size": f"{vh} vh",
+                "fill_color": color,
+                "shadow_color": "rgba(0,0,0,0.6)",
+                "shadow_blur": "1.1 vh",
+                "shadow_x": "0 vh",
+                "shadow_y": "0.3 vh",
+                "letter_spacing": "0",
+                "animations": [
+                    {"time": 0, "duration": 0.22, "type": "fade"},
+                    {"time": round(max(0.0, dur - fade_out), 2),
+                     "duration": fade_out, "type": "fade", "reversed": True},
+                ],
+            })
+    return out
+
+
 # Designer styles that emit a complete multi-element caption track instead of
 # the builders' one-element-per-flash loop. The assembly builders call
 # styled_caption_elements() first and fall back to the standard loop on None.
@@ -802,10 +1099,38 @@ def gradient_mint_elements(captions: list[dict], track: int = 3) -> list[dict]:
 # title" emphasised single words and overflowed the frame (captions "outside
 # and big / flying everywhere"). Unregistering it makes any residual viral_hook
 # request fall back to the uniform, width-constrained standard caption loop.
+def karaoke_elements(captions: list[dict], track: int = 3) -> list[dict]:
+    """Word-by-word reveal: each spoken word flashes center-screen ONE at a time
+    (pop-in), timed by even interpolation within its caption flash — the
+    high-retention 'one word at a time' viral caption. Reuses caption_element so
+    it inherits the karaoke preset's look + safe-zone y positioning."""
+    preset = CAPTION_PRESETS.get("karaoke") or CAPTION_PRESETS[DEFAULT_CAPTION_STYLE]
+    els: list[dict] = []
+    for c in (captions or []):
+        s = float(c.get("start") or 0.0)
+        e = float(c.get("end") or s)
+        raw = (c.get("raw_text") or c.get("text") or "").strip()
+        words = [w for w in raw.split() if w]
+        if not words or e <= s:
+            continue
+        role = c.get("role") or "default"
+        step = (e - s) / len(words)
+        for i, w in enumerate(words):
+            ws = s + i * step
+            we = e if i == len(words) - 1 else ws + step
+            els.append(caption_element(
+                text=w, raw_text=w, start=round(ws, 2), end=round(we, 2),
+                preset=preset, track=track, role=role,
+            ))
+    return els
+
+
 _STYLED_BUILDERS = {
     "magenta_blocks": magenta_blocks_elements,
     "editorial_serif": editorial_serif_elements,
     "gradient_mint": gradient_mint_elements,
+    "cinematic_scatter": cinematic_scatter_elements,
+    "karaoke": karaoke_elements,
 }
 
 
@@ -820,7 +1145,10 @@ __all__ = [
     "CAPTION_PRESETS", "DEFAULT_CAPTION_STYLE", "AUTO_PICK_KEY",
     "SAFE_ZONES",
     "get_preset", "list_presets", "caption_element", "caption_y_for_role",
+    "hook_title_elements", "hook_hold_seconds",
     "viral_hook_elements", "magenta_blocks_elements",
     "editorial_serif_elements", "gradient_mint_elements",
+    "cinematic_scatter_elements",
+    "karaoke_elements",
     "styled_caption_elements",
 ]

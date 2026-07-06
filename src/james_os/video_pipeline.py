@@ -144,6 +144,7 @@ async def start_production(
     template_id: UUID | None = None,
     video_engine: str = "",
     broll_pacing: str = "",
+    broll_style: str = "",
     tenant_id: UUID | None = None,
 ) -> dict:
     """Create a production.
@@ -205,21 +206,39 @@ async def start_production(
                   caption_style, image_style,
                   music_mood, logo_position, structure, template_id, video_engine,
                   broll_pacing,
-                  avatar_provider, broll_provider, assembly_provider)
+                  avatar_provider, broll_provider, assembly_provider, broll_style)
                VALUES ('queued',$1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,
-                       $14,$15,$16,$17) RETURNING *""",
+                       $14,$15,$16,$17,$18) RETURNING *""",
             title, platform, aspect, script, json.dumps(scenes or []), mode,
             caption_style or "", image_style or "",
             music_mood or "", logo_position or "", json.dumps(structure or []), template_id,
             video_engine or "",
             broll_pacing or "",
             get_avatar_provider().name, settings.video_provider,
-            get_assembly_provider().name,
+            get_assembly_provider().name, broll_style or "",
         )
     return _row(row)
 
 
+class RenderCanceled(Exception):
+    """Raised inside the worker when the user has canceled the production, so
+    the render stops cleanly at the next stage boundary WITHOUT being recorded
+    as a 'failed' render (the status stays 'canceled')."""
+
+
+async def _abort_if_canceled(conn, pid) -> None:
+    """Stage-boundary checkpoint. If the row was canceled out-of-band (the
+    /cancel endpoint set status='canceled'), stop the worker before it starts
+    the next — paid — stage. Cheap: one indexed SELECT per transition."""
+    st = await conn.fetchval("SELECT status FROM video_productions WHERE id=$1", pid)
+    if st == "canceled":
+        raise RenderCanceled()
+
+
 async def _set(conn, pid, **cols):
+    # Every stage transition doubles as a cancellation checkpoint — the cheapest
+    # moment to stop a canceled render before the next provider call is made.
+    await _abort_if_canceled(conn, pid)
     sets = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(cols))
     await conn.execute(
         f"UPDATE video_productions SET {sets}, updated_at=now() WHERE id=$1",
@@ -229,9 +248,11 @@ async def _set(conn, pid, **cols):
 
 async def _fail(pid, msg, tenant_id):
     async with acquire(tenant_id) as conn:
+        # Never clobber a user cancellation into a 'failed' render — 'canceled'
+        # is a terminal state of its own, so guard the write.
         await conn.execute(
             "UPDATE video_productions SET status='failed', error=$2, "
-            "updated_at=now(), completed_at=now() WHERE id=$1",
+            "updated_at=now(), completed_at=now() WHERE id=$1 AND status <> 'canceled'",
             pid, msg[:500],
         )
 
@@ -605,7 +626,7 @@ async def _run_avatar_only(row, tenant_id: UUID | None) -> None:
         await conn.execute(
             """UPDATE video_productions SET status='succeeded', final_url=$2,
                queued_action_id=$3, updated_at=now(), completed_at=now()
-               WHERE id=$1""",
+               WHERE id=$1 AND status <> 'canceled'""",
             pid, final_url, action_id,
         )
 
@@ -643,7 +664,7 @@ async def _run_hero_clone(row, tenant_id: UUID | None) -> None:
         await conn.execute(
             """UPDATE video_productions SET status='succeeded', final_url=$2,
                queued_action_id=$3, updated_at=now(), completed_at=now()
-               WHERE id=$1""",
+               WHERE id=$1 AND status <> 'canceled'""",
             pid, final_url, action_id,
         )
 
@@ -773,7 +794,7 @@ async def _run_story_audio(row, tenant_id: UUID | None) -> None:
         await conn.execute(
             """UPDATE video_productions SET status='succeeded', final_url=$2,
                queued_action_id=$3, updated_at=now(), completed_at=now()
-               WHERE id=$1""",
+               WHERE id=$1 AND status <> 'canceled'""",
             pid, res.url, action_id,
         )
 
@@ -904,7 +925,7 @@ async def _run_avatar_story_mix(row, tenant_id: UUID | None) -> None:
         await conn.execute(
             """UPDATE video_productions SET status='succeeded', final_url=$2,
                queued_action_id=$3, updated_at=now(), completed_at=now()
-               WHERE id=$1""",
+               WHERE id=$1 AND status <> 'canceled'""",
             pid, res.url, action_id,
         )
 
@@ -1061,9 +1082,20 @@ async def _run_engaging_avatar(
         await conn.execute(
             """UPDATE video_productions SET status='succeeded', final_url=$2,
                queued_action_id=$3, updated_at=now(), completed_at=now()
-               WHERE id=$1""",
+               WHERE id=$1 AND status <> 'canceled'""",
             pid, res.url, action_id,
         )
+
+
+def _aspect_ratio_of(aspect: str, default: float = 9.0 / 16.0) -> float:
+    """Parse a 'W:H' aspect string → W/H float (e.g. '9:16' → 0.5625).
+    Falls back to 9:16 on anything unparseable."""
+    try:
+        w, h = (aspect or "").split(":")
+        r = float(w) / float(h)
+        return r if r > 0 else default
+    except (ValueError, ZeroDivisionError, AttributeError):
+        return default
 
 
 async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
@@ -1101,65 +1133,147 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
         plan = json.loads(plan)
     if not plan or not isinstance(plan, list) or not plan[0]:
         return await _fail(pid, "long_form_reel needs candidate metadata", tenant_id)
-    meta = plan[0]
-    source_url = (meta.get("source_url") or "").strip()
-    drive_file_id = (meta.get("drive_file_id") or "").strip()
-    try:
-        start_s = float(meta["start_s"])
-        end_s = float(meta["end_s"])
-    except (KeyError, TypeError, ValueError):
+    # Every plan entry carrying a time window is a segment to cut. Topic
+    # builds pass several (possibly from different sources) — they get
+    # stitched into ONE cut before the engaging treatment. Rendered-insert
+    # dicts appended on a previous run use start/end (no start_s), so a
+    # re-run naturally ignores them.
+    windows: list[dict] = []
+    for entry in plan:
+        if not isinstance(entry, dict) or "start_s" not in entry:
+            continue
+        e_url = (entry.get("source_url") or "").strip()
+        e_drive = (entry.get("drive_file_id") or "").strip()
+        try:
+            e_start = float(entry["start_s"])
+            e_end = float(entry["end_s"])
+        except (KeyError, TypeError, ValueError):
+            return await _fail(pid, "candidate window malformed", tenant_id)
+        if e_end <= e_start:
+            return await _fail(pid, "candidate window malformed", tenant_id)
+        # Drive source-of-truth path needs only drive_file_id; legacy
+        # Supabase-backed sources still need a usable source_url.
+        if not e_drive and not e_url.startswith("http"):
+            return await _fail(pid, "candidate window malformed", tenant_id)
+        windows.append({**entry, "source_url": e_url, "drive_file_id": e_drive,
+                        "start_s": e_start, "end_s": e_end})
+    if not windows:
         return await _fail(pid, "candidate window malformed", tenant_id)
-    if end_s <= start_s:
-        return await _fail(pid, "candidate window malformed", tenant_id)
-    # Drive source-of-truth path needs only drive_file_id; legacy
-    # Supabase-backed sources still need a usable source_url.
-    if not drive_file_id and not source_url.startswith("http"):
-        return await _fail(pid, "candidate window malformed", tenant_id)
+    meta = windows[0]
+    start_s, end_s = meta["start_s"], meta["end_s"]
 
     # ── 1) Cut the source ────────────────────────────────────────
     async with acquire(tenant_id) as conn:
         await _set(conn, pid, status="planning")
 
+    # Speaker re-centering: detected inside the temp block (while the local cut
+    # exists) so the vertical crop can pan to keep James centered. None → the
+    # assembler keeps today's centered cover crop.
+    speaker_face_x: float | None = None
+    source_overflow_pct: float | None = None
+
     # Re-fetched source can be multi-GB — keep it on the mounted volume
     # (BIG_FILE_TMP) so it doesn't fill the container's ephemeral disk.
     from .drive import big_file_tmp_dir
     with tempfile.TemporaryDirectory(dir=big_file_tmp_dir()) as td:
-        src_path = f"{td}/source.mp4"
         out_path = f"{td}/cut.mp4"
-        # Prefer Drive when drive_file_id is set on the row — re-fetch
-        # the original from the service account every time (fast,
-        # free, no Supabase size cap). Falls back to source_url for
-        # the legacy upload path.
-        if drive_file_id:
-            from .drive import fetch_drive_file_to_path, DriveNotConfigured
-            try:
-                await fetch_drive_file_to_path(drive_file_id, src_path)
-            except DriveNotConfigured as e:
-                return await _fail(pid, f"drive not configured: {e}", tenant_id)
-            except Exception as e:  # noqa: BLE001
-                return await _fail(
-                    pid, f"could not re-fetch from Drive: {e}", tenant_id,
-                )
-        else:
-            try:
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(900.0, connect=15.0),
-                ) as c:
-                    async with c.stream("GET", source_url) as r:
-                        r.raise_for_status()
-                        with open(src_path, "wb") as fh:
-                            async for chunk in r.aiter_bytes(chunk_size=1 << 20):
-                                fh.write(chunk)
-            except Exception as e:  # noqa: BLE001
-                return await _fail(pid, f"could not fetch source: {e}", tenant_id)
+        # Group windows by source so only ONE (possibly multi-GB) original
+        # sits on disk at a time: download → cut its windows → delete it,
+        # then move to the next source. Cut order still follows the
+        # storytelling order the windows arrived in.
+        by_source: dict[str, list[int]] = {}
+        for wi, win in enumerate(windows):
+            by_source.setdefault(
+                win["drive_file_id"] or win["source_url"], []).append(wi)
+        cut_by_window: dict[int, str] = {}
+        for si, indices in enumerate(by_source.values()):
+            first = windows[indices[0]]
+            src_path = f"{td}/source{si}.mp4"
+            # Prefer Drive when drive_file_id is set — re-fetch the
+            # original from the service account every time (fast, free,
+            # no Supabase size cap). Falls back to source_url for the
+            # legacy upload path.
+            if first["drive_file_id"]:
+                from .drive import fetch_drive_file_to_path, DriveNotConfigured
+                try:
+                    await fetch_drive_file_to_path(first["drive_file_id"], src_path)
+                except DriveNotConfigured as e:
+                    return await _fail(pid, f"drive not configured: {e}", tenant_id)
+                except Exception as e:  # noqa: BLE001
+                    return await _fail(
+                        pid, f"could not re-fetch from Drive: {e}", tenant_id,
+                    )
+            else:
+                try:
+                    async with httpx.AsyncClient(
+                        timeout=httpx.Timeout(900.0, connect=15.0),
+                    ) as c:
+                        async with c.stream("GET", first["source_url"]) as r:
+                            r.raise_for_status()
+                            with open(src_path, "wb") as fh:
+                                async for chunk in r.aiter_bytes(chunk_size=1 << 20):
+                                    fh.write(chunk)
+                except Exception as e:  # noqa: BLE001
+                    return await _fail(pid, f"could not fetch source: {e}", tenant_id)
 
-        # Compact slicer (CRF 26 + 96k mono + height-capped) keeps the
-        # working artifact under Supabase Storage's service-tier size
-        # cap (HTTP 413 kicks in around 50-100 MB). Talking-head
-        # footage compresses well so the quality drop is minor — and
-        # Creatomate re-encodes for the final reel anyway.
-        if not await slice_video_compact(src_path, out_path, start_s, end_s):
-            return await _fail(pid, "ffmpeg cut failed", tenant_id)
+            # Compact slicer (CRF 20 + mono + height-capped) keeps the
+            # working artifact under Supabase Storage's service-tier size
+            # cap (HTTP 413 kicks in around 50-100 MB). Talking-head
+            # footage compresses well so the quality drop is minor — and
+            # Creatomate re-encodes for the final reel anyway.
+            for wi in indices:
+                cpath = f"{td}/seg{wi}.mp4"
+                if not await slice_video_compact(
+                    src_path, cpath, windows[wi]["start_s"], windows[wi]["end_s"],
+                ):
+                    return await _fail(pid, "ffmpeg cut failed", tenant_id)
+                cut_by_window[wi] = cpath
+            # Free the original before fetching the next source.
+            _P(src_path).unlink(missing_ok=True)
+        cut_paths = [cut_by_window[wi] for wi in range(len(windows))]
+
+        if len(cut_paths) == 1:
+            out_path = cut_paths[0]
+        else:
+            from .audio_trim import concat_videos_normalized
+            if not await concat_videos_normalized(cut_paths, out_path):
+                return await _fail(pid, "ffmpeg concat failed", tenant_id)
+            print(f"[long_form] stitched {len(cut_paths)} segments into one cut")
+
+        # Speaker re-centering (best-effort, never breaks the render). If the cut
+        # is WIDER than the target reel aspect (16:9 podcast → 9:16), the default
+        # center-crop can slice James to the edge — so detect his horizontal
+        # position once and pan the crop to center him at assembly time.
+        # A stitched multi-segment cut can put the speaker in a DIFFERENT spot
+        # per segment — one static pan would mis-crop the others, so stitched
+        # cuts keep the safe center crop.
+        try:
+            from .audio_trim import probe_video_dims, probe_duration
+            _dims = await probe_video_dims(out_path)
+            if _dims and _dims[1] > 0:
+                _cw, _ch = _dims
+                _src_ar = _cw / _ch
+                _out_ar = _aspect_ratio_of(row["aspect"])
+                if len(windows) > 1:
+                    print(f"[long_form] centering: skipped — {len(windows)}-segment "
+                          f"stitch keeps the default center crop")
+                elif _src_ar > _out_ar * 1.05:          # source is meaningfully wider
+                    source_overflow_pct = round(_src_ar / _out_ar * 100.0, 1)
+                    from .perception import detect_speaker_center_x
+                    speaker_face_x = await detect_speaker_center_x(
+                        out_path, await probe_duration(out_path),
+                    )
+                    print(
+                        f"[long_form] centering: cut {_cw}x{_ch} (ar {_src_ar:.2f}) "
+                        f"→ overflow {source_overflow_pct}%, face_x={speaker_face_x} "
+                        f"({'PAN to center' if speaker_face_x is not None else 'no face → center crop'})"
+                    )
+                else:
+                    print(f"[long_form] centering: cut ar {_src_ar:.2f} ≤ target "
+                          f"{_out_ar:.2f} — already vertical, no pan")
+        except Exception as e:  # noqa: BLE001 — centering is best-effort
+            print(f"[long_form] speaker-centering detection skipped: {e}")
+            speaker_face_x, source_overflow_pct = None, None
 
         try:
             cut_bytes = _P(out_path).read_bytes()
@@ -1186,9 +1300,13 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
     # the picker below.
     broll_avoid = await _avoid_block(["broll"], tenant_id)
     cap_avoid = await _avoid_block(["captions"], tenant_id)
+    _win_desc = (
+        f"[{start_s:.1f}s – {end_s:.1f}s]" if len(windows) == 1
+        else f"{len(windows)} stitched segments"
+    )
     brand_context = (
         f"Source: long-form podcast / interview. "
-        f"Window: [{start_s:.1f}s – {end_s:.1f}s]. "
+        f"Window: {_win_desc}. "
         f"Hook: {(meta.get('hook_quote') or '')[:200]}. "
         f"Platform: {row['platform']}. Aspect: {row['aspect']}."
     )
@@ -1198,6 +1316,28 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
         istyle = ""
     if not istyle:
         istyle = "cinematic"
+
+    try:
+        bstyle = (row["broll_style"] or "").strip().lower() or "literal"
+    except (KeyError, TypeError):
+        bstyle = "literal"
+
+    # Speaker name-tag assignment lives on the source (assigned once via the
+    # "who is this?" step); it applies to every reel cut from that source.
+    speaker_assignment: list[dict] = []
+    _src_id = meta.get("source_id")
+    if _src_id:
+        try:
+            async with acquire(tenant_id) as conn:
+                _st = await conn.fetchval(
+                    "SELECT speaker_tags FROM long_sources WHERE id=$1", UUID(str(_src_id))
+                )
+            if isinstance(_st, str):
+                _st = json.loads(_st)
+            if isinstance(_st, list):
+                speaker_assignment = [a for a in _st if isinstance(a, dict) and a.get("handle")]
+        except Exception:  # noqa: BLE001 — no tags → just no name-tags
+            speaker_assignment = []
 
     assets = await build_engaging_avatar_assets(
         avatar_video_url=cut_url,
@@ -1209,14 +1349,17 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
         broll_avoid=broll_avoid,
         engine=(row["video_engine"] or ""),   # Runway / Higgsfield for B-roll
         broll_pacing=(row.get("broll_pacing") or ""),
+        broll_style=bstyle,                   # 'literal' | 'cinematic'
+        speaker_assignment=speaker_assignment,
     )
     if assets.error:
         return await _fail(pid, assets.error, tenant_id)
 
     async with acquire(tenant_id) as conn:
-        # Preserve the candidate meta on element 0 and append the
-        # rendered insert metadata after, so the UI can show both.
-        merged_scenes = [meta, *inserts_to_dict(assets.inserts)]
+        # Preserve EVERY candidate window up front (a topic build has
+        # several) and append the rendered insert metadata after, so the
+        # UI can show both and a re-run can re-derive the windows.
+        merged_scenes = [*windows, *inserts_to_dict(assets.inserts)]
         await _set(
             conn, pid, status="assembling",
             scenes=json.dumps(merged_scenes),
@@ -1232,9 +1375,9 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
         # row still overrides.
         try:
             from .autopilot import get_config
-            cstyle = (await get_config(tenant_id)).get("default_caption_style") or "bold_pop"
+            cstyle = (await get_config(tenant_id)).get("default_caption_style") or "clean_white"
         except Exception:  # noqa: BLE001
-            cstyle = "bold_pop"
+            cstyle = "clean_white"
 
     # Short, punchy on-screen HOOK (big bold white) generated from the spoken
     # words — not the long run-on opening line.
@@ -1258,6 +1401,14 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
         caption_style=cstyle,
         # Short bold-white hook for the first ~3s (what the reel is about).
         hook_title=short_hook or (meta.get("hook_quote") or row["title"] or "")[:80],
+        # Reframe the wide source to 9:16: prefer speaker-FOLLOWING keyframes
+        # (2-person interview, panning to the active speaker); else the static
+        # single-face pan. When keyframes exist, use the overflow width they were
+        # built for so the media box matches.
+        speaker_face_x=speaker_face_x,
+        source_overflow_pct=assets.speaker_overflow_pct or source_overflow_pct,
+        speaker_keyframes=assets.speaker_keyframes,
+        speaker_tags=assets.speaker_tags,     # lower-third name-tags
     )
     if res.status == "processing":
         for _ in range(_MAX_POLLS):
@@ -1296,7 +1447,7 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
         await conn.execute(
             """UPDATE video_productions SET status='succeeded', final_url=$2,
                queued_action_id=$3, updated_at=now(), completed_at=now()
-               WHERE id=$1""",
+               WHERE id=$1 AND status <> 'canceled'""",
             pid, res.url, action_id,
         )
 
@@ -1310,6 +1461,8 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
             row = await conn.fetchrow("SELECT * FROM video_productions WHERE id=$1", pid)
             if row is None:
                 return
+            if row["status"] == "canceled":
+                return  # canceled before the worker even picked it up
 
         # Avatar-only mode forks here — one HeyGen render of the entire
         # script, no per-scene plan, no Creatomate assembly.
@@ -1430,9 +1583,11 @@ async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> 
             await conn.execute(
                 """UPDATE video_productions SET status='succeeded', final_url=$2,
                    queued_action_id=$3, scenes=$4, updated_at=now(), completed_at=now()
-                   WHERE id=$1""",
+                   WHERE id=$1 AND status <> 'canceled'""",
                 pid, res.url, action_id, json.dumps(scenes),
             )
+    except RenderCanceled:
+        return  # user canceled mid-render — status is already 'canceled'
     except Exception as e:  # noqa: BLE001
         await _fail(pid, f"production crashed: {e}", tenant_id)
 
@@ -1449,6 +1604,95 @@ async def get_production(production_id: UUID, tenant_id: UUID | None = None) -> 
     async with acquire(tenant_id) as conn:
         row = await conn.fetchrow("SELECT * FROM video_productions WHERE id=$1", production_id)
     return _row(row) if row else None
+
+
+async def cancel_production(production_id: UUID, tenant_id: UUID | None = None) -> dict:
+    """Cancel an in-flight render. Flips status to 'canceled' ONLY while the
+    production is still in a non-terminal stage; the worker's per-stage
+    checkpoint (_abort_if_canceled in _set) then stops it before the next paid
+    provider call. Returns {ok, id, status}: ok=False (with the current status)
+    when the render already finished, or status=None when it doesn't exist."""
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            "UPDATE video_productions SET status='canceled', "
+            "error='canceled by user', updated_at=now(), completed_at=now() "
+            "WHERE id=$1 AND status IN "
+            "('queued','planning','rendering_clips','assembling') "
+            "RETURNING id",
+            production_id,
+        )
+        if row is not None:
+            return {"ok": True, "id": str(production_id), "status": "canceled"}
+        cur = await conn.fetchval(
+            "SELECT status FROM video_productions WHERE id=$1", production_id
+        )
+    return {
+        "ok": False, "id": str(production_id), "status": cur,
+        "reason": "not found" if cur is None else "already finished",
+    }
+
+
+async def trim_production(
+    production_id: UUID, start_s: float, end_s: float,
+    tenant_id: UUID | None = None,
+) -> dict:
+    """Trim a FINISHED render to the window [start_s, end_s], re-host the result,
+    and point both the production (final_url) and its queued action (media_url)
+    at the trimmed video. Returns {ok, url, duration} or {ok:False, reason}.
+    Non-destructive to the original bytes — it writes a new file; the row simply
+    references the trimmed one now."""
+    import tempfile
+    from pathlib import Path
+
+    from .audio_trim import probe_duration, trim_video
+
+    prod = await get_production(production_id, tenant_id)
+    if prod is None:
+        return {"ok": False, "reason": "production not found"}
+    url = (prod.get("final_url") or "").strip()
+    if not url.startswith("http"):
+        return {"ok": False, "reason": "no rendered video to trim"}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(240.0, connect=10.0)) as c:
+            r = await c.get(url, follow_redirects=True)
+            r.raise_for_status()
+            data = r.content
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "reason": f"download failed: {e}"}
+
+    with tempfile.TemporaryDirectory() as td:
+        ip, op = f"{td}/in.mp4", f"{td}/out.mp4"
+        Path(ip).write_bytes(data)
+        total = await probe_duration(ip)
+        s = max(0.0, float(start_s or 0.0))
+        e = float(end_s) if end_s and float(end_s) > 0 else (total or 0.0)
+        if total and total > 0:
+            e = min(e, total)
+        if e - s < 0.5:
+            return {"ok": False, "reason": "trim window too short (min 0.5s)"}
+        if not await trim_video(ip, op, s, e):
+            return {"ok": False, "reason": "ffmpeg trim failed"}
+        out_bytes = Path(op).read_bytes()
+    new_dur = round(e - s, 2)
+    tenant = str(tenant_id or settings.default_tenant_id)
+    new_url, _ = await asyncio.to_thread(
+        media_storage().save, tenant, out_bytes,
+        f"trim-{production_id}-{int(s * 10)}-{int(e * 10)}.mp4",
+    )
+    async with acquire(tenant_id) as conn:
+        await conn.execute(
+            "UPDATE video_productions SET final_url=$2, updated_at=now() WHERE id=$1",
+            production_id, new_url,
+        )
+        aid = prod.get("queued_action_id")
+        if aid:
+            # Point the queued/approved item at the trimmed video too.
+            await conn.execute(
+                "UPDATE actions SET payload = payload || $2::jsonb WHERE id=$1",
+                UUID(str(aid)),
+                json.dumps({"media_url": new_url, "video_url": new_url}),
+            )
+    return {"ok": True, "url": new_url, "duration": new_dur}
 
 
 async def delete_production(production_id: UUID, tenant_id: UUID | None = None) -> bool:

@@ -104,65 +104,38 @@ async def _attach_image_to_action(
     draft_text: str,
     tenant_id: UUID | None,
 ) -> str | None:
-    """Generate a post hero image for a queued text action and patch its
-    URL onto that action's payload (so the human reviews text+image as one
-    item). Returns the served image URL, or None on any failure (the text
-    action is already queued and stands on its own — the image is additive).
+    """Attach a REAL hero photo to a queued text action and patch its URL onto
+    the action's payload (so the human reviews text+image as one item).
+
+    NO AI-generated scenes. Designed posts use the branded templates; photo
+    posts use the hero's OWN uploaded photos. Previously this directed a
+    cinematic AI scene which, with no hero face to anchor, invented a generic
+    stranger (e.g. "a young investor at a laptop") — exactly what the owner
+    rejected. A real photo is picked from the hero library and rotated by the
+    action id so a batch varies. Returns the URL, or None when no real hero
+    photo exists (the text stands on its own — the image is additive).
     """
-    from .hero_context import get_hero_photo_files
-    from .imagegen import direct_image_scene, generate_post_image_with_refs
-    from .media import create_media
-    from .media import storage as media_storage
+    import hashlib
 
-    topic = (idea.get("topic") or idea.get("title") or "").strip()
-    # Direct a cinematic, realistic scene from the ACTUAL story (not the
-    # one-line topic) so the hero image carries the post's emotional tension.
-    # Falls back to the topic if the director LLM is unavailable.
-    scene = await direct_image_scene(draft_text, fallback_topic=topic)
-    # Baseline every text-post image on the brand hero's uploaded photos so the
-    # SAME person shows up across all posts. With no hero photos uploaded,
-    # generate_post_image_with_refs transparently falls back to the no-ref path.
-    hero_refs = await get_hero_photo_files(tenant_id=tenant_id)
-    png, meta, err = await generate_post_image_with_refs(
-        topic=scene,
-        references=hero_refs,
-        platform=platform,
-        brief="",
-        tenant_id=tenant_id,
-    )
-    if not png:
-        # No OpenAI key (or a render error) → leave the text action as-is.
+    from .media import list_media
+
+    photos = await list_media(role="hero_photo", tenant_id=tenant_id)
+    # Real uploads ONLY — never AI-generated (source_type='generated'), matching
+    # the single hero chokepoint in hero_context.get_hero_context.
+    urls = [
+        (m.get("uri") or "").strip()
+        for m in photos
+        if (m.get("uri") or "").startswith("http")
+        and (m.get("source_type") or "") != "generated"
+    ]
+    if not urls:
+        # No real hero photo → leave the post image-less rather than invent one.
         return None
+    idx = int(hashlib.md5(str(action_id).encode()).hexdigest(), 16) % len(urls)
+    served_uri = urls[idx]
 
-    tenant = str(tenant_id or settings.default_tenant_id)
-    filename = (
-        f"bulk-{meta['platform']}-{meta['style']}-"
-        f"{meta['aspect'].replace(':', 'x')}.png"
-    )
-    served_uri, file_path = await asyncio.to_thread(
-        media_storage().save, tenant, png, filename
-    )
-
-    # Mirror /images/generate: register the image in the media library so
-    # it's reusable, then point the queued action at it.
-    try:
-        await create_media(
-            role="post_image",
-            source_type="upload",
-            uri=served_uri,
-            file_path=file_path,
-            title=(idea.get("title") or topic)[:120],
-            platform=platform,
-            mime="image/png",
-            tags=[f"style:{meta['style']}", "bulk"],
-            notes=meta["prompt"][:500],
-            tenant_id=tenant_id,
-        )
-    except Exception:  # noqa: BLE001 — library bookkeeping must not lose the URL
-        pass
-
-    # Patch the image onto the existing pending action's payload. Postgres
-    # jsonb `||` concat merges the new keys without disturbing the rest.
+    # Patch the real photo onto the pending action. jsonb `||` merges the keys
+    # without disturbing the rest. No image_prompt — there is no AI prompt.
     async with acquire(tenant_id) as conn:
         await conn.execute(
             "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1",
@@ -172,17 +145,16 @@ async def _attach_image_to_action(
                     "image_url": served_uri,
                     "media_url": served_uri,
                     "has_image": True,
-                    "image_prompt": meta["prompt"],
                 }
             ),
         )
     return served_uri
 
 
-# Image-type rotation across a text+image batch: 'james' = a real/Soul James
-# photo (the existing hero path); 'designed' = the quote/meme/statement card
-# machine (which itself rotates the three formats). Gives a real mix of looks
-# instead of every post being a James photo. ~3-in-5 designed.
+# Image-type rotation across a text+image batch: 'james' = a REAL hero photo
+# (rotated from the library); 'designed' = the branded card machine (which
+# itself rotates brand_quote / hero_quote / statement). Both use real photos or
+# clean type — never an AI-generated scene. ~3-in-5 designed.
 _IMAGE_MIX = ["designed", "james", "designed", "designed", "james"]
 
 
@@ -192,9 +164,9 @@ async def _make_text_post(
 ) -> dict:
     """One text+image post: on-voice draft → queue → attach an image.
 
-    image_kind 'james' attaches a real/Soul James photo (the existing hero
-    path); 'designed' runs the quote/meme/statement card machine and, on any
-    failure, falls back to the James photo so a post is never left imageless.
+    image_kind 'james' attaches a REAL hero photo (rotated from the library);
+    'designed' runs the branded card machine and, on any failure, falls back to
+    a real hero photo so a post is never left with an AI scene or imageless.
     Returns the chosen designed format (or None) so the batch can vary them."""
     draft = await generate_content(
         ContentBrief(

@@ -43,10 +43,14 @@ class SupabaseStorageError(RuntimeError):
 class SupabaseMediaStorage:
     """Save uploaded bytes to Supabase Storage; return its public URL."""
 
-    def __init__(self, url: str = "", key: str = "", bucket: str = ""):
+    def __init__(self, url: str = "", key: str = "", bucket: str = "",
+                 public: bool = True):
         self.base = (url or settings.supabase_url or "").rstrip("/")
         self.key = key or settings.supabase_service_key
         self.bucket = bucket or settings.supabase_media_bucket or "media"
+        # public=False → a PRIVATE bucket (company documents / knowledge base):
+        # objects are only reachable via signed_url(), never a public URL.
+        self.public = public
         self._bucket_ready = False
         if not self.base or not self.key:
             raise SupabaseStorageError(
@@ -70,22 +74,42 @@ class SupabaseMediaStorage:
         with httpx.Client(timeout=_TIMEOUT) as c:
             r = c.post(
                 f"{self.base}/storage/v1/bucket", headers=self._h(),
-                json={"id": self.bucket, "name": self.bucket, "public": True},
+                json={"id": self.bucket, "name": self.bucket, "public": self.public},
             )
-        # Success path: created (200/201), already exists (409), OR
-        # Supabase's quirky 400 envelope around a 409/already-exists body.
-        already_exists = (
-            r.status_code == 409
-            or '"statusCode":"409"' in r.text
-            or "already exists" in r.text.lower()
-        )
-        if r.status_code in (200, 201) or already_exists:
-            self._bucket_ready = True
-            return
-        raise SupabaseStorageError(
-            f"Could not create bucket '{self.bucket}': "
-            f"HTTP {r.status_code} {r.text[:200]}"
-        )
+            # Success path: created (200/201), already exists (409), OR
+            # Supabase's quirky 400 envelope around a 409/already-exists body.
+            already_exists = (
+                r.status_code == 409
+                or '"statusCode":"409"' in r.text
+                or "already exists" in r.text.lower()
+            )
+            if not (r.status_code in (200, 201) or already_exists):
+                raise SupabaseStorageError(
+                    f"Could not create bucket '{self.bucket}': "
+                    f"HTTP {r.status_code} {r.text[:200]}"
+                )
+            # PRIVATE intent must be ENFORCED, not assumed: if the bucket
+            # already existed as public (created earlier with different
+            # settings), confidential documents would be fetchable at the
+            # unauthenticated /object/public/... URL. Verify and flip it
+            # private; fail loudly if we can't — never store secrets publicly.
+            if already_exists and not self.public:
+                g = c.get(f"{self.base}/storage/v1/bucket/{self.bucket}",
+                          headers=self._h())
+                if g.status_code == 200 and (g.json() or {}).get("public") is True:
+                    u = c.put(
+                        f"{self.base}/storage/v1/bucket/{self.bucket}",
+                        headers=self._h(),
+                        json={"id": self.bucket, "name": self.bucket,
+                              "public": False},
+                    )
+                    if u.status_code not in (200, 201):
+                        raise SupabaseStorageError(
+                            f"Bucket '{self.bucket}' exists as PUBLIC and could "
+                            f"not be made private: HTTP {u.status_code} "
+                            f"{u.text[:200]}"
+                        )
+        self._bucket_ready = True
 
     # ── TUS resumable upload (required for files > 50 MB; recommended > 6 MB) ──
     def _b64(self, s: str) -> str:
@@ -227,8 +251,11 @@ class SupabaseMediaStorage:
         # definition, and the single-POST path's 50 MB cap would fail
         # anyway.
         self._upload_resumable_from_path(path, src_path, mime)
+        internal = f"supabase://{self.bucket}/{path}"
+        if not self.public:
+            return internal, internal
         public_url = f"{self.base}/storage/v1/object/public/{self.bucket}/{path}"
-        return public_url, f"supabase://{self.bucket}/{path}"
+        return public_url, internal
 
     def save(self, tenant: str, data: bytes, filename: str) -> tuple[str, str]:
         """Upload bytes; return (public_url, internal_path).
@@ -260,8 +287,13 @@ class SupabaseMediaStorage:
                     f"Upload failed: HTTP {r.status_code} {r.text[:200]}"
                 )
 
+        internal = f"supabase://{self.bucket}/{path}"
+        if not self.public:
+            # No public URL exists on a private bucket — hand back the internal
+            # path twice; callers reach the object via signed_url()/download().
+            return internal, internal
         public_url = f"{self.base}/storage/v1/object/public/{self.bucket}/{path}"
-        return public_url, f"supabase://{self.bucket}/{path}"
+        return public_url, internal
 
     def delete(self, file_path: str | None) -> None:
         """Delete by the internal path returned from save()."""
@@ -278,6 +310,47 @@ class SupabaseMediaStorage:
                 )
         except Exception:  # noqa: BLE001 — best-effort cleanup
             pass
+
+    def signed_url(self, file_path: str | None, expires_in: int = 3600) -> str | None:
+        """Time-limited download URL for an object (the ONLY way to reach a
+        private bucket's objects — company docs are never public URLs).
+        Accepts the internal `supabase://bucket/path` form from save().
+        Returns None on any failure (caller treats as not-downloadable)."""
+        if not file_path:
+            return None
+        if file_path.startswith("supabase://"):
+            bucket, _, path = file_path[len("supabase://"):].partition("/")
+        else:
+            bucket, path = self.bucket, file_path.lstrip("/")
+        try:
+            with httpx.Client(timeout=_TIMEOUT) as c:
+                r = c.post(
+                    f"{self.base}/storage/v1/object/sign/{bucket}/{path}",
+                    headers=self._h({"Content-Type": "application/json"}),
+                    json={"expiresIn": expires_in},
+                )
+            if r.status_code != 200:
+                return None
+            signed = (r.json() or {}).get("signedURL") or ""
+            return f"{self.base}/storage/v1{signed}" if signed else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def download(self, file_path: str | None) -> bytes | None:
+        """Fetch an object's bytes by its internal `supabase://` path (works on
+        private buckets — used for re-index / corpus assembly). None on failure."""
+        if not file_path or not file_path.startswith("supabase://"):
+            return None
+        bucket, _, path = file_path[len("supabase://"):].partition("/")
+        try:
+            with httpx.Client(timeout=httpx.Timeout(120.0, connect=10.0)) as c:
+                r = c.get(
+                    f"{self.base}/storage/v1/object/{bucket}/{path}",
+                    headers=self._h(),
+                )
+            return r.content if r.status_code == 200 else None
+        except Exception:  # noqa: BLE001
+            return None
 
 
 def derive_supabase_url_from_db(database_url: str) -> str:

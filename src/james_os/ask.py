@@ -70,8 +70,19 @@ async def ask(req: AskRequest, tenant_id: UUID | None = None) -> AskResponse:
 
     try:
         system = await system_task
+        # Sensitivity gating (intelligence parity): stamp knowledge-base
+        # passages with their travel tier and append the READ-vs-REPRODUCE
+        # policy — internal by default; 'public' excludes Restricted/NDA data
+        # from output. FAIL-CLOSED: the policy is appended whenever memory is
+        # in play (even if the tier lookup errored and returned {}), so a
+        # silent lookup failure can never strip the guardrails from an answer
+        # that does contain knowledge-base content.
+        from .sensitivity import policy_for, sensitivity_map_for
+        sens_map = await sensitivity_map_for(retrieved, tenant_id)
+        if retrieved:
+            system = f"{system}\n\n{policy_for(getattr(req, 'audience', 'internal'))}"
         t = time.perf_counter()
-        answer = await _generate(req.question, retrieved, system)
+        answer = await _generate(req.question, retrieved, system, sens_map)
         _mark("generate", t)
     except LLMParseError as e:
         # The model produced unparseable output (most often: hit max_tokens
@@ -86,7 +97,7 @@ async def ask(req: AskRequest, tenant_id: UUID | None = None) -> AskResponse:
     if not answer.get("refused"):
         t = time.perf_counter()
         try:
-            verified = await _verify(answer, retrieved)
+            verified = await _verify(answer, retrieved, sens_map)
         except LLMParseError:
             verified = False
         _mark("verify", t)
@@ -111,9 +122,10 @@ async def ask(req: AskRequest, tenant_id: UUID | None = None) -> AskResponse:
 
 
 async def _generate(
-    question: str, retrieved: list[RetrievedEvent], system: str
+    question: str, retrieved: list[RetrievedEvent], system: str,
+    sensitivity_map: dict | None = None,
 ) -> dict:
-    memory = format_memory_block(retrieved)
+    memory = format_memory_block(retrieved, sensitivity_map)
     messages = [
         {
             "role": "user",
@@ -129,14 +141,15 @@ async def _generate(
     )
 
 
-async def _verify(answer: dict, retrieved: list[RetrievedEvent]) -> bool:
+async def _verify(answer: dict, retrieved: list[RetrievedEvent],
+                  sensitivity_map: dict | None = None) -> bool:
     claims = answer.get("claims") or []
     if not claims:
         # No claims to verify is OK if the answer text is empty/refused;
         # otherwise it's a violation of cite-or-refuse.
         return not (answer.get("answer") or "").strip()
 
-    messages = build_verification_messages(answer, retrieved)
+    messages = build_verification_messages(answer, retrieved, sensitivity_map)
     # The verifier returns a small JSON verdict ({verified: bool, ...}); it
     # doesn't need a big budget. 768 is plenty and trims the worst case.
     result = await get_llm().complete_json(

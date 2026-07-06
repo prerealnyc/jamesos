@@ -180,25 +180,38 @@ class CurrentUser:
 
 
 async def _record_login_attempt(ip: str, email: str, succeeded: bool) -> None:
-    async with acquire(_DEFAULT_TENANT_UUID()) as conn:
-        await conn.execute(
-            "INSERT INTO login_attempts (ip, email, succeeded) "
-            "VALUES ($1, $2, $3)",
-            ip, email, succeeded,
-        )
+    # Audit/throttle logging must NEVER break authentication. If the write
+    # fails (e.g. a misconfigured RLS policy on login_attempts), swallow it —
+    # a degraded audit log is acceptable; a 500 that locks everyone out is not.
+    try:
+        async with acquire(_DEFAULT_TENANT_UUID()) as conn:
+            await conn.execute(
+                "INSERT INTO login_attempts (ip, email, succeeded) "
+                "VALUES ($1, $2, $3)",
+                ip, email, succeeded,
+            )
+    except Exception as e:  # noqa: BLE001 — never 500 a login over an audit write
+        print(f"[auth] login-attempt audit write failed (non-fatal): {e}")
 
 
 async def _ip_too_many_fails(ip: str) -> bool:
     """LOGIN_RATE_MAX_FAILS failures in LOGIN_RATE_WINDOW_MIN minutes
-    blocks further attempts. Cheap rate limit without a Redis dep."""
+    blocks further attempts. Cheap rate limit without a Redis dep.
+
+    Fails OPEN: if the throttle query errors we allow the attempt rather than
+    lock everyone out — the audit table is a convenience, not a security gate."""
     since = datetime.now(timezone.utc) - timedelta(minutes=LOGIN_RATE_WINDOW_MIN)
-    async with acquire(_DEFAULT_TENANT_UUID()) as conn:
-        n = await conn.fetchval(
-            "SELECT count(*) FROM login_attempts "
-            "WHERE ip = $1 AND succeeded = false AND created_at >= $2",
-            ip, since,
-        )
-    return int(n or 0) >= LOGIN_RATE_MAX_FAILS
+    try:
+        async with acquire(_DEFAULT_TENANT_UUID()) as conn:
+            n = await conn.fetchval(
+                "SELECT count(*) FROM login_attempts "
+                "WHERE ip = $1 AND succeeded = false AND created_at >= $2",
+                ip, since,
+            )
+        return int(n or 0) >= LOGIN_RATE_MAX_FAILS
+    except Exception as e:  # noqa: BLE001 — fail open, don't lock out on a DB error
+        print(f"[auth] login throttle check failed (allowing): {e}")
+        return False
 
 
 def _DEFAULT_TENANT_UUID() -> UUID:

@@ -267,11 +267,12 @@ export default function AutopilotPage() {
         <Label>Caption style</Label>
         <div className="flex items-center gap-3">
           <Select
-            value={cfg.default_caption_style || "bold_pop"}
+            value={cfg.default_caption_style || "clean_white"}
             onChange={(e) => patch({ default_caption_style: e.target.value })}
           >
-            <option value="bold_pop">Bold white (recommended)</option>
-            <option value="clean_white">Clean white</option>
+            <option value="clean_white">Clean white (recommended)</option>
+            <option value="bold_pop">Bold white</option>
+            <option value="cinematic_scatter">Cinematic (scatter)</option>
           </Select>
           <span className="text-[11px] text-muted-foreground">
             The default caption look for every reel — big bold white, kept off

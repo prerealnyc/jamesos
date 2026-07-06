@@ -225,23 +225,24 @@ _DESIGN_DIRECTOR_SYSTEM = (
     "later in perfect type — so NEVER put any words in bg_prompt.\n\n"
     "Return STRICT JSON:\n"
     "{\n"
-    '  "format": "quote" | "meme" | "statement",\n'
-    '  "quote": "<quote format: ONE punchy, scroll-stopping line in the '
-    "author's voice, <= 14 words, no hashtags, no surrounding quote marks>\",\n"
-    '  "top_text": "<meme format: the SETUP line, <= 8 words>",\n'
-    '  "bottom_text": "<meme format: the PUNCHLINE / truth turn, <= 8 words>",\n'
+    '  "format": "brand_quote" | "hero_quote" | "statement",\n'
+    '  "quote": "<brand_quote / hero_quote: the on-image line in the author\'s '
+    "voice — a punchy mantra / identity / one-liner, <= 12 words>\",\n"
+    '  "emphasis": "<the 1-3 KEY words inside quote to highlight in brand blue '
+    "(must appear verbatim in quote)>\",\n"
     '  "statement": "<statement format: a bold declarative statement / hot '
-    "take / identity line in the author's voice, <= 16 words>\",\n"
-    '  "bg_prompt": "<a TEXT-FREE photoreal cinematic background to generate — '
-    "for statement format, describe JAMES in a relevant scene; otherwise a "
-    "real scene/mood. Absolutely NO text, words, letters, signs or logos>\",\n"
-    '  "bg_kind": "scene" | "james"\n'
+    "take / identity line in the author's voice, <= 16 words>\"\n"
     "}\n\n"
-    "Rules: 'meme' ONLY for a clear expectation-vs-reality / before-after turn. "
-    "'statement' for a values/identity declaration or hot take where JAMES is "
-    "the visual (bg_kind MUST be 'james'). Otherwise 'quote'. bg_kind 'james' "
-    "only when James himself should be the visual, else 'scene'. Match the "
-    "author's voice; no clichés, no hype words."
+    "There are THREE formats, ALL using clean brand type on a navy card or the "
+    "hero's REAL photo — NEVER an AI-generated scene:\n"
+    "  * 'brand_quote' — a text-only navy card for a short punchy mantra / "
+    "identity / one-liner. PREFER this for crisp quotable lines.\n"
+    "  * 'hero_quote' — the branded look with JAMES's real photo beside the "
+    "quote; for motivational lines where his presence adds authority.\n"
+    "  * 'statement' — a bold declarative statement / hot take with James's "
+    "real photo framed below it.\n"
+    "Pick the format that best fits THIS post. Match the author's voice; no "
+    "clichés, no hype words."
 )
 
 
@@ -257,11 +258,12 @@ async def direct_designed_image(draft_text: str, topic: str = "", avoid: str = "
     while still letting content win when a post clearly fits the avoided one."""
     text = (draft_text or topic or "").strip()
     fallback = {
-        "format": "quote",
+        "format": "brand_quote",
         "quote": (text.split(". ")[0] if text else (topic or "")).strip()[:140],
-        "top_text": "", "bottom_text": "",
-        "bg_prompt": (topic or "cinematic golden-hour scene").strip(),
-        "bg_kind": "scene",
+        "emphasis": "",
+        "top_text": "", "bottom_text": "", "statement": "",
+        "bg_prompt": (topic or "").strip(),
+        "bg_kind": "none",
     }
     if not text:
         return fallback
@@ -282,12 +284,21 @@ async def direct_designed_image(draft_text: str, topic: str = "", avoid: str = "
         )
         out = out or {}
         raw_fmt = str(out.get("format", "")).lower()
-        fmt = raw_fmt if raw_fmt in ("quote", "meme", "statement") else "quote"
-        # Statement format puts James in the image — force bg_kind=james.
-        bg_kind = "james" if (fmt == "statement" or str(out.get("bg_kind", "")).lower() == "james") else "scene"
+        # Designed images now use REAL photos or clean type ONLY — no AI-scene
+        # backgrounds. Coerce any legacy format the model still returns into the
+        # three real templates: quote/meme → brand_quote (text card),
+        # statement → statement (real James photo at the bottom).
+        _MAP = {"quote": "brand_quote", "meme": "brand_quote",
+                "brand_quote": "brand_quote", "hero_quote": "hero_quote",
+                "statement": "statement"}
+        fmt = _MAP.get(raw_fmt, "brand_quote")
+        # bg_kind: brand_quote → none (self-contained navy card); hero_quote &
+        # statement → hero (James's REAL uploaded photo, never AI-generated).
+        bg_kind = "none" if fmt == "brand_quote" else "hero"
         spec = {
             "format": fmt,
             "quote": str(out.get("quote") or "").strip(),
+            "emphasis": str(out.get("emphasis") or "").strip(),
             "top_text": str(out.get("top_text") or "").strip(),
             "bottom_text": str(out.get("bottom_text") or "").strip(),
             "statement": str(out.get("statement") or "").strip(),
@@ -295,7 +306,7 @@ async def direct_designed_image(draft_text: str, topic: str = "", avoid: str = "
             "bg_kind": bg_kind,
         }
         # Guards: each format needs its text or it falls back to a quote.
-        if fmt == "quote" and not spec["quote"]:
+        if fmt in ("quote", "brand_quote", "hero_quote") and not spec["quote"]:
             spec["quote"] = fallback["quote"]
         if fmt == "meme" and not (spec["top_text"] or spec["bottom_text"]):
             return fallback

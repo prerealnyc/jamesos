@@ -45,9 +45,10 @@ DEFAULT_CONFIG = {
     # B-roll animator for every reel: '' = system default, 'runway', or
     # 'higgsfield' (image→video). Defaults to Higgsfield.
     "broll_engine": "higgsfield",
-    # Default caption style for reels (the white reels look). 'bold_pop' = big
-    # bold white with a black outline; 'clean_white' = lighter mixed-case white.
-    "default_caption_style": "bold_pop",
+    # Default caption style for reels. 'clean_white' = lighter mixed-case white
+    # (the default, normal sentence captions); 'bold_pop' = big bold white with a
+    # black outline; 'cinematic_scatter' = kinetic editorial words to the sides.
+    "default_caption_style": "clean_white",
     # How batch reels choose their caption style:
     #   "rotate" — each video gets the next style in the showcase rotation
     #              (compare looks on real renders, finalise favourites);

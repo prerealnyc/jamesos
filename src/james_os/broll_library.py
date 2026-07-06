@@ -72,19 +72,28 @@ async def register_generated_clip(
     engine: str,
     aspect: str,
     tenant_id=None,
+    mime: str = "video/mp4",
+    style: str = "",
 ) -> None:
-    """File a freshly rendered insert clip into the library. Best-effort —
-    a failure here must never fail the render that produced the clip."""
+    """File a freshly rendered insert asset into the library. Handles both
+    animated clips (mime video/*) and static stills (mime image/*) so EVERY
+    generated B-roll is saved, not just the ones that animated. `style` tags the
+    b-roll look ('cinematic'/'literal') so cinematic b-roll is findable. Reuse
+    (find_reusable_clip) only ever returns video assets, so a saved still never
+    gets swapped in as motion. Best-effort — a failure here must never fail the
+    render that produced the asset."""
     if not (url or "").startswith("http"):
         return
+    kind = "still" if (mime or "").startswith("image/") else "clip"
     try:
         await create_media(
             role="broll",
             source_type="generated",
             uri=url,
-            title=_short_title(prompt) or f"{engine or 'video'} B-roll clip",
-            mime="video/mp4",
-            tags=[t for t in ("generated", engine or "", aspect or "") if t],
+            title=_short_title(prompt) or f"{engine or 'video'} B-roll {kind}",
+            mime=mime,
+            tags=[t for t in ("generated", engine or "", aspect or "",
+                              (style or "").strip().lower(), kind) if t],
             notes=(prompt or "")[:2000],
             tenant_id=_tenant_uuid(tenant_id),
         )
@@ -104,8 +113,11 @@ async def find_reusable_clip(
     try:
         async with acquire(_tenant_uuid(tenant_id)) as conn:
             rows = await conn.fetch(
+                # Video assets only — a reused clip becomes insert.video_url, so a
+                # saved STILL (mime image/*) must never be a reuse candidate.
                 "SELECT id, uri, title, notes, tags FROM media_assets "
                 "WHERE role = 'broll' AND uri LIKE 'http%' "
+                "AND coalesce(mime, '') NOT LIKE 'image/%' "
                 "ORDER BY created_at DESC LIMIT $1",
                 _MAX_CANDIDATES,
             )

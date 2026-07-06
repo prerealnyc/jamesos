@@ -14,6 +14,7 @@ breath that reads as natural pacing).
 
 import asyncio
 import re
+import tempfile
 
 _DUR_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+\.?\d*)")
 _SILENCE_START = re.compile(r"silence_start:\s*([\d.]+)")
@@ -81,6 +82,25 @@ async def trim_to(in_path: str, out_path: str, duration_s: float) -> bool:
         "ffmpeg", "-y", "-i", in_path,
         "-t", f"{duration_s:.3f}",
         "-c:v", "copy", "-c:a", "aac", "-movflags", "+faststart",
+        out_path,
+    ]
+    rc, _ = await _run(cmd)
+    return rc == 0
+
+
+async def trim_video(in_path: str, out_path: str, start_s: float, end_s: float) -> bool:
+    """Cut [start_s, end_s] out of a finished reel, KEEPING audio + video,
+    frame-accurate (decodes from the start, then re-encodes). Used to trim a
+    rendered output's excess head/tail footage."""
+    start = max(0.0, float(start_s))
+    end = float(end_s)
+    if end - start < 0.2:
+        return False
+    cmd = [
+        "ffmpeg", "-y", "-i", in_path,
+        "-ss", f"{start:.3f}", "-to", f"{end:.3f}",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-c:a", "aac", "-movflags", "+faststart",
         out_path,
     ]
     rc, _ = await _run(cmd)
@@ -254,8 +274,124 @@ async def probe_duration(in_path: str) -> float:
     return _parse_total_duration(log)
 
 
+_DIMS_RE = re.compile(r"Video:.*?,\s(\d{2,5})x(\d{2,5})[\s,\[]")
+
+
+async def probe_video_dims(in_path: str) -> tuple[int, int] | None:
+    """(width, height) of a video's first video stream, or None if it can't be
+    parsed. Parses `ffmpeg -i` output (ffprobe isn't guaranteed on PATH). Used to
+    decide whether a long-form cut is wide enough to need a re-centering pan."""
+    _, log = await _run(["ffmpeg", "-i", in_path])
+    m = _DIMS_RE.search(log)
+    if not m:
+        return None
+    try:
+        return int(m.group(1)), int(m.group(2))
+    except ValueError:
+        return None
+
+
+async def concat_videos_normalized(paths: list[str], out_path: str) -> bool:
+    """Concatenate several cuts into one file (topic edits stitch segments
+    from DIFFERENT sources). Dims/fps/sample-rates can differ, so every
+    input is scaled + padded onto the first cut's canvas and its audio
+    normalized to mono 48 kHz before the concat filter — the concat demuxer
+    would silently corrupt on mismatched streams."""
+    if not paths:
+        return False
+    if len(paths) == 1:
+        # Nothing to stitch; a stream copy keeps this cheap.
+        rc, _ = await _run([
+            "ffmpeg", "-y", "-i", paths[0], "-c", "copy",
+            "-movflags", "+faststart", out_path,
+        ])
+        return rc == 0
+    # Canvas = the highest-resolution input, so one low-res (or oddly
+    # oriented) segment can't drag every other segment down with it.
+    best: tuple[int, int] | None = None
+    for p in paths:
+        d = await probe_video_dims(p)
+        if d and (best is None or d[0] * d[1] > best[0] * best[1]):
+            best = d
+    if not best:
+        return False
+    w, h = (best[0] // 2) * 2, (best[1] // 2) * 2   # libx264 needs even dims
+    n = len(paths)
+    chains: list[str] = []
+    cmd: list[str] = ["ffmpeg", "-y"]
+    for i, p in enumerate(paths):
+        cmd += ["-i", p]
+        chains.append(
+            f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
+            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v{i}];"
+            f"[{i}:a]aformat=sample_fmts=fltp:sample_rates=48000:"
+            f"channel_layouts=mono[a{i}];"
+        )
+    inputs = "".join(f"[v{i}][a{i}]" for i in range(n))
+    filter_graph = "".join(chains) + f"{inputs}concat=n={n}:v=1:a=1[v][a]"
+    cmd += [
+        "-filter_complex", filter_graph,
+        "-map", "[v]", "-map", "[a]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-c:a", "aac", "-b:a", "128k", "-ac", "1",
+        "-movflags", "+faststart",
+        out_path,
+    ]
+    rc, _ = await _run(cmd)
+    return rc == 0
+
+
+async def tighten_clip(
+    in_bytes: bytes, intervals: list[tuple[float, float]], *, crossfade_ms: int = 0,
+) -> bytes | None:
+    """Re-encode `in_bytes` keeping ONLY the given (start,end) intervals, in
+    order, concatenated — used to cut internal dead air out of a reel. ONE ffmpeg
+    filter_complex pass (sample-accurate; no temp-file concat demuxer). Preserves
+    the source's dimensions/fps (NO scale filter) so any detected face-position /
+    crop math stays valid.
+
+    Returns the tightened mp4 bytes, or None on any failure / nothing to cut
+    (< 2 intervals) / absurd segment count — caller then keeps the original."""
+    from pathlib import Path as _PathT
+    from .drive import big_file_tmp_dir
+    n = len(intervals)
+    if n < 2 or n > 400:
+        return None
+    with tempfile.TemporaryDirectory(dir=big_file_tmp_dir()) as td:
+        inp, outp = f"{td}/tin.mp4", f"{td}/tout.mp4"
+        try:
+            with open(inp, "wb") as fh:
+                fh.write(in_bytes)
+        except OSError:
+            return None
+        parts: list[str] = []
+        for i, (s, e) in enumerate(intervals):
+            parts.append(f"[0:v]trim=start={s:.3f}:end={e:.3f},setpts=PTS-STARTPTS[v{i}]")
+            parts.append(f"[0:a]atrim=start={s:.3f}:end={e:.3f},asetpts=PTS-STARTPTS[a{i}]")
+        vlabels = "".join(f"[v{i}]" for i in range(n))
+        alabels = "".join(f"[a{i}]" for i in range(n))
+        parts.append(f"{vlabels}concat=n={n}:v=1:a=0[v]")
+        parts.append(f"{alabels}concat=n={n}:v=0:a=1[a]")
+        cmd = [
+            "ffmpeg", "-y", "-i", inp,
+            "-filter_complex", ";".join(parts),
+            "-map", "[v]", "-map", "[a]",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-c:a", "aac", "-b:a", "128k", "-ac", "1",
+            "-movflags", "+faststart", outp,
+        ]
+        rc, _ = await _run(cmd)
+        if rc != 0:
+            return None
+        try:
+            data = _PathT(outp).read_bytes()
+        except OSError:
+            return None
+        return data if data else None
+
+
 __all__ = [
     "detect_speech_end", "trim_to", "extract_audio_mp3",
     "slice_video_silent", "slice_video", "extract_audio_lowbit",
-    "split_audio_chunks", "probe_duration",
+    "split_audio_chunks", "probe_duration", "probe_video_dims", "tighten_clip",
 ]

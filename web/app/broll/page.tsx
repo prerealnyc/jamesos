@@ -113,21 +113,34 @@ export default function BrollLibraryPage() {
             {clips.map((m) => {
               const n = reuseCount(m);
               const engine = engineOf(m);
+              const isStill = (m.tags || []).includes("still")
+                || (m.mime || "").startsWith("image/");
+              const cinematic = (m.tags || []).includes("cinematic");
               return (
                 <div
                   key={m.id}
                   className="border border-border rounded-md overflow-hidden bg-background flex flex-col"
                 >
-                  <video
-                    src={mediaUrl(m.uri)}
-                    controls
-                    preload="metadata"
-                    className="w-full aspect-[9/16] object-cover bg-black"
-                  />
+                  {isStill ? (
+                    <img
+                      src={mediaUrl(m.uri)}
+                      alt={m.title || "b-roll still"}
+                      className="w-full aspect-[9/16] object-cover bg-black"
+                    />
+                  ) : (
+                    <video
+                      src={mediaUrl(m.uri)}
+                      controls
+                      preload="metadata"
+                      className="w-full aspect-[9/16] object-cover bg-black"
+                    />
+                  )}
                   <div className="p-2 flex flex-col gap-1.5">
                     <div className="text-[11px] leading-snug line-clamp-2">{m.title || "(untitled)"}</div>
                     <div className="flex flex-wrap items-center gap-1">
-                      {engine && <Badge tone="accent">{engine}</Badge>}
+                      {cinematic && <Badge tone="primary">cinematic</Badge>}
+                      {isStill && <Badge tone="muted">still</Badge>}
+                      {engine && !isStill && <Badge tone="accent">{engine}</Badge>}
                       {(m.tags || []).includes("generated")
                         ? <Badge tone="muted">generated</Badge>
                         : <Badge tone="ok">upload</Badge>}

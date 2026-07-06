@@ -626,6 +626,10 @@ class Insert:
     image_url: str | None = None
     image_error: str = ""
     uses_hero: bool = False
+    # The FILM's locked recurring figure (cinematic mode). Plumbed so the render
+    # path can pin the same identity across these shots; today it steers only the
+    # prompt text (the render still routes identity on uses_hero).
+    uses_recurring_figure: bool = False
     video_url: str | None = None       # Runway image-to-video output
     video_error: str = ""
 
@@ -637,43 +641,234 @@ def inserts_to_dict(inserts: list[Insert]) -> list[dict[str, Any]]:
             "text": i.text, "image_prompt": i.image_prompt,
             "image_url": i.image_url, "image_error": i.image_error,
             "uses_hero": i.uses_hero,
+            "uses_recurring_figure": i.uses_recurring_figure,
             "video_url": i.video_url, "video_error": i.video_error,
         }
         for i in inserts
     ]
 
 
+# Cinematic-storytelling grade: one locked, moody film look across all inserts
+# (the Agent-Opus reference aesthetic) — used when broll_style == "cinematic".
+_CINEMATIC_BROLL_GRADE = (
+    "moody cinematic color grade, cool desaturated blue-grey, deep shadows, "
+    "single-source dramatic lighting, volumetric haze, shallow depth of field, "
+    "film grain, anamorphic, high production value"
+)
+
+
+# ── Cinematic storyboard: turn the WHOLE transcript into ONE cohesive film ──
+# Before picking per-slot cutaways, we read the full script and design a single
+# through-line (world + recurring figure + motif + grade + arc). Every insert
+# then becomes a shot from THAT film, so the b-roll cuts together as one short
+# story alongside the speaker — not a slideshow of unrelated metaphors. This is
+# what makes broll_style="cinematic" a STORYLINE and not just moody stock.
+_CINEMATIC_TREATMENT_SYSTEM = """You are a film director storyboarding a short cinematic B-ROLL FILM \
+that plays in cutaways over a talking-head clip. You get the FULL transcript of \
+what the speaker says. Design ONE cohesive visual STORY (a mini-film) that \
+dramatizes his message — NOT a set of unrelated stock shots.
+
+Think like the cold open of a moody thriller: a single consistent world, a \
+recurring figure or motif the camera keeps returning to, and an emotional arc \
+that tracks his argument (set the stakes -> build tension -> the turn -> the payoff).
+
+Return STRICT JSON:
+{
+  "logline":  "<1 sentence: the visual through-line / central metaphor of the whole film>",
+  "world":    "<the ONE setting every shot lives in, e.g. 'a rain-slicked neon financial district at night'>",
+  "character":"<the recurring figure the camera follows, e.g. 'a lone investor in a charcoal coat'; or 'none' if motif-driven>",
+  "motif":    "<a recurring symbolic object that returns across shots, e.g. 'a single brass key', 'a rising red line'>",
+  "palette":  "<the locked color grade in a few words, e.g. 'cold desaturated blue-grey, deep shadows, amber highlights'>",
+  "arc":      "<one line mapping the emotional beats from open to close>",
+  "prop_lexicon": "<4-6 metaphor->object pairs the film reuses; turn key nouns/verbs from the transcript into ONE literal physical prop each, e.g. 'two sides->coin on edge; demand->brass scale; countercyclical->Newton's cradle; walk away->fedora man down a corridor'>",
+  "figure_policy": "<'locked' if ONE face recurs shot-to-shot (same wardrobe/hair), or 'archetype' if anonymous types rotate (trader/analyst/hooded figure) with NO persistent identity>",
+  "payoff_beat": "<the ONE optimistic/turn line that earns a single warm gold key light; everything else stays cold>"
+}
+
+Ground it in the transcript's ACTUAL subject. Keep it conceptual and cinematic, \
+never literal stock footage. Turn each key NOUN or VERB into ONE literal physical \
+PROP that embodies the phrase (not a mood shot of the topic) and list your recurring \
+ones in prop_lexicon. Keep ~90% of the film in the cold locked grade; reserve a \
+single warm gold key light for the payoff_beat only, so the turn from fear to hope \
+lands visually. One world, one figure, one motif, one grade — so the cutaways cut \
+together as a single film."""
+
+
+async def _cinematic_treatment(
+    full_text: str, industry: str = "", hero_description: str = "",
+) -> dict:
+    """One-pass storyboard for cinematic b-roll: read the whole transcript and
+    return a cohesive film through-line (world / recurring figure / motif /
+    palette / arc) that every insert then shares. Best-effort — returns {} on
+    any failure, in which case the picker falls back to the per-slot cinematic
+    look (still moody, just not one continuous story).
+
+    When a brand hero is known, the treatment CASTS the hero as the film's
+    locked recurring figure — so the picker tags those shots uses_recurring_figure
+    and the render pins the hero's Soul face on each one (the same person appears
+    shot-to-shot, the way the reference reels lock one character)."""
+    text = (full_text or "").strip()
+    if len(text) < 40:
+        return {}
+    user = text[:4000]
+    if industry.strip():
+        user += f"\n\n[The speaker's world / industry: {industry.strip()}]"
+    if hero_description.strip():
+        user += (
+            f"\n\n[BRAND HERO — cast THIS person as the film's recurring figure "
+            f"(set figure_policy='locked' and describe them in 'character'): "
+            f"{hero_description.strip()[:300]}]"
+        )
+    try:
+        out = await get_llm().complete_json(
+            system=_CINEMATIC_TREATMENT_SYSTEM,
+            messages=[{"role": "user", "content": user}],
+            max_tokens=500, temperature=0.8,
+        )
+    except Exception:  # noqa: BLE001
+        return {}
+    if not isinstance(out, dict):
+        return {}
+    keys = ("logline", "world", "character", "motif", "palette", "arc",
+            "prop_lexicon", "figure_policy", "payoff_beat")
+    tr = {k: str(out.get(k) or "").strip() for k in keys}
+    # Useful only if it actually described a world to shoot in.
+    return tr if (tr["logline"] or tr["world"]) else {}
+
+
 def _insert_pick_system(
     min_dur: float, max_dur: float,
     industry: str = "", color_grade: str = "",
-    content_aware: bool = True,
+    content_aware: bool = True, broll_style: str = "literal",
+    treatment: dict | None = None,
 ) -> str:
     """Build the insert-picker system prompt for the active pacing.
 
-    Durations are injected so pacing presets steer window length. Two
-    editor skills also fold in here:
-      * industry/color_grade → B-roll is LITERAL to the brand's real
-        world and consistently graded (not generic abstract symbols).
-      * content_aware → the editor may LEAVE a strong line on the
-        speaker's face instead of cutting away, so the rhythm follows
-        meaning rather than a metronome.
+    Durations are injected so pacing presets steer window length. Editor skills:
+      * broll_style="literal"  → B-roll is LITERAL to the brand's real world,
+        consistently graded (the default; recognisable real scenes).
+      * broll_style="cinematic"→ dramatic CONCEPTUAL storytelling: each line
+        becomes a moody film-metaphor in one locked cinematic grade (the
+        Agent-Opus look), data rendered AS a prop inside the scene.
+      * content_aware → the editor may LEAVE a strong line on the speaker's
+        face instead of cutting away, so rhythm follows meaning not a metronome.
     """
     typical = round((min_dur + max_dur) / 2, 1)
-    world = (
-        f"\n\nTHE BRAND'S WORLD: {industry.strip()}.\n"
-        "Pull B-roll from THIS world FIRST — real, literal scenes the "
-        "viewer would recognise: actual properties, streets, job sites, "
-        "signings, handshakes, listing signs, blueprints, skylines, "
-        "the work itself. Reach for an abstract symbol (a key, a ledger, "
-        "an Edison bulb) ONLY when a line is genuinely abstract and no "
-        "literal scene fits. Concrete-and-real beats clever-and-symbolic."
-        if industry.strip() else ""
-    )
-    grade = (
-        f"\n  * COLOR: every prompt ends with this exact grade so the "
-        f"footage is cohesive — \"{color_grade.strip()}\"."
-        if color_grade.strip() else ""
-    )
+    cinematic = (broll_style or "literal").strip().lower() == "cinematic"
+    if cinematic:
+        tr = treatment or {}
+        _logline, _tr_world = tr.get("logline", ""), tr.get("world", "")
+        _character, _motif = tr.get("character", ""), tr.get("motif", "")
+        _arc, _palette = tr.get("arc", ""), tr.get("palette", "")
+        _lexicon = tr.get("prop_lexicon", "")
+        _fig_policy = (tr.get("figure_policy", "") or "").strip().lower()
+        _payoff = tr.get("payoff_beat", "")
+        if _logline or _tr_world:
+            # STORYBOARDED: every insert is the next shot of ONE pre-designed
+            # film, so the cutaways play as a continuous story, not a slideshow.
+            film = "\n\nTHE FILM — every insert is a shot from ONE cinematic story you MUST keep cohesive:\n"
+            if _logline:
+                film += f"  * LOGLINE: {_logline}\n"
+            if _tr_world:
+                film += f"  * WORLD — every shot lives in this ONE place: {_tr_world}\n"
+            if _character and _character.lower() != "none":
+                film += f"  * RECURRING FIGURE — the SAME person in shot after shot: {_character}\n"
+            if _motif:
+                film += f"  * RECURRING MOTIF — this object returns across shots: {_motif}\n"
+            if _lexicon:
+                film += (f"  * PROP LEXICON — reuse these metaphor->object mappings; turn the "
+                         f"phrase's key noun into its object: {_lexicon}\n")
+            if _fig_policy == "locked":
+                film += ("  * FIGURE IS LOCKED — whenever a person appears it is the SAME person: "
+                         "identical face, wardrobe, hair. Set uses_recurring_figure:true on those inserts.\n")
+            elif _fig_policy == "archetype":
+                film += ("  * FIGURE IS AN ARCHETYPE — when a shot needs a person, use an anonymous "
+                         "TYPE (trader / anxious analyst / hooded figure), NOT a persistent identity.\n")
+            if _arc:
+                film += (f"  * ARC: {_arc}\n    Order your cuts to this arc: EARLY slots "
+                         "ESTABLISH the world, MIDDLE slots ESCALATE, FINAL slots PAY OFF.\n")
+            if _payoff:
+                film += (f"  * PAYOFF BEAT — only the slot matching \"{_payoff}\" gets a warm gold "
+                         "key light; every other slot stays in the cold locked grade.\n")
+            film += ("Each insert is the NEXT shot of this film — advance the story while "
+                     "matching the words spoken in its slot. Same world, same figure, same "
+                     "motif throughout; only the FRAMING changes shot to shot.")
+            world = film
+        else:
+            world = (
+                "\n\nTHE LOOK — CINEMATIC STORYTELLING (NOT literal stock footage):\n"
+                "Direct each insert like a cinematographer shooting a moody thriller. "
+                "Turn the spoken line into a DRAMATIC VISUAL METAPHOR, not a literal "
+                "photo of the thing. Reach for high-concept, high-stakes imagery: a "
+                "lone figure in a dim war-room of screens; a giant glowing NUMBER "
+                "projected on a concrete wall; a gloved hand moving metal pieces "
+                "across a lit tactical map; a hooded figure studying documents under "
+                "one lamp; a symbolic object (a key, a coin, a falling graph, a "
+                "cracked foundation) rendered huge and cinematic.\n"
+                "  * MOOD: atmospheric, high-contrast, a little ominous — the "
+                "'stakes are high' feeling that stops the scroll.\n"
+                "  * FRAME: shallow depth of field, dramatic rim/single-source light, "
+                "haze, reflective surfaces, negative space. Film-grade, never a snapshot.\n"
+                "  * ONE WORLD: keep a single consistent setting/grade across every "
+                "insert so the reel plays like one short film, not a slideshow."
+                + (f"\n  * GROUND IT in the brand's world where natural: {industry.strip()}."
+                   if industry.strip() else "")
+            )
+        # Cinematic mode carries the ONE exception to the no-text rule + its own grade.
+        data_prop = (
+            "\n  * TEXT AS PROP: any number or key word is rendered AS an object IN the "
+            "scene — neon on a wall, a stamp on a document, a newspaper headline, a HUD "
+            "label — never a caption overlay. Words that MUST read are SHORT, UPPERCASE, "
+            "on a clean high-contrast surface (e.g. '6.3%', 'VOTE', 'PARDON', 'OCTOBER') "
+            "so the model renders them reliably. Incidental text (code streams, background "
+            "headlines) may stay illegible and read only as texture. This diegetic text "
+            "is the ONLY text allowed — no captions, subtitles, or lower-thirds."
+        )
+        # Lock the film's own palette when the storyboard gave us one, else the
+        # house cinematic grade. Either way, every prompt ends with it.
+        _grade_look = (
+            f"{_palette}, cinematic film grade, shallow depth of field, film grain, anamorphic"
+            if _palette else _CINEMATIC_BROLL_GRADE
+        )
+        grade = (
+            f"\n  * COLOR: end every prompt with this exact grade so the reel is "
+            f"one cohesive film — \"{_grade_look}\". On the PAYOFF beat only, you MAY "
+            "swap the cold key for a single warm gold key light (keep the same crushed-black "
+            "grade) — the one warm moment that lands the turn from fear to hope."
+        )
+        # The reference-reel shot grammar (Agent Opus study): specific moves
+        # beyond generic rule-of-three that make cutaways read as one film.
+        shot_moves = (
+            "\n  * ESCALATE by tightening on the SAME subject at emotional peaks: "
+            "medium -> close -> extreme MACRO of a single eye; reserve the macro eye "
+            "for the heaviest / turning line, never casual."
+            "\n  * SCALE HUMANS DOWN against data: on number/stakes lines, frame a tiny "
+            "lone silhouette dwarfed by a giant screen or wall-sized glowing number."
+            "\n  * HOLD & EVOLVE: on a key concept, prefer 2-3 consecutive inserts that "
+            "PROGRESS THE SAME subject through a motion arc (stamp presses -> lifts -> "
+            "reveals; tool smoulders -> flames -> ashes) instead of one shot then a new "
+            "idea. Dwell on the money moment; cut fast on transitions."
+            "\n  * Use an abstract MOTION-BLUR smear (streaking light / a blurred figure "
+            "through a dark corridor) as the connective beat BETWEEN two unrelated ideas."
+        )
+    else:
+        world = (
+            f"\n\nTHE BRAND'S WORLD: {industry.strip()}.\n"
+            "Pull B-roll from THIS world FIRST — real, literal scenes the "
+            "viewer would recognise: actual properties, streets, job sites, "
+            "signings, handshakes, listing signs, blueprints, skylines, "
+            "the work itself. Reach for an abstract symbol (a key, a ledger, "
+            "an Edison bulb) ONLY when a line is genuinely abstract and no "
+            "literal scene fits. Concrete-and-real beats clever-and-symbolic."
+            if industry.strip() else ""
+        )
+        data_prop = ""
+        shot_moves = ""
+        grade = (
+            f"\n  * COLOR: every prompt ends with this exact grade so the "
+            f"footage is cohesive — \"{color_grade.strip()}\"."
+            if color_grade.strip() else ""
+        )
     if content_aware:
         density = (
             "PACING IS CONTENT-DRIVEN, not one-per-slot. Cut away to "
@@ -691,6 +886,16 @@ def _insert_pick_system(
     else:
         density = "Drop one cutaway in EVERY slot — no skipping, no extras."
         density_rule = "Every slot gets exactly one insert."
+    # The recurring-figure channel exists ONLY in cinematic mode (it depends on
+    # the FIGURE IS LOCKED storyboard, which literal mode never emits). Keep both
+    # the instruction and the JSON key OUT of the literal prompt so the LLM can't
+    # tag a literal shot with it and route a generic scene through the hero face.
+    fig_field_doc = (
+        "\n  * uses_recurring_figure: true when the shot depicts THE FILM's locked "
+        "recurring figure (see FIGURE IS LOCKED above) — so the render keeps the "
+        "SAME face across those shots. Else false."
+    ) if cinematic else ""
+    fig_field_key = ', "uses_recurring_figure": bool' if cinematic else ""
     return f"""You are the editor for a short-form video.
 The hero is on camera the whole time, talking. {density}
 Each insert lasts {min_dur:g}-{max_dur:g} seconds and the image must
@@ -707,15 +912,15 @@ For each slot you choose to cut on, return ONE insert:
     number / action when one exists; otherwise the most CONCRETE word.
     Avoid connector words ('and', 'so', 'but') as the anchor.
   * end = start + {typical:g} typically. Always within the slot bounds.
-  * prompt: ONE concrete image prompt, 18-30 words, that paints WHAT
-    THE ANCHOR PHRASE describes — a real scene from the brand's world.
-    NEVER text/captions/logos in the image.{grade}
+  * prompt: ONE vivid image prompt, 18-32 words, that turns THE ANCHOR PHRASE
+    into {"a DRAMATIC CINEMATIC METAPHOR" if cinematic else "a real scene from the brand's world"}.
+    {"No captions/logos — the ONLY text allowed is a data NUMBER rendered as a prop." if cinematic else "NEVER text/captions/logos in the image."}{data_prop}{grade}
   * SHOT VARIETY (the rule of three): rotate framing — wide establishing
     shot, then medium shot, then close-up detail, and repeat. State the
     shot size explicitly (e.g. "wide establishing shot of..."). Two
-    consecutive inserts must NEVER share the same shot size.
+    consecutive inserts must NEVER share the same shot size.{shot_moves}
   * uses_hero: true ONLY when the anchor phrase is about the brand hero
-    himself (e.g. "I watched my mentor" = uses_hero; "the calendar" = no).
+    himself (e.g. "I watched my mentor" = uses_hero; "the calendar" = no).{fig_field_doc}
   * text: short label of the anchor word(s), max 4 words.
 
 {density_rule}
@@ -726,7 +931,7 @@ rule — your inserts must NOT repeat any of those mistakes.
 
 Return STRICT JSON:
 {{"inserts": [{{"slot": int, "start": float, "end": float,
-              "text": str, "prompt": str, "uses_hero": bool}}, ...]}}
+              "text": str, "prompt": str, "uses_hero": bool{fig_field_key}}}, ...]}}
 The slot field is the 0-indexed slot the insert is for.
 """
 
@@ -784,6 +989,7 @@ async def pick_insert_points(
     industry: str = "",
     color_grade: str = "",
     content_aware: bool = True,
+    broll_style: str = "literal",
 ) -> list[Insert]:
     """Word-anchored dense cutaway picker.
 
@@ -841,6 +1047,17 @@ async def pick_insert_points(
     if not slots:
         return []
 
+    # Cinematic mode: storyboard the WHOLE transcript into one cohesive film
+    # FIRST, so every cutaway below is a shot from the same story (a mini-film
+    # alongside the speaker) rather than unrelated moody stills. Best-effort.
+    treatment: dict | None = None
+    _is_cinematic = (broll_style or "").strip().lower() == "cinematic"
+    if _is_cinematic:
+        full_text = " ".join(w.word for w in words).strip()
+        treatment = await _cinematic_treatment(
+            full_text, industry=industry, hero_description=hero_description,
+        )
+
     payload = {
         "brand_context": brand_context[:600],
         "hero_description": hero_description[:400] if hero_description else "",
@@ -853,7 +1070,8 @@ async def pick_insert_points(
             system=_insert_pick_system(
                 _INSERT_MIN_DUR, _INSERT_MAX_DUR,
                 industry=industry, color_grade=color_grade,
-                content_aware=content_aware,
+                content_aware=content_aware, broll_style=broll_style,
+                treatment=treatment,
             ),
             messages=[{"role": "user", "content": json.dumps(payload)}],
             # Bump the ceiling — denser cadence = more inserts =
@@ -922,6 +1140,10 @@ async def pick_insert_points(
             text=str(entry.get("text") or "")[:140],
             image_prompt=prompt,
             uses_hero=bool(entry.get("uses_hero")),
+            # Honor the recurring-figure identity channel ONLY in cinematic mode
+            # (literal mode never emits FIGURE IS LOCKED, so any value there is
+            # spurious and must not route a generic shot through the hero face).
+            uses_recurring_figure=_is_cinematic and bool(entry.get("uses_recurring_figure")),
         ))
         last_end = end
     _enforce_shot_rotation(inserts)
@@ -1004,6 +1226,7 @@ async def animate_inserts(
     *,
     concurrency: int = 2,
     engine: str = "",
+    style: str = "",
 ) -> None:
     """Chain each insert's still through image-to-video so the cutaway has
     real motion instead of just Creatomate's Ken Burns.
@@ -1158,11 +1381,12 @@ async def animate_inserts(
                 return
 
             # File the freshly paid-for clip into the B-roll library so future
-            # renders (and the timeline editor) can reuse it for free.
+            # renders (and the timeline editor) can reuse it for free — tagged
+            # with the b-roll style so cinematic clips are findable.
             from .broll_library import register_generated_clip
             await register_generated_clip(
                 url=url, prompt=scene, engine=provider.name, aspect=aspect,
-                tenant_id=tenant_id,
+                mime="video/mp4", style=style, tenant_id=tenant_id,
             )
 
     # return_exceptions=True restores the documented contract: ONE insert
@@ -1241,18 +1465,26 @@ async def _render_hero_or_scene_still(
     *, prompt: str, uses_hero: bool,
     hero_refs: list[tuple[str, bytes]] | None,
     aspect: str, platform: str, style: str,
+    uses_recurring_figure: bool = False,
 ) -> tuple[bytes | None, str | None]:
-    """Generate one B-roll still, best identity first. Brand-hero shots
-    prefer the trained Higgsfield Soul (same face every cut); on any Soul
-    failure they fall back to gpt-image-1 photo-reference edits, then to a
-    generic text-only scene. Shared by the insert and beat render paths."""
+    """Generate one B-roll still, best identity first. Shots that depict the
+    brand hero (`uses_hero`) OR the cinematic film's locked recurring figure
+    (`uses_recurring_figure`) both render through the identity path — the
+    trained Higgsfield Soul (same face every cut), falling back to gpt-image-1
+    photo-reference edits, then a generic text-only scene. This is what makes
+    the recurring cinematic character stay the SAME person shot-to-shot: the
+    figure is James, rendered from his Soul into each cinematic scene. Shared by
+    the insert and beat render paths."""
+    # The figure IS the hero for identity purposes — lock the same face on every
+    # shot the LLM tagged as the recurring figure, exactly like an explicit hero shot.
+    want_identity = uses_hero or uses_recurring_figure
     # 1) Soul ID — consistent hero across every cut.
-    if uses_hero and (settings.higgsfield_soul_id or "").strip():
+    if want_identity and (settings.higgsfield_soul_id or "").strip():
         png, err = await _soul_still(prompt, aspect)
         if png:
             return png, None
     # 2) Photo-reference hero edit.
-    if uses_hero and hero_refs:
+    if want_identity and hero_refs:
         from .imagegen import generate_post_image_with_refs
         png, _meta, err = await generate_post_image_with_refs(
             topic=prompt, references=hero_refs,
@@ -1288,6 +1520,7 @@ async def gen_insert_images(
                 return
             png, err = await _render_hero_or_scene_still(
                 prompt=i.image_prompt, uses_hero=i.uses_hero,
+                uses_recurring_figure=i.uses_recurring_figure,
                 hero_refs=hero_refs, aspect=aspect,
                 platform=platform, style=style,
             )
@@ -1774,6 +2007,94 @@ class EngagingAvatarResult:
     inserts: list[Insert]
     captions: list[dict]               # word-pinned flashes
     error: str = ""
+    # Speaker-following crop: x keyframes that pan track-1 to the active speaker
+    # (2-person interviews), + the overflow width they were built for. None when
+    # not applicable (solo/portrait/no diarization) → static pan / center crop.
+    speaker_keyframes: list[dict] | None = None
+    speaker_overflow_pct: float | None = None
+    # Lower-third name-tag overlay elements (one per speaker, at their first
+    # appearance). None when no speaker assignment was supplied for this reel.
+    speaker_tags: list[dict] | None = None
+
+
+def _diarized_turns(words: list) -> list[dict]:
+    """Group diarized words into speaker turns [{speaker,start,end}] by
+    coalescing consecutive same-speaker words. Words without a speaker label are
+    skipped. Short interruptions become their own (short) turns — the keyframe
+    builder absorbs sub-min_turn ones so the crop doesn't twitch."""
+    turns: list[dict] = []
+    for w in words:
+        spk = getattr(w, "speaker", "") or ""
+        if not spk:
+            continue
+        if turns and turns[-1]["speaker"] == spk:
+            turns[-1]["end"] = float(w.end)
+        else:
+            turns.append({"speaker": spk, "start": float(w.start), "end": float(w.end)})
+    return turns
+
+
+def _build_speaker_nametags(
+    turns: list[dict], fmap: dict | None, assignment: list[dict],
+    total: float, hook_hold: float, brand: dict | None = None,
+) -> list[dict]:
+    """One lower-third name-tag per speaker at their FIRST appearance (~2.5s).
+
+    Matches each cut-speaker to an assigned identity by face_x when we have
+    positions (robust to AssemblyAI relabeling speakers between the source and
+    the cut), else by order of appearance. Each identity is used at most once.
+    The first speaker's tag is delayed past the hook so they never overlap."""
+    from .caption_styles import speaker_nametag_elements
+    idents = [a for a in (assignment or []) if (a.get("handle") or "").strip()]
+    if not idents:
+        return []
+    DUR = 2.6
+
+    first: dict[str, float] = {}
+    for t in (turns or []):
+        s = t.get("speaker") or ""
+        st = float(t.get("start") or 0.0)
+        if s and (s not in first or st < first[s]):
+            first[s] = st
+    order = sorted(first, key=lambda s: first[s])
+
+    # No diarization / single speaker → the sole identity, once, near the top.
+    if len(order) <= 1:
+        i = idents[0]
+        start = min(max(0.0, hook_hold + 0.2), max(0.0, total - 1.2))
+        dur = min(DUR, max(1.2, total - start))
+        return speaker_nametag_elements(
+            i["handle"], i.get("subtitle", ""), start, dur, brand)
+
+    have_fx = bool(fmap) and any("face_x" in a for a in idents)
+    used: set[int] = set()
+    els: list[dict] = []
+    for idx, spk in enumerate(order):
+        j_pick = None
+        if have_fx and spk in fmap:
+            fx = float(fmap[spk])
+            for j in sorted(range(len(idents)),
+                            key=lambda k: abs(float(idents[k].get("face_x", 0.5)) - fx)):
+                if j not in used:
+                    j_pick = j
+                    break
+        if j_pick is None:  # appearance-order fallback, skipping used identities
+            for j in range(len(idents)):
+                if j not in used:
+                    j_pick = j
+                    break
+        if j_pick is None:
+            continue
+        used.add(j_pick)
+        ident = idents[j_pick]
+        start = first[spk]
+        if idx == 0:
+            start = max(start, hook_hold + 0.2)
+        start = min(start, max(0.0, total - 1.2))
+        dur = min(DUR, max(1.2, total - start))
+        els += speaker_nametag_elements(
+            ident["handle"], ident.get("subtitle", ""), start, dur, brand)
+    return els
 
 
 async def build_engaging_avatar_assets(
@@ -1787,6 +2108,8 @@ async def build_engaging_avatar_assets(
     broll_avoid: str = "",
     engine: str = "",                  # B-roll animator: ''|runway|higgsfield
     broll_pacing: str = "",            # ''|punchy|illustrative|reflective
+    broll_style: str = "literal",      # 'literal' | 'cinematic' (conceptual metaphor)
+    speaker_assignment: list[dict] | None = None,  # [{face_x,handle,subtitle}] → name-tags
 ) -> EngagingAvatarResult:
     """Engaging-avatar pipeline.
 
@@ -1834,13 +2157,132 @@ async def build_engaging_avatar_assets(
             error="could not persist audio",
         )
 
-    try:
-        tr = await transcribe_words("voice.mp3", audio_bytes)
-    except Exception as e:  # noqa: BLE001
-        return EngagingAvatarResult(
-            avatar_video_url, audio_url, 0.0, [], [],
-            error=f"whisper failed: {e}",
-        )
+    # Transcribe the cut. Prefer AssemblyAI (per-word SPEAKER labels) so the
+    # speaker-following reframe knows who's talking; fall back to Whisper (no
+    # speakers — captions still work, framing degrades to the static pan).
+    tr = None
+    if settings.speaker_follow_enabled and (settings.assemblyai_api_key or "").strip():
+        try:
+            from .transcription import transcribe_assemblyai
+            # Short cap: a reel CUT is tens of seconds — if AssemblyAI hangs,
+            # fall back to Whisper in ~4 min, not 45.
+            _atr = await transcribe_assemblyai(audio_bytes, max_wait_s=240.0)
+            if _atr.words:
+                tr = _atr
+                _spk = len({w.speaker for w in _atr.words if w.speaker})
+                print(f"[speaker-follow] diarized cut: {len(_atr.words)} words, "
+                      f"{_spk} speaker(s)")
+        except Exception as e:  # noqa: BLE001 — fall back to Whisper
+            print(f"[speaker-follow] AssemblyAI transcription failed ({e}); using Whisper")
+    if tr is None:
+        try:
+            tr = await transcribe_words("voice.mp3", audio_bytes)
+        except Exception as e:  # noqa: BLE001
+            return EngagingAvatarResult(
+                avatar_video_url, audio_url, 0.0, [], [],
+                error=f"transcription failed: {e}",
+            )
+
+    # Intra-clip tightening (config-gated, OFF by default): cut INTERNAL silent
+    # gaps out of the clip so the reel is punchy (no dead air). Best-effort —
+    # any failure ships the original, un-tightened clip. Because we remap tr.words
+    # to the compressed timeline here, the EXISTING pick_insert_points + caption
+    # builders below line up automatically (they read only word.start/.end).
+    if settings.clip_tighten_enabled and tr.words:
+        try:
+            from .clip_tighten import (
+                compute_kept_intervals, maybe_drop_fillers, remap_words,
+            )
+            from .audio_trim import tighten_clip
+            _ws = maybe_drop_fillers(tr.words, settings.clip_tighten_remove_fillers)
+            _ivs = compute_kept_intervals(
+                _ws, tr.duration, max_gap=settings.clip_tighten_max_gap_s,
+            )
+            _removed = tr.duration - sum(e - s for s, e in _ivs)
+            # Only act when there's a meaningful, sane amount to cut: >=2 segments,
+            # at least min_savings_s removed, and never more than 45% of the clip
+            # (a suspiciously aggressive cut usually means a bad transcript).
+            if (len(_ivs) >= 2
+                    and _removed >= settings.clip_tighten_min_savings_s
+                    and _removed <= tr.duration * 0.45):
+                _nb = await tighten_clip(video_bytes, _ivs)
+                if _nb:
+                    _turl, _ = await asyncio.to_thread(
+                        media_storage().save, tid, _nb,
+                        f"reel-tight-{uuid.uuid4().hex[:8]}.mp4",
+                    )
+                    if _turl:
+                        video_bytes = _nb
+                        avatar_video_url = _turl
+                        tr = remap_words(tr, _ivs)
+                        print(f"[tighten] cut {_removed:.1f}s of dead air "
+                              f"({len(_ivs)} segments kept)")
+        except Exception as e:  # noqa: BLE001 — passthrough keeps the original clip
+            print(f"[tighten] skipped: {e}")
+
+    # Speaker-following reframe (best-effort): for a 2-person interview, build x
+    # keyframes that pan the vertical crop to whoever is speaking. Uses the
+    # diarized SPEAKER labels on tr.words (already on the TIGHTENED timeline).
+    # Any failure → speaker_keyframes stays None → static single-face pan.
+    speaker_keyframes: list[dict] | None = None
+    speaker_overflow_pct: float | None = None
+    _nt_fmap: dict | None = None   # speaker→face_x, reused for name-tag matching
+    if settings.speaker_follow_enabled and any(getattr(w, "speaker", "") for w in tr.words):
+        try:
+            turns = _diarized_turns(tr.words)
+            if len({t["speaker"] for t in turns}) >= 2:
+                from .audio_trim import probe_video_dims
+                from .perception import detect_speaker_face_map
+                from .assembly import build_speaker_keyframes
+                with tempfile.TemporaryDirectory() as _td:
+                    _vp = f"{_td}/cut.mp4"
+                    with open(_vp, "wb") as _fh:
+                        _fh.write(video_bytes)
+                    _dims = await probe_video_dims(_vp)
+                    if _dims and _dims[1] > 0:
+                        try:
+                            _w, _h = aspect.split(":")
+                            _out_ar = float(_w) / float(_h)
+                        except Exception:  # noqa: BLE001
+                            _out_ar = 9.0 / 16.0
+                        _src_ar = _dims[0] / _dims[1]
+                        if _out_ar and _src_ar > _out_ar * 1.05:   # wide enough to pan
+                            _W = round(_src_ar / _out_ar * 100.0, 1)
+                            _fmap = await detect_speaker_face_map(_vp, turns)
+                            if _fmap:
+                                _nt_fmap = _fmap   # reuse for name-tag matching
+                                _kfs = build_speaker_keyframes(
+                                    turns, _fmap, tr.duration, _W,
+                                    left_bias=settings.speaker_follow_left_bias,
+                                    min_turn_s=settings.speaker_follow_min_turn_s,
+                                    ramp_s=settings.speaker_follow_ramp_s,
+                                )
+                                if _kfs:
+                                    speaker_keyframes = _kfs
+                                    speaker_overflow_pct = _W
+        except Exception as e:  # noqa: BLE001 — degrade to static pan
+            print(f"[speaker-follow] keyframe build skipped: {e}")
+            speaker_keyframes, speaker_overflow_pct = None, None
+
+    # Speaker NAME-TAGS (lower-third @handle + title) — only when the user has
+    # assigned identities for this reel. Reuses the diarized turns + face map so
+    # it costs nothing extra. Best-effort: never fails a render.
+    speaker_tags: list[dict] | None = None
+    if speaker_assignment:
+        try:
+            _nt_turns = (
+                _diarized_turns(tr.words)
+                if any(getattr(w, "speaker", "") for w in tr.words) else []
+            )
+            from .caption_styles import hook_hold_seconds
+            _tags = _build_speaker_nametags(
+                _nt_turns, _nt_fmap, speaker_assignment, tr.duration,
+                hook_hold_seconds(tr.duration),
+            )
+            speaker_tags = _tags or None
+        except Exception as e:  # noqa: BLE001 — name-tags must never break a render
+            print(f"[name-tags] skipped: {e}")
+            speaker_tags = None
 
     # Hero context (description + refs) — same as story modes.
     from .hero_context import (
@@ -1879,6 +2321,7 @@ async def build_engaging_avatar_assets(
         industry=settings.brand_industry,
         color_grade=settings.broll_color_grade,
         content_aware=(broll_pacing or "").strip().lower() != "punchy",
+        broll_style=broll_style,
     )
 
     if inserts:
@@ -1891,7 +2334,25 @@ async def build_engaging_avatar_assets(
         # static image_url and the Creatomate source falls back to a
         # still element. Tracked per-insert via video_error so the UI
         # can show what was actually rendered as motion.
-        await animate_inserts(inserts, aspect, tid, engine=engine)
+        await animate_inserts(inserts, aspect, tid, engine=engine, style=broll_style)
+        # SAVE every generated B-roll into the reusable library. animate_inserts
+        # already files each animated CLIP; here we also file the STILLS that
+        # never animated (animation off / failed) so NO generated cutaway is
+        # lost — each tagged with the b-roll style for later reuse.
+        try:
+            from .broll_library import register_generated_clip
+            for _ins in inserts:
+                if (_ins.video_url or "").startswith("http"):
+                    continue  # already filed as a clip inside animate_inserts
+                if (_ins.image_url or "").startswith("http"):
+                    await register_generated_clip(
+                        url=_ins.image_url,
+                        prompt=_ins.image_prompt or _ins.text,
+                        engine="still", aspect=aspect,
+                        mime="image/png", style=broll_style, tenant_id=tid,
+                    )
+        except Exception:  # noqa: BLE001 — provenance only, never break a render
+            pass
 
     captions = caption_lines(tr.words)
     return EngagingAvatarResult(
@@ -1900,6 +2361,9 @@ async def build_engaging_avatar_assets(
         audio_duration=tr.duration,
         inserts=inserts,
         captions=captions,
+        speaker_keyframes=speaker_keyframes,
+        speaker_overflow_pct=speaker_overflow_pct,
+        speaker_tags=speaker_tags,
     )
 
 

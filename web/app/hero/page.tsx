@@ -87,6 +87,53 @@ export default function HeroLibraryPage() {
     }
   }
 
+  async function remove(id: string) {
+    if (!confirm("Delete this asset? This can't be undone.")) return;
+    setErr(null);
+    // optimistic
+    setPhotos((xs) => xs.filter((x) => x.id !== id));
+    setVideos((xs) => xs.filter((x) => x.id !== id));
+    try {
+      await api.deleteMedia(id);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "delete failed");
+      await load();
+    }
+  }
+
+  // Split hero photos: real uploads vs AI-generated (source_type='generated').
+  const realPhotos = photos.filter((p) => p.source_type !== "generated");
+  const aiPhotos = photos.filter((p) => p.source_type === "generated");
+
+  const [libTab, setLibTab] = useState<"images" | "ai" | "videos">("images");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [moving, setMoving] = useState(false);
+  function toggleSel(id: string) {
+    setSelected((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }
+  async function moveSelected(ids: string[], to: "generated" | "upload") {
+    const targets = ids.filter((id) => selected.has(id));
+    if (!targets.length) return;
+    setMoving(true);
+    setErr(null);
+    try {
+      for (const id of targets) await api.updateMedia(id, { source_type: to });
+      setSelected(new Set());
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "move failed");
+    } finally {
+      setMoving(false);
+    }
+  }
+  const selRealCount = realPhotos.filter((p) => selected.has(p.id)).length;
+  const selAiCount = aiPhotos.filter((p) => selected.has(p.id)).length;
+
   const acceptForBucket = bucket === "hero_photo"
     ? "image/*"
     : "video/*";
@@ -182,37 +229,155 @@ export default function HeroLibraryPage() {
 
       <HiggsfieldSoulsCard />
 
-      {photos.length > 0 && (
-        <Card>
-          <CardTitle>Photos ({photos.length})</CardTitle>
-          <div className="grid grid-cols-3 gap-2 mt-2">
-            {photos.map((p) => (
+      <div className="flex gap-2 flex-wrap">
+        {([
+          ["images", `Hero images (${realPhotos.length})`],
+          ["ai", `Hero AI images (${aiPhotos.length})`],
+          ["videos", `Videos (${videos.length})`],
+        ] as const).map(([t, label]) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setLibTab(t)}
+            className={`text-[13px] px-4 py-2 rounded-full border transition-colors ${
+              libTab === t
+                ? "border-primary text-primary bg-primary/10 font-medium"
+                : "border-border text-muted-foreground hover:border-primary/60 hover:text-foreground"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {libTab === "images" && (
+      <Card>
+        <div className="flex items-center justify-between">
+          <CardTitle>Hero images ({realPhotos.length})</CardTitle>
+          {selRealCount > 0 && (
+            <Button
+              variant="secondary"
+              disabled={moving}
+              onClick={() => moveSelected(realPhotos.map((p) => p.id), "generated")}
+              className="text-[12px] !px-3 !py-1"
+              title="Reclassify the selected photos as AI images — moves them to the Hero AI images section (and out of template/reference use)."
+            >
+              {moving ? <Spinner /> : `Move ${selRealCount} to AI images →`}
+            </Button>
+          )}
+        </div>
+        <p className="text-[11px] text-muted-foreground mt-1 mb-2">
+          Real uploaded photos of James — the reference for descriptions,
+          Soul training, and hero-quote cards. Tick any that are actually AI and
+          move them across.
+        </p>
+        {realPhotos.length === 0 ? (
+          <p className="text-[12px] text-muted-foreground">No hero images yet — upload some above.</p>
+        ) : (
+          <div className="grid grid-cols-3 gap-2">
+            {realPhotos.map((p) => (
               <div
                 key={p.id}
-                className="border border-border rounded-md overflow-hidden bg-background"
+                onClick={() => toggleSel(p.id)}
+                className={`group relative border rounded-md overflow-hidden bg-background cursor-pointer ${
+                  selected.has(p.id) ? "border-primary ring-2 ring-primary" : "border-border"
+                }`}
               >
-                <img
-                  src={mediaUrl(p.uri)}
-                  alt={p.title}
-                  className="w-full aspect-square object-cover"
+                <img src={mediaUrl(p.uri)} alt={p.title} className="w-full aspect-square object-cover" />
+                <input
+                  type="checkbox"
+                  checked={selected.has(p.id)}
+                  onChange={() => toggleSel(p.id)}
+                  onClick={(e) => e.stopPropagation()}
+                  className="absolute top-1 left-1 w-4 h-4 accent-primary"
                 />
-                <div className="p-1.5 text-[10px] text-muted-foreground truncate">
-                  {p.title}
-                </div>
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); remove(p.id); }}
+                  title="Delete"
+                  className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/70 text-white text-[13px] leading-none opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive"
+                >
+                  ×
+                </button>
+                <div className="p-1.5 text-[10px] text-muted-foreground truncate">{p.title}</div>
               </div>
             ))}
           </div>
-        </Card>
+        )}
+      </Card>
+
       )}
 
-      {videos.length > 0 && (
+      {libTab === "ai" && (
+      <Card>
+        <div className="flex items-center justify-between">
+          <CardTitle>Hero AI images ({aiPhotos.length})</CardTitle>
+          {selAiCount > 0 && (
+            <Button
+              variant="secondary"
+              disabled={moving}
+              onClick={() => moveSelected(aiPhotos.map((p) => p.id), "upload")}
+              className="text-[12px] !px-3 !py-1"
+              title="Move the selected AI images back to the real Hero images section."
+            >
+              {moving ? <Spinner /> : `← Move ${selAiCount} to Hero images`}
+            </Button>
+          )}
+        </div>
+        <p className="text-[11px] text-muted-foreground mt-1 mb-2">
+          AI-generated images of James. Kept separate from real photos and
+          EXCLUDED from templates/references, so only the authentic likeness is used.
+        </p>
+        {aiPhotos.length === 0 ? (
+          <p className="text-[12px] text-muted-foreground">
+            None yet. Tick AI photos in the Hero images section above and use
+            &quot;Move to AI images&quot; to file them here.
+          </p>
+        ) : (
+          <div className="grid grid-cols-3 gap-2">
+            {aiPhotos.map((p) => (
+              <div
+                key={p.id}
+                onClick={() => toggleSel(p.id)}
+                className={`group relative border rounded-md overflow-hidden bg-background cursor-pointer ${
+                  selected.has(p.id) ? "border-primary ring-2 ring-primary" : "border-border"
+                }`}
+              >
+                <img src={mediaUrl(p.uri)} alt={p.title} className="w-full aspect-square object-cover" />
+                <input
+                  type="checkbox"
+                  checked={selected.has(p.id)}
+                  onChange={() => toggleSel(p.id)}
+                  onClick={(e) => e.stopPropagation()}
+                  className="absolute top-1 left-1 w-4 h-4 accent-primary"
+                />
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); remove(p.id); }}
+                  title="Delete"
+                  className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/70 text-white text-[13px] leading-none opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive"
+                >
+                  ×
+                </button>
+                <div className="p-1.5 text-[10px] text-muted-foreground truncate">{p.title}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+      )}
+
+      {libTab === "videos" && (
         <Card>
           <CardTitle>Videos ({videos.length})</CardTitle>
+          {videos.length === 0 ? (
+            <p className="text-[12px] text-muted-foreground mt-2">No hero videos yet — upload some above.</p>
+          ) : (
           <div className="grid grid-cols-3 gap-2 mt-2">
             {videos.map((v) => (
               <div
                 key={v.id}
-                className="border border-border rounded-md overflow-hidden bg-background"
+                className="group relative border border-border rounded-md overflow-hidden bg-background"
               >
                 <video
                   src={mediaUrl(v.uri)}
@@ -220,12 +385,21 @@ export default function HeroLibraryPage() {
                   controls
                   className="w-full aspect-video object-cover"
                 />
+                <button
+                  type="button"
+                  onClick={() => remove(v.id)}
+                  title="Delete"
+                  className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/70 text-white text-[13px] leading-none opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive z-10"
+                >
+                  ×
+                </button>
                 <div className="p-1.5 text-[10px] text-muted-foreground truncate">
                   {v.title}
                 </div>
               </div>
             ))}
           </div>
+          )}
         </Card>
       )}
     </div>

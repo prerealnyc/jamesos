@@ -25,10 +25,13 @@ logger = logging.getLogger("james_os.brand_kit")
 DEFAULT_BRAND_KIT = {
     "display_name": "James Prendamano",
     "tagline": "PreReal",
-    "handle": "",
+    "handle": "@j_prendamano",
     "logo_url": "",
     # Fixed closing line appended to every generated caption (posts + videos).
     "caption_signoff": "We are ALL one",
+    # Branded navy quote cards (brand_quote / hero_quote): footer + accent.
+    "website": "prendamanoacademy.com",
+    "footer_tagline": "free forever",
 }
 
 _KEYS = set(DEFAULT_BRAND_KIT)

@@ -106,6 +106,11 @@ class AskRequest(BaseModel):
     event_types: list[EventType] | None = None
     since: datetime | None = None
     until: datetime | None = None
+    # Sensitivity gating: 'internal' (default) may reproduce Restricted data;
+    # 'public' excludes Restricted + NDA-Protected data from the output.
+    # Literal so a typo ('public_facing') is rejected instead of silently
+    # degrading to the more permissive internal policy.
+    audience: Literal["internal", "public"] = "internal"
 
 
 class AskResponse(BaseModel):
@@ -293,12 +298,50 @@ class MediaLinkRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class SpeakerCreate(BaseModel):
+    """A saved speaker for on-screen name-tags: handle + who-they-are subtitle."""
+    handle: str                       # '@j_prendamano' (@ added if missing)
+    subtitle: str = ""                # 'CEO at PreReal Estate'
+    face_ref: str = ""                # optional stored face crop / photo url
+
+
+class SpeakerUpdate(BaseModel):
+    handle: str | None = None
+    subtitle: str | None = None
+    face_ref: str | None = None
+
+
+class SpeakerTag(BaseModel):
+    """One assigned identity for a source's on-screen name-tags."""
+    face_x: float = 0.5               # 0=left .. 1=right (matches render face map)
+    handle: str
+    subtitle: str = ""
+
+
+class SpeakerTagsRequest(BaseModel):
+    tags: list[SpeakerTag] = Field(default_factory=list)
+
+
+class VideoTrimRequest(BaseModel):
+    """Trim a finished render to [start_s, end_s] (end_s<=0 → to the end)."""
+    start_s: float = 0.0
+    end_s: float = 0.0
+
+
+class WhitepaperRequest(BaseModel):
+    """Generate a grounded, cited white paper from the Knowledge Base."""
+    topic: str
+    audience: str = ""    # default: executives, partners, stakeholders
+    goal: str = ""        # default: inform strategy & decision-making
+
+
 class MediaUpdate(BaseModel):
     title: str | None = None
     notes: str | None = None
     platform: str | None = None
     tags: list[str] | None = None
     mute_audio: bool | None = None
+    source_type: str | None = None   # reclassify: upload | url | generated
 
 
 class VideoPlanRequest(BaseModel):

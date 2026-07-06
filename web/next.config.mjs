@@ -81,6 +81,16 @@ const nextConfig = {
       { source: "/higgsfield/:path*", destination: `${BACKEND}/higgsfield/:path*` },
       // Brand kit (name plate / watermark / end card identity).
       { source: "/brand-kit", destination: `${BACKEND}/brand-kit` },
+      // Knowledge Base (intelligence parity) — ingest/documents/whitepaper/
+      // vocab/silos/entities/intelligence/synthesize/commitments. Sub-paths
+      // only; the bare /knowledge route stays the Next page.
+      { source: "/knowledge/:path*", destination: `${BACKEND}/knowledge/:path*` },
+      // Content Library data — /content-library is the Next page, the API
+      // lives at /content-library/data (sub-path, no clash).
+      { source: "/content-library/:path*", destination: `${BACKEND}/content-library/:path*` },
+      // Speaker directory (on-screen name-tags). No /speakers Next page.
+      { source: "/speakers", destination: `${BACKEND}/speakers` },
+      { source: "/speakers/:path*", destination: `${BACKEND}/speakers/:path*` },
     ];
   },
 };

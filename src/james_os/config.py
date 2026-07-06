@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # for live status). Never logged, never returned by any endpoint —
     # only their presence (bool) is ever exposed.
     openai_api_key: str = ""       # Whisper transcription, GPT, Sora
+    # When set, long-form transcription uses AssemblyAI (speaker diarization +
+    # word timestamps) instead of Whisper — lets the reel cutter avoid crossing
+    # into the next speaker's turn. Empty = fall back to Whisper (no speakers).
+    assemblyai_api_key: str = ""   # ASSEMBLYAI_API_KEY
     elevenlabs_api_key: str = ""   # voice synthesis / cloning
     heygen_api_key: str = ""       # avatar video
     heygen_avatar_id: str = ""     # default avatar for renders
@@ -106,10 +110,39 @@ class Settings(BaseSettings):
     heygen_api_version: str = "v2"
     heygen_voice_id: str = ""         # HeyGen voice id (required to speak text)
     image_model: str = "gpt-image-1"  # OpenAI image model for B-roll seed stills
+    ocr_model: str = "gpt-4o-mini"    # vision model for document-image OCR
     # Auto-trim trailing silence on every avatar/broll clip and snap the
     # scene's duration to the trimmed length. Eliminates dead air between
     # scenes in Creatomate's stitched output. Disable for raw clips.
     auto_trim_silence: bool = True
+    # ─── Intra-clip tightening (de-um / de-silence the chosen reel window) ───
+    # Off by default — flip on after verifying on a few reels. When on, the reel
+    # builder cuts INTERNAL silent gaps longer than max_gap_s out of the clip on
+    # word boundaries and remaps captions + B-roll to the compressed timeline,
+    # so the reel is punchier (no dead air). Best-effort: any failure ships the
+    # untightened clip. Filler-word removal is a separate, riskier toggle.
+    clip_tighten_enabled: bool = True     # ON: every clip gets dead air cut ("kill the fluff")
+    clip_tighten_max_gap_s: float = 0.55   # only excise silences longer than this
+    clip_tighten_min_savings_s: float = 0.8  # skip if we'd save less (not worth a re-encode)
+    clip_tighten_remove_fillers: bool = True   # also drop isolated fillers ("um/uh/…")
+    # ─── Auto-clip: the clipper works ON ITS OWN ───
+    # When a source finishes analysis, automatically render its top-N scored
+    # candidates into reels (they land in the approval queue) — no manual
+    # "Render reel" click. Bounded per source to keep render spend predictable.
+    auto_clip_enabled: bool = True
+    auto_clip_top_n: int = 3               # how many top candidates to auto-render per source
+    auto_clip_broll_style: str = ""        # ''(literal)|cinematic for auto-clips
+    auto_clip_caption_style: str = ""      # blank → pipeline default
+    # ─── Speaker-following auto-reframe (2-person interviews) ───
+    # When a wide (16:9) cut is reframed to 9:16, keyframe the crop to pan to
+    # WHOEVER is speaking (using AssemblyAI diarization + face detection), so
+    # each person is in-frame during their turn — instead of one static crop
+    # that can center the wrong person. Best-effort; degrades to the static
+    # single-face pan, then a center crop. Needs assemblyai_api_key.
+    speaker_follow_enabled: bool = True
+    speaker_follow_min_turn_s: float = 1.2   # ignore turns shorter than this (no jitter)
+    speaker_follow_ramp_s: float = 0.4       # ease duration for each pan (seconds)
+    speaker_follow_left_bias: float = 0.42   # active speaker's face target (0..1, center-LEFT)
     # Auto-reuse of previously-rendered B-roll across videos. OFF: per human
     # feedback the same clips kept reappearing and drifting off the spoken
     # words, so every reel now generates fresh, transcript-grounded B-roll

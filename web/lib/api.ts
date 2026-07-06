@@ -476,7 +476,7 @@ export type ComposeResult = {
 
 export type Production = {
   id: string;
-  status: "queued" | "planning" | "rendering_clips" | "assembling" | "succeeded" | "failed";
+  status: "queued" | "planning" | "rendering_clips" | "assembling" | "succeeded" | "failed" | "canceled";
   mode?: "mixed" | "avatar_only" | "timeline" | "story_audio" | "avatar_story_mix" | "engaging_avatar" | "long_form_reel" | "hero_clone";
   title: string;
   platform: string;
@@ -539,6 +539,179 @@ export type LongSource = {
   error: string | null;
   created_at: string;
   updated_at: string;
+};
+
+/** One filed company document in the Knowledge Base ledger. */
+export type KnowledgeDoc = {
+  id: string;
+  filename: string;
+  original_name: string;
+  category: string;
+  version: number;
+  status: string;
+  sensitivity: string;
+  flagged_for_review: boolean;
+  review_reason: string | null;
+  mime_type: string | null;
+  size_bytes: number;
+  notes: string | null;
+  chunks: number;
+  business_unit: string | null;
+  asset_class: string | null;
+  doc_type: string | null;
+  descriptor: string | null;
+  entity_id: string | null;
+  silo_id: string | null;
+  indexing_status: "indexed" | "skipped" | "failed" | "pending";
+  indexing_error: string | null;
+  indexed_at: string | null;
+  created_at: string;
+};
+
+/** Per-file outcome of a knowledge ingest (single file or ZIP batch). */
+export type KnowledgeIngestResult = {
+  ok: boolean;
+  expanded: boolean;
+  total: number;
+  filed: number;
+  skipped: number;
+  failed: number;
+  results: {
+    originalName: string; ok: boolean; skipped?: boolean;
+    reason?: string | null; filename?: string; fileId?: string; chunks?: number;
+  }[];
+};
+
+/** A generated, corpus-grounded white paper (Knowledge Base intelligence). */
+export type Whitepaper = {
+  ok: boolean;
+  topic: string;
+  low_grounding: boolean;
+  title: string;
+  subtitle: string;
+  abstract: string;
+  sections: { heading: string; body: string }[];
+  key_takeaways: string[];
+  structure_summary: string;
+  exemplars: { url: string; title: string | null }[];
+  sources: { n: number; filename: string }[];
+  markdown: string;
+  file: { id: string | null; filename: string | null; chunks: number } | null;
+};
+
+/** A silo (project/topic corpus grouping). */
+export type Silo = { id: string; name: string; description: string | null; files?: number };
+
+/** A registered entity (stable EntityID, e.g. TBM-H-001). */
+export type KbEntity = {
+  id: string; business_unit: string; entity_type_code: string;
+  display_name: string; notes: string | null; created_at: string;
+};
+
+/** An action item mined from a document/transcript. */
+export type Commitment = {
+  id: string; text: string; owner: string; author: string;
+  entity_id: string | null; source_file_id: string | null;
+  due: string | null; status: "open" | "in_progress" | "blocked" | "done" | "missed";
+  notes: string | null; created_at: string;
+};
+
+/** Topic-intelligence result (multi-angle sweep + synthesis). */
+export type IntelBrief = {
+  ok: boolean;
+  topic: string;
+  coverage: { had_enough: boolean; existing_docs: number; top_similarity: number; researched: boolean };
+  planned: boolean;
+  gathered: { angle: string; label: string; rationale: string; citations: number; saved: boolean; error?: string | null }[];
+  synthesis: { answer: string; file: { id: string | null; filename: string | null } | null };
+  sources: { n: number; filename: string; origin: string }[];
+};
+
+/** Cross-silo portfolio synthesis. */
+export type PortfolioSynthesis = {
+  ok: boolean;
+  executive_summary: string;
+  points: { type: string; title: string; insight: string; silos: string[]; evidence: number[] }[];
+  silos: { id: string; name: string }[];
+  sources: { n: number; filename: string; silo: string }[];
+};
+
+/** One clippable topic-reel found inside a source, with its clip lifecycle. */
+export type LibCandidate = {
+  id: string;
+  hook_quote: string;
+  summary: string;
+  score: number;
+  start_s: number;
+  end_s: number;
+  state: "clippable" | "clipping" | "clipped";
+  production_id: string | null;
+  final_url: string | null;
+  review_status: string | null;
+};
+
+export type LibSource = {
+  id: string;
+  title: string;
+  status: string;
+  duration_s: number;
+  created_at: string | null;
+  candidates: LibCandidate[];
+};
+
+/** One segment inside a topic suggestion (a candidate window, possibly
+ *  from a different footage than its siblings). */
+export type ClipTopicSegment = {
+  candidate_id: string;
+  source_id: string;
+  start_s: number;
+  end_s: number;
+  quote?: string;
+  source_title?: string;
+};
+
+/** A topic the clipper suggests it can build — click Build and it cuts
+ *  every segment, stitches them, and runs the full engaging treatment. */
+export type ClipTopic = {
+  id: string;
+  title: string;
+  hook: string;
+  why: string;
+  score: number;
+  segments: ClipTopicSegment[];
+  state: "suggested" | "building" | "built";
+  production_id: string | null;
+  final_url: string | null;
+};
+
+export type ContentLibrary = {
+  summary: { sources: number; clippable: number; clipping: number; clipped: number };
+  sources: LibSource[];
+  topics: ClipTopic[];
+  topics_mining: boolean;
+};
+
+/** A saved speaker for on-screen name-tags. */
+export type Speaker = {
+  id: string;
+  handle: string;
+  subtitle: string;
+  face_ref: string;
+  created_at: string;
+};
+
+/** A distinct on-camera speaker detected in a source (the "who is this?" step). */
+export type DetectedSpeaker = {
+  face_x: number;
+  label: string;
+  preview_url: string;
+};
+
+/** One assigned identity saved on a source → drives a name-tag at render. */
+export type SpeakerTag = {
+  face_x: number;
+  handle: string;
+  subtitle: string;
 };
 
 /** One LLM-picked 30-45s window inside a LongSource. Each candidate
@@ -945,6 +1118,14 @@ export const api = {
     jpost<{ ok: boolean; id: string; status: string; learned_id: string | null }>(
       `/video/productions/${id}/reject`, { reason },
     ),
+  cancelProduction: (id: string) =>
+    jpost<{ ok: boolean; id: string; status: string | null; reason?: string }>(
+      `/video/productions/${id}/cancel`, {},
+    ),
+  trimProduction: (id: string, body: { start_s: number; end_s: number }) =>
+    jpost<{ ok: boolean; url: string; duration: number }>(
+      `/video/productions/${id}/trim`, body,
+    ),
   deleteProduction: (id: string) =>
     jdel<{ ok: boolean; id: string }>(`/video/productions/${id}`),
   listVideoFeedback: (limit = 30, tag = "") => {
@@ -1018,10 +1199,91 @@ export const api = {
     jpost<{ source_id: string; new_candidates: number }>(
       `/long-form/${id}/reanalyze`, {},
     ),
+
+  // ── Knowledge Base (company documents → askable memory) ──
+  async knowledgeIngest(file: File, opts: { category?: string; notes?: string } = {}) {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("category", opts.category || "company_doc");
+    fd.append("notes", opts.notes || "");
+    const r = await fetch(u("/knowledge/ingest"), { method: "POST", body: fd, credentials: "include" });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    return d as KnowledgeIngestResult;
+  },
+  listKnowledgeDocuments: () =>
+    jget<{ documents: KnowledgeDoc[] }>("/knowledge/documents"),
+  deleteKnowledgeDocument: (id: string) =>
+    jdel<{ ok: boolean; id: string }>(`/knowledge/documents/${id}`),
+  knowledgeDownloadUrl: (id: string) =>
+    jget<{ url: string }>(`/knowledge/documents/${id}/download`),
+
+  // Generation takes 1-2 min → background job + poll.
+  startWhitepaper: (body: { topic: string; audience?: string; goal?: string }) =>
+    jpost<{ job_id: string; status: string }>("/knowledge/whitepaper", body),
+  whitepaperStatus: (jobId: string) =>
+    jget<{ status: "running" | "done" | "failed"; result?: Whitepaper; error?: string }>(
+      `/knowledge/whitepaper/${jobId}`,
+    ),
+  // Topic intelligence (multi-angle research sweep + synthesis) — background job.
+  startIntelligence: (body: { topic: string; auto_plan?: boolean; force?: boolean }) =>
+    jpost<{ job_id: string; status: string }>("/knowledge/intelligence", body),
+  intelligenceStatus: (jobId: string) =>
+    jget<{ status: "running" | "done" | "failed"; result?: IntelBrief; error?: string }>(
+      `/knowledge/intelligence/${jobId}`,
+    ),
+  synthesizePortfolio: (body: { theme?: string; silo_ids?: string[] }) =>
+    jpost<PortfolioSynthesis>("/knowledge/synthesize", body),
+  listSilos: (stats = false) =>
+    jget<{ silos: Silo[] }>(`/knowledge/silos${stats ? "?stats=1" : ""}`),
+  createSilo: (body: { name: string; id?: string; description?: string }) =>
+    jpost<{ ok: boolean; silo: Silo }>("/knowledge/silos", body),
+  listEntities: () => jget<{ entities: KbEntity[] }>("/knowledge/entities"),
+  listCommitments: (status = "") =>
+    jget<{ commitments: Commitment[] }>(
+      `/knowledge/commitments${status ? `?status=${status}` : ""}`,
+    ),
+  updateCommitment: (id: string, status: string) =>
+    jpatch<{ ok: boolean }>(`/knowledge/commitments/${id}`, { status }),
+
+  // ── Content Library (unified clippable-reels dashboard) ──
+  // /content-library is the Next PAGE; the data endpoint is a sub-path.
+  contentLibrary: () => jget<ContentLibrary>("/content-library/data"),
+  autoClipSource: (id: string, topN = 0) =>
+    jpost<{ source_id: string; clips_started: number }>(
+      `/long-form/${id}/auto-clip${topN ? `?top_n=${topN}` : ""}`, {},
+    ),
+  refreshClipTopics: () =>
+    jpost<{ started: boolean }>("/content-library/topics/refresh", {}),
+  buildClipTopic: (id: string) =>
+    jpost<{ production_id: string; state: string }>(
+      `/content-library/topics/${id}/build`, {},
+    ),
+  dismissClipTopic: (id: string) =>
+    jpost<{ ok: boolean }>(`/content-library/topics/${id}/dismiss`, {}),
+
+  // ── Speaker directory + on-screen name-tags ──
+  listSpeakers: () => jget<Speaker[]>("/speakers"),
+  createSpeaker: (body: { handle: string; subtitle?: string }) =>
+    jpost<Speaker>("/speakers", body),
+  deleteSpeaker: (id: string) =>
+    jdel<{ ok: boolean; id: string }>(`/speakers/${id}`),
+  detectSpeakers: (sourceId: string) =>
+    jpost<{ source_id: string; speakers: DetectedSpeaker[] }>(
+      `/long-form/${sourceId}/detect-speakers`, {},
+    ),
+  getSpeakerTags: (sourceId: string) =>
+    jget<{ source_id: string; speaker_tags: SpeakerTag[] }>(
+      `/long-form/${sourceId}/speaker-tags`,
+    ),
+  setSpeakerTags: (sourceId: string, tags: SpeakerTag[]) =>
+    jput<{ source_id: string; speaker_tags: SpeakerTag[] }>(
+      `/long-form/${sourceId}/speaker-tags`, { tags },
+    ),
   async renderLongCandidate(candidateId: string, opts: {
     platform?: string; aspect?: string;
     image_style?: string; caption_style?: string;
-    video_engine?: string; broll_pacing?: string;
+    video_engine?: string; broll_pacing?: string; broll_style?: string;
   } = {}) {
     const fd = new FormData();
     fd.append("platform", opts.platform || "instagram");
@@ -1030,6 +1292,7 @@ export const api = {
     fd.append("caption_style", opts.caption_style || "");
     fd.append("video_engine", opts.video_engine || "");
     fd.append("broll_pacing", opts.broll_pacing || "");
+    fd.append("broll_style", opts.broll_style || "");
     const r = await fetch(
       u(`/long-form/candidates/${candidateId}/render`),
       { method: "POST", body: fd },
@@ -1045,7 +1308,7 @@ export const api = {
   async renderLongSourceWhole(sourceId: string, opts: {
     platform?: string; aspect?: string;
     image_style?: string; caption_style?: string;
-    video_engine?: string; broll_pacing?: string;
+    video_engine?: string; broll_pacing?: string; broll_style?: string;
   } = {}) {
     const fd = new FormData();
     fd.append("platform", opts.platform || "instagram");
@@ -1054,6 +1317,7 @@ export const api = {
     fd.append("caption_style", opts.caption_style || "");
     fd.append("video_engine", opts.video_engine || "");
     fd.append("broll_pacing", opts.broll_pacing || "");
+    fd.append("broll_style", opts.broll_style || "");
     const r = await fetch(
       u(`/long-form/${sourceId}/render-whole`),
       { method: "POST", body: fd },
@@ -1109,7 +1373,7 @@ export const api = {
   }) => jpost<MediaAsset>("/media/link", body),
   updateMedia: (
     id: string,
-    fields: { title?: string; notes?: string; platform?: string; tags?: string[]; mute_audio?: boolean }
+    fields: { title?: string; notes?: string; platform?: string; tags?: string[]; mute_audio?: boolean; source_type?: "upload" | "url" | "generated" }
   ) => jpatch<MediaAsset>(`/media/${id}`, fields),
   deleteMedia: (id: string) => jdel<{ ok: boolean }>(`/media/${id}`),
   analyzeMedia: (id: string) => jpost<MediaAsset>(`/media/${id}/analyze`, {}),

@@ -36,7 +36,7 @@ const TABS = [
   {
     href: "/style-templates",
     label: "Style Templates",
-    sub: "Reference styles, reverse-engineered to replicate",
+    sub: "Reference styles + killer edits, reverse-engineered to replicate (and to train the clipper's style)",
   },
 ];
 

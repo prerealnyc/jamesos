@@ -170,6 +170,181 @@ def _zoom_punch_props(total: float, period: float = 7.0, hold: float = 2.6) -> d
     return {"x_scale": kfs, "y_scale": kfs}
 
 
+def _zoom_emphasis_punch_props(
+    captions: list[dict], inserts: list[dict], total: float,
+    *, min_gap: float = 4.5, start_after: float = 3.2,
+    peak: str = "110%", ramp: float = 0.16,
+) -> dict:
+    """Frame punch-ins tied to WHAT IS SAID — the pro-clipper move.
+
+    Instead of a blind timer, zoom the frame in ON a caption flash (a real
+    spoken beat), spaced >= min_gap apart, skipping (a) the opening hook window
+    and (b) any beat hidden under a full-frame B-roll cutaway (a zoom there is
+    wasted). Snap to `peak`, hold through the line, snap back. Returns
+    x_scale/y_scale property keyframes (same channel as _zoom_punch_props)."""
+    flashes = sorted(
+        (
+            (float(c.get("start") or 0.0), float(c.get("end") or 0.0))
+            for c in (captions or []) if c.get("start") is not None
+        ),
+        key=lambda f: f[0],
+    )
+    if not flashes:
+        return {}
+    ins = [
+        (float(i.get("start") or 0.0), float(i.get("end") or 0.0))
+        for i in (inserts or [])
+    ]
+
+    def under_broll(s: float, e: float) -> bool:
+        return any(not (e <= a or s >= b) for (a, b) in ins)
+
+    picks: list[tuple[float, float]] = []
+    last = -1e9
+    for s, e in flashes:
+        if e <= s:
+            e = s + 0.6
+        if s < start_after or e + ramp + 0.25 > total:
+            continue
+        if s - last < min_gap or under_broll(s, e):
+            continue
+        picks.append((s, min(e, s + 1.8)))   # hold at most ~1.8s
+        last = e
+    if not picks:
+        return {}
+    kfs: list[dict] = [{"time": 0.0, "value": "100%"}]
+    for s, e in picks:
+        e = max(e, s + 0.5)
+        kfs += [
+            {"time": round(max(0.0, s - 0.05), 2), "value": "100%"},
+            {"time": round(s + ramp, 2), "value": peak},
+            {"time": round(e, 2), "value": peak},
+            {"time": round(e + 0.14, 2), "value": "100%"},
+        ]
+    # Creatomate requires strictly-increasing keyframe times — collapse any
+    # rounding collisions, keeping the later value.
+    out: list[dict] = []
+    for k in kfs:
+        if not out or k["time"] > out[-1]["time"]:
+            out.append(k)
+        else:
+            out[-1] = k
+    if len(out) <= 1:
+        return {}
+    return {"x_scale": out, "y_scale": out}
+
+
+def _speaker_crop_props(face_x: float | None, src_overflow: float | None) -> dict:
+    """Pan the vertical crop so an off-center speaker lands at horizontal CENTER.
+
+    Creatomate's `fit:cover` has NO focal point (center-crop only), so to pan we
+    size the media box to the source's full width-at-fill-height and shift x:
+      box = width:W% (the 16:9 source filling 1920h is ~316% of the 1080 frame),
+            height:100%, fit:cover  → media exactly fills the box, no distortion
+      x   = 50 + (0.5 - f)*W with x_anchor 50%  → source fraction f → frame center
+    Returns {} (→ keep today's centered cover crop) when data is missing, the
+    source is already ~portrait (nothing to pan), or the speaker is ~centered.
+    """
+    if face_x is None or src_overflow is None:
+        return {}
+    W = float(src_overflow)                  # media width as % of the output frame
+    if W <= 105.0:                           # source already ~9:16 → nothing to pan
+        return {}
+    f = min(1.0, max(0.0, float(face_x)))
+    if abs(f - 0.5) < 0.04:                  # already centered → no rewrite
+        return {}
+    x = 50.0 + (0.5 - f) * W
+    lo, hi = 100.0 - W / 2.0, W / 2.0        # clamp so no source edge enters frame
+    x = min(hi, max(lo, x))
+    return {
+        "width": f"{round(W, 1)}%", "height": "100%", "fit": "cover",
+        "x_anchor": "50%", "x": f"{round(x, 1)}%",
+    }
+
+
+def build_speaker_keyframes(
+    turns: list[dict], face_map: dict[str, float], total: float, overflow_pct: float | None,
+    *, left_bias: float = 0.42, min_turn_s: float = 1.2, ramp_s: float = 0.4,
+) -> list[dict] | None:
+    """Turn diarized speaker turns + a {speaker: face_x} map into a Creatomate
+    keyframe array for the track-1 video element's `x`, so the crop PANS to
+    whoever is speaking. Same media-box model as _speaker_crop_props (width:W%,
+    height:100%, fit:cover, x_anchor:50%) — only x animates.
+
+    The dominant speaker (most talk-time, usually James/host) is framed
+    center-LEFT (left_bias); the other center-right — each on their natural side.
+    Sub-`min_turn_s` turns (backchannels) are absorbed into the neighbour so the
+    crop doesn't twitch; each real switch eases over `ramp_s`. Returns None
+    (→ static single-face pan) when it can't help (portrait source, <2 speakers,
+    one dominant speaker, no usable turns)."""
+    if not turns or not face_map or overflow_pct is None:
+        return None
+    W = float(overflow_pct)
+    if W <= 105.0 or len(face_map) < 2:
+        return None
+    lo_clamp, hi_clamp = 100.0 - W / 2.0, W / 2.0
+
+    def x_for(face_f: float, target_p: float) -> float:
+        # place source-fraction face_f at frame position target_p (0..1)
+        x = (0.5 - face_f) * W + 100.0 * target_p
+        return min(hi_clamp, max(lo_clamp, x))
+
+    # Dominant speaker (most talk-time) → center-left; the rest → center-right.
+    dur_by_spk: dict[str, float] = {}
+    for t in turns:
+        spk = str(t.get("speaker") or "")
+        if spk in face_map:
+            dur_by_spk[spk] = dur_by_spk.get(spk, 0.0) + max(
+                0.0, float(t.get("end") or 0.0) - float(t.get("start") or 0.0))
+    if len(dur_by_spk) < 2:
+        return None
+    primary = max(dur_by_spk, key=lambda k: dur_by_spk[k])
+    right_target = min(0.62, 1.0 - left_bias)
+    target = {spk: (left_bias if spk == primary else right_target) for spk in face_map}
+
+    # Merge turns into sustained segments; short turns absorb into the current.
+    segs: list[list] = []   # [start, end, speaker]
+    for t in sorted(turns, key=lambda t: float(t.get("start") or 0.0)):
+        spk = str(t.get("speaker") or "")
+        if spk not in face_map:
+            continue
+        s = float(t.get("start") or 0.0)
+        e = float(t.get("end") or s)
+        if not segs:
+            segs.append([s, e, spk])
+        elif segs[-1][2] == spk or (e - s) < min_turn_s:
+            segs[-1][1] = max(segs[-1][1], e)   # same speaker OR too-short → extend
+        else:
+            segs.append([s, e, spk])
+    if len(segs) < 2:
+        return None                              # one speaker dominates → static pan
+
+    kfs: list[dict] = []
+
+    def push(t: float, x: float) -> None:
+        tt = round(max(0.0, t), 2)
+        if kfs and kfs[-1]["time"] >= tt:        # keep times strictly increasing
+            return
+        kfs.append({"time": tt, "value": f"{round(x, 1)}%"})
+
+    prev_x = x_for(face_map[segs[0][2]], target[segs[0][2]])
+    push(0.0, prev_x)
+    for (s, e, spk) in segs[1:]:
+        tx = x_for(face_map[spk], target[spk])
+        if abs(tx - prev_x) < 0.5:               # no meaningful move
+            continue
+        push(s, prev_x)                          # hold through the previous speaker
+        push(s + ramp_s, tx)                     # ease into the new speaker
+        prev_x = tx
+    if total and total > 0:
+        push(float(total), prev_x)               # hold last value to the end
+    if len(kfs) < 2:
+        return None
+    print(f"[speaker-follow] {len(segs)} segments, primary={primary}, "
+          f"{len(kfs)} x-keyframes (W={W:.0f}%)")
+    return kfs
+
+
 def _watermark_element(logo_url: str, total: float, track: int = 8) -> list[dict]:
     """Brand logo watermark — DISABLED for video. The logo belongs on designed
     image cards only (image_compose), not burned into reels. Kept as a no-op so
@@ -425,7 +600,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                     break
             elements.append(caption_element(
                 text=text, start=start, end=end, preset=preset, track=3,
-                role=role,
+                role=role, raw_text=c.get("raw_text", ""),
             ))
 
         # 4) optional music
@@ -541,7 +716,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                     break
             elements.append(caption_element(
                 text=text, start=start, end=end, preset=preset, track=3,
-                role=role,
+                role=role, raw_text=c.get("raw_text", ""),
             ))
 
         # track 4 — optional background music (ducked further than story
@@ -576,6 +751,10 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         sfx_hit_url: str = "",
         sfx_riser_url: str = "",
         hook_title: str | None = None,         # persistent below-face hook/title
+        speaker_face_x: float | None = None,   # detected face center 0..1 (pan)
+        source_overflow_pct: float | None = None,  # media width as % of frame
+        speaker_keyframes: list[dict] | None = None,  # x keyframes: follow the speaker
+        speaker_tags: list[dict] | None = None,        # lower-third name-tag overlays
     ) -> dict:
         """engaging_avatar layout. The avatar video carries its own
         audio across the whole timeline; B-roll images overlay on top
@@ -594,12 +773,28 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         elements: list[dict] = []
         total = max(audio_duration, inserts[-1]["end"] if inserts else 0.0)
 
-        # track 1 — the avatar video carries its own audio
+        # track 1 — the speaker video carries its own audio. Framing, best → worst:
+        #   1. speaker_keyframes → PAN the crop to follow whoever is speaking
+        #      (2-person interviews); needs the overflow width to size the box.
+        #   2. speaker_face_x    → static pan to keep the one detected face centered.
+        #   3. neither           → today's centered cover crop.
         if avatar_video_url and avatar_video_url.startswith("http"):
+            if speaker_keyframes and source_overflow_pct and source_overflow_pct > 105.0:
+                crop = {
+                    "width": f"{round(float(source_overflow_pct), 1)}%",
+                    "height": "100%", "fit": "cover", "x_anchor": "50%",
+                    "x": speaker_keyframes,
+                }
+            else:
+                crop = _speaker_crop_props(speaker_face_x, source_overflow_pct) or {"fit": "cover"}
+            # Emphasis-driven punch-ins on the spoken beats (falls back to the
+            # blind timer only when there are no captions to anchor to).
+            spk_zoom = _zoom_emphasis_punch_props(captions, inserts, total) or _zoom_punch_props(total)
             elements.append({
                 "type": "video", "source": avatar_video_url,
-                "track": 1, "time": 0, "duration": total, "fit": "cover",
-                **_zoom_punch_props(total),
+                "track": 1, "time": 0, "duration": total,
+                **crop,
+                **spk_zoom,
             })
 
         # Persistent hook/title BELOW the face — tells the viewer what the reel
@@ -642,6 +837,21 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                     **common,
                 })
 
+        # Hold the captions until the boxed hook fully clears, so the hook and
+        # the live captions NEVER share the screen (manager: "captions start
+        # after the hook disappears" / "hooks and caption is mixing up"). The
+        # first ~3s show only the boxed hook; captions begin once it's gone.
+        # No back-slack — a caption may not begin until the hook's hold ends, so
+        # there's not even a partial-fade overlap.
+        if hook_title:
+            from .caption_styles import hook_hold_seconds
+            _hook_clear = hook_hold_seconds(total)
+            if _hook_clear > 0:
+                captions = [
+                    c for c in captions
+                    if float(c.get("start") or 0.0) >= _hook_clear
+                ]
+
         # track 3 — captions with safe-zone awareness. For each flash,
         # treat as broll-zone iff an insert overlays its midpoint.
         preset = get_preset(caption_style)
@@ -668,7 +878,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                     break
             elements.append(caption_element(
                 text=text, start=start, end=end, preset=preset, track=3,
-                role=role,
+                role=role, raw_text=c.get("raw_text", ""),
             ))
 
         # track 5 — ONE transition whoosh at the first cutaway only (only
@@ -699,6 +909,11 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                 "volume": 14,
                 "audio_fade_in": 0.8, "audio_fade_out": 1.2,
             })
+
+        # Speaker name-tags (lower-third @handle + title), pre-built at each
+        # speaker's first appearance. Rendered above captions/hook.
+        if speaker_tags:
+            elements.extend(speaker_tags)
 
         elements += _polish_elements(brand, total, sfx_hit_url, sfx_riser_url)
         return {"output_format": "mp4", "width": w, "height": h, "elements": elements}
@@ -817,7 +1032,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             end = float(c.get("end") or start)
             elem = caption_element(
                 text=text, start=start, end=end, preset=preset, track=4,
-                role="broll",
+                role="broll", raw_text=c.get("raw_text", ""),
             )
             # Lower third (in the B-roll bottom half), NOT the 50% seam — the
             # seam sat on the speaker's face. caption_element already places at
@@ -998,7 +1213,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             end = float(c.get("end") or start)
             elem = caption_element(
                 text=text, start=start, end=end, preset=preset, track=3,
-                role="broll",
+                role="broll", raw_text=c.get("raw_text", ""),
             )
             # Pull the caption into the right half: centre on the right column,
             # narrow the box so it stays clear of the speaker on the left.
@@ -1091,6 +1306,10 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         aspect: str, music_mood: str = "none",
         caption_style: str | None = None,
         hook_title: str | None = None,
+        speaker_face_x: float | None = None,
+        source_overflow_pct: float | None = None,
+        speaker_keyframes: list[dict] | None = None,
+        speaker_tags: list[dict] | None = None,
     ) -> RenderResult:
         """Submit an engaging_avatar render. Same poll contract."""
         if not (avatar_video_url or "").startswith("http"):
@@ -1102,6 +1321,10 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             aspect=aspect, music_mood=music_mood,
             caption_style=caption_style,
             hook_title=hook_title,
+            speaker_face_x=speaker_face_x,
+            source_overflow_pct=source_overflow_pct,
+            speaker_keyframes=speaker_keyframes,
+            speaker_tags=speaker_tags,
             music_track_url=await resolve_music_url(music_mood),
             sfx_url=await resolve_sfx_url("whoosh"),
             brand=await get_brand_kit(),

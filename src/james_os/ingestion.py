@@ -81,7 +81,13 @@ async def ingest_many(
 
     embeddings: dict[int, list[float]] = {}
     if texts_to_embed:
-        vectors = await embedder.embed(texts_to_embed)
+        # Voyage caps a request at ~120K total tokens (and 1000 inputs); a
+        # 300-page PDF's chunks in one call get a 400 back. 96 chunks of
+        # ≤2K chars stays comfortably under both limits.
+        batch = 96
+        vectors: list[list[float]] = []
+        for j in range(0, len(texts_to_embed), batch):
+            vectors.extend(await embedder.embed(texts_to_embed[j:j + batch]))
         for idx, vec in zip(text_indexes, vectors, strict=True):
             embeddings[idx] = vec
 
