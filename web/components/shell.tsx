@@ -69,6 +69,7 @@ const NAV: Group[] = [
     title: "Brand",
     items: [
       { href: "/brand", label: "Brand", sub: "Voice rules, voice studio & health", icon: "voice", live: true, match: BRAND_SUBROUTES },
+      { href: "/intake", label: "Brand Setup", sub: "Who this brand is — goals, topics, peers", icon: "design", live: true },
     ],
   },
   // Newest features live at the BOTTOM of the rail while they're still

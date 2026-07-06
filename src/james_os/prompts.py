@@ -263,33 +263,49 @@ async def _tenant_label(tenant_id: UUID | None) -> str:
     return "this brand"
 
 
+async def _brand_block(tenant_id: UUID | None) -> str:
+    """The tenant's brand-profile block ('' until intake is done) — makes
+    every engine identity-aware without changing behavior for tenants that
+    haven't onboarded."""
+    try:
+        from .brands import brand_profile_block
+        return await brand_profile_block(tenant_id)
+    except Exception:  # noqa: BLE001 — identity is additive, never fatal
+        return ""
+
+
 async def build_content_system_prompt(
     platform: str, fmt: str, tenant_id: UUID | None = None
 ) -> str:
-    # The two lookups (guidelines table + tenant row) are independent — run
-    # them concurrently instead of sequentially (each is a remote round-trip).
-    rules, tenant_name = await asyncio.gather(
+    # The lookups (guidelines, tenant row, brand profile) are independent —
+    # run them concurrently instead of sequentially (remote round-trips).
+    rules, tenant_name, brand = await asyncio.gather(
         _load_active_guidelines(tenant_id),
         _tenant_label(tenant_id),
+        _brand_block(tenant_id),
     )
     base = CONTENT_SYSTEM_PROMPT.format(
         tenant_name=tenant_name,
         platform=platform, fmt=fmt,
     )
-    return f"{base}\n\n<rules>\n{rules or '(none configured yet)'}\n</rules>"
+    brand_part = f"\n\n{brand}" if brand else ""
+    return (f"{base}{brand_part}\n\n<rules>\n"
+            f"{rules or '(none configured yet)'}\n</rules>")
 
 
 async def build_system_prompt(tenant_id: UUID | None = None) -> str:
     # Independent lookups → fetch concurrently (halves the prompt-build time,
-    # which is otherwise two sequential remote DB round-trips).
-    guidelines, tenant_name = await asyncio.gather(
+    # which is otherwise sequential remote DB round-trips).
+    guidelines, tenant_name, brand = await asyncio.gather(
         _load_active_guidelines(tenant_id),
         _tenant_label(tenant_id),
+        _brand_block(tenant_id),
     )
-    return SYSTEM_PROMPT_BASE.format(
+    base = SYSTEM_PROMPT_BASE.format(
         tenant_name=tenant_name,
         guidelines=guidelines or "(none configured yet)",
     )
+    return f"{base}\n\n{brand}" if brand else base
 
 
 async def _load_active_guidelines(tenant_id: UUID | None) -> str:

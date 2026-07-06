@@ -8,7 +8,9 @@
  */
 
 import Link from "next/link";
-import { Card, PageHeader, Badge } from "@/components/ui";
+import { useEffect, useState } from "react";
+import { api, type ContentSuggestion } from "@/lib/api";
+import { Button, Card, CardTitle, PageHeader, Badge, Spinner } from "@/components/ui";
 import { Icon } from "@/components/icons";
 
 type Option = {
@@ -85,6 +87,127 @@ function OptionCard({ o }: { o: Option }) {
   );
 }
 
+function SuggestionsRail() {
+  const [items, setItems] = useState<ContentSuggestion[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function load() {
+    try {
+      const r = await api.listSuggestions();
+      setItems(r.suggestions);
+    } catch { /* no profile yet → rail stays empty */ }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function accept(id: string) {
+    setBusy(id);
+    setErr(null);
+    try {
+      await api.acceptSuggestion(id);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "failed");
+    } finally {
+      setBusy((p) => (p === id ? null : p));
+    }
+  }
+
+  async function dismiss(id: string) {
+    setBusy(id);
+    try {
+      await api.dismissSuggestion(id);
+      setItems((prev) => prev.filter((s) => s.id !== id));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "failed");
+    } finally {
+      setBusy((p) => (p === id ? null : p));
+    }
+  }
+
+  async function refresh() {
+    setRefreshing(true);
+    setErr(null);
+    try {
+      const start = (await api.listSuggestions()).suggestions.length;
+      await api.refreshSuggestions();
+      // Research + ideation take a couple of minutes; poll until new rows land.
+      for (let i = 0; i < 24; i++) {
+        await new Promise((r) => setTimeout(r, 10000));
+        const r2 = await api.listSuggestions();
+        setItems(r2.suggestions);
+        if (r2.suggestions.length > start) break;
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "refresh failed");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  return (
+    <Card className="flex flex-col gap-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div>
+          <CardTitle>Today&apos;s suggestions</CardTitle>
+          <div className="text-[11px] text-muted-foreground mt-0.5">
+            The brand manager&apos;s own picks — fresh research every morning,
+            filtered through your goals. Accept one and it&apos;s made for you.
+          </div>
+        </div>
+        <Button
+          variant="secondary"
+          onClick={refresh}
+          disabled={refreshing}
+          className="text-[12px] !px-3 !py-1"
+          title="Run the research pass now"
+        >
+          {refreshing ? <span className="inline-flex items-center gap-1"><Spinner /> researching…</span> : "↻ Research now"}
+        </Button>
+      </div>
+      {err && <p className="text-[12px] text-destructive">✗ {err}</p>}
+      {items.length === 0 ? (
+        <p className="text-[12px] text-muted-foreground">
+          No suggestions yet. Complete the{" "}
+          <Link href="/intake" className="text-primary hover:underline">Brand Setup</Link>{" "}
+          and the brand manager starts proposing content every morning — or hit
+          “Research now”.
+        </p>
+      ) : (
+        <div className="flex flex-col divide-y divide-border">
+          {items.map((s) => (
+            <div key={s.id} className="flex items-start gap-3 py-2">
+              <div className="flex-1 min-w-0">
+                <div className="text-[13px] font-medium leading-snug">{s.title}</div>
+                {s.why && <div className="text-[11px] text-muted-foreground line-clamp-1">{s.why}</div>}
+              </div>
+              <Badge tone="muted">{s.format}</Badge>
+              <div className="flex items-center gap-2">
+                <Button
+                  onClick={() => accept(s.id)}
+                  disabled={busy === s.id}
+                  className="text-[12px] !px-3 !py-1"
+                >
+                  {busy === s.id ? <Spinner /> : "Make it"}
+                </Button>
+                <button
+                  onClick={() => dismiss(s.id)}
+                  disabled={busy === s.id}
+                  className="text-[12px] text-muted-foreground hover:text-destructive"
+                  title="Dismiss"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function CreatePage() {
   return (
     <div className="flex flex-col gap-6">
@@ -92,6 +215,8 @@ export default function CreatePage() {
         title="Create"
         sub="What do you want to make? Pick one — everything you create lands in the Approval Queue for review before it goes anywhere."
       />
+
+      <SuggestionsRail />
 
       <div className="grid grid-cols-2 gap-4">
         {OPTIONS.map((o) => <OptionCard key={o.href} o={o} />)}

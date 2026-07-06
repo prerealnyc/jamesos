@@ -21,6 +21,34 @@ export type SavedPost = {
 /** One prior turn in a conversational Ask thread. */
 export type AskTurn = { role: "user" | "assistant"; content: string };
 
+/** The brand's identity — the Intake's output, read by every engine. */
+export type BrandProfile = {
+  tenant_id?: string;
+  kind: "person" | "asset" | "institution" | "politician";
+  identity: { name?: string; mission?: string; positioning?: string; audience?: string };
+  goals: string[];
+  pillars: string[];
+  taboos: string[];
+  platforms: string[];
+  peers: string[];
+  constraints: Record<string, unknown>;
+  intake_done: boolean;
+  updated_at?: string;
+};
+
+/** A piece the brand manager proposes on its own (daily research etc.). */
+export type ContentSuggestion = {
+  id: string;
+  source: string;
+  title: string;
+  topic: string;
+  format: "post" | "reel";
+  why: string;
+  status: "suggested" | "accepted" | "dismissed";
+  action_ref: string | null;
+  created_at: string | null;
+};
+
 /** Result of developing a weekly thesis (intelligence + white paper). */
 export type ThesisDevelopResult = {
   thesis_doc_id: string;
@@ -1317,6 +1345,19 @@ export const api = {
     jdel<{ ok: boolean; id: string }>(`/knowledge/documents/${id}`),
   knowledgeDownloadUrl: (id: string) =>
     jget<{ url: string }>(`/knowledge/documents/${id}/download`),
+
+  // ── Brand identity (Intake) + proactive suggestions ──
+  getBrandProfile: () => jget<BrandProfile>("/brand-profile"),
+  saveBrandProfile: (body: Partial<BrandProfile>) =>
+    jput<BrandProfile>("/brand-profile", body),
+  listSuggestions: (status = "suggested") =>
+    jget<{ suggestions: ContentSuggestion[] }>(`/suggestions/list?status=${status}`),
+  acceptSuggestion: (id: string) =>
+    jpost<{ id: string; status: string; ref?: string }>(`/suggestions/${id}/accept`, {}),
+  dismissSuggestion: (id: string) =>
+    jpost<{ ok: boolean }>(`/suggestions/${id}/dismiss`, {}),
+  refreshSuggestions: () =>
+    jpost<{ started: boolean }>("/suggestions/refresh", {}),
 
   // Weekly thesis → intelligence → white paper (background job + poll).
   // full=true is the ONE BUTTON: continues into content pack + podcast.

@@ -236,8 +236,13 @@ async def lifespan(app: FastAPI):
     # must never leave a fake 'running' row spinning forever.
     await _reap_all_orphans()
     scheduler = asyncio.create_task(_autopilot_scheduler())
+    # Platform heartbeat: table-driven recurring jobs (daily brand research,
+    # and every future scheduled engine — playbooks, press scans, analytics).
+    from .scheduler import scheduler_loop
+    jobs_loop = asyncio.create_task(scheduler_loop())
     yield
     scheduler.cancel()
+    jobs_loop.cancel()
     await close_pool()
 
 
@@ -651,6 +656,76 @@ async def knowledge_thesis_develop(doc_id: UUID, full: bool = False) -> dict[str
     poll GET /knowledge/thesis/develop/{job_id}. Idempotent while running."""
     from .thesis import start_develop_job
     return {"job_id": start_develop_job(doc_id, full=full), "status": "running"}
+
+
+@app.get("/brand-profile")
+async def brand_profile_get() -> dict[str, Any]:
+    """The tenant's brand identity (the Intake's output) — or intake_done:
+    false when onboarding hasn't happened."""
+    from .brands import get_brand_profile
+    prof = await get_brand_profile()
+    return prof or {"intake_done": False}
+
+
+@app.put("/brand-profile")
+async def brand_profile_put(body: dict = Body(default={})) -> dict[str, Any]:
+    """Create/update the brand identity. Setting intake_done=true enables
+    the daily research job — the brand manager starts doing its homework
+    the next morning."""
+    from .brands import upsert_brand_profile
+    return await upsert_brand_profile(body or {})
+
+
+@app.get("/suggestions/list")
+async def suggestions_list(status: str = "suggested") -> dict[str, Any]:
+    """What the brand manager proposes on its own (daily research, and every
+    future proactive engine). status='' returns all."""
+    from .brands import list_suggestions
+    return {"suggestions": await list_suggestions(status=status)}
+
+
+@app.post("/suggestions/{suggestion_id}/accept", status_code=202)
+async def suggestions_accept(suggestion_id: UUID) -> dict[str, Any]:
+    """Turn a suggestion into queued content (post → voice engine + image
+    gates; reel → the locked video template) — lands in the Approval Queue."""
+    from .brands import accept_suggestion
+    try:
+        return await accept_suggestion(suggestion_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@app.post("/suggestions/{suggestion_id}/dismiss")
+async def suggestions_dismiss(suggestion_id: UUID) -> dict[str, Any]:
+    from .brands import dismiss_suggestion
+    if not await dismiss_suggestion(suggestion_id):
+        raise HTTPException(status_code=404, detail="suggestion not found")
+    return {"ok": True}
+
+
+@app.post("/suggestions/refresh", status_code=202)
+async def suggestions_refresh() -> dict[str, Any]:
+    """Run the daily research pass NOW for the current tenant (the scheduler
+    also runs it every 24h once intake is done)."""
+    import asyncio as _aio
+
+    from .db import _request_tenant
+    tid = _request_tenant.get() or settings.default_tenant_id
+    from .brand_research import run_daily_brand_research
+
+    async def _run() -> None:
+        try:
+            await run_daily_brand_research(tenant_id=tid, config={})
+        except Exception as e:  # noqa: BLE001
+            print(f"[brand_research] manual refresh failed: {e}")
+
+    task = _aio.create_task(_run())
+    _SUGGESTION_TASKS.add(task)
+    task.add_done_callback(_SUGGESTION_TASKS.discard)
+    return {"started": True}
+
+
+_SUGGESTION_TASKS: set = set()
 
 
 @app.post("/knowledge/content-pack", status_code=202)

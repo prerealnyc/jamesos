@@ -91,6 +91,10 @@ const nextConfig = {
       // Speaker directory (on-screen name-tags). No /speakers Next page.
       { source: "/speakers", destination: `${BACKEND}/speakers` },
       { source: "/speakers/:path*", destination: `${BACKEND}/speakers/:path*` },
+      // Brand identity (the Intake's output) + proactive suggestions.
+      // /intake is a Next PAGE; the APIs live on their own paths.
+      { source: "/brand-profile", destination: `${BACKEND}/brand-profile` },
+      { source: "/suggestions/:path*", destination: `${BACKEND}/suggestions/:path*` },
     ];
   },
 };
