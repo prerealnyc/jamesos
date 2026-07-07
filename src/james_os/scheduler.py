@@ -28,9 +28,17 @@ async def _registry() -> dict:
     # Imported lazily so module import order can't bite at startup.
     from .brand_research import run_daily_brand_research
     from .intake_agent import run_brand_interview
+    from .strategy import (
+        run_peer_snapshot,
+        run_playbook_refresh,
+        run_weekly_prescription,
+    )
     return {
         "daily_brand_research": run_daily_brand_research,
         "brand_interview": run_brand_interview,
+        "playbook_refresh": run_playbook_refresh,
+        "peer_snapshot": run_peer_snapshot,
+        "weekly_prescription": run_weekly_prescription,
     }
 
 

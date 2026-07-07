@@ -76,9 +76,14 @@ async def upsert_brand_profile(
             tid = await conn.fetchval(
                 "SELECT current_setting('app.current_tenant', true)::uuid")
             # The brand manager starts working the moment it knows who the
-            # brand is: daily research + the continuous deep interview.
+            # brand is: daily research, the continuous deep interview, and
+            # the strategy loop (playbooks weekly, peers weekly, a fresh
+            # Prescription every Monday-ish).
             for kind, cadence in (("daily_brand_research", 24),
-                                  ("brand_interview", 12)):
+                                  ("brand_interview", 12),
+                                  ("playbook_refresh", 168),
+                                  ("peer_snapshot", 168),
+                                  ("weekly_prescription", 168)):
                 await conn.execute(
                     """INSERT INTO scheduled_jobs (tenant_id, kind, cadence_hours)
                        VALUES ($1, $2, $3)

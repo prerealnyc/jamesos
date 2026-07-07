@@ -36,6 +36,37 @@ export type BrandProfile = {
   updated_at?: string;
 };
 
+/** One line of the weekly Prescription — always evidence-backed. */
+export type PrescriptionLine = {
+  platform: string;
+  format: string;
+  per_week: number;
+  topics: string[];
+  why: string;
+  evidence: string[];
+};
+
+export type Prescription = {
+  id: string;
+  week_of: string;
+  status: "proposed" | "accepted" | "partial" | "expired";
+  plan: PrescriptionLine[];
+  growth_actions: { action: string; why: string; evidence: string[] }[];
+  accepted_items: { line: number; kind: string; ref?: string }[];
+  created_at: string;
+};
+
+export type StrategyState = {
+  prescription: Prescription | null;
+  playbooks: {
+    platform: string; version: number; changed: boolean;
+    refreshed_at: string; key_points: string[];
+  }[];
+  queue_pending: number;
+  suggestions: ContentSuggestion[];
+  interview: InterviewStats;
+};
+
 /** The Researcher agent's "is this your brand?" proposal. */
 export type BrandResearchProposal = {
   proposal: {
@@ -1376,6 +1407,16 @@ export const api = {
     jdel<{ ok: boolean; id: string }>(`/knowledge/documents/${id}`),
   knowledgeDownloadUrl: (id: string) =>
     jget<{ url: string }>(`/knowledge/documents/${id}/download`),
+
+  // ── Strategy engine (Morning Brief / Prescription) ──
+  strategyState: () => jget<StrategyState>("/strategy/state"),
+  prescribeNow: () => jpost<{ started: boolean }>("/strategy/prescribe", {}),
+  refreshStrategyInputs: () =>
+    jpost<{ started: boolean }>("/strategy/refresh-inputs", {}),
+  acceptPrescription: (id: string, items?: number[]) =>
+    jpost<{ id: string; status: string; produced: number; errors: string[]; capped: boolean }>(
+      `/strategy/prescription/${id}/accept`, items ? { items } : {},
+    ),
 
   // ── Agentic intake (Researcher + Interviewer agents) ──
   researchBrand: (name: string, hints = "") =>

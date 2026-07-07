@@ -658,6 +658,94 @@ async def knowledge_thesis_develop(doc_id: UUID, full: bool = False) -> dict[str
     return {"job_id": start_develop_job(doc_id, full=full), "status": "running"}
 
 
+@app.get("/strategy/state")
+async def strategy_state() -> dict[str, Any]:
+    """Everything the Morning Brief needs in one call: latest prescription,
+    playbooks (with changed flags), queue snapshot, suggestions count,
+    interview stats."""
+    from .brands import list_suggestions
+    from .db import acquire as _acq
+    from .intake_agent import interview_stats
+    from .strategy import latest_playbooks, latest_prescription
+    async with _acq() as conn:
+        pending = await conn.fetchval(
+            "SELECT count(*) FROM actions WHERE status='pending'")
+    return {
+        "prescription": await latest_prescription(),
+        "playbooks": [
+            {k: p[k] for k in ("platform", "version", "changed", "refreshed_at",
+                               "key_points")}
+            for p in await latest_playbooks()
+        ],
+        "queue_pending": int(pending or 0),
+        "suggestions": await list_suggestions(status="suggested"),
+        "interview": await interview_stats(),
+    }
+
+
+@app.post("/strategy/prescribe", status_code=202)
+async def strategy_prescribe() -> dict[str, Any]:
+    """Compose a fresh Prescription NOW (the scheduler also does this
+    weekly). Refreshes nothing itself — run playbooks/peers first if stale."""
+    import asyncio as _aio
+
+    from .db import _request_tenant
+    tid = _request_tenant.get() or settings.default_tenant_id
+    from .strategy import compose_prescription
+
+    async def _run() -> None:
+        try:
+            await compose_prescription(tid)
+        except Exception as e:  # noqa: BLE001
+            print(f"[strategy] manual prescribe failed: {e}")
+
+    task = _aio.create_task(_run())
+    _SUGGESTION_TASKS.add(task)
+    task.add_done_callback(_SUGGESTION_TASKS.discard)
+    return {"started": True}
+
+
+@app.post("/strategy/refresh-inputs", status_code=202)
+async def strategy_refresh_inputs() -> dict[str, Any]:
+    """Refresh the prescription's inputs NOW: platform playbooks + peer
+    snapshots (also on weekly cadences via the scheduler)."""
+    import asyncio as _aio
+
+    from .db import _request_tenant
+    tid = _request_tenant.get() or settings.default_tenant_id
+    from .strategy import run_peer_snapshot, run_playbook_refresh
+
+    async def _run() -> None:
+        try:
+            await run_playbook_refresh(tid)
+            await run_peer_snapshot(tid)
+        except Exception as e:  # noqa: BLE001
+            print(f"[strategy] refresh-inputs failed: {e}")
+
+    task = _aio.create_task(_run())
+    _SUGGESTION_TASKS.add(task)
+    task.add_done_callback(_SUGGESTION_TASKS.discard)
+    return {"started": True}
+
+
+@app.post("/strategy/prescription/{prescription_id}/accept", status_code=202)
+async def strategy_accept(
+    prescription_id: UUID, body: dict = Body(default={}),
+) -> dict[str, Any]:
+    """Accept the plan (all lines, or body.items=[indexes]) — each line
+    produces its pieces through the standard machinery into the Approval
+    Queue, capped per accept for cost sanity."""
+    from .strategy import accept_prescription
+    items = (body or {}).get("items")
+    try:
+        return await accept_prescription(
+            prescription_id,
+            [int(i) for i in items] if isinstance(items, list) else None,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 @app.post("/intake/research")
 async def intake_research(body: dict = Body(default={})) -> dict[str, Any]:
     """The 'is this your brand?' step: type a name (+ optional hints) and

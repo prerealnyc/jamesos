@@ -39,6 +39,7 @@ const NAV: Group[] = [
   {
     title: "Memory",
     items: [
+      { href: "/brief", label: "Morning Brief", sub: "The brand manager's plan for you today", icon: "market", live: true },
       { href: "/", label: "Ask the memory", sub: "Grounded, cited Q&A", icon: "ask", live: true },
     ],
   },

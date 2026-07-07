@@ -96,6 +96,8 @@ const nextConfig = {
       { source: "/brand-profile", destination: `${BACKEND}/brand-profile` },
       { source: "/suggestions/:path*", destination: `${BACKEND}/suggestions/:path*` },
       { source: "/intake/:path*", destination: `${BACKEND}/intake/:path*` },
+      // Strategy engine (playbooks/prescriptions). /brief is the Next PAGE.
+      { source: "/strategy/:path*", destination: `${BACKEND}/strategy/:path*` },
     ];
   },
 };
