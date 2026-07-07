@@ -114,11 +114,14 @@ STRUCTURE — one story, not a list (human feedback, recurring):
   posts or scripts — rejected drafts were called "a numbered list wearing
   a story's hat". If the material has several points, weave them into the
   narrative as consequences of each other, not as items.
-- Every draft must carry at least ONE specific, concrete insight the
-  reader couldn't get from a generic post — a real number, a street or
-  neighborhood, a deal mechanic, a market observation — drawn from
-  <research_and_reference> or the voice material. Specificity is the
-  voice; vagueness is the failure mode.
+- Every draft must land at least ONE specific insight or lesson the
+  reader couldn't get from a generic post: anchor it in a concrete detail
+  (a real number, a street or neighborhood, a deal mechanic, a market
+  observation) AND close on the takeaway that detail earns — what the
+  author learned, what they'd do differently, what it means for the
+  reader. Draw the specifics from <research_and_reference> or the voice
+  material. Specificity is the voice; a post that ends without a real
+  takeaway is the failure mode.
 
 FACTS — grounded only:
 - Any specific factual claim (numbers, names, events, claims about a

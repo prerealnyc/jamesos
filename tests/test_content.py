@@ -45,6 +45,17 @@ async def _action_count() -> int:
         return await conn.fetchval("SELECT count(*) FROM actions")
 
 
+def test_content_prompt_requires_insight_or_lesson():
+    # Feedback: posts were "too generic, no insights". The generation prompt
+    # must mandate a concrete insight/lesson and a landed takeaway, not just
+    # on-voice prose.
+    from james_os.prompts import CONTENT_SYSTEM_PROMPT
+
+    lowered = CONTENT_SYSTEM_PROMPT.lower()
+    assert "insight or lesson" in lowered
+    assert "takeaway" in lowered
+
+
 def test_bucketing_is_category_driven():
     assert _bucket_of(_retrieved("voice_corpus")) == "voice"
     assert _bucket_of(_retrieved("guideline")) == "voice"
