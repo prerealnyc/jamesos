@@ -73,5 +73,12 @@ async def fresh_pool():
             "TRUNCATE queries, outbox, actions, events, plug_ins, adapters, "
             "video_jobs RESTART IDENTITY CASCADE"
         )
+        # Brand Manager layer tables (bm2.0 merge, migration 053+). Separate
+        # statement so pre-053 local DBs fail loudly with a clear message
+        # rather than silently skipping the core truncate above.
+        await conn.execute(
+            "TRUNCATE profile_fields, action_items, daily_digests, job_runs, "
+            "brand_questions RESTART IDENTITY CASCADE"
+        )
     yield
     await close_pool()

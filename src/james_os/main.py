@@ -350,6 +350,7 @@ from .templates_api import router as templates_router
 from .feedback_changes_api import router as feedback_changes_router
 from .brand_kit_api import router as brand_kit_router
 from .xpoz_api import router as xpoz_router
+from .manager.sources_api import router as manager_sources_router
 app.include_router(autopilot_bulk_router)
 app.include_router(analytics_live_router)
 app.include_router(research_roster_router)
@@ -358,6 +359,8 @@ app.include_router(templates_router)
 app.include_router(feedback_changes_router)
 app.include_router(brand_kit_router)
 app.include_router(xpoz_router)
+# Brand Manager layer (bm2.0 merge, P1+) — all routes gated on manager_v2.
+app.include_router(manager_sources_router)
 
 
 @app.get("/", include_in_schema=False)

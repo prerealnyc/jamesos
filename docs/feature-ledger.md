@@ -26,201 +26,208 @@ All 431 rows now have a final disposition — zero open items.
 
 ## P1 — Substrate & schema — 174 rows
 
+> **Progress 2026-07-09:** migration 053 (profile_fields / action_items / daily_digests /
+> job_runs / actions D5 vocabulary / brand_questions.field_key), src/james_os/manager/
+> (contracts, profile, actions, state_machine, runs, sources_api, providers/{base,mocks,
+> fixtures,live}), config manager block + manager_v2 flag. 14 new tests green, suite green.
+> Open rows: app-shell scheduler registration, Brand CRUD merge, run_agent 502 wrapper,
+> nightly mark_stale job — they land with the P2 scheduler/API work.
+
 
 ### bm2.0 · execution
 
-- [ ] **Action lifecycle (status/notes/snooze/delete)** (PORT) — `backend/app/services/actions.py` → action_items module (statuses, snooze_until, timestamped update trail)
-- [ ] **ActionItem upsert with dedupe keys** (PORT) — `backend/app/services/actions.py` → new action_items table/module (P1 migration) with dedupe_key upsert; dismissed/done never resurrected
-- [ ] **D5 work-order state machine (single implementation)** (MERGE) — `backend/app/services/state_machine.py` → actions queue: status vocabulary extended with published/measured + validated edge sets (P1 migration)
+- [x] **Action lifecycle (status/notes/snooze/delete)** (PORT) — `backend/app/services/actions.py` → action_items module (statuses, snooze_until, timestamped update trail)
+- [x] **ActionItem upsert with dedupe keys** (PORT) — `backend/app/services/actions.py` → new action_items table/module (P1 migration) with dedupe_key upsert; dismissed/done never resurrected
+- [x] **D5 work-order state machine (single implementation)** (MERGE) — `backend/app/services/state_machine.py` → actions queue: status vocabulary extended with published/measured + validated edge sets (P1 migration)
 
 ### bm2.0 · platform
 
-- [ ] **AgentRun bookkeeping around every agent** (PORT) — `backend/app/services/runs.py` → job-run records on their scheduled_jobs scheduler (agent_runs migration; asyncpg pattern removes the SQLite lock dance)
+- [x] **AgentRun bookkeeping around every agent** (PORT) — `backend/app/services/runs.py` → job-run records on their scheduled_jobs scheduler (agent_runs migration; asyncpg pattern removes the SQLite lock dance)
 - [ ] **App shell: provider wiring, scheduler lifecycle, health** (MERGE) — `backend/app/main.py` → james-os app startup (their shell KEEP; provider wiring + scheduler job registration folded into their lifespan)
 - [ ] **Brand CRUD + cascade delete + settings** (MERGE) — `backend/app/routers/brands.py` → their tenant/brand management (auth/tenancy/RLS KEEP-theirs; settings toggles + RLS-scoped cascade delete folded in)
-- [ ] **Captions-first video transcription** (PORT) — `backend/app/adapters/live.py` → provider module transcription provider (captions -> AssemblyAI; feeds the ported voice harvester)
-- [ ] **Computed confidence (D2 rubric)** (PORT) — `backend/app/schemas/contracts.py` → profile_fields envelope contracts module (deterministic rubric, never model-reported)
-- [ ] **Contradiction detection + auto-queued interview question** (PORT) — `backend/app/services/profile.py` → profile_fields contradiction states; materialized question -> brand_questions
-- [ ] **D12 intelligence-source inventory** (PORT) — `backend/app/routers/sources.py` → provider layer module: GET /system/sources ('more keys = more power' observability)
-- [ ] **Hardened HTTP helper for all vendors** (PORT) — `backend/app/adapters/live.py` → provider module shared HTTP helper (timeout/retry/key-redaction/ok_404)
-- [ ] **LLM availability chain (Anthropic -> Perplexity)** (PORT) — `backend/app/adapters/live.py` → provider module chain router (availability fall-through, tier-bug re-raise, no mock in live)
-- [ ] **Per-provider incremental go-live with mock fallback** (PORT) — `backend/app/adapters/live.py` → provider module (per-key live-else-mock fallback; PostProxy primary / Ayrshare fallback routing)
-- [ ] **Profile envelope: append-only versioned writes** (PORT) — `backend/app/services/profile.py` → NEW migration profile_fields; their brand_profiles becomes flat VIEW/projection (non-negotiable, never flattened)
-- [ ] **Provider protocol layer (D8)** (PORT) — `backend/app/adapters/base.py` → new james-os provider module (13 Protocols, mock/live by env — keeps merged product demo-able without keys)
-- [ ] **Settings: env-driven keys, voice caps, model tiers** (MERGE) — `backend/app/core/config.py` → james-os config/env system (vendor keys, LLM tier ids, voice caps, scheduler toggle, manager_v2 flag)
+- [x] **Captions-first video transcription** (PORT) — `backend/app/adapters/live.py` → provider module transcription provider (captions -> AssemblyAI; feeds the ported voice harvester)
+- [x] **Computed confidence (D2 rubric)** (PORT) — `backend/app/schemas/contracts.py` → profile_fields envelope contracts module (deterministic rubric, never model-reported)
+- [x] **Contradiction detection + auto-queued interview question** (PORT) — `backend/app/services/profile.py` → profile_fields contradiction states; materialized question -> brand_questions
+- [x] **D12 intelligence-source inventory** (PORT) — `backend/app/routers/sources.py` → provider layer module: GET /system/sources ('more keys = more power' observability)
+- [x] **Hardened HTTP helper for all vendors** (PORT) — `backend/app/adapters/live.py` → provider module shared HTTP helper (timeout/retry/key-redaction/ok_404)
+- [x] **LLM availability chain (Anthropic -> Perplexity)** (PORT) — `backend/app/adapters/live.py` → provider module chain router (availability fall-through, tier-bug re-raise, no mock in live)
+- [x] **Per-provider incremental go-live with mock fallback** (PORT) — `backend/app/adapters/live.py` → provider module (per-key live-else-mock fallback; PostProxy primary / Ayrshare fallback routing)
+- [x] **Profile envelope: append-only versioned writes** (PORT) — `backend/app/services/profile.py` → NEW migration profile_fields; their brand_profiles becomes flat VIEW/projection (non-negotiable, never flattened)
+- [x] **Provider protocol layer (D8)** (PORT) — `backend/app/adapters/base.py` → new james-os provider module (13 Protocols, mock/live by env — keeps merged product demo-able without keys)
+- [x] **Settings: env-driven keys, voice caps, model tiers** (MERGE) — `backend/app/core/config.py` → james-os config/env system (vendor keys, LLM tier ids, voice caps, scheduler toggle, manager_v2 flag)
 - [ ] **Staleness TTLs + nightly mark_stale** (PORT) — `backend/app/services/profile.py` → profile_fields TTL logic + nightly scheduled_jobs entry
-- [ ] **Tiered LLM routing + JSON enforcement** (PORT) — `backend/app/adapters/live.py` → provider module LLM router (extract/content/strategy tiers, no native tools, complete_json retry)
-- [ ] **Token accounting via active-run contextvar** (MERGE) — `backend/app/services/runs.py` → their credit metering (per-run tokens_in/tokens_out accrual feeds existing meter)
+- [x] **Tiered LLM routing + JSON enforcement** (PORT) — `backend/app/adapters/live.py` → provider module LLM router (extract/content/strategy tiers, no native tools, complete_json retry)
+- [x] **Token accounting via active-run contextvar** (MERGE) — `backend/app/services/runs.py` → their credit metering (per-run tokens_in/tokens_out accrual feeds existing meter)
 - [ ] **run_agent wrapper (failed runs survive as 502)** (PORT) — `backend/app/routers/brands.py` → API-layer job wrapper on their routes (failed job-run committed, 502 surfaced)
 
 ### bm2.0 · providers
 
-- [ ] **AnthropicRouter — tiered LLM with token accounting** (PORT) — `backend/app/adapters/live.py` → james-os providers module — primary LLM router (usage accrual adapted to their credit metering)
-- [ ] **AssemblyAITranscription + YouTube caption/audio chain** (PORT) — `backend/app/adapters/live.py` → james-os providers module — transcription chain consumed by the voice harvester alongside voice_ingest
-- [ ] **AyrshareConnector (fallback social vendor)** (PORT) — `backend/app/adapters/live.py` → james-os providers module — fallback social vendor behind PostProxy in the vendor priority chain
-- [ ] **CompositePeerData — per-platform resilient scraper chain** (PORT) — `backend/app/adapters/live.py` → james-os providers module — peer-data chain feeding research_roster/peer_snapshots fills
-- [ ] **DeepResearchProvider protocol** (PORT) — `backend/app/adapters/base.py` → james-os providers module — supplementary research contract (source=researched SECONDARY rule preserved)
-- [ ] **EmailProvider protocol (execution hand)** (PORT) — `backend/app/adapters/base.py` → james-os providers module — email-hand contract consumed by the outbox.execute_action executor
-- [ ] **GET /system/sources — D12 stream inventory** (PORT) — `backend/app/routers/sources.py` → new sources route in james-os API — provider-layer stream inventory (live/mock/idle observability)
-- [ ] **Keyless mock provider suite (mock mode works with zero keys)** (PORT) — `backend/app/adapters/mocks.py` → james-os providers module — mock mode; how the merged product stays demo-able without keys
-- [ ] **KnowledgeProvider protocol (Wikipedia lane)** (PORT) — `backend/app/adapters/base.py` → james-os providers module — wiki lane contract (None-is-a-finding semantics preserved)
-- [ ] **LLM availability chain: PerplexityRouter fallback + ChainLLMRouter** (PORT) — `backend/app/adapters/live.py` → james-os providers module — anthropic→perplexity availability chain
-- [ ] **LLMRouter protocol (tiered LLM access)** (PORT) — `backend/app/adapters/base.py` → james-os providers module — tiered LLM contract with token accounting (D8 no-tools rule preserved)
-- [ ] **MockLLMRouter — prompt-routed deterministic completions for every agent** (PORT) — `backend/app/adapters/mocks.py` → james-os providers module — deterministic LLM mock backing every ported agent's tests and demos
-- [ ] **News chain: GNewsProvider + SerperNewsProvider fallback** (PORT) — `backend/app/adapters/live.py` → james-os providers module — news chain (gnews>serper>mock)
-- [ ] **NewsProvider protocol** (PORT) — `backend/app/adapters/base.py` → james-os providers module — news lane contract
-- [ ] **PeerDataProvider protocol** (PORT) — `backend/app/adapters/base.py` → james-os providers module — non-owned-account data contract feeding peer_snapshots
-- [ ] **PerplexityDeepResearch adapter** (PORT) — `backend/app/adapters/live.py` → james-os providers module — supplementary deep-research lane (supersedes their single-Perplexity-pass research role)
-- [ ] **PlacesProvider protocol** (PORT) — `backend/app/adapters/base.py` → james-os providers module — places lane contract
-- [ ] **PublishProvider protocol (blog hand)** (PORT) — `backend/app/adapters/base.py` → james-os providers module — blog-hand contract consumed by the outbox.execute_action executor
-- [ ] **Scrape chain: FirecrawlScrape + PlainScrape keyless fallback** (PORT) — `backend/app/adapters/live.py` → james-os providers module — scrape chain (firecrawl>plain, never mock in live)
-- [ ] **ScrapeProvider protocol** (PORT) — `backend/app/adapters/base.py` → james-os providers module — scrape contract
-- [ ] **SearchProvider protocol** (PORT) — `backend/app/adapters/base.py` → james-os providers module (new, D8 mock/live-per-key) — sanctioned web access contract
-- [ ] **SerperPlaces adapter** (PORT) — `backend/app/adapters/live.py` → james-os providers module — places lane riding the Serper key
-- [ ] **SerperSearch adapter** (PORT) — `backend/app/adapters/live.py` → james-os providers module — live search (also carries the reddit stream)
-- [ ] **Shared HTTP resilience helper (_http)** (PORT) — `backend/app/adapters/live.py` → james-os providers module — shared HTTP helper (timeout/retry/key-redaction/ok_404)
-- [ ] **SocialConnector protocol (aggregator)** (PORT) — `backend/app/adapters/base.py` → james-os providers module — typed aggregator contract over postproxy.py + connections.py
-- [ ] **TranscriptionProvider protocol** (PORT) — `backend/app/adapters/base.py` → james-os providers module — transcription contract (voice harvester dependency)
-- [ ] **VideoProvider protocol (YouTube lane)** (PORT) — `backend/app/adapters/base.py` → james-os providers module — YouTube lane contract (D9 no-search.list rule travels with it)
-- [ ] **WikipediaKnowledge adapter (keyless)** (PORT) — `backend/app/adapters/live.py` → james-os providers module — always-live keyless wiki lane
-- [ ] **YouTubeVideo adapter (D9-safe)** (PORT) — `backend/app/adapters/live.py` → james-os providers module — D9-safe YouTube lane (feeds voice harvester in P4)
-- [ ] **get_providers() single wiring point** (PORT) — `backend/app/adapters/base.py` → james-os providers module — single wiring point (mock vs live-with-fallback)
-- [ ] **live_providers() per-provider key-gated fallback rules** (PORT) — `backend/app/adapters/live.py` → james-os providers module — live wiring with per-provider key-gated fallback (D8 incremental go-live)
+- [x] **AnthropicRouter — tiered LLM with token accounting** (PORT) — `backend/app/adapters/live.py` → james-os providers module — primary LLM router (usage accrual adapted to their credit metering)
+- [x] **AssemblyAITranscription + YouTube caption/audio chain** (PORT) — `backend/app/adapters/live.py` → james-os providers module — transcription chain consumed by the voice harvester alongside voice_ingest
+- [x] **AyrshareConnector (fallback social vendor)** (PORT) — `backend/app/adapters/live.py` → james-os providers module — fallback social vendor behind PostProxy in the vendor priority chain
+- [x] **CompositePeerData — per-platform resilient scraper chain** (PORT) — `backend/app/adapters/live.py` → james-os providers module — peer-data chain feeding research_roster/peer_snapshots fills
+- [x] **DeepResearchProvider protocol** (PORT) — `backend/app/adapters/base.py` → james-os providers module — supplementary research contract (source=researched SECONDARY rule preserved)
+- [x] **EmailProvider protocol (execution hand)** (PORT) — `backend/app/adapters/base.py` → james-os providers module — email-hand contract consumed by the outbox.execute_action executor
+- [x] **GET /system/sources — D12 stream inventory** (PORT) — `backend/app/routers/sources.py` → new sources route in james-os API — provider-layer stream inventory (live/mock/idle observability)
+- [x] **Keyless mock provider suite (mock mode works with zero keys)** (PORT) — `backend/app/adapters/mocks.py` → james-os providers module — mock mode; how the merged product stays demo-able without keys
+- [x] **KnowledgeProvider protocol (Wikipedia lane)** (PORT) — `backend/app/adapters/base.py` → james-os providers module — wiki lane contract (None-is-a-finding semantics preserved)
+- [x] **LLM availability chain: PerplexityRouter fallback + ChainLLMRouter** (PORT) — `backend/app/adapters/live.py` → james-os providers module — anthropic→perplexity availability chain
+- [x] **LLMRouter protocol (tiered LLM access)** (PORT) — `backend/app/adapters/base.py` → james-os providers module — tiered LLM contract with token accounting (D8 no-tools rule preserved)
+- [x] **MockLLMRouter — prompt-routed deterministic completions for every agent** (PORT) — `backend/app/adapters/mocks.py` → james-os providers module — deterministic LLM mock backing every ported agent's tests and demos
+- [x] **News chain: GNewsProvider + SerperNewsProvider fallback** (PORT) — `backend/app/adapters/live.py` → james-os providers module — news chain (gnews>serper>mock)
+- [x] **NewsProvider protocol** (PORT) — `backend/app/adapters/base.py` → james-os providers module — news lane contract
+- [x] **PeerDataProvider protocol** (PORT) — `backend/app/adapters/base.py` → james-os providers module — non-owned-account data contract feeding peer_snapshots
+- [x] **PerplexityDeepResearch adapter** (PORT) — `backend/app/adapters/live.py` → james-os providers module — supplementary deep-research lane (supersedes their single-Perplexity-pass research role)
+- [x] **PlacesProvider protocol** (PORT) — `backend/app/adapters/base.py` → james-os providers module — places lane contract
+- [x] **PublishProvider protocol (blog hand)** (PORT) — `backend/app/adapters/base.py` → james-os providers module — blog-hand contract consumed by the outbox.execute_action executor
+- [x] **Scrape chain: FirecrawlScrape + PlainScrape keyless fallback** (PORT) — `backend/app/adapters/live.py` → james-os providers module — scrape chain (firecrawl>plain, never mock in live)
+- [x] **ScrapeProvider protocol** (PORT) — `backend/app/adapters/base.py` → james-os providers module — scrape contract
+- [x] **SearchProvider protocol** (PORT) — `backend/app/adapters/base.py` → james-os providers module (new, D8 mock/live-per-key) — sanctioned web access contract
+- [x] **SerperPlaces adapter** (PORT) — `backend/app/adapters/live.py` → james-os providers module — places lane riding the Serper key
+- [x] **SerperSearch adapter** (PORT) — `backend/app/adapters/live.py` → james-os providers module — live search (also carries the reddit stream)
+- [x] **Shared HTTP resilience helper (_http)** (PORT) — `backend/app/adapters/live.py` → james-os providers module — shared HTTP helper (timeout/retry/key-redaction/ok_404)
+- [x] **SocialConnector protocol (aggregator)** (PORT) — `backend/app/adapters/base.py` → james-os providers module — typed aggregator contract over postproxy.py + connections.py
+- [x] **TranscriptionProvider protocol** (PORT) — `backend/app/adapters/base.py` → james-os providers module — transcription contract (voice harvester dependency)
+- [x] **VideoProvider protocol (YouTube lane)** (PORT) — `backend/app/adapters/base.py` → james-os providers module — YouTube lane contract (D9 no-search.list rule travels with it)
+- [x] **WikipediaKnowledge adapter (keyless)** (PORT) — `backend/app/adapters/live.py` → james-os providers module — always-live keyless wiki lane
+- [x] **YouTubeVideo adapter (D9-safe)** (PORT) — `backend/app/adapters/live.py` → james-os providers module — D9-safe YouTube lane (feeds voice harvester in P4)
+- [x] **get_providers() single wiring point** (PORT) — `backend/app/adapters/base.py` → james-os providers module — single wiring point (mock vs live-with-fallback)
+- [x] **live_providers() per-provider key-gated fallback rules** (PORT) — `backend/app/adapters/live.py` → james-os providers module — live wiring with per-provider key-gated fallback (D8 incremental go-live)
 
 ### james-os · intelligence
 
-- [ ] **AI auto-filing classifier** (KEEP) — `src/james_os/classify.py` → stays: src/james_os/classify.py
-- [ ] **Commitments extraction from meeting docs** (KEEP) — `src/james_os/commitments.py; src/james_os/main.py` → stays: src/james_os/commitments.py; src/james_os/main.py (bm2.0 action_items land as a separate new P1 migration, not merged here)
+- [x] **AI auto-filing classifier** (KEEP) — `src/james_os/classify.py` → stays: src/james_os/classify.py
+- [x] **Commitments extraction from meeting docs** (KEEP) — `src/james_os/commitments.py; src/james_os/main.py` → stays: src/james_os/commitments.py; src/james_os/main.py (bm2.0 action_items land as a separate new P1 migration, not merged here)
 
 ### james-os · memory
 
-- [ ] **Append-only events memory substrate** (KEEP) — `src/james_os/models.py; src/james_os/main.py` → stays: src/james_os/models.py; src/james_os/main.py (also the landing zone for bm2.0 brand-memory/exemplar chunks PORTed as events)
-- [ ] **Ask audit log with stage timings** (KEEP) — `src/james_os/ask.py` → stays: src/james_os/ask.py
-- [ ] **Canonical 8-slot filename convention** (KEEP) — `src/james_os/naming.py` → stays: src/james_os/naming.py
-- [ ] **Cohere Rerank v3.5 reranker with pass-through fallback** (KEEP) — `src/james_os/rerank.py` → stays: src/james_os/rerank.py
-- [ ] **Collision-safe document versioning** (KEEP) — `src/james_os/knowledge.py` → stays: src/james_os/knowledge.py
-- [ ] **Controlled vocabularies (PreReal Naming v1.0)** (KEEP) — `src/james_os/vocab.py` → stays: src/james_os/vocab.py
-- [ ] **Conversational follow-ups with history guard** (KEEP) — `src/james_os/ask.py` → stays: src/james_os/ask.py
-- [ ] **Document version supersession (append-only)** (KEEP) — `src/james_os/ingestion.py` → stays: src/james_os/ingestion.py
-- [ ] **Entity registry with stable EntityIDs** (KEEP) — `src/james_os/entities.py` → stays: src/james_os/entities.py
-- [ ] **Full-spectrum document text extraction** (KEEP) — `src/james_os/documents.py` → stays: src/james_os/documents.py
-- [ ] **Hybrid retrieval (vector + full-text, parallel fan-out)** (KEEP) — `src/james_os/retrieval.py` → stays: src/james_os/retrieval.py
-- [ ] **Idempotent event ingestion with embedding** (KEEP) — `src/james_os/ingestion.py` → stays: src/james_os/ingestion.py
-- [ ] **Knowledge Base single-file + batch-ZIP ingest** (KEEP) — `src/james_os/knowledge.py; src/james_os/main.py` → stays: src/james_os/knowledge.py; src/james_os/main.py
-- [ ] **Knowledge document management API** (KEEP) — `src/james_os/main.py` → stays: src/james_os/main.py (/knowledge/documents endpoints)
-- [ ] **Paragraph-aware chunking** (KEEP) — `src/james_os/documents.py` → stays: src/james_os/documents.py
-- [ ] **Plug-ins guidelines API** (KEEP) — `src/james_os/main.py` → stays: src/james_os/main.py (/plug-ins endpoints)
-- [ ] **Private storage + signed-URL document downloads** (KEEP) — `src/james_os/knowledge.py` → stays: src/james_os/knowledge.py
-- [ ] **Provider-agnostic embedder (Voyage + stub)** (KEEP) — `src/james_os/embedder.py` → stays: src/james_os/embedder.py
-- [ ] **Rules-as-data system prompts (plug_ins slots)** (KEEP) — `src/james_os/prompts.py` → stays: src/james_os/prompts.py (bm2.0 learned guardrails feed its ACTIVE GUIDELINES / avoid slots as data in P3)
-- [ ] **Sensitivity enforcement at answer time** (KEEP) — `src/james_os/sensitivity.py` → stays: src/james_os/sensitivity.py
-- [ ] **Silos (project/topic corpus groupings)** (KEEP) — `src/james_os/silos.py; src/james_os/main.py` → stays: src/james_os/silos.py; src/james_os/main.py
-- [ ] **Two-pass answer verification** (KEEP) — `src/james_os/ask.py; src/james_os/prompts.py` → stays: src/james_os/ask.py; src/james_os/prompts.py
-- [ ] **ask() cite-or-refuse QA pipeline** (KEEP) — `src/james_os/ask.py` → stays: src/james_os/ask.py
+- [x] **Append-only events memory substrate** (KEEP) — `src/james_os/models.py; src/james_os/main.py` → stays: src/james_os/models.py; src/james_os/main.py (also the landing zone for bm2.0 brand-memory/exemplar chunks PORTed as events)
+- [x] **Ask audit log with stage timings** (KEEP) — `src/james_os/ask.py` → stays: src/james_os/ask.py
+- [x] **Canonical 8-slot filename convention** (KEEP) — `src/james_os/naming.py` → stays: src/james_os/naming.py
+- [x] **Cohere Rerank v3.5 reranker with pass-through fallback** (KEEP) — `src/james_os/rerank.py` → stays: src/james_os/rerank.py
+- [x] **Collision-safe document versioning** (KEEP) — `src/james_os/knowledge.py` → stays: src/james_os/knowledge.py
+- [x] **Controlled vocabularies (PreReal Naming v1.0)** (KEEP) — `src/james_os/vocab.py` → stays: src/james_os/vocab.py
+- [x] **Conversational follow-ups with history guard** (KEEP) — `src/james_os/ask.py` → stays: src/james_os/ask.py
+- [x] **Document version supersession (append-only)** (KEEP) — `src/james_os/ingestion.py` → stays: src/james_os/ingestion.py
+- [x] **Entity registry with stable EntityIDs** (KEEP) — `src/james_os/entities.py` → stays: src/james_os/entities.py
+- [x] **Full-spectrum document text extraction** (KEEP) — `src/james_os/documents.py` → stays: src/james_os/documents.py
+- [x] **Hybrid retrieval (vector + full-text, parallel fan-out)** (KEEP) — `src/james_os/retrieval.py` → stays: src/james_os/retrieval.py
+- [x] **Idempotent event ingestion with embedding** (KEEP) — `src/james_os/ingestion.py` → stays: src/james_os/ingestion.py
+- [x] **Knowledge Base single-file + batch-ZIP ingest** (KEEP) — `src/james_os/knowledge.py; src/james_os/main.py` → stays: src/james_os/knowledge.py; src/james_os/main.py
+- [x] **Knowledge document management API** (KEEP) — `src/james_os/main.py` → stays: src/james_os/main.py (/knowledge/documents endpoints)
+- [x] **Paragraph-aware chunking** (KEEP) — `src/james_os/documents.py` → stays: src/james_os/documents.py
+- [x] **Plug-ins guidelines API** (KEEP) — `src/james_os/main.py` → stays: src/james_os/main.py (/plug-ins endpoints)
+- [x] **Private storage + signed-URL document downloads** (KEEP) — `src/james_os/knowledge.py` → stays: src/james_os/knowledge.py
+- [x] **Provider-agnostic embedder (Voyage + stub)** (KEEP) — `src/james_os/embedder.py` → stays: src/james_os/embedder.py
+- [x] **Rules-as-data system prompts (plug_ins slots)** (KEEP) — `src/james_os/prompts.py` → stays: src/james_os/prompts.py (bm2.0 learned guardrails feed its ACTIVE GUIDELINES / avoid slots as data in P3)
+- [x] **Sensitivity enforcement at answer time** (KEEP) — `src/james_os/sensitivity.py` → stays: src/james_os/sensitivity.py
+- [x] **Silos (project/topic corpus groupings)** (KEEP) — `src/james_os/silos.py; src/james_os/main.py` → stays: src/james_os/silos.py; src/james_os/main.py
+- [x] **Two-pass answer verification** (KEEP) — `src/james_os/ask.py; src/james_os/prompts.py` → stays: src/james_os/ask.py; src/james_os/prompts.py
+- [x] **ask() cite-or-refuse QA pipeline** (KEEP) — `src/james_os/ask.py` → stays: src/james_os/ask.py
 
 ### james-os · platform
 
-- [ ] **Auth: bcrypt + JWT-in-httpOnly-cookie + CSRF** (KEEP) — `src/james_os/auth.py; src/james_os/main.py` → stays: src/james_os/auth.py; src/james_os/main.py (merge kills bm2.0's need to ever build auth)
-- [ ] **Field-level Fernet encryption of stored keys** (KEEP) — `src/james_os/encryption.py` → stays: src/james_os/encryption.py
-- [ ] **First-signup claims default tenant** (KEEP) — `src/james_os/auth.py` → stays: src/james_os/auth.py
-- [ ] **Global auth + tenant middleware** (KEEP) — `src/james_os/main.py` → stays: src/james_os/main.py (all ported bm2.0 services inherit tenant scoping from it)
-- [ ] **Login rate limiting + account lockout** (KEEP) — `src/james_os/auth.py` → stays: src/james_os/auth.py
-- [ ] **Postgres RLS multi-tenancy** (KEEP) — `src/james_os/db.py` → stays: src/james_os/db.py (all bm2.0 code rewrites onto this asyncpg/RLS pattern; brand_id -> tenant_id maps once in P6)
-- [ ] **Revocable DB-backed sessions** (KEEP) — `src/james_os/auth.py` → stays: src/james_os/auth.py
-- [ ] **Supabase Storage backend (CDN URLs + TUS resumable upload)** (KEEP) — `src/james_os/storage_supabase.py` → stays: src/james_os/storage_supabase.py
-- [ ] **Tenant-managed credentials store (Settings-driven keys)** (KEEP) — `src/james_os/credentials.py` → stays: src/james_os/credentials.py (supplies per-tenant keys to the PORTed bm2.0 D8 mock/live provider layer)
-- [ ] **Warm asyncpg pool tuned for cloud Supabase** (KEEP) — `src/james_os/db.py` → stays: src/james_os/db.py
+- [x] **Auth: bcrypt + JWT-in-httpOnly-cookie + CSRF** (KEEP) — `src/james_os/auth.py; src/james_os/main.py` → stays: src/james_os/auth.py; src/james_os/main.py (merge kills bm2.0's need to ever build auth)
+- [x] **Field-level Fernet encryption of stored keys** (KEEP) — `src/james_os/encryption.py` → stays: src/james_os/encryption.py
+- [x] **First-signup claims default tenant** (KEEP) — `src/james_os/auth.py` → stays: src/james_os/auth.py
+- [x] **Global auth + tenant middleware** (KEEP) — `src/james_os/main.py` → stays: src/james_os/main.py (all ported bm2.0 services inherit tenant scoping from it)
+- [x] **Login rate limiting + account lockout** (KEEP) — `src/james_os/auth.py` → stays: src/james_os/auth.py
+- [x] **Postgres RLS multi-tenancy** (KEEP) — `src/james_os/db.py` → stays: src/james_os/db.py (all bm2.0 code rewrites onto this asyncpg/RLS pattern; brand_id -> tenant_id maps once in P6)
+- [x] **Revocable DB-backed sessions** (KEEP) — `src/james_os/auth.py` → stays: src/james_os/auth.py
+- [x] **Supabase Storage backend (CDN URLs + TUS resumable upload)** (KEEP) — `src/james_os/storage_supabase.py` → stays: src/james_os/storage_supabase.py
+- [x] **Tenant-managed credentials store (Settings-driven keys)** (KEEP) — `src/james_os/credentials.py` → stays: src/james_os/credentials.py (supplies per-tenant keys to the PORTed bm2.0 D8 mock/live provider layer)
+- [x] **Warm asyncpg pool tuned for cloud Supabase** (KEEP) — `src/james_os/db.py` → stays: src/james_os/db.py
 
 ### james-os · production
 
-- [ ] **<avoid> render steering block** (KEEP) — `src/james_os/video_feedback.py` → stays: src/james_os/video_feedback.py
-- [ ] **Abstracted media storage layer** (KEEP) — `src/james_os/media.py` → stays: src/james_os/media.py MediaStorage (their storage abstraction survives per plan)
-- [ ] **Auto-clip (one-click render top candidates)** (KEEP) — `src/james_os/long_form.py` → stays: src/james_os/long_form.py
-- [ ] **Avatar vs B-roll beat classification** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
-- [ ] **B-roll reuse library (generated clips become assets)** (KEEP) — `src/james_os/broll_library.py` → stays: src/james_os/broll_library.py (media_assets role='broll')
-- [ ] **B-roll scene rendering (seed still -> image-to-video)** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
-- [ ] **B-roll seed image generation** (KEEP) — `src/james_os/imagegen.py` → stays: src/james_os/imagegen.py
-- [ ] **Beat visual-prompt writing + parallel still generation** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
-- [ ] **Brand kit (identity on every render)** (KEEP) — `src/james_os/brand_kit.py` → stays: src/james_os/brand_kit.py (tenants.config['brand_kit'] + brand_kit_api.py)
-- [ ] **Branding overlay elements (watermark / nameplate / end card / progress bar)** (KEEP) — `src/james_os/assembly.py` → stays: src/james_os/assembly.py
-- [ ] **Bulk one-click generation (N pieces)** (KEEP) — `src/james_os/autopilot_bulk.py` → stays: src/james_os/autopilot_bulk.py (+ autopilot_bulk_api.py POST /autopilot/bulk)
-- [ ] **Candidate management (whole-source, re-analyze, dismiss)** (KEEP) — `src/james_os/long_form.py` → stays: src/james_os/long_form.py
-- [ ] **Caption element builder (auto-fit, face-safe)** (KEEP) — `src/james_os/caption_styles.py` → stays: src/james_os/caption_styles.py
-- [ ] **Caption preset library (14 presets)** (KEEP) — `src/james_os/caption_styles.py` → stays: src/james_os/caption_styles.py
-- [ ] **Cinematic treatment storyboard (film through-line)** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
-- [ ] **Clip-topic mining across the library** (KEEP) — `src/james_os/long_form.py` → stays: src/james_os/long_form.py
-- [ ] **Composition capability registry + build queue** (KEEP) — `src/james_os/compositions.py` → stays: src/james_os/compositions.py (build-request surface restyled in P5, logic unchanged)
-- [ ] **Conservative B-roll reuse matching + provenance** (KEEP) — `src/james_os/broll_library.py` → stays: src/james_os/broll_library.py
-- [ ] **Content library rollup** (KEEP) — `src/james_os/long_form.py` → stays: src/james_os/long_form.py
-- [ ] **Creatomate final-cut assembly provider** (KEEP) — `src/james_os/assembly.py` → stays: src/james_os/assembly.py (registered in unified provider layer)
-- [ ] **Crop-safety gate (subject never cut off)** (KEEP) — `src/james_os/image_compose.py` → stays: src/james_os/image_compose.py
-- [ ] **Dead-air interval computation + timestamp remap** (KEEP) — `src/james_os/clip_tighten.py` → stays: src/james_os/clip_tighten.py
-- [ ] **Design Inspector (whole-video style reverse-engineering)** (KEEP) — `src/james_os/design_inspector.py` → stays: src/james_os/design_inspector.py
-- [ ] **Designed-card compositor (5 formats, Pillow)** (KEEP) — `src/james_os/image_compose.py` → stays: src/james_os/image_compose.py
-- [ ] **Distinct style-template batch assignment** (KEEP) — `src/james_os/autopilot_templates.py` → stays: src/james_os/autopilot_templates.py
-- [ ] **Durable video render state machine** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
-- [ ] **Durable video-job store** (KEEP) — `src/james_os/video.py` → stays: src/james_os/video.py (video_jobs table)
-- [ ] **ElevenLabs cloned-voice TTS** (KEEP) — `src/james_os/tts.py` → stays: src/james_os/tts.py (registered in unified provider layer)
-- [ ] **Filler-word removal (optional gate)** (KEEP) — `src/james_os/clip_tighten.py` → stays: src/james_os/clip_tighten.py
-- [ ] **Generated-clip persistence to owned storage** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py (_persist_clip_to_storage into their media storage)
-- [ ] **Hero character context from photos** (KEEP) — `src/james_os/hero_context.py` → stays: src/james_os/hero_context.py
-- [ ] **Hero-consistent insert stills (Soul / photo refs)** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
-- [ ] **Hero-photo reuse ledger** (KEEP) — `src/james_os/photo_pick.py` → stays: src/james_os/photo_pick.py (actions-table memory, zero DDL)
-- [ ] **HeyGen avatar provider** (KEEP) — `src/james_os/heygen.py` → stays: src/james_os/heygen.py (registered in unified provider layer)
-- [ ] **HeyGen talking photo** (KEEP) — `src/james_os/heygen.py` → stays: src/james_os/heygen.py
-- [ ] **Higgsfield Soul ID (trained digital double)** (KEEP) — `src/james_os/higgsfield_souls.py` → stays: src/james_os/higgsfield_souls.py
-- [ ] **Hook title cards** (KEEP) — `src/james_os/caption_styles.py` → stays: src/james_os/caption_styles.py
-- [ ] **Image-to-video providers (Runway / Higgsfield / stub)** (KEEP) — `src/james_os/video.py` → stays: src/james_os/video.py (aligned with the unified D8-style provider layer landing in P1)
-- [ ] **Insert animation (image-to-video motion)** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
-- [ ] **Insert scene dedupe gate** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
-- [ ] **Intra-clip tightening orchestration (kill the fluff)** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
-- [ ] **LLM art director for designed cards** (KEEP) — `src/james_os/imagegen.py` → stays: src/james_os/imagegen.py
-- [ ] **LLM image director (story -> cinematic scene prompt)** (KEEP) — `src/james_os/imagegen.py` → stays: src/james_os/imagegen.py
-- [ ] **LLM reel-candidate mining** (KEEP) — `src/james_os/long_form.py` → stays: src/james_os/long_form.py (reel_candidates)
-- [ ] **Layout mislabel guard** (KEEP) — `src/james_os/compositions.py` → stays: src/james_os/compositions.py
-- [ ] **Live-tunable render knobs** (KEEP) — `src/james_os/render_tuning.py` → stays: src/james_os/render_tuning.py (tenants.config['render_tuning'])
-- [ ] **Long-form cutter pipeline (podcast -> reels)** (KEEP) — `src/james_os/long_form.py` → stays: src/james_os/long_form.py (long_sources)
-- [ ] **Mood-tagged music-bed library** (KEEP) — `src/james_os/audio_library.py` → stays: src/james_os/audio_library.py (media_assets role='music')
-- [ ] **Motion and reframe props (Ken Burns / zoom punch / speaker crop)** (KEEP) — `src/james_os/assembly.py` → stays: src/james_os/assembly.py
-- [ ] **Per-scene re-render** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
-- [ ] **Photo sharpness gate (Laplacian variance)** (KEEP) — `src/james_os/photo_pick.py` → stays: src/james_os/photo_pick.py
-- [ ] **Podcast engine (document -> spoken episode)** (KEEP) — `src/james_os/podcast.py` → stays: src/james_os/podcast.py (actions queue, action_type='podcast')
-- [ ] **Post hero-image generation** (KEEP) — `src/james_os/imagegen.py` → stays: src/james_os/imagegen.py
-- [ ] **Post image style library (6 styles)** (KEEP) — `src/james_os/imagegen.py` → stays: src/james_os/imagegen.py
-- [ ] **Production lifecycle controls (cancel / trim / delete / progress)** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
-- [ ] **Reference-conditioned hero image generation** (KEEP) — `src/james_os/imagegen.py` → stays: src/james_os/imagegen.py
-- [ ] **Role-based media / reference library** (KEEP) — `src/james_os/media.py` → stays: src/james_os/media.py (9-role media_assets)
-- [ ] **SFX library (transition sounds)** (KEEP) — `src/james_os/audio_library.py` → stays: src/james_os/audio_library.py (media_assets role='sfx')
-- [ ] **Scene-plan generator (fixed shootable structure)** (KEEP) — `src/james_os/video_plan.py` → stays: src/james_os/video_plan.py
-- [ ] **Sentence-aware beat segmentation** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
-- [ ] **Shot-size rotation gate** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
-- [ ] **Similar-style dedupe detection** (KEEP) — `src/james_os/templates.py` → stays: src/james_os/templates.py
-- [ ] **Speaker detection + manual speaker tags** (KEEP) — `src/james_os/long_form.py` → stays: src/james_os/long_form.py
-- [ ] **Speaker lower-third name tags** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
-- [ ] **Speaker-following crop (diarization-driven reframe)** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
-- [ ] **Split-screen modes (horizontal / vertical)** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
-- [ ] **Style-specific caption treatments** (KEEP) — `src/james_os/caption_styles.py` → stays: src/james_os/caption_styles.py
-- [ ] **Style-template library (trending video styles)** (KEEP) — `src/james_os/templates.py` → stays: src/james_os/templates.py (+ templates_api.py)
-- [ ] **Template -> render parameter mapping (honest approximations)** (KEEP) — `src/james_os/template_apply.py` → stays: src/james_os/template_apply.py
-- [ ] **Template B-roll-only reel** (KEEP) — `src/james_os/templates_api.py` → stays: src/james_os/templates_api.py (POST /templates/{id}/broll-reel)
-- [ ] **Template replicate (render in a stored style)** (KEEP) — `src/james_os/templates_api.py` → stays: src/james_os/templates_api.py (POST /templates/{id}/replicate)
-- [ ] **Trailing-silence detection + trim** (KEEP) — `src/james_os/audio_trim.py` → stays: src/james_os/audio_trim.py
-- [ ] **Uniform caption style policy** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
-- [ ] **Video caption + hook generators + signoff** (KEEP) — `src/james_os/content.py` → stays: src/james_os/content.py
-- [ ] **Video rejection learning loop** (KEEP) — `src/james_os/video_feedback.py` → stays: src/james_os/video_feedback.py (video_feedback events, deliberately separate from text frustrations)
-- [ ] **Whisper-cap-aware chunked transcription** (KEEP) — `src/james_os/long_form.py` → stays: src/james_os/long_form.py
-- [ ] **White paper -> content pack fan-out** (KEEP) — `src/james_os/content_pack.py` → stays: src/james_os/content_pack.py (into their Approval Queue)
-- [ ] **White-paper generator (3-act, cited)** (KEEP) — `src/james_os/whitepaper.py` → stays: src/james_os/whitepaper.py (grounds on their KB/events substrate)
-- [ ] **Word-anchored dense B-roll insert picker** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
-- [ ] **Word-pinned caption phrase builder** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
-- [ ] **avatar_only production mode** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
-- [ ] **avatar_story_mix production mode** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
-- [ ] **engaging_avatar production mode** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
-- [ ] **ffmpeg toolbelt (slice / extract / probe / concat / tighten)** (KEEP) — `src/james_os/audio_trim.py` → stays: src/james_os/audio_trim.py
-- [ ] **hero_clone talking-photo mode** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
-- [ ] **long_form_reel production mode** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
-- [ ] **mixed / timeline structured mode** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
-- [ ] **story_audio production mode** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
+- [x] **<avoid> render steering block** (KEEP) — `src/james_os/video_feedback.py` → stays: src/james_os/video_feedback.py
+- [x] **Abstracted media storage layer** (KEEP) — `src/james_os/media.py` → stays: src/james_os/media.py MediaStorage (their storage abstraction survives per plan)
+- [x] **Auto-clip (one-click render top candidates)** (KEEP) — `src/james_os/long_form.py` → stays: src/james_os/long_form.py
+- [x] **Avatar vs B-roll beat classification** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
+- [x] **B-roll reuse library (generated clips become assets)** (KEEP) — `src/james_os/broll_library.py` → stays: src/james_os/broll_library.py (media_assets role='broll')
+- [x] **B-roll scene rendering (seed still -> image-to-video)** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
+- [x] **B-roll seed image generation** (KEEP) — `src/james_os/imagegen.py` → stays: src/james_os/imagegen.py
+- [x] **Beat visual-prompt writing + parallel still generation** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
+- [x] **Brand kit (identity on every render)** (KEEP) — `src/james_os/brand_kit.py` → stays: src/james_os/brand_kit.py (tenants.config['brand_kit'] + brand_kit_api.py)
+- [x] **Branding overlay elements (watermark / nameplate / end card / progress bar)** (KEEP) — `src/james_os/assembly.py` → stays: src/james_os/assembly.py
+- [x] **Bulk one-click generation (N pieces)** (KEEP) — `src/james_os/autopilot_bulk.py` → stays: src/james_os/autopilot_bulk.py (+ autopilot_bulk_api.py POST /autopilot/bulk)
+- [x] **Candidate management (whole-source, re-analyze, dismiss)** (KEEP) — `src/james_os/long_form.py` → stays: src/james_os/long_form.py
+- [x] **Caption element builder (auto-fit, face-safe)** (KEEP) — `src/james_os/caption_styles.py` → stays: src/james_os/caption_styles.py
+- [x] **Caption preset library (14 presets)** (KEEP) — `src/james_os/caption_styles.py` → stays: src/james_os/caption_styles.py
+- [x] **Cinematic treatment storyboard (film through-line)** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
+- [x] **Clip-topic mining across the library** (KEEP) — `src/james_os/long_form.py` → stays: src/james_os/long_form.py
+- [x] **Composition capability registry + build queue** (KEEP) — `src/james_os/compositions.py` → stays: src/james_os/compositions.py (build-request surface restyled in P5, logic unchanged)
+- [x] **Conservative B-roll reuse matching + provenance** (KEEP) — `src/james_os/broll_library.py` → stays: src/james_os/broll_library.py
+- [x] **Content library rollup** (KEEP) — `src/james_os/long_form.py` → stays: src/james_os/long_form.py
+- [x] **Creatomate final-cut assembly provider** (KEEP) — `src/james_os/assembly.py` → stays: src/james_os/assembly.py (registered in unified provider layer)
+- [x] **Crop-safety gate (subject never cut off)** (KEEP) — `src/james_os/image_compose.py` → stays: src/james_os/image_compose.py
+- [x] **Dead-air interval computation + timestamp remap** (KEEP) — `src/james_os/clip_tighten.py` → stays: src/james_os/clip_tighten.py
+- [x] **Design Inspector (whole-video style reverse-engineering)** (KEEP) — `src/james_os/design_inspector.py` → stays: src/james_os/design_inspector.py
+- [x] **Designed-card compositor (5 formats, Pillow)** (KEEP) — `src/james_os/image_compose.py` → stays: src/james_os/image_compose.py
+- [x] **Distinct style-template batch assignment** (KEEP) — `src/james_os/autopilot_templates.py` → stays: src/james_os/autopilot_templates.py
+- [x] **Durable video render state machine** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
+- [x] **Durable video-job store** (KEEP) — `src/james_os/video.py` → stays: src/james_os/video.py (video_jobs table)
+- [x] **ElevenLabs cloned-voice TTS** (KEEP) — `src/james_os/tts.py` → stays: src/james_os/tts.py (registered in unified provider layer)
+- [x] **Filler-word removal (optional gate)** (KEEP) — `src/james_os/clip_tighten.py` → stays: src/james_os/clip_tighten.py
+- [x] **Generated-clip persistence to owned storage** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py (_persist_clip_to_storage into their media storage)
+- [x] **Hero character context from photos** (KEEP) — `src/james_os/hero_context.py` → stays: src/james_os/hero_context.py
+- [x] **Hero-consistent insert stills (Soul / photo refs)** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
+- [x] **Hero-photo reuse ledger** (KEEP) — `src/james_os/photo_pick.py` → stays: src/james_os/photo_pick.py (actions-table memory, zero DDL)
+- [x] **HeyGen avatar provider** (KEEP) — `src/james_os/heygen.py` → stays: src/james_os/heygen.py (registered in unified provider layer)
+- [x] **HeyGen talking photo** (KEEP) — `src/james_os/heygen.py` → stays: src/james_os/heygen.py
+- [x] **Higgsfield Soul ID (trained digital double)** (KEEP) — `src/james_os/higgsfield_souls.py` → stays: src/james_os/higgsfield_souls.py
+- [x] **Hook title cards** (KEEP) — `src/james_os/caption_styles.py` → stays: src/james_os/caption_styles.py
+- [x] **Image-to-video providers (Runway / Higgsfield / stub)** (KEEP) — `src/james_os/video.py` → stays: src/james_os/video.py (aligned with the unified D8-style provider layer landing in P1)
+- [x] **Insert animation (image-to-video motion)** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
+- [x] **Insert scene dedupe gate** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
+- [x] **Intra-clip tightening orchestration (kill the fluff)** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
+- [x] **LLM art director for designed cards** (KEEP) — `src/james_os/imagegen.py` → stays: src/james_os/imagegen.py
+- [x] **LLM image director (story -> cinematic scene prompt)** (KEEP) — `src/james_os/imagegen.py` → stays: src/james_os/imagegen.py
+- [x] **LLM reel-candidate mining** (KEEP) — `src/james_os/long_form.py` → stays: src/james_os/long_form.py (reel_candidates)
+- [x] **Layout mislabel guard** (KEEP) — `src/james_os/compositions.py` → stays: src/james_os/compositions.py
+- [x] **Live-tunable render knobs** (KEEP) — `src/james_os/render_tuning.py` → stays: src/james_os/render_tuning.py (tenants.config['render_tuning'])
+- [x] **Long-form cutter pipeline (podcast -> reels)** (KEEP) — `src/james_os/long_form.py` → stays: src/james_os/long_form.py (long_sources)
+- [x] **Mood-tagged music-bed library** (KEEP) — `src/james_os/audio_library.py` → stays: src/james_os/audio_library.py (media_assets role='music')
+- [x] **Motion and reframe props (Ken Burns / zoom punch / speaker crop)** (KEEP) — `src/james_os/assembly.py` → stays: src/james_os/assembly.py
+- [x] **Per-scene re-render** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
+- [x] **Photo sharpness gate (Laplacian variance)** (KEEP) — `src/james_os/photo_pick.py` → stays: src/james_os/photo_pick.py
+- [x] **Podcast engine (document -> spoken episode)** (KEEP) — `src/james_os/podcast.py` → stays: src/james_os/podcast.py (actions queue, action_type='podcast')
+- [x] **Post hero-image generation** (KEEP) — `src/james_os/imagegen.py` → stays: src/james_os/imagegen.py
+- [x] **Post image style library (6 styles)** (KEEP) — `src/james_os/imagegen.py` → stays: src/james_os/imagegen.py
+- [x] **Production lifecycle controls (cancel / trim / delete / progress)** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
+- [x] **Reference-conditioned hero image generation** (KEEP) — `src/james_os/imagegen.py` → stays: src/james_os/imagegen.py
+- [x] **Role-based media / reference library** (KEEP) — `src/james_os/media.py` → stays: src/james_os/media.py (9-role media_assets)
+- [x] **SFX library (transition sounds)** (KEEP) — `src/james_os/audio_library.py` → stays: src/james_os/audio_library.py (media_assets role='sfx')
+- [x] **Scene-plan generator (fixed shootable structure)** (KEEP) — `src/james_os/video_plan.py` → stays: src/james_os/video_plan.py
+- [x] **Sentence-aware beat segmentation** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
+- [x] **Shot-size rotation gate** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
+- [x] **Similar-style dedupe detection** (KEEP) — `src/james_os/templates.py` → stays: src/james_os/templates.py
+- [x] **Speaker detection + manual speaker tags** (KEEP) — `src/james_os/long_form.py` → stays: src/james_os/long_form.py
+- [x] **Speaker lower-third name tags** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
+- [x] **Speaker-following crop (diarization-driven reframe)** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
+- [x] **Split-screen modes (horizontal / vertical)** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
+- [x] **Style-specific caption treatments** (KEEP) — `src/james_os/caption_styles.py` → stays: src/james_os/caption_styles.py
+- [x] **Style-template library (trending video styles)** (KEEP) — `src/james_os/templates.py` → stays: src/james_os/templates.py (+ templates_api.py)
+- [x] **Template -> render parameter mapping (honest approximations)** (KEEP) — `src/james_os/template_apply.py` → stays: src/james_os/template_apply.py
+- [x] **Template B-roll-only reel** (KEEP) — `src/james_os/templates_api.py` → stays: src/james_os/templates_api.py (POST /templates/{id}/broll-reel)
+- [x] **Template replicate (render in a stored style)** (KEEP) — `src/james_os/templates_api.py` → stays: src/james_os/templates_api.py (POST /templates/{id}/replicate)
+- [x] **Trailing-silence detection + trim** (KEEP) — `src/james_os/audio_trim.py` → stays: src/james_os/audio_trim.py
+- [x] **Uniform caption style policy** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
+- [x] **Video caption + hook generators + signoff** (KEEP) — `src/james_os/content.py` → stays: src/james_os/content.py
+- [x] **Video rejection learning loop** (KEEP) — `src/james_os/video_feedback.py` → stays: src/james_os/video_feedback.py (video_feedback events, deliberately separate from text frustrations)
+- [x] **Whisper-cap-aware chunked transcription** (KEEP) — `src/james_os/long_form.py` → stays: src/james_os/long_form.py
+- [x] **White paper -> content pack fan-out** (KEEP) — `src/james_os/content_pack.py` → stays: src/james_os/content_pack.py (into their Approval Queue)
+- [x] **White-paper generator (3-act, cited)** (KEEP) — `src/james_os/whitepaper.py` → stays: src/james_os/whitepaper.py (grounds on their KB/events substrate)
+- [x] **Word-anchored dense B-roll insert picker** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
+- [x] **Word-pinned caption phrase builder** (KEEP) — `src/james_os/story_video.py` → stays: src/james_os/story_video.py
+- [x] **avatar_only production mode** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
+- [x] **avatar_story_mix production mode** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
+- [x] **engaging_avatar production mode** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
+- [x] **ffmpeg toolbelt (slice / extract / probe / concat / tighten)** (KEEP) — `src/james_os/audio_trim.py` → stays: src/james_os/audio_trim.py
+- [x] **hero_clone talking-photo mode** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
+- [x] **long_form_reel production mode** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
+- [x] **mixed / timeline structured mode** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
+- [x] **story_audio production mode** (KEEP) — `src/james_os/video_pipeline.py` → stays: src/james_os/video_pipeline.py
 
 ## P2 — Eyes & heartbeat — 54 rows
 

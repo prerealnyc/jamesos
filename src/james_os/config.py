@@ -202,6 +202,38 @@ class Settings(BaseSettings):
     # invite_code. Leaving this empty keeps the install single-tenant.
     signup_invite_code: str = ""
 
+    # ─── Brand Manager layer (bm2.0 merge, docs/unification-plan.md) ───
+    # Master feature flag for the ported manager surfaces (P1+). Per-tenant
+    # override lives in tenants.config['manager_v2']; this is the default.
+    manager_v2: bool = False
+    # D8 provider layer mode: mock = deterministic keyless fixtures (demo-able
+    # with zero keys); live = each provider goes live iff its key is set,
+    # per-provider mock fallback otherwise.
+    manager_env: str = "mock"  # mock | live
+    serper_api_key: str = ""       # web search (also carries the reddit stream)
+    firecrawl_api_key: str = ""    # page scraping
+    gnews_api_key: str = ""        # news (serper /news is the fallback)
+    ayrshare_api_key: str = ""     # social aggregator fallback behind PostProxy
+    postproxy_redirect_url: str = "http://localhost:3000/onboard?connected=1"
+    scrapecreators_api_key: str = ""  # peer social data (Apify preferred when set)
+    resend_api_key: str = ""       # email hand (Resend); nothing sends without approval
+    email_from: str = "Brand Manager <hello@brandmanager.local>"
+    blog_publish_url: str = ""     # CMS/webhook endpoint that accepts a post payload
+    blog_api_key: str = ""         # bearer for blog_publish_url
+    blog_public_base: str = ""     # public base to build post URLs, e.g. https://brand.blog
+    # brand-voice harvest caps (cost control on transcription)
+    voice_max_videos: int = 6
+    voice_max_exemplars_per_source: int = 8
+    voice_exemplar_min_chars: int = 40
+    voice_exemplar_max_chars: int = 400
+    # manager daily-cycle heartbeat (registered on the scheduled_jobs scheduler)
+    manager_scheduler_enabled: bool = True
+    daily_cycle_hour: int = 7
+    # model routing tiers (D8): extract / content / strategy
+    llm_extract_model: str = "claude-haiku-4-5-20251001"
+    llm_content_model: str = "claude-sonnet-5"
+    llm_strategy_model: str = "claude-opus-4-8"
+
     log_level: str = "INFO"
 
     # Retrieval tuning
