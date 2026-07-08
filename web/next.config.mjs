@@ -98,6 +98,11 @@ const nextConfig = {
       { source: "/intake/:path*", destination: `${BACKEND}/intake/:path*` },
       // Strategy engine (playbooks/prescriptions). /brief is the Next PAGE.
       { source: "/strategy/:path*", destination: `${BACKEND}/strategy/:path*` },
+      // Brand Manager layer (bm2.0 merge, P5): the /manager API surface and
+      // the D12 sources inventory. /manager itself is the Next PAGE — only
+      // sub-paths proxy; the page's fetches all target /manager/<sub>.
+      { source: "/manager/:path*", destination: `${BACKEND}/manager/:path*` },
+      { source: "/system/:path*", destination: `${BACKEND}/system/:path*` },
     ];
   },
 };

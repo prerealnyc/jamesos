@@ -3,27 +3,29 @@
 import { useEffect, useState } from "react";
 
 /**
- * Floating Classic ⇄ Iris theme switcher — a PREVIEW control so the new
- * "Iris" redesign can be evaluated live against the shipped "Classic"
- * look on every page, without committing to it. Toggles the `theme-iris`
- * class on <html> (CSS-var overrides in globals.css do the rest) and
- * remembers the choice in localStorage. Default = Classic.
+ * Floating Classic ⇄ Mission Control switcher — the P5 rollout vehicle
+ * (repurposed from the retired Iris preview, per the merge decision):
+ * every restyled page can be verified against the pre-merge look until
+ * full cutover, at which point this control retires with Roy's sign-off.
+ * Toggles the `theme-manager` class on <html> (CSS-var overrides in
+ * globals.css do the rest) and remembers the choice in localStorage.
+ * Default = Mission Control (the unified bm2.0-discipline design).
  */
 const KEY = "jos-theme-preview";
 
 export function ThemeSwitcher() {
-  const [iris, setIris] = useState(false);
+  const [mc, setMc] = useState(true);
 
   useEffect(() => {
-    const on = localStorage.getItem(KEY) === "iris";
-    setIris(on);
-    document.documentElement.classList.toggle("theme-iris", on);
+    const on = localStorage.getItem(KEY) !== "classic";
+    setMc(on);
+    document.documentElement.classList.toggle("theme-manager", on);
   }, []);
 
   function set(on: boolean) {
-    setIris(on);
-    document.documentElement.classList.toggle("theme-iris", on);
-    localStorage.setItem(KEY, on ? "iris" : "classic");
+    setMc(on);
+    document.documentElement.classList.toggle("theme-manager", on);
+    localStorage.setItem(KEY, on ? "manager" : "classic");
   }
 
   return (
@@ -36,21 +38,21 @@ export function ThemeSwitcher() {
       </span>
       <button
         onClick={() => set(false)}
-        aria-pressed={!iris}
+        aria-pressed={!mc}
         className={`rounded-full px-3 py-1.5 text-[12px] font-medium transition-colors ${
-          !iris ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+          !mc ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
         }`}
       >
         Classic
       </button>
       <button
         onClick={() => set(true)}
-        aria-pressed={iris}
+        aria-pressed={mc}
         className={`rounded-full px-3 py-1.5 text-[12px] font-medium transition-colors ${
-          iris ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+          mc ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
         }`}
       >
-        Iris (new)
+        Mission Control
       </button>
     </div>
   );

@@ -37,6 +37,14 @@ const BRAND_SUBROUTES = ["/brand", "/voice-studio", "/jp-live"];
 
 const NAV: Group[] = [
   {
+    title: "Manager",
+    items: [
+      // The strategy home from the bm2.0 merge (P5): today's brief, the
+      // radar, north star, competitors, the work and follow-ups — one screen.
+      { href: "/manager", label: "Mission Control", sub: "Today, radar, plan & the work", icon: "market", live: true },
+    ],
+  },
+  {
     title: "Memory",
     items: [
       { href: "/brief", label: "Morning Brief", sub: "The brand manager's plan for you today", icon: "market", live: true },
@@ -97,6 +105,16 @@ export function Shell({ children }: { children: React.ReactNode }) {
   }
   return (
     <div className="flex min-h-screen">
+      {/* WCAG skip-link (unified design pattern): first tab stop, visible
+          only on focus, jumps past the rail to the focusable main region. */}
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[70]
+                   focus:rounded-md focus:bg-primary focus:px-4 focus:py-2
+                   focus:text-primary-foreground focus:text-sm focus:font-semibold"
+      >
+        Skip to content
+      </a>
       <aside className="w-64 shrink-0 bg-sidebar text-sidebar-foreground border-r border-sidebar-border flex flex-col">
         <div className="px-5 py-5 border-b border-sidebar-border">
           <div className="text-[15px] font-bold tracking-[.5px] text-sidebar-primary">JAMES OS</div>
@@ -163,7 +181,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         </Link>
       </aside>
 
-      <main className="flex-1 min-w-0 bg-background">
+      <main id="main" tabIndex={-1} className="flex-1 min-w-0 bg-background outline-none">
         <div className="max-w-4xl mx-auto px-8 py-10">
           {/* Hub tab strips unify a cluster of pages into one surface.
               Media/Assets pages render their own MediaTabs in-page. */}

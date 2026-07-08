@@ -3,10 +3,11 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { managerApi } from "@/lib/manager-api";
 
 const STORAGE_KEY = "jos.onboarding.dismissed.v1";
 
-type StepKey = "keys" | "accounts" | "hero" | "render";
+type StepKey = "brand" | "keys" | "accounts" | "hero" | "render";
 
 type Step = {
   key: StepKey;
@@ -33,10 +34,11 @@ export function OnboardingChecklist() {
 
     let cancelled = false;
     (async () => {
-      const [accountsR, productionsR, heroR] = await Promise.allSettled([
+      const [accountsR, productionsR, heroR, managerStepsR] = await Promise.allSettled([
         api.listBrandAccounts(),
         api.listProductions(),
         api.getHeroContext(),
+        managerApi.nextSteps(),
       ]);
 
       const accountsCount =
@@ -46,7 +48,25 @@ export function OnboardingChecklist() {
       const heroPhotos =
         heroR.status === "fulfilled" ? (heroR.value.photo_count ?? 0) : 0;
 
+      // Brand onboarding (the /intake wizard): done once the profile has been
+      // researched AND a brand voice has been learned (manager next-steps).
+      const managerSteps = managerStepsR.status === "fulfilled" ? managerStepsR.value : [];
+      const researched = managerSteps.find((s) => s.step === "research_profile")?.state === "done";
+      const voiced = managerSteps.find((s) => s.step === "build_voice")?.state === "done";
+      const brandDone = researched && voiced;
+
       const next: Step[] = [
+        {
+          key: "brand",
+          label: "Complete brand onboarding",
+          href: "/intake",
+          done: brandDone,
+          note: brandDone
+            ? "Profile researched · brand voice learned"
+            : researched
+              ? "Research done — finish the interview and learn the voice"
+              : "Research, interview, and brand voice — the wizard walks you through it",
+        },
         {
           key: "keys",
           label: "Configure API keys",

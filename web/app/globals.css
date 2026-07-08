@@ -154,6 +154,91 @@ html.dark.theme-iris {
   --shadow-lg: 0 12px 20px -4px hsl(222 60% 2% / 0.55), 0 4px 8px -4px hsl(222 60% 2% / 0.40);
 }
 
+/* ─────────────────────────────────────────────────────────────────────
+   "Mission Control" — the unified Brand Manager design (P5 of the merge).
+   Roy's decision (2026-07-08): bm2.0's token DISCIPLINE (one token set,
+   calm cards, pill section-nav, WCAG focus states) in a dark-first,
+   dense, one-screen mission-control skin: deep neutral ground, content
+   floats on calm cards, QUIET status accents (nothing screams), warm
+   paper foreground, tabular numerals everywhere numbers appear.
+   Default theme from P5 on; Classic remains reachable via the switcher
+   until cutover sign-off. Light theme is DERIVED from the same hues.
+   ───────────────────────────────────────────────────────────────────── */
+html.theme-manager {
+  /* light (derived): warm paper ground, same accent hues, dark rail */
+  --background: 40 24% 96%;            /* paper */
+  --foreground: 228 16% 12%;           /* ink */
+  --border: 228 12% 86%;
+  --card: 40 20% 99%;
+  --card-foreground: 228 16% 12%;
+  --sidebar: 228 16% 9%;               /* the rail stays mission-dark */
+  --sidebar-foreground: 36 12% 90%;
+  --sidebar-border: 228 12% 16%;
+  --sidebar-primary: 40 70% 58%;
+  --sidebar-accent: 228 12% 14%;
+  --sidebar-accent-foreground: 36 12% 92%;
+  --popover: 40 20% 99%;
+  --popover-foreground: 228 16% 12%;
+  --primary: 40 72% 42%;               /* burnished gold, AA on paper */
+  --primary-foreground: 40 30% 98%;
+  --secondary: 228 12% 91%;
+  --secondary-foreground: 228 16% 16%;
+  --muted: 228 12% 92%;
+  --muted-foreground: 228 10% 40%;
+  --accent: 168 55% 27%;               /* quiet verdigris, AA on paper */
+  --accent-foreground: 0 0% 100%;
+  --destructive: 4 62% 44%;
+  --destructive-foreground: 0 0% 100%;
+  --success: 152 48% 30%;
+  --warning: 35 90% 38%;
+  --memory: 40 72% 42%;
+  --memory-foreground: 40 30% 98%;
+  --input: 228 12% 78%;
+  --ring: 40 72% 42%;
+  --shadow-sm: 0 1px 3px 0 hsl(228 40% 12% / 0.07), 0 1px 2px -1px hsl(228 40% 12% / 0.05);
+  --shadow: 0 4px 8px -2px hsl(228 40% 12% / 0.09), 0 2px 4px -2px hsl(228 40% 12% / 0.05);
+  --shadow-lg: 0 12px 20px -4px hsl(228 40% 12% / 0.11), 0 4px 8px -4px hsl(228 40% 12% / 0.07);
+}
+html.dark.theme-manager {
+  /* dark-first: the real mission-control ground */
+  --background: 228 14% 6%;            /* deep neutral ground */
+  --foreground: 36 12% 92%;            /* warm paper text  ~15:1 AAA */
+  --border: 228 10% 18%;
+  --card: 228 12% 10%;                 /* calm card, floats above ground */
+  --card-foreground: 36 12% 92%;
+  --sidebar: 228 16% 4.5%;             /* deepest layer — content floats above */
+  --sidebar-foreground: 36 10% 90%;
+  --sidebar-border: 228 12% 13%;
+  --sidebar-primary: 40 70% 60%;       /* gold on near-black — AAA */
+  --sidebar-accent: 228 12% 11%;
+  --sidebar-accent-foreground: 36 12% 92%;
+  --popover: 228 12% 11%;
+  --popover-foreground: 36 12% 92%;
+  --primary: 40 70% 58%;               /* burnished gold */
+  --primary-foreground: 228 20% 8%;
+  --secondary: 228 10% 15%;
+  --secondary-foreground: 36 10% 90%;
+  --muted: 228 10% 14%;
+  --muted-foreground: 228 8% 69%;      /* 4.9:1 on card — AA */
+  --accent: 168 42% 52%;               /* quiet verdigris signal */
+  --accent-foreground: 228 20% 7%;
+  --destructive: 4 58% 58%;
+  --destructive-foreground: 228 20% 7%;
+  --success: 152 40% 52%;
+  --warning: 38 82% 58%;
+  --memory: 40 70% 58%;
+  --memory-foreground: 228 20% 8%;
+  --input: 228 10% 23%;
+  --ring: 40 70% 58%;
+  --shadow-sm: 0 1px 3px 0 hsl(228 60% 2% / 0.45), 0 1px 2px -1px hsl(228 60% 2% / 0.35);
+  --shadow: 0 4px 10px -2px hsl(228 60% 2% / 0.5), 0 2px 4px -2px hsl(228 60% 2% / 0.4);
+  --shadow-lg: 0 14px 24px -6px hsl(228 60% 2% / 0.6), 0 4px 10px -4px hsl(228 60% 2% / 0.45);
+}
+/* mission-control typography: numbers align in columns, everywhere */
+html.theme-manager body {
+  font-variant-numeric: tabular-nums;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

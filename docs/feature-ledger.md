@@ -498,105 +498,116 @@ All 431 rows now have a final disposition — zero open items.
 
 ## P5 — Unified frontend (bm2.0 design language) — 90 rows
 
+> **Progress 2026-07-09: COMPLETE (90/90).** "Mission Control" token set (dark-first,
+> warm-paper fg, quiet gold/verdigris accents, tabular numerals, WCAG skip-link) is the
+> DEFAULT across all surfaces via the ui.tsx/globals.css choke point; ThemeSwitcher
+> repurposed Classic ⇄ Mission Control (retires at cutover with Roy's sign-off).
+> web/lib/manager-api.ts (44 typed routes) + manager primitives/citations/section-nav;
+> web/app/manager (9-section dashboard) + /manager/plan; web/app/intake replaced by the
+> 5-step wizard (resumable). Verified live in-browser end-to-end on the mock stack:
+> onboarding basics→discovery→7-lane research review→interview (answer → 3 user_stated
+> fields + aspirational peers seeded)→voice; Mission Control renders real brief/plan/
+> radar data. Known cosmetic: donor list-parser keeps leading "and" on final list item.
+
 
 ### bm2.0 · frontend
 
-- [ ] **5-step onboarding wizard with progress stepper** (REPLACE) — `frontend/app/onboard/page.tsx` → james-os web/app/intake — supersedes their intake flow, restyled to unified design
-- [ ] **AnswerReview — batch review of AI-drafted answers** (REPLACE) — `frontend/components/answer-review.tsx` → james-os intake_agent review flow UI — drafted-answer review over brand_questions
-- [ ] **Approval queue page — triage, draft, approve/reject** (MERGE) — `frontend/app/brand/[id]/queue/page.tsx` → james-os approval queue UI (theirs is stronger, survives restyled) — fold in D7 review badges, reject-reason capture, draft-content trigger
-- [ ] **Async UI primitives + data-loading hook** (PORT) — `frontend/components/use-load.ts` → shared frontend lib in james-os web (useLoad + Loading/ErrorBox/EmptyState)
-- [ ] **Auditor baseline per platform** (PORT) — `frontend/app/brand/[id]/page.tsx` → Manager area — Accounts section, audit baseline cards over connections.py analytics
-- [ ] **Back-to-top control (BackToTop)** (PORT) — `frontend/components/section-nav.tsx` → Manager area in james-os shell — shared nav component
-- [ ] **Batch AI auto-answer ('✨ Draft all with AI')** (REPLACE) — `frontend/app/brand/[id]/page.tsx` → james-os intake_agent answerer flow UI (intake + onboarding-checklist) — batch auto-answer is part of the intake replacement
-- [ ] **Brand Voice panel — harvest, poll, add source** (PORT) — `frontend/components/voice-panel.tsx` → Manager area — Brand Voice section, alongside their voice_ingest upload door (one corpus, origin-tagged)
-- [ ] **Brand layout with view tabs and status badges** (PORT) — `frontend/app/brand/[id]/layout.tsx` → new Manager area layout inside james-os web shell (their shell/routes survive restyled)
-- [ ] **Citation chips with favicons** (PORT) — `frontend/components/citations.tsx` → shared design-system components in james-os web — citation rendering for suggestions/prescriptions/profile fields
-- [ ] **Collaboration & growth panel** (PORT) — `frontend/components/collaboration-panel.tsx` → Manager area — Competitors/growth section; plays land as action_items (new P1 migration)
-- [ ] **Competitors & peers panel — discover → approve → track** (PORT) — `frontend/components/competitor-panel.tsx` → Manager area — Competitors section over research_roster + peer_snapshots (0-row landing zones)
-- [ ] **Connected accounts: OAuth connect, sync, and aggregator group picker** (MERGE) — `frontend/app/brand/[id]/page.tsx` → james-os connections UI over postproxy.py + connections.py — adds connect-URL/group-bind flow to their read/analytics layer
-- [ ] **Daily brief panel — run/re-run today's cycle** (PORT) — `frontend/components/daily-brief-panel.tsx` → Manager area — Today section, reading the daily-cycle job registered on their scheduled_jobs scheduler
-- [ ] **Follow-ups panel — trackable action items** (PORT) — `frontend/components/followups-panel.tsx` → Manager area — Follow-ups section over action_items (new P1 migration)
-- [ ] **Growth intelligence + today's plan panel** (PORT) — `frontend/components/growth-plan-panel.tsx` → Manager area — growth/daily-plan section over strategy.py replacement + prescriptions
-- [ ] **Inline dashboard interview inside Next steps** (REPLACE) — `frontend/app/brand/[id]/page.tsx` → james-os web onboarding-checklist — answer_questions step backed by brand_questions
-- [ ] **Intelligence radar — 5 scanning lanes** (PORT) — `frontend/components/radar-panel.tsx` → Manager area — Radar section over the 5 eyes filling content_suggestions + their scheduler registry
-- [ ] **Intelligence sources card (D12 stream inventory)** (PORT) — `frontend/app/brand/[id]/page.tsx` → Manager area — sources card reading the ported sources router (provider-layer observability)
-- [ ] **Morning Brief card (Strategist)** (PORT) — `frontend/app/brand/[id]/page.tsx` → Manager area — Today section, strategist brief (strategy.py replacement output)
-- [ ] **Next-steps setup checklist card** (REPLACE) — `frontend/app/brand/[id]/page.tsx` → james-os web onboarding-checklist component — superseded by our checklist in the Manager area
-- [ ] **North Star panel — negotiate growth targets** (PORT) — `frontend/components/north-star-panel.tsx` → Manager area — North Star section over goal agent (strategy.py replacement / prescriptions)
-- [ ] **Peer-Agent digest (benchmarks + observations)** (PORT) — `frontend/app/brand/[id]/page.tsx` → Manager area — Competitors section, benchmark digest over peer_snapshots
-- [ ] **Provenance and status badge kit** (PORT) — `frontend/components/badges.tsx` → shared design-system components in james-os web — part of the winning bm2.0 token set
-- [ ] **QuestionCard with '✨ Suggest an answer' agent** (REPLACE) — `frontend/components/question-card.tsx` → shared component in james-os web/app/intake + Manager area — interview UI over brand_questions
-- [ ] **Step 1 basics form (name, entity type, website, socials)** (REPLACE) — `frontend/app/onboard/page.tsx` → james-os web/app/intake — step 1 of replacement intake flow (feeds intake_agent replacement)
-- [ ] **Step 2 entity disambiguation candidate picker** (REPLACE) — `frontend/app/onboard/page.tsx` → james-os web/app/intake — 'is this your brand?' step (part of intake_agent replacement)
-- [ ] **Step 3 background confirmed-research run with status polling** (REPLACE) — `frontend/app/onboard/page.tsx` → james-os web/app/intake — research step over the brand_research.py replacement (D11 lanes)
-- [ ] **Step 3 research-results review grouped by profile section** (REPLACE) — `frontend/app/onboard/page.tsx` → james-os web/app/intake — research review step reading profile_fields envelope (new migration)
-- [ ] **Step 4 onboarding interview** (REPLACE) — `frontend/app/onboard/page.tsx` → james-os web/app/intake — interview step backed by brand_questions (0-row table)
-- [ ] **Step 5 brand-voice reveal** (REPLACE) — `frontend/app/onboard/page.tsx` → james-os web/app/intake — Brand Voice step (embeds ported VoicePanel)
-- [ ] **Sticky section jump-nav with scroll-spy (SectionNav)** (PORT) — `frontend/components/section-nav.tsx` → Manager area in james-os shell — pill section-nav (part of winning design token set)
-- [ ] **The Work — execution spine panel** (MERGE) — `frontend/components/execution-panel.tsx` → james-os actions queue UI (survives, restyled) — extended with publish/measure controls and published/measured statuses
-- [ ] **Typed API client for the whole backend surface** (MERGE) — `frontend/lib/api.ts` → james-os web API client layer — fold in typed wrappers, ApiError, 202/409 background-job conventions against merged james-os routes
-- [ ] **WCAG skip-link and focusable main content** (PORT) — `frontend/app/brand/[id]/layout.tsx` → james-os web shell layout — WCAG pattern applied across all surfaces per unified design
-- [ ] **Weekly plan page — draft, review, activate** (PORT) — `frontend/app/brand/[id]/plan/page.tsx` → Manager area — weekly plan page over strategist (strategy.py replacement) + prescriptions evidence[] format
+- [x] **5-step onboarding wizard with progress stepper** (REPLACE) — `frontend/app/onboard/page.tsx` → james-os web/app/intake — supersedes their intake flow, restyled to unified design
+- [x] **AnswerReview — batch review of AI-drafted answers** (REPLACE) — `frontend/components/answer-review.tsx` → james-os intake_agent review flow UI — drafted-answer review over brand_questions
+- [x] **Approval queue page — triage, draft, approve/reject** (MERGE) — `frontend/app/brand/[id]/queue/page.tsx` → james-os approval queue UI (theirs is stronger, survives restyled) — fold in D7 review badges, reject-reason capture, draft-content trigger
+- [x] **Async UI primitives + data-loading hook** (PORT) — `frontend/components/use-load.ts` → shared frontend lib in james-os web (useLoad + Loading/ErrorBox/EmptyState)
+- [x] **Auditor baseline per platform** (PORT) — `frontend/app/brand/[id]/page.tsx` → Manager area — Accounts section, audit baseline cards over connections.py analytics
+- [x] **Back-to-top control (BackToTop)** (PORT) — `frontend/components/section-nav.tsx` → Manager area in james-os shell — shared nav component
+- [x] **Batch AI auto-answer ('✨ Draft all with AI')** (REPLACE) — `frontend/app/brand/[id]/page.tsx` → james-os intake_agent answerer flow UI (intake + onboarding-checklist) — batch auto-answer is part of the intake replacement
+- [x] **Brand Voice panel — harvest, poll, add source** (PORT) — `frontend/components/voice-panel.tsx` → Manager area — Brand Voice section, alongside their voice_ingest upload door (one corpus, origin-tagged)
+- [x] **Brand layout with view tabs and status badges** (PORT) — `frontend/app/brand/[id]/layout.tsx` → new Manager area layout inside james-os web shell (their shell/routes survive restyled)
+- [x] **Citation chips with favicons** (PORT) — `frontend/components/citations.tsx` → shared design-system components in james-os web — citation rendering for suggestions/prescriptions/profile fields
+- [x] **Collaboration & growth panel** (PORT) — `frontend/components/collaboration-panel.tsx` → Manager area — Competitors/growth section; plays land as action_items (new P1 migration)
+- [x] **Competitors & peers panel — discover → approve → track** (PORT) — `frontend/components/competitor-panel.tsx` → Manager area — Competitors section over research_roster + peer_snapshots (0-row landing zones)
+- [x] **Connected accounts: OAuth connect, sync, and aggregator group picker** (MERGE) — `frontend/app/brand/[id]/page.tsx` → james-os connections UI over postproxy.py + connections.py — adds connect-URL/group-bind flow to their read/analytics layer
+- [x] **Daily brief panel — run/re-run today's cycle** (PORT) — `frontend/components/daily-brief-panel.tsx` → Manager area — Today section, reading the daily-cycle job registered on their scheduled_jobs scheduler
+- [x] **Follow-ups panel — trackable action items** (PORT) — `frontend/components/followups-panel.tsx` → Manager area — Follow-ups section over action_items (new P1 migration)
+- [x] **Growth intelligence + today's plan panel** (PORT) — `frontend/components/growth-plan-panel.tsx` → Manager area — growth/daily-plan section over strategy.py replacement + prescriptions
+- [x] **Inline dashboard interview inside Next steps** (REPLACE) — `frontend/app/brand/[id]/page.tsx` → james-os web onboarding-checklist — answer_questions step backed by brand_questions
+- [x] **Intelligence radar — 5 scanning lanes** (PORT) — `frontend/components/radar-panel.tsx` → Manager area — Radar section over the 5 eyes filling content_suggestions + their scheduler registry
+- [x] **Intelligence sources card (D12 stream inventory)** (PORT) — `frontend/app/brand/[id]/page.tsx` → Manager area — sources card reading the ported sources router (provider-layer observability)
+- [x] **Morning Brief card (Strategist)** (PORT) — `frontend/app/brand/[id]/page.tsx` → Manager area — Today section, strategist brief (strategy.py replacement output)
+- [x] **Next-steps setup checklist card** (REPLACE) — `frontend/app/brand/[id]/page.tsx` → james-os web onboarding-checklist component — superseded by our checklist in the Manager area
+- [x] **North Star panel — negotiate growth targets** (PORT) — `frontend/components/north-star-panel.tsx` → Manager area — North Star section over goal agent (strategy.py replacement / prescriptions)
+- [x] **Peer-Agent digest (benchmarks + observations)** (PORT) — `frontend/app/brand/[id]/page.tsx` → Manager area — Competitors section, benchmark digest over peer_snapshots
+- [x] **Provenance and status badge kit** (PORT) — `frontend/components/badges.tsx` → shared design-system components in james-os web — part of the winning bm2.0 token set
+- [x] **QuestionCard with '✨ Suggest an answer' agent** (REPLACE) — `frontend/components/question-card.tsx` → shared component in james-os web/app/intake + Manager area — interview UI over brand_questions
+- [x] **Step 1 basics form (name, entity type, website, socials)** (REPLACE) — `frontend/app/onboard/page.tsx` → james-os web/app/intake — step 1 of replacement intake flow (feeds intake_agent replacement)
+- [x] **Step 2 entity disambiguation candidate picker** (REPLACE) — `frontend/app/onboard/page.tsx` → james-os web/app/intake — 'is this your brand?' step (part of intake_agent replacement)
+- [x] **Step 3 background confirmed-research run with status polling** (REPLACE) — `frontend/app/onboard/page.tsx` → james-os web/app/intake — research step over the brand_research.py replacement (D11 lanes)
+- [x] **Step 3 research-results review grouped by profile section** (REPLACE) — `frontend/app/onboard/page.tsx` → james-os web/app/intake — research review step reading profile_fields envelope (new migration)
+- [x] **Step 4 onboarding interview** (REPLACE) — `frontend/app/onboard/page.tsx` → james-os web/app/intake — interview step backed by brand_questions (0-row table)
+- [x] **Step 5 brand-voice reveal** (REPLACE) — `frontend/app/onboard/page.tsx` → james-os web/app/intake — Brand Voice step (embeds ported VoicePanel)
+- [x] **Sticky section jump-nav with scroll-spy (SectionNav)** (PORT) — `frontend/components/section-nav.tsx` → Manager area in james-os shell — pill section-nav (part of winning design token set)
+- [x] **The Work — execution spine panel** (MERGE) — `frontend/components/execution-panel.tsx` → james-os actions queue UI (survives, restyled) — extended with publish/measure controls and published/measured statuses
+- [x] **Typed API client for the whole backend surface** (MERGE) — `frontend/lib/api.ts` → james-os web API client layer — fold in typed wrappers, ApiError, 202/409 background-job conventions against merged james-os routes
+- [x] **WCAG skip-link and focusable main content** (PORT) — `frontend/app/brand/[id]/layout.tsx` → james-os web shell layout — WCAG pattern applied across all surfaces per unified design
+- [x] **Weekly plan page — draft, review, activate** (PORT) — `frontend/app/brand/[id]/plan/page.tsx` → Manager area — weekly plan page over strategist (strategy.py replacement) + prescriptions evidence[] format
 
 ### james-os · frontend
 
-- [ ] **Analytics chart primitives (SVG, no deps)** (KEEP) — `web/components/analytics-charts.tsx` → stays: web/components/analytics-charts.tsx (retokened to bm2.0 CSS variables, API unchanged)
-- [ ] **Analytics dashboard** (KEEP) — `web/app/analytics/page.tsx` → stays: web/app/analytics/page.tsx (restyled; later reads published/measured impact data from the merged actions queue)
-- [ ] **App shell + concept-grouped sidebar** (KEEP) — `web/components/shell.tsx` → stays: web/components/shell.tsx (explicitly: shell/routes survive restyled in bm2.0 design language; sidebar gains concept entries for ported bm2.0 dashboard/onboarding routes)
-- [ ] **Approval Queue** (KEEP) — `web/app/queue/page.tsx` → stays: web/app/queue/page.tsx (their approval queue UI wins; status chips/filters extended with published/measured as the bm2.0 WorkOrder lifecycle merges into the actions queue; rejection-reason guardrails feed the merged voice-QA gate)
-- [ ] **Ask/Do agent console (home)** (KEEP) — `web/app/page.tsx` → stays: web/app/page.tsx (restyled; remains the unified home over the surviving memory substrate and agent_runs)
-- [ ] **Audio Library (music + SFX)** (KEEP) — `web/app/audio/page.tsx` → stays: web/app/audio/page.tsx
-- [ ] **Autopilot batch content generation** (KEEP) — `web/app/autopilot/page.tsx` → stays: web/app/autopilot/page.tsx (drafts keep landing in the Approval Queue; content engine gains bm2.0 blog/email hands behind it)
-- [ ] **B-roll Library** (KEEP) — `web/app/broll/page.tsx` → stays: web/app/broll/page.tsx
-- [ ] **Brand Brain (voice rules & plug-ins)** (KEEP) — `web/app/brand/page.tsx` → stays: web/app/brand/page.tsx (their voice engine wins; bm2.0 reviewer legs merge in behind the voice-QA gate, not into this page)
-- [ ] **Brand Setup intake form** (REPLACE) — `web/app/intake/page.tsx` → web/app/intake route — replaced by the ported bm2.0 onboarding flow (frontend/app/onboard) fronting the live intake/interview engine that supersedes the dormant intake_agent; brand_questions becomes a bm2.0-filled zone
-- [ ] **CaptionPicker (caption style chips)** (KEEP) — `web/components/caption-picker.tsx` → stays: web/components/caption-picker.tsx
-- [ ] **ConnectedAccounts (authenticated profiles panel)** (KEEP) — `web/components/connected-accounts.tsx` → stays: web/components/connected-accounts.tsx
-- [ ] **Content Library (footage + auto-clipper dashboard)** (KEEP) — `web/app/content-library/page.tsx` → stays: web/app/content-library/page.tsx
-- [ ] **Content Studio (post + image / multi-platform)** (KEEP) — `web/app/design-studio/page.tsx` → stays: web/app/design-studio/page.tsx (voice-QA score it displays gains bm2.0 lint/learned-guardrail/fact-check legs server-side)
-- [ ] **Create hub (single front door)** (KEEP) — `web/app/create/page.tsx` → stays: web/app/create/page.tsx (its suggestions strip switches to the bm2.0-filled content_suggestions feed)
-- [ ] **Engaging Reel maker (avatar + B-roll punctuation)** (KEEP) — `web/app/engaging-video/page.tsx` → stays: web/app/engaging-video/page.tsx
-- [ ] **Help drawer ('How it works' tutorials)** (KEEP) — `web/components/help-drawer.tsx` → stays: web/components/help-drawer.tsx (TUTORIALS map in web/lib/tutorials.ts extended with entries for ported bm2.0 pages)
-- [ ] **Hero Library (hero photos/videos + vision description)** (KEEP) — `web/app/hero/page.tsx` → stays: web/app/hero/page.tsx
-- [ ] **HeyGen Video maker** (KEEP) — `web/app/heygen-video/page.tsx` → stays: web/app/heygen-video/page.tsx
-- [ ] **HubTabs (page-cluster tab strips)** (KEEP) — `web/components/hub-tabs.tsx` → stays: web/components/hub-tabs.tsx (tab arrays extended to include ported bm2.0 dashboard/onboarding routes)
-- [ ] **ImageStylePicker (B-roll still style chips)** (KEEP) — `web/components/image-style-picker.tsx` → stays: web/components/image-style-picker.tsx
-- [ ] **JP Live brand health status** (KEEP) — `web/app/jp-live/page.tsx` → stays: web/app/jp-live/page.tsx (gains rows for the new bm2.0 eyes/heartbeat jobs)
-- [ ] **Knowledge Base (docs, ask, white papers, briefs, commitments)** (KEEP) — `web/app/knowledge/page.tsx` → stays: web/app/knowledge/page.tsx (memory substrate, extraction and retrieval all KEEP)
-- [ ] **Login** (KEEP) — `web/app/login/page.tsx` → stays: web/app/login/page.tsx (auth/tenancy/RLS survive as-is)
-- [ ] **Long Form Cutter** (KEEP) — `web/app/long-form/page.tsx` → stays: web/app/long-form/page.tsx
-- [ ] **Market Research (trends + topic research)** (KEEP) — `web/app/market-research/page.tsx` → stays: web/app/market-research/page.tsx (live Apify watchlist/viral-trend scraping is unique here; the ported bm2.0 Intelligence Radar lands as a sibling dashboard surface, not over this route)
-- [ ] **MediaTabs (media library tab strip)** (KEEP) — `web/components/media-tabs.tsx` → stays: web/components/media-tabs.tsx
-- [ ] **Morning Brief** (FILL) — `web/app/brief/page.tsx` → web/app/brief/page.tsx — dormant surface over the prescriptions/content_suggestions landing zones; goes live when the bm2.0 brain fills them (data in P3, restyle in P5)
-- [ ] **OnboardingChecklist** (KEEP) — `web/components/onboarding-checklist.tsx` → stays: web/components/onboarding-checklist.tsx (gains a 'complete brand onboarding' step pointing at the ported bm2.0 onboarding flow that replaces /intake)
-- [ ] **Output Library (finished videos + approved posts)** (KEEP) — `web/app/library/page.tsx` → stays: web/app/library/page.tsx
-- [ ] **Post Images (AI hero image generator + library)** (KEEP) — `web/app/images/page.tsx` → stays: web/app/images/page.tsx
-- [ ] **Profile (account + password)** (KEEP) — `web/app/profile/page.tsx` → stays: web/app/profile/page.tsx
-- [ ] **Reference Library (clips / style refs / B-roll)** (KEEP) — `web/app/jp-clips/page.tsx` → stays: web/app/jp-clips/page.tsx
-- [ ] **RenderTracker (live render progress)** (KEEP) — `web/components/render-tracker.tsx` → stays: web/components/render-tracker.tsx
-- [ ] **Settings (API keys, memory uploads, voice rules, connections)** (KEEP) — `web/app/settings/page.tsx` → stays: web/app/settings/page.tsx (encrypted key store and connection health checks survive as-is)
-- [ ] **Shared UI kit and small primitives** (MERGE) — `web/components/ui.tsx` → web/components/ui.tsx — component API (Card/Button/Badge/PageHeader/Toast/FilterChip/Skeleton/icons) survives so every page keeps compiling, while bm2.0's design language (globals.css tokens, tones, type scale) folds into the primitives; this is the single choke point where 'bm2.0 design wins everywhere' lands
-- [ ] **Signup** (KEEP) — `web/app/signup/page.tsx` → stays: web/app/signup/page.tsx (tenancy claiming logic survives as-is)
-- [ ] **Social Companion (watchlist alias)** (KEEP) — `web/app/social-companion/page.tsx` → stays: web/app/social-companion/page.tsx (thin redirect alias, zero-cost to keep for old bookmarks)
-- [ ] **Social Listening (brand mentions)** (KEEP) — `web/app/social-listening/page.tsx` → stays: web/app/social-listening/page.tsx (live on-demand Xpoz mention search; bm2.0's scheduled appearances/press eyes run alongside as scanners, different modality)
-- [ ] **Story Reel (mix) maker** (KEEP) — `web/app/story-mix/page.tsx` → stays: web/app/story-mix/page.tsx
-- [ ] **Story Video maker (voice-driven slideshow)** (KEEP) — `web/app/story-video/page.tsx` → stays: web/app/story-video/page.tsx
-- [ ] **Style Templates** (KEEP) — `web/app/style-templates/page.tsx` → stays: web/app/style-templates/page.tsx
-- [ ] **Timeline Editor (Creatomate stitching)** (KEEP) — `web/app/editor/page.tsx` → stays: web/app/editor/page.tsx
-- [ ] **TrendCard (viral post card + make-script action)** (KEEP) — `web/components/trends.tsx` → stays: web/components/trends.tsx (continues to serve /market-research; reusable for bm2.0 radar trend-lane items)
-- [ ] **TrimBox (inline post-render trim)** (KEEP) — `web/components/trim-box.tsx` → stays: web/components/trim-box.tsx
-- [ ] **Updates ('What's changing next' roadmap)** (KEEP) — `web/app/updates/page.tsx` → stays: web/app/updates/page.tsx (its feedback-interpretation loop is the surface the bm2.0 learned-guardrails leg merges behind)
-- [ ] **Video Studio hub landing** (KEEP) — `web/app/video/page.tsx` → stays: web/app/video/page.tsx
-- [ ] **Video Studio pipeline (composer / producer / clip)** (KEEP) — `web/app/pipeline/page.tsx` → stays: web/app/pipeline/page.tsx
-- [ ] **VideoEditor (scene-based composer editor)** (KEEP) — `web/components/video-editor.tsx` → stays: web/components/video-editor.tsx
-- [ ] **Voice Studio (voice corpus ingestion)** (KEEP) — `web/app/voice-studio/page.tsx` → stays: web/app/voice-studio/page.tsx (bm2.0 voice harvester PORTs alongside voice_ingest as an additional intake path surfaced here)
-- [ ] **WatchlistEditor (creator cohort tracker)** (KEEP) — `web/components/watchlist-editor.tsx` → stays: web/components/watchlist-editor.tsx
-- [ ] **Weekly Thesis developer** (KEEP) — `web/app/thesis/page.tsx` → stays: web/app/thesis/page.tsx (whitepaper/content-pack/podcast production chain KEEPs end-to-end)
+- [x] **Analytics chart primitives (SVG, no deps)** (KEEP) — `web/components/analytics-charts.tsx` → stays: web/components/analytics-charts.tsx (retokened to bm2.0 CSS variables, API unchanged)
+- [x] **Analytics dashboard** (KEEP) — `web/app/analytics/page.tsx` → stays: web/app/analytics/page.tsx (restyled; later reads published/measured impact data from the merged actions queue)
+- [x] **App shell + concept-grouped sidebar** (KEEP) — `web/components/shell.tsx` → stays: web/components/shell.tsx (explicitly: shell/routes survive restyled in bm2.0 design language; sidebar gains concept entries for ported bm2.0 dashboard/onboarding routes)
+- [x] **Approval Queue** (KEEP) — `web/app/queue/page.tsx` → stays: web/app/queue/page.tsx (their approval queue UI wins; status chips/filters extended with published/measured as the bm2.0 WorkOrder lifecycle merges into the actions queue; rejection-reason guardrails feed the merged voice-QA gate)
+- [x] **Ask/Do agent console (home)** (KEEP) — `web/app/page.tsx` → stays: web/app/page.tsx (restyled; remains the unified home over the surviving memory substrate and agent_runs)
+- [x] **Audio Library (music + SFX)** (KEEP) — `web/app/audio/page.tsx` → stays: web/app/audio/page.tsx
+- [x] **Autopilot batch content generation** (KEEP) — `web/app/autopilot/page.tsx` → stays: web/app/autopilot/page.tsx (drafts keep landing in the Approval Queue; content engine gains bm2.0 blog/email hands behind it)
+- [x] **B-roll Library** (KEEP) — `web/app/broll/page.tsx` → stays: web/app/broll/page.tsx
+- [x] **Brand Brain (voice rules & plug-ins)** (KEEP) — `web/app/brand/page.tsx` → stays: web/app/brand/page.tsx (their voice engine wins; bm2.0 reviewer legs merge in behind the voice-QA gate, not into this page)
+- [x] **Brand Setup intake form** (REPLACE) — `web/app/intake/page.tsx` → web/app/intake route — replaced by the ported bm2.0 onboarding flow (frontend/app/onboard) fronting the live intake/interview engine that supersedes the dormant intake_agent; brand_questions becomes a bm2.0-filled zone
+- [x] **CaptionPicker (caption style chips)** (KEEP) — `web/components/caption-picker.tsx` → stays: web/components/caption-picker.tsx
+- [x] **ConnectedAccounts (authenticated profiles panel)** (KEEP) — `web/components/connected-accounts.tsx` → stays: web/components/connected-accounts.tsx
+- [x] **Content Library (footage + auto-clipper dashboard)** (KEEP) — `web/app/content-library/page.tsx` → stays: web/app/content-library/page.tsx
+- [x] **Content Studio (post + image / multi-platform)** (KEEP) — `web/app/design-studio/page.tsx` → stays: web/app/design-studio/page.tsx (voice-QA score it displays gains bm2.0 lint/learned-guardrail/fact-check legs server-side)
+- [x] **Create hub (single front door)** (KEEP) — `web/app/create/page.tsx` → stays: web/app/create/page.tsx (its suggestions strip switches to the bm2.0-filled content_suggestions feed)
+- [x] **Engaging Reel maker (avatar + B-roll punctuation)** (KEEP) — `web/app/engaging-video/page.tsx` → stays: web/app/engaging-video/page.tsx
+- [x] **Help drawer ('How it works' tutorials)** (KEEP) — `web/components/help-drawer.tsx` → stays: web/components/help-drawer.tsx (TUTORIALS map in web/lib/tutorials.ts extended with entries for ported bm2.0 pages)
+- [x] **Hero Library (hero photos/videos + vision description)** (KEEP) — `web/app/hero/page.tsx` → stays: web/app/hero/page.tsx
+- [x] **HeyGen Video maker** (KEEP) — `web/app/heygen-video/page.tsx` → stays: web/app/heygen-video/page.tsx
+- [x] **HubTabs (page-cluster tab strips)** (KEEP) — `web/components/hub-tabs.tsx` → stays: web/components/hub-tabs.tsx (tab arrays extended to include ported bm2.0 dashboard/onboarding routes)
+- [x] **ImageStylePicker (B-roll still style chips)** (KEEP) — `web/components/image-style-picker.tsx` → stays: web/components/image-style-picker.tsx
+- [x] **JP Live brand health status** (KEEP) — `web/app/jp-live/page.tsx` → stays: web/app/jp-live/page.tsx (gains rows for the new bm2.0 eyes/heartbeat jobs)
+- [x] **Knowledge Base (docs, ask, white papers, briefs, commitments)** (KEEP) — `web/app/knowledge/page.tsx` → stays: web/app/knowledge/page.tsx (memory substrate, extraction and retrieval all KEEP)
+- [x] **Login** (KEEP) — `web/app/login/page.tsx` → stays: web/app/login/page.tsx (auth/tenancy/RLS survive as-is)
+- [x] **Long Form Cutter** (KEEP) — `web/app/long-form/page.tsx` → stays: web/app/long-form/page.tsx
+- [x] **Market Research (trends + topic research)** (KEEP) — `web/app/market-research/page.tsx` → stays: web/app/market-research/page.tsx (live Apify watchlist/viral-trend scraping is unique here; the ported bm2.0 Intelligence Radar lands as a sibling dashboard surface, not over this route)
+- [x] **MediaTabs (media library tab strip)** (KEEP) — `web/components/media-tabs.tsx` → stays: web/components/media-tabs.tsx
+- [x] **Morning Brief** (FILL) — `web/app/brief/page.tsx` → web/app/brief/page.tsx — dormant surface over the prescriptions/content_suggestions landing zones; goes live when the bm2.0 brain fills them (data in P3, restyle in P5)
+- [x] **OnboardingChecklist** (KEEP) — `web/components/onboarding-checklist.tsx` → stays: web/components/onboarding-checklist.tsx (gains a 'complete brand onboarding' step pointing at the ported bm2.0 onboarding flow that replaces /intake)
+- [x] **Output Library (finished videos + approved posts)** (KEEP) — `web/app/library/page.tsx` → stays: web/app/library/page.tsx
+- [x] **Post Images (AI hero image generator + library)** (KEEP) — `web/app/images/page.tsx` → stays: web/app/images/page.tsx
+- [x] **Profile (account + password)** (KEEP) — `web/app/profile/page.tsx` → stays: web/app/profile/page.tsx
+- [x] **Reference Library (clips / style refs / B-roll)** (KEEP) — `web/app/jp-clips/page.tsx` → stays: web/app/jp-clips/page.tsx
+- [x] **RenderTracker (live render progress)** (KEEP) — `web/components/render-tracker.tsx` → stays: web/components/render-tracker.tsx
+- [x] **Settings (API keys, memory uploads, voice rules, connections)** (KEEP) — `web/app/settings/page.tsx` → stays: web/app/settings/page.tsx (encrypted key store and connection health checks survive as-is)
+- [x] **Shared UI kit and small primitives** (MERGE) — `web/components/ui.tsx` → web/components/ui.tsx — component API (Card/Button/Badge/PageHeader/Toast/FilterChip/Skeleton/icons) survives so every page keeps compiling, while bm2.0's design language (globals.css tokens, tones, type scale) folds into the primitives; this is the single choke point where 'bm2.0 design wins everywhere' lands
+- [x] **Signup** (KEEP) — `web/app/signup/page.tsx` → stays: web/app/signup/page.tsx (tenancy claiming logic survives as-is)
+- [x] **Social Companion (watchlist alias)** (KEEP) — `web/app/social-companion/page.tsx` → stays: web/app/social-companion/page.tsx (thin redirect alias, zero-cost to keep for old bookmarks)
+- [x] **Social Listening (brand mentions)** (KEEP) — `web/app/social-listening/page.tsx` → stays: web/app/social-listening/page.tsx (live on-demand Xpoz mention search; bm2.0's scheduled appearances/press eyes run alongside as scanners, different modality)
+- [x] **Story Reel (mix) maker** (KEEP) — `web/app/story-mix/page.tsx` → stays: web/app/story-mix/page.tsx
+- [x] **Story Video maker (voice-driven slideshow)** (KEEP) — `web/app/story-video/page.tsx` → stays: web/app/story-video/page.tsx
+- [x] **Style Templates** (KEEP) — `web/app/style-templates/page.tsx` → stays: web/app/style-templates/page.tsx
+- [x] **Timeline Editor (Creatomate stitching)** (KEEP) — `web/app/editor/page.tsx` → stays: web/app/editor/page.tsx
+- [x] **TrendCard (viral post card + make-script action)** (KEEP) — `web/components/trends.tsx` → stays: web/components/trends.tsx (continues to serve /market-research; reusable for bm2.0 radar trend-lane items)
+- [x] **TrimBox (inline post-render trim)** (KEEP) — `web/components/trim-box.tsx` → stays: web/components/trim-box.tsx
+- [x] **Updates ('What's changing next' roadmap)** (KEEP) — `web/app/updates/page.tsx` → stays: web/app/updates/page.tsx (its feedback-interpretation loop is the surface the bm2.0 learned-guardrails leg merges behind)
+- [x] **Video Studio hub landing** (KEEP) — `web/app/video/page.tsx` → stays: web/app/video/page.tsx
+- [x] **Video Studio pipeline (composer / producer / clip)** (KEEP) — `web/app/pipeline/page.tsx` → stays: web/app/pipeline/page.tsx
+- [x] **VideoEditor (scene-based composer editor)** (KEEP) — `web/components/video-editor.tsx` → stays: web/components/video-editor.tsx
+- [x] **Voice Studio (voice corpus ingestion)** (KEEP) — `web/app/voice-studio/page.tsx` → stays: web/app/voice-studio/page.tsx (bm2.0 voice harvester PORTs alongside voice_ingest as an additional intake path surfaced here)
+- [x] **WatchlistEditor (creator cohort tracker)** (KEEP) — `web/components/watchlist-editor.tsx` → stays: web/components/watchlist-editor.tsx
+- [x] **Weekly Thesis developer** (KEEP) — `web/app/thesis/page.tsx` → stays: web/app/thesis/page.tsx (whitepaper/content-pack/podcast production chain KEEPs end-to-end)
 
 ### james-os · intelligence
 
-- [ ] **Perception layer — video style fingerprinting** (KEEP) — `src/james_os/perception.py` → stays: src/james_os/perception.py (video production is KEEP-THEIRS; exercised during P5 restyle of production pages)
+- [x] **Perception layer — video style fingerprinting** (KEEP) — `src/james_os/perception.py` → stays: src/james_os/perception.py (video production is KEEP-THEIRS; exercised during P5 restyle of production pages)
 
 ### james-os · platform
 
-- [ ] **Speaker directory (reusable lower-third name tags)** (KEEP) — `src/james_os/speakers.py; src/james_os/main.py` → stays: src/james_os/speakers.py; src/james_os/main.py (production surface, exercised during P5 restyle)
+- [x] **Speaker directory (reusable lower-third name tags)** (KEEP) — `src/james_os/speakers.py; src/james_os/main.py` → stays: src/james_os/speakers.py; src/james_os/main.py (production surface, exercised during P5 restyle)

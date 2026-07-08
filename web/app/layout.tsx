@@ -11,13 +11,15 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" className="dark theme-manager">
       <head>
-        {/* Apply the saved theme preview before paint (no flash). */}
+        {/* Apply the saved theme choice before paint (no flash). Mission
+            Control (the unified P5 design) is the default; Classic remains
+            reachable via the switcher until cutover sign-off. */}
         <script
           dangerouslySetInnerHTML={{
             __html:
-              "try{if(localStorage.getItem('jos-theme-preview')==='iris')document.documentElement.classList.add('theme-iris')}catch(e){}",
+              "try{if(localStorage.getItem('jos-theme-preview')==='classic')document.documentElement.classList.remove('theme-manager')}catch(e){}",
           }}
         />
         {/* Same typefaces as the approved dashboard build */}

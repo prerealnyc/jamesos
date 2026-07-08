@@ -613,4 +613,43 @@ export const TUTORIALS: Record<string, Tutorial> = {
       "Audio and video are auto-transcribed at any length, so larger imports can take a while; the job stays 'running' until it finishes — leave the page and come back if needed.",
       "Re-importing the same file replaces its old version rather than adding a duplicate, so it's safe to re-ingest an updated doc.",
     ],
-  },};
+  },
+  "/manager": {
+    title: "Mission Control",
+    what: "The brand manager's cockpit on one scrolling page: today's brief and daily cycle, your setup checklist and negotiated targets, five scanning radar lanes, competitor discovery and plays, the execution pipeline (The Work), trackable follow-ups, your learned brand voice, and the source inventory feeding it all.",
+    when: "Start your day here to see what the manager found and what needs a decision; use the Weekly plan page (linked from The Work section) when you want to review and activate the week's full prescription.",
+    steps: [
+      "Use the sticky pill bar at the top to jump between sections — Today, Next steps, North Star, Radar, Competitors, The Work, Follow-ups, Brand Voice, Sources.",
+      "In Today, read the Morning Brief, then click \"Run today's cycle\" to assemble the day's digest — a step-by-step report shows what each stage did, and digest items link straight to their follow-up cards.",
+      "Work the Next steps checklist in order — done steps are checked, the current one says \"You are here\", and each button jumps to where that step happens.",
+      "In Radar, pick a lane (Reddit problems, trends, press, questions, appearances) and hit its Scan button; every finding is pushed into Follow-ups with a why and source links.",
+      "In Competitors, click \"Discover competitors & peers\" (it runs in the background — the page polls until it finishes), approve or reject each candidate, then \"Plan collaborations & growth\" for plays matched to your tracked roster.",
+      "In The Work, click a row to expand it: read the draft, approve (which also publishes) or reject with a reason, and retry a failed publish — published rows show the live link, measured rows show actual numbers.",
+      "In Follow-ups, accept / snooze / mark done each item, log update notes, click \"Research contact\" for an outreach path, or \"Draft it\" to send the opportunity into The Work.",
+    ],
+    tips: [
+      "Long jobs (peer discovery, voice harvest, the daily cycle) answer \"already running\" if you click twice — that's a quiet notice, not an error; the page just watches the run that's in flight.",
+      "North Star targets are read-only here — they're negotiated during onboarding and planning, so an empty card just means no targets are on file yet.",
+      "Rejecting work always asks for a reason because the system learns from it; a failed publish is reported honestly and the outbox retries.",
+      "The Sources table is the honest inventory: green dots are live providers, grey are mock fixtures, amber are idle — insight counts only appear after a research run.",
+    ],
+  },
+  "/manager/plan": {
+    title: "Weekly Plan",
+    what: "The Strategist's prescription for the week — line items per platform, each with a rationale, cited evidence, and predicted metrics — which you activate in full or in part to queue drafts into The Work.",
+    when: "Use this once a week (or whenever your situation changes) to review and commission the week's content; day-to-day execution and approvals happen back on Mission Control.",
+    steps: [
+      "If no plan exists, click \"Draft this week's plan\" and wait — the Strategist reads your profile, baseline, and peer digest before proposing anything.",
+      "Read the plan header (the Strategist's reasoning plus the goals in play), then review each line item's \"Why this, this week\", its evidence chips, and predicted numbers.",
+      "Untick any line items you don't want — the Activate button updates to show exactly how many drafts will be queued.",
+      "Click Activate. The readout shows work orders created, reattached, and superseded, with a link to track them in The Work.",
+      "Not happy with the proposal? Hit Re-draft for a fresh prescription — nothing is queued until you activate.",
+    ],
+    tips: [
+      "Activating supersedes still-queued orders from earlier plans, but work already in review or beyond survives and reattaches — you won't lose drafts in progress.",
+      "If activation says a newer prescription overtook this one (a stale plan), that's not a failure — just re-draft to get the current week and activate that.",
+      "Evidence chips open the actual sources in a new tab — the plan is only as good as its citations, so spot-check them.",
+      "Growth actions at the bottom are the week's non-posting moves; they also land as Follow-ups on Mission Control so you can track them.",
+    ],
+  },
+};
