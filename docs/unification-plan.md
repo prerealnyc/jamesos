@@ -91,7 +91,12 @@ Legend: **PORT** = rewrite natively on james-os's asyncpg/RLS pattern ·
   harvester; brand-profile projection; PostProxy publish path (their outbox).
 - **P5 — Unified frontend (≈1–1.5 wk):** the Manager area (our dashboard sections)
   in their shell; onboarding UI; ONE design token set; WCAG nav patterns.
-- **P6 — Data migration + retirement (≈2–3 d):** James / Spaceport / Turtleback
+- **P6 — Data migration + retirement (≈2–3 d):** *(script DONE 2026-07-09 —
+  scripts/migrate_bm2.py, dry-run-first, single-tx, idempotent, additive-only;
+  rehearsed + adversarially verified on the local cluster: 839 profile fields,
+  832 memory chunks, 127 action items, 96 questions, all counts 1:1. The
+  PRODUCTION run awaits Roy: Supabase DATABASE_URL + James's tenant uuid for
+  --map, dry-run read-through, then --execute in a quiet window.)* James / Spaceport / Turtleback
   brands migrated (profile fields, peers, actions, work orders, voice exemplars →
   events); bm2.0 archived. James's existing james-os tenant is ENRICHED, never
   overwritten (his 1,344 exemplars + 106 rules are the moat — additive only).
