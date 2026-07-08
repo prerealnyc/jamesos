@@ -60,7 +60,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -122,23 +122,39 @@ class Report:
 
 async def _tenant_for(conn: asyncpg.Connection, brand: dict, mapping: dict[str, str],
                       report: Report) -> UUID:
+    """Resolve the target tenant UNDER RLS. Production's tenants policy only
+    exposes the row matching app.current_tenant, so: (a) existence checks
+    happen AFTER set_config; (b) unmapped brands get a DETERMINISTIC uuid5
+    (idempotent re-runs re-derive the same id — name enumeration is
+    impossible under the policy); (c) inserts carry the pre-set id so the
+    new row passes the policy's implicit WITH CHECK."""
     mapped = mapping.get(brand["name"])
     if mapped:
         tid = UUID(mapped)
+        await _set_tenant(conn, tid)
         if await conn.fetchval("SELECT 1 FROM tenants WHERE id=$1", tid) is None:
-            raise SystemExit(f"mapped tenant {tid} for {brand['name']!r} does not exist")
+            raise SystemExit(f"mapped tenant {tid} for {brand['name']!r} does not exist "
+                             "(or is not visible under RLS)")
         report.notes.append(f"{brand['name']!r} -> existing tenant {tid} (ENRICHED, additive only)")
         return tid
-    existing = await conn.fetchval("SELECT id FROM tenants WHERE name=$1", brand["name"])
-    if existing:
-        report.notes.append(f"{brand['name']!r} -> existing tenant {existing} (matched by name)")
-        return existing
-    tid = await conn.fetchval(
-        """INSERT INTO tenants (name, config) VALUES ($1,
-             jsonb_build_object('manager_v2', true, 'brand_name', $1::text,
-                                'entity_type', $2::text))
-           RETURNING id""",
-        brand["name"], brand["entity_type"],
+
+    tid = uuid5(NAMESPACE_URL, f"james-os:bm2-migration:{brand['name']}")
+    await _set_tenant(conn, tid)
+    if await conn.fetchval("SELECT 1 FROM tenants WHERE id=$1", tid):
+        report.notes.append(f"{brand['name']!r} -> existing tenant {tid} (deterministic id, re-run)")
+        return tid
+    # legacy fallback: a rehearsal cluster whose role CAN enumerate may hold a
+    # name-matched tenant from an earlier run; a no-op under production RLS
+    legacy = await conn.fetchval("SELECT id FROM tenants WHERE name=$1", brand["name"])
+    if legacy:
+        await _set_tenant(conn, legacy)
+        report.notes.append(f"{brand['name']!r} -> existing tenant {legacy} (matched by name)")
+        return legacy
+    await conn.execute(
+        """INSERT INTO tenants (id, name, config) VALUES ($1, $2,
+             jsonb_build_object('manager_v2', true, 'brand_name', $2::text,
+                                'entity_type', $3::text))""",
+        tid, brand["name"], brand["entity_type"],
     )
     report.notes.append(f"{brand['name']!r} -> NEW tenant {tid}")
     return tid
@@ -157,42 +173,37 @@ async def mig_profile_fields(conn, db, brand, report) -> None:
         (r["field_key"], r["item_key"], r["version"])
         for r in await conn.fetch("SELECT field_key, item_key, version FROM profile_fields WHERE tenant_id = current_setting('app.current_tenant', true)::uuid")
     }
-    idmap: dict[str, str] = {}
-    todo = []
-    for r in rows:
-        if (r["field_key"], r["item_key"], r["version"]) in have:
-            continue
-        todo.append(r)
-    for r in todo:
-        new_id = await conn.fetchval(
-            """INSERT INTO profile_fields
-                 (section, field_key, item_key, value, source, confidence, citations,
-                  status, version, updated_by, created_at)
-               VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7::jsonb,$8,$9,$10,$11) RETURNING id""",
-            r["section"], r["field_key"], r["item_key"],
-            json.dumps(_j(r["value"], {})), r["source"], r["confidence"],
-            json.dumps(_j(r["citations"], [])), r["status"], r["version"],
-            r["updated_by"] or "bm2.0-migration", _dt(r["created_at"]),
-        )
-        idmap[r["id"]] = str(new_id)
-    # second pass: rewire supersession chains among the rows we created
-    for r in todo:
-        if r["superseded_by"] and r["id"] in idmap and r["superseded_by"] in idmap:
-            await conn.execute(
-                "UPDATE profile_fields SET superseded_by=$2 WHERE id=$1::uuid",
-                idmap[r["id"]], idmap[r["superseded_by"]],
-            )
+    todo = [r for r in rows if (r["field_key"], r["item_key"], r["version"]) not in have]
+    # deterministic per-row ids: supersession chains resolve client-side, so
+    # the whole table lands in ONE batched executemany (WAN-friendly)
+    idmap = {r["id"]: uuid5(NAMESPACE_URL, f"bm2-mig-pf:{r['id']}") for r in todo}
+    await conn.executemany(
+        """INSERT INTO profile_fields
+             (id, section, field_key, item_key, value, source, confidence, citations,
+              status, version, superseded_by, updated_by, created_at)
+           VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8::jsonb,$9,$10,$11,$12,$13)""",
+        [(idmap[r["id"]], r["section"], r["field_key"], r["item_key"],
+          json.dumps(_j(r["value"], {})), r["source"], r["confidence"],
+          json.dumps(_j(r["citations"], [])), r["status"], r["version"],
+          idmap.get(r["superseded_by"]) if r["superseded_by"] else None,
+          r["updated_by"] or "bm2.0-migration", _dt(r["created_at"])) for r in todo],
+    )
     report.add(brand["name"], "profile_fields", len(rows), len(todo))
 
 
 async def mig_memory(conn, db, brand, report, embedder) -> None:
     rows = db.execute("SELECT * FROM memory_chunks WHERE brand_id=?", (brand["id"],)).fetchall()
+    have = {
+        r["k"] for r in await conn.fetch(
+            "SELECT source->>'dedupe_key' AS k FROM events "
+            "WHERE source->>'dedupe_key' LIKE 'bm2-mig-%' "
+            "AND tenant_id = current_setting('app.current_tenant', true)::uuid"
+        )
+    }
     todo = []
     for r in rows:
         dedupe = f"bm2-mig-{r['id']}"
-        if await conn.fetchval(
-            "SELECT 1 FROM events WHERE source->>'dedupe_key'=$1 AND tenant_id = current_setting('app.current_tenant', true)::uuid LIMIT 1", dedupe
-        ):
+        if dedupe in have:
             continue
         meta = _j(r["meta"], {})
         if r["kind"] == "exemplar":
@@ -207,17 +218,21 @@ async def mig_memory(conn, db, brand, report, embedder) -> None:
         if origin:
             payload["origin"] = origin
         todo.append((r, etype, payload, dedupe))
-    vecs = await embedder.embed([t[0]["text"] for t in todo]) if todo else []
-    for (r, etype, payload, dedupe), vec in zip(todo, vecs):
-        await conn.execute(
-            """INSERT INTO events (event_type, payload, raw_content, embedding,
-                                   embedding_model, source, entities, created_at)
-               VALUES ($1,$2::jsonb,$3,$4,$5,$6::jsonb,$7,$8)""",
-            etype, json.dumps(payload), r["text"], str(vec), embedder.model_name,
-            json.dumps({"adapter": "bm2_migration", "dedupe_key": dedupe,
-                        "uri": r["source_ref"] or None}),
-            [f"category:{payload['category']}"], _dt(r["created_at"]),
-        )
+    # Voyage caps ~128 inputs per request; their embedder sends one request
+    # per call, so batch here (96 = comfortable headroom; stub unaffected)
+    vecs: list[list[float]] = []
+    for i in range(0, len(todo), 96):
+        vecs += await embedder.embed([t[0]["text"] for t in todo[i:i + 96]])
+    await conn.executemany(
+        """INSERT INTO events (event_type, payload, raw_content, embedding,
+                               embedding_model, source, entities, created_at)
+           VALUES ($1,$2::jsonb,$3,$4,$5,$6::jsonb,$7,$8)""",
+        [(etype, json.dumps(payload), r["text"], str(vec), embedder.model_name,
+          json.dumps({"adapter": "bm2_migration", "dedupe_key": dedupe,
+                      "uri": r["source_ref"] or None}),
+          [f"category:{payload['category']}"], _dt(r["created_at"]))
+         for (r, etype, payload, dedupe), vec in zip(todo, vecs)],
+    )
     report.add(brand["name"], "memory->events", len(rows), len(todo))
 
 
@@ -292,42 +307,49 @@ def _has_col(db, table: str, col: str) -> bool:
 
 async def mig_action_items(conn, db, brand, report) -> None:
     rows = db.execute("SELECT * FROM action_items WHERE brand_id=?", (brand["id"],)).fetchall()
-    added = 0
+    have = {
+        r["dedupe_key"] for r in await conn.fetch(
+            "SELECT dedupe_key FROM action_items "
+            "WHERE tenant_id = current_setting('app.current_tenant', true)::uuid"
+        )
+    }
+    batch = []
     for r in rows:
         dedupe = r["dedupe_key"] or f"bm2-mig:{r['id']}"
-        if await conn.fetchval(
-            "SELECT 1 FROM action_items WHERE dedupe_key=$1 AND tenant_id = current_setting('app.current_tenant', true)::uuid LIMIT 1", dedupe
-        ):
+        if dedupe in have:
             continue
         peer = None
         if r["related_peer_id"]:
             p = db.execute("SELECT handle FROM peer_entities WHERE id=?", (r["related_peer_id"],)).fetchone()
             peer = p["handle"] if p else None
-        await conn.execute(
-            """INSERT INTO action_items (kind, title, detail, status, related_peer, meta,
-                 updates, dedupe_key, snooze_until, last_activity_at, created_at)
-               VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9,$10,$11)""",
-            r["kind"], r["title"], r["detail"], r["status"], peer,
-            json.dumps({**_j(r["meta"], {}), "migrated_from": "bm2.0"}),
-            json.dumps(_j(r["updates"], [])), dedupe,
-            _dt(r["snooze_until"]), _dt(r["last_activity_at"]), _dt(r["created_at"]),
-        )
-        added += 1
+        batch.append((r["kind"], r["title"], r["detail"], r["status"], peer,
+                      json.dumps({**_j(r["meta"], {}), "migrated_from": "bm2.0"}),
+                      json.dumps(_j(r["updates"], [])), dedupe,
+                      _dt(r["snooze_until"]), _dt(r["last_activity_at"]), _dt(r["created_at"])))
+    await conn.executemany(
+        """INSERT INTO action_items (kind, title, detail, status, related_peer, meta,
+             updates, dedupe_key, snooze_until, last_activity_at, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9,$10,$11)""",
+        batch,
+    )
+    added = len(batch)
     report.add(brand["name"], "action_items", len(rows), added)
 
 
 async def mig_work_orders(conn, db, brand, report) -> dict[str, str]:
     rows = db.execute("SELECT * FROM work_orders WHERE brand_id=?", (brand["id"],)).fetchall()
+    prior = {
+        r["mf"]: str(r["id"]) for r in await conn.fetch(
+            "SELECT payload->>'migrated_from' AS mf, id FROM actions "
+            "WHERE action_type='work_order' AND payload->>'migrated_from' IS NOT NULL "
+            "AND tenant_id = current_setting('app.current_tenant', true)::uuid"
+        )
+    }
     idmap: dict[str, str] = {}
     added = 0
     for r in rows:
-        if existing := await conn.fetchval(
-            "SELECT id FROM actions WHERE action_type='work_order' "
-            "AND payload->>'migrated_from'=$1 "
-            "AND tenant_id = current_setting('app.current_tenant', true)::uuid LIMIT 1",
-            r["id"],
-        ):
-            idmap[r["id"]] = str(existing)
+        if existing := prior.get(r["id"]):
+            idmap[r["id"]] = existing
             continue
         artifacts = [
             {"version": a["version"], "kind": a["kind"], "content": a["content"],
@@ -402,11 +424,16 @@ async def mig_questions(conn, db, brand, report) -> None:
         "FROM question_instances qi JOIN question_templates qt ON qt.id = qi.template_id "
         "WHERE qi.brand_id=?", (brand["id"],),
     ).fetchall()
+    have = {
+        r["question"] for r in await conn.fetch(
+            "SELECT question FROM brand_questions "
+            "WHERE tenant_id = current_setting('app.current_tenant', true)::uuid"
+        )
+    }
     added = 0
+    batch = []
     for r in rows:
-        if await conn.fetchval(
-            "SELECT 1 FROM brand_questions WHERE question=$1 AND tenant_id = current_setting('app.current_tenant', true)::uuid LIMIT 1", r["q_text"]
-        ):
+        if r["q_text"] in have:
             continue
         ans = _j(r["answer"], None)
         # donor answers are JSON: a list of items, a {"raw": text} wrapper, or
@@ -417,15 +444,17 @@ async def mig_questions(conn, db, brand, report) -> None:
             ans_text = str(ans.get("raw") or ans.get("text") or json.dumps(ans))
         else:
             ans_text = str(ans) if ans not in (None, "") else None
-        await conn.execute(
-            """INSERT INTO brand_questions (dimension, question, answer, source, status,
-                 field_key, answered_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7)""",
-            "identity", r["q_text"], ans_text,
-            "user" if r["answered_by"] == "user" else "research",
-            _QI_STATE.get(r["state"], "open"), r["q_field"] or "", _dt(r["answered_at"]),
-        )
+        batch.append(("identity", r["q_text"], ans_text,
+                      "user" if r["answered_by"] == "user" else "research",
+                      _QI_STATE.get(r["state"], "open"), r["q_field"] or "",
+                      _dt(r["answered_at"])))
         added += 1
+    await conn.executemany(
+        """INSERT INTO brand_questions (dimension, question, answer, source, status,
+             field_key, answered_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)""",
+        batch,
+    )
     report.add(brand["name"], "questions", len(rows), added)
 
 
@@ -465,6 +494,10 @@ async def main() -> None:
                     help='"Brand Name=tenant-uuid" (repeatable)')
     ap.add_argument("--brands", default="", help="comma-separated subset of brand names")
     ap.add_argument("--execute", action="store_true", help="commit (default: dry-run rollback)")
+    ap.add_argument("--database-url", default="",
+                    help="explicit target DB (beats .env — config.py's load_dotenv(override=True) "
+                         "silently clobbers a DATABASE_URL shell var; REQUIRED practice for the "
+                         "production run)")
     args = ap.parse_args()
 
     mapping = dict(m.split("=", 1) for m in args.map)
@@ -476,14 +509,16 @@ async def main() -> None:
     if only:
         brands = [b for b in brands if b["name"] in only]
 
-    if "supabase" in settings.database_url and not args.execute:
-        print("[target: SUPABASE — dry run]")
+    db_url = args.database_url or settings.database_url
+    host = db_url.split("@")[-1].split("/")[0]
+    print(f"[target database: {host} · {'EXECUTE' if args.execute else 'dry run'}]")
 
     embedder = make_embedder()
     report = Report()
     conn = await asyncpg.connect(
-        settings.database_url,
-        ssl=None if settings.db_ssl == "disable" else settings.db_ssl,
+        db_url,
+        ssl="require" if "supabase" in db_url else (
+            None if settings.db_ssl == "disable" else settings.db_ssl),
         statement_cache_size=0,
     )
     tx = conn.transaction()
