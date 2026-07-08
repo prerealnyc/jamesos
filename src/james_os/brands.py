@@ -187,7 +187,121 @@ async def dismiss_suggestion(
     return tag.endswith("1")
 
 
+# ── profile projection (bm2.0 export shape, internal) ─────────────────
+#
+# bm2.0's GET /export/brand-profile was the handoff between the two systems;
+# unified, that shape becomes the internal projection over the profile_fields
+# envelope. Merge order: the existing brand_profiles row is the BASE, and the
+# envelope's flat {field_key: value} snapshot merges OVER it — envelope values
+# win on overlapping keys, every brand_profiles key survives, so current
+# readers (voice engine, autopilot, Ask, research, strategy) see a superset.
+
+
+def _values(v: object) -> list:
+    """A flat field value may itself be a list; normalize for list merges."""
+    if isinstance(v, (list, tuple)):
+        return list(v)
+    return [] if v is None else [v]
+
+
+def _merged_list(base: object, extra: list) -> list:
+    out = list(base) if isinstance(base, list) else _values(base)
+    for v in extra:
+        if v not in out:
+            out.append(v)
+    return out
+
+
+async def profile_projection(tenant_id: UUID | None = None) -> dict:
+    """The flat envelope snapshot merged over brand_profiles — the bm2.0
+    'james-os handoff export' shape (identity/positioning/audience/goals/
+    pillars/taboos/voice/platforms/peers/constraints/intake_done), computed
+    from live DB state on every call.
+
+    - dict sections (identity, constraints): per-subkey merge, envelope wins
+    - list sections (goals, pillars, taboos): base order kept, envelope
+      values appended (deduped) — guardrails.* feed taboos (donor mapping),
+      positioning.pillar_topics feed pillars
+    - new sections the base never had (positioning, audience, voice,
+      connected_accounts, tracked_peers) ride alongside — pure superset
+    - the complete flat projection is under 'fields' so nothing is lost
+    """
+    from .manager import profile as manager_profile  # lazy: keeps import edges one-way
+
+    async with acquire(tenant_id) as conn:
+        fields = await manager_profile.current_fields(conn)
+        conn_rows = await conn.fetch(
+            "SELECT platform, handle, status FROM connections ORDER BY created_at"
+        )
+        cfg = await conn.fetchval(
+            "SELECT config FROM tenants WHERE id = current_setting('app.current_tenant', true)::uuid"
+        )
+    if isinstance(cfg, str):
+        cfg = json.loads(cfg or "{}")
+    cfg = cfg or {}
+
+    flat = manager_profile.projection(fields)
+    base = await get_brand_profile(tenant_id) or {}
+
+    # split the flat snapshot: scalar keys vs item-keyed lists ("fk[item]")
+    scalars: dict = {}
+    lists: dict[str, list] = {}
+    for k, v in flat.items():
+        if k.endswith("]") and "[" in k:
+            lists.setdefault(k.split("[", 1)[0], []).append(v)
+        else:
+            scalars[k] = v
+
+    def collect(prefix: str) -> dict:
+        return {
+            k.split(".", 1)[1]: v for k, v in scalars.items() if k.startswith(prefix + ".")
+        } | {k.split(".", 1)[1]: v for k, v in lists.items() if k.startswith(prefix + ".")}
+
+    goals_extra = [v for raw in collect("goals").values() for v in _values(raw)]
+    pillars_extra = [
+        v
+        for raw in (lists.get("positioning.pillar_topics") or []) + _values(scalars.get("positioning.pillar_topics"))
+        for v in _values(raw)
+    ]
+    taboos_extra = [v for raw in collect("guardrails").values() for v in _values(raw)]
+    tracked_peers = [
+        {
+            "platform": e.get("platform") or "",
+            "handle": e.get("handle") or "",
+            "kind": e.get("kind") or "",
+            "name": e.get("display_name") or e.get("name") or "",
+            "why": e.get("reason") or "",
+        }
+        for e in (cfg.get("watchlist") or [])
+        if str(e.get("status") or "tracked") == "tracked"
+    ]
+
+    return {
+        "tenant_id": str(base.get("tenant_id") or ""),
+        "kind": scalars.get("identity.kind") or base.get("kind"),
+        "identity": {**(base.get("identity") or {}), **collect("identity")},
+        "positioning": collect("positioning"),
+        "audience": collect("audience"),
+        "voice": collect("voice"),
+        "goals": _merged_list(base.get("goals"), goals_extra),
+        "pillars": _merged_list(base.get("pillars"), pillars_extra),
+        "taboos": _merged_list(base.get("taboos"), taboos_extra),
+        "platforms": base.get("platforms") or [],
+        "peers": base.get("peers") or [],
+        "constraints": base.get("constraints") or {},
+        "intake_done": bool(base.get("intake_done")),
+        # superset extensions (never existed on brand_profiles)
+        "connected_accounts": [
+            {"platform": r["platform"], "handle": r["handle"] or "", "auth_status": r["status"]}
+            for r in conn_rows
+        ],
+        "tracked_peers": tracked_peers,
+        "fields": flat,
+    }
+
+
 __all__ = [
     "get_brand_profile", "upsert_brand_profile", "brand_profile_block",
     "list_suggestions", "accept_suggestion", "dismiss_suggestion",
+    "profile_projection",
 ]

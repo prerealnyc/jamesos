@@ -641,6 +641,21 @@ def _cited_in(url: str, text: str) -> bool:
     return False
 
 
+def _json_answer_suggestion(text: str, brand: dict | None) -> dict:
+    """Answerer-agent drafts (intake_agent PROMPT: 'Draft a suggested answer
+    to the interview question'). Deterministic: echoes the question so every
+    draft is distinguishable on the review screen."""
+    m = re.search(r"^QUESTION: (.+)$", text, re.MULTILINE | re.IGNORECASE)
+    q = (m.group(1).strip() if m else "the question").rstrip("?")[:140]
+    b = brand or fixtures.GENERIC
+    return {
+        "suggestion": f"{b['name']}'s working answer: {q} — kept short, specific, "
+        "and phrased the way the owner would state it (mock draft; edit before accepting).",
+        "rationale": "Grounded in the brand facts included in the prompt (mock route).",
+        "grounded": True,
+    }
+
+
 def _json_lane_findings(text: str, brand: dict | None) -> dict:
     """{"fields": [...]} for the D11 lane-extraction prompts ('lane findings').
     Lane detection is implicit: the brand's lane_findings fixture is filtered
@@ -1008,6 +1023,10 @@ def _text_draft_email(text: str, brand: dict | None) -> str:
 # Routing tables. Matched against lowercased system+prompt; FIRST match wins.
 # To add a route: write a handler (text, brand)->payload and append a row.
 JSON_ROUTES: list[tuple[str, tuple[str, ...], Callable[[str, dict | None], dict]]] = [
+    # answer_suggestion goes FIRST: the answerer prompt embeds an arbitrary
+    # question plus profile-fact text, either of which could contain another
+    # route's marker phrase by accident.
+    ("answer_suggestion", ("brand-research assistant", "draft a suggested answer"), _json_answer_suggestion),
     # lane_findings MUST precede field_extraction: the D11 lane prompts reuse
     # PROMPT_EXTRACT wording, so both marker sets can appear in one prompt.
     ("lane_findings", ("lane findings",), _json_lane_findings),

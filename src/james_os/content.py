@@ -43,6 +43,7 @@ from .brand_kit import get_brand_kit
 from .config import settings
 from .db import acquire
 from .llm import get_llm
+from .manager import review as manager_review
 from .models import ContentBrief, ContentDraft, QAVerdict, RetrievedEvent
 from .prompts import (
     build_content_system_prompt,
@@ -84,6 +85,104 @@ def strip_internal_labels(text: str) -> str:
     out = re.sub(r" +([,.!?;:])", r"\1", out)
     out = re.sub(r"\n{3,}", "\n\n", out)
     return out.strip()
+
+
+# ── bm2.0 text-hands MERGE (additive; exercised only for the new formats) ──
+# Ported verbatim from bm2.0 backend/app/agents/hands.py: the long-form text
+# formats james-os never built (blog, email). When a brief asks for one of
+# these, its donor instruction block is appended to the existing system
+# prompt; every other format's prompt is byte-identical to pre-merge.
+
+# The Reviewer's D7 lint is zero-tolerance (manager/ai_isms): no em dashes and
+# no marketing/AI clichés. Steer every hand to write lint-clean on the first
+# pass so it clears the gate instead of bouncing to the revise loop.
+_HANDS_HOUSE_STYLE = (
+    " House style (mandatory): plain, direct, specific language, like a sharp human expert. "
+    "Do NOT use em dashes (—); use commas, periods, or parentheses. Never use clichés or AI-isms "
+    "such as: delve, seamless, leverage, elevate, unlock, supercharge, robust, holistic, synergy, "
+    "game-changer, cutting-edge, world-class, unparalleled, transformative, actionable insights, "
+    "key takeaways, thought leadership, 'in today's ... world', 'it's worth noting', 'in conclusion', "
+    "'at the end of the day', 'at its core'. Ground every claim in the facts given; never invent numbers. "
+    "Write STRICTLY in the brand's own voice exactly as specified in the prompt — match it, and never "
+    "fall back to a generic or AI voice."
+)
+
+# format -> donor per-format instruction block (hands.py _SYSTEM), appended to
+# the system prompt ONLY when that format is requested.
+_HANDS_FORMAT_SYSTEM: dict[str, str] = {
+    "blog": (
+        "You are the brand's blog writer. Write the article exactly as it should be published: a clear "
+        "headline on the first line, then the body in the brand's voice, concrete and grounded in the "
+        "facts given. Never write placeholders or meta commentary that describes an article instead of "
+        "being one." + _HANDS_HOUSE_STYLE
+    ),
+    "email": (
+        "You are the brand's email writer. Write the email body exactly as it should be sent: a warm, "
+        "concrete note in the brand's voice that pays off the subject and gives the reader one real thing. "
+        "Never write placeholders or meta commentary." + _HANDS_HOUSE_STYLE
+    ),
+}
+
+# PRD R5.2 — the 'rewrite this' door (hands.py, verbatim): an external draft
+# goes in, the brand's voice comes out. Facts stay; the voice changes.
+_REWRITE_INSTRUCTION = (
+    "REWRITE the following external draft. Keep its facts, claims, and intent; replace the "
+    "voice entirely so it reads like the brand wrote it (never like AI or a ghostwriter):\n"
+)
+
+
+def _hands_slug(text: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return (s or "post")[:60]
+
+
+def _format_fields(fmt: str, topic: str, body: str) -> dict:
+    """Format-specific fields the publish step needs (donor hands.py _media):
+    blog = title + body_markdown + meta (slug/meta_description/tags), email =
+    subject + preheader + body. Kept alongside the queued draft."""
+    if fmt == "blog":
+        title = (body.splitlines()[0].strip() if body.strip() else topic) or topic
+        title = title.lstrip("# ").strip()[:200]
+        rest = body.split("\n", 1)[1].strip() if "\n" in body else body
+        return {
+            "title": title,
+            "slug": _hands_slug(title or topic),
+            "meta_description": rest[:155],
+            "tags": [],
+            "links": [],
+        }
+    if fmt == "email":
+        subject = topic.strip()
+        return {"subject": subject[:150], "preheader": subject[:120], "links": []}
+    return {}
+
+
+def _extract_rewrite(extra_instructions: str) -> tuple[str | None, str]:
+    """Pull a rewrite_of payload out of brief.extra_instructions (ContentBrief
+    is frozen upstream, so the payload rides the existing free-text field).
+    Accepted shapes: a JSON object {"rewrite_of": "...", "extra_instructions":
+    "..."} or a 'rewrite_of:' prefix followed by the external draft. Returns
+    (rewrite_text | None, remaining extra instructions). Anything else passes
+    through untouched — the pre-merge path stays byte-identical."""
+    raw = (extra_instructions or "").strip()
+    if not raw:
+        return None, extra_instructions
+    if raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            return None, extra_instructions
+        if isinstance(data, dict) and str(data.get("rewrite_of") or "").strip():
+            return (
+                str(data["rewrite_of"]).strip(),
+                str(data.get("extra_instructions") or data.get("instructions") or "").strip(),
+            )
+        return None, extra_instructions
+    prefix = "rewrite_of:"
+    if raw.lower().startswith(prefix):
+        rewrite = raw[len(prefix):].strip()
+        return (rewrite or None), ""
+    return None, extra_instructions
 
 
 # event payload.category (and event_type) → memory bucket.
@@ -451,19 +550,30 @@ async def generate_content(
             ),
         )
 
+    # bm2.0 rewrite door (R5.2): a rewrite_of payload in extra_instructions
+    # switches this run into rewrite mode; the remaining instructions (if
+    # any) still reach the brief. No payload → byte-identical to pre-merge.
+    rewrite_of, extra_instructions = _extract_rewrite(brief.extra_instructions)
+
     # ── LLM #1: generate ──
     system = await build_content_system_prompt(
         brief.platform, brief.format, tenant_id
     )
+    # bm2.0 text-hands formats (blog/email): append the donor's per-format
+    # instruction block. Existing formats never enter this branch.
+    if brief.format in _HANDS_FORMAT_SYSTEM:
+        system = f"{system}\n\n{_HANDS_FORMAT_SYSTEM[brief.format]}"
     brief_block = (
         f"<brief>\n"
         f"platform: {brief.platform}\n"
         f"format: {brief.format}\n"
         f"pillar: {brief.pillar or '(none specified)'}\n"
         f"topic: {strip_internal_labels(brief.topic)}\n"
-        f"extra_instructions: {brief.extra_instructions or '(none)'}\n"
+        f"extra_instructions: {extra_instructions or '(none)'}\n"
         f"</brief>"
     )
+    if rewrite_of:
+        brief_block += f"\n\n{_REWRITE_INSTRUCTION}{str(rewrite_of)[:4000]}"
     memory_block = format_content_memory(buckets)
     try:
         gen = await llm.complete_json(
@@ -502,21 +612,49 @@ async def generate_content(
     score = float(qa_raw.get("voice_score", 0.0) or 0.0)
     drift = [str(d) for d in (qa_raw.get("drift") or [])]
     passed = bool(qa_raw.get("passed", score >= floor)) and score >= floor
-    qa = QAVerdict(voice_score=score, passed=passed, drift=drift)
-    status = "generated" if passed else "flagged"
 
     # Brand caption sign-off — every caption ends on the same note. Applied
     # AFTER voice-QA so the boilerplate never sways the voice score, and it
-    # flows into content, caption and the returned draft below.
-    try:
-        _kit = await get_brand_kit(tenant_id)
-        draft_text = apply_caption_signoff(draft_text, _kit.get("caption_signoff"))
-    except Exception:  # noqa: BLE001 — never lose the draft over a brand read
-        pass
+    # flows into content, caption and the returned draft below. (Skipped for
+    # the merged long-form formats — a caption sign-off is not a blog/email
+    # signature; those formats never existed pre-merge.)
+    if brief.format not in _HANDS_FORMAT_SYSTEM:
+        try:
+            _kit = await get_brand_kit(tenant_id)
+            draft_text = apply_caption_signoff(draft_text, _kit.get("caption_signoff"))
+        except Exception:  # noqa: BLE001 — never lose the draft over a brand read
+            pass
 
     # Hard firewall: internal vocabulary must never reach the audience, no
     # matter which input carried it in (topic, memory, or the model itself).
     draft_text = strip_internal_labels(draft_text)
+
+    # ── bm2.0 reviewer legs (D7): deterministic lint + profile guardrails ──
+    # Runs on the FINAL text, after their voice-QA. A violation flags the
+    # draft (never silently ships, matching content_voice_floor semantics)
+    # but changes nothing else: pass/fail for existing formats is untouched
+    # unless a violation actually fires.
+    if brief.format in _HANDS_FORMAT_SYSTEM:
+        # donor hands.py post-pass: strip em/en dashes so a good long-form
+        # draft isn't bounced on punctuation alone (voice stays the gate)
+        draft_text = manager_review.lint_clean(draft_text)
+    lint_violations = manager_review.lint(draft_text)
+    guardrail_violations: list[str] = []
+    try:
+        async with acquire(tenant_id) as conn:
+            guardrail_violations = await manager_review.guardrail_check(conn, draft_text)
+    except Exception:  # noqa: BLE001 — guardrail leg is best-effort here; lint still gates
+        pass
+    review_flags = [
+        *(f"lint: {v}" for v in lint_violations),
+        *(f"guardrail: {v}" for v in guardrail_violations),
+    ]
+    if review_flags:
+        drift = [*drift, *review_flags]
+
+    qa = QAVerdict(voice_score=score, passed=passed, drift=drift)
+    flagged = (not passed) or bool(review_flags)
+    status = "generated" if not flagged else "flagged"
 
     # ── queue as a pending action (the human gate) ──
     payload = {
@@ -533,8 +671,20 @@ async def generate_content(
         "qa_drift": drift,
         "grounded_event_ids": [str(g) for g in grounded],
         "memory_used": used,
-        "flagged": not passed,
+        "flagged": flagged,
     }
+    # Additive annotations — present only when the new merge paths fired, so
+    # pre-merge payloads keep their exact shape.
+    if lint_violations:
+        payload["lint_violations"] = lint_violations
+    if guardrail_violations:
+        payload["guardrail_violations"] = guardrail_violations
+    if brief.format in _HANDS_FORMAT_SYSTEM:
+        payload["format_fields"] = _format_fields(
+            brief.format, strip_internal_labels(brief.topic), draft_text
+        )
+    if rewrite_of:
+        payload["rewrite_of"] = str(rewrite_of)[:4000]
     async with acquire(tenant_id) as conn:
         action_id = await conn.fetchval(
             """
@@ -556,6 +706,13 @@ async def generate_content(
             "Thin voice grounding (≤1 voice/thesis event in memory). It "
             "passed QA, but ingest more voice corpus for stronger fidelity."
         )
+    if review_flags:
+        review_note = (
+            f"Reviewer flagged {len(review_flags)} violation(s): "
+            + "; ".join(review_flags[:5])
+            + " — queued but flagged for revision, never silently shipped."
+        )
+        note = f"{note} {review_note}" if note else review_note
 
     return _draft(
         status,

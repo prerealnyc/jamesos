@@ -385,105 +385,116 @@ All 431 rows now have a final disposition — zero open items.
 
 ## P4 — Onboarding, voice & publish — 72 rows
 
+> **Progress 2026-07-09: COMPLETE (72/72).** intake_agent.py rebuilt on the bm2.0
+> interviewer/answerer + 119-template question bank; manager/researcher.py (D11 7-lane
+> fan-out, citation gates); manager/voice_harvester.py (origin=harvested corpus + voice.*
+> distillation); manager/review.py 4-leg gate + blog/email/rewrite folded ADDITIVELY into
+> content.py (pre-merge payloads byte-identical); manager/{execution,publish}.py — the
+> dormant outbox is now the publish ledger (honest-failure, bounded retries);
+> postproxy/connections gain connect+publish; brand_profiles readable as projection over
+> the envelope; next-steps checklist computed live. 49 manager routes; 6 new tests green.
+> Note: keyless env drafts refuse honestly (their stub-LLM policy) — live drafting needs
+> ANTHROPIC_API_KEY, publish needs the per-hand keys (D8 incremental go-live).
+
 
 ### bm2.0 · execution
 
-- [ ] **Approval queue view + human approve/reject gate** (MERGE) — `backend/app/routers/queue.py` → their actions queue + approval UI (KEEP-theirs UI; add D5 guards, ApprovalEvent trail, superseded-version 409, RLS scoping)
-- [ ] **Creator v0 drafting pipeline** (MERGE) — `backend/app/agents/creator.py` → their content engine (queued-order drafting loop folded in; their engine drafts)
-- [ ] **D5 guard on reviewer state moves** (MERGE) — `backend/app/agents/reviewer.py` → actions queue transition guards (rejected only from review/pending_approval)
-- [ ] **Email placeholder-recipient + social profile-key guards** (FILL) — `backend/app/services/execution.py` → outbox.execute_action provider guards (honest errors, labelled placeholder sends)
-- [ ] **Execution HTTP surface with layered error mapping** (MERGE) — `backend/app/routers/execution.py` → execution API routes over content engine + outbox + actions queue (404/409/502 mapping kept)
-- [ ] **Hands: format-aware text drafting (blog/email/social)** (MERGE) — `backend/app/agents/hands.py` → their content engine (adds blog/email formats + media payloads they never built)
-- [ ] **Lint-clean house style + em-dash stripping** (MERGE) — `backend/app/agents/hands.py` → content engine system prompt + deterministic post-pass
-- [ ] **One automatic revise-and-rescore loop** (MERGE) — `backend/app/agents/reviewer.py` → voice-QA gate + content engine (single retry, new artifact version, annotations on their queue)
-- [ ] **Owner work view (opportunity -> draft -> impact)** (MERGE) — `backend/app/services/execution.py` → actions queue views (their queue UI survives; join adds opportunity/routing/metrics columns)
-- [ ] **Publish step with honest-failure semantics** (FILL) — `backend/app/services/execution.py` → outbox.execute_action (dormant) — bm2.0 publish code IS the missing executor
-- [ ] **Reviewer gate leg 1: deterministic AI-ism lint** (MERGE) — `backend/app/agents/reviewer.py` → james-os voice-QA gate (new deterministic lint leg, zero tolerance)
-- [ ] **Reviewer gate leg 2: guardrail substring check** (MERGE) — `backend/app/agents/reviewer.py` → voice-QA gate (learned-guardrails leg reading profile_fields guardrails.*)
-- [ ] **Reviewer gate leg 3: voice-fidelity LLM judge** (MERGE) — `backend/app/agents/reviewer.py` → voice-QA gate (their voice engine is stronger; our threshold/cold-start semantics folded in)
-- [ ] **Reviewer gate leg 4: fact-check on specific claims** (MERGE) — `backend/app/agents/reviewer.py` → voice-QA gate (new best-effort fact-check leg vs order evidence)
-- [ ] **Rewrite door pipeline (R5.2)** (MERGE) — `backend/app/services/execution.py` → content engine (source='rewrite' orders through their queue + merged QA gates)
-- [ ] **Rewrite-of prompt path (R5.2)** (MERGE) — `backend/app/agents/hands.py` → content engine (new rewrite path through the same QA gates)
-- [ ] **Video/image routing to james-os** (MERGE) — `backend/app/services/execution.py` → their media production pipelines (cross-project hand-off becomes direct in-process dispatch; pipelines KEEP-theirs)
-- [ ] **Voice-strict drafting context** (MERGE) — `backend/app/agents/hands.py` → their content engine + voice engine (theirs stronger; harvested-profile injection + no-fake-voice rule folded in)
-- [ ] **execute_opportunity: ActionItem -> WorkOrder -> draft** (MERGE) — `backend/app/services/execution.py` → content engine + actions queue (opportunity -> source='opportunity' order -> engine draft; outcome noted on action_items)
+- [x] **Approval queue view + human approve/reject gate** (MERGE) — `backend/app/routers/queue.py` → their actions queue + approval UI (KEEP-theirs UI; add D5 guards, ApprovalEvent trail, superseded-version 409, RLS scoping)
+- [x] **Creator v0 drafting pipeline** (MERGE) — `backend/app/agents/creator.py` → their content engine (queued-order drafting loop folded in; their engine drafts)
+- [x] **D5 guard on reviewer state moves** (MERGE) — `backend/app/agents/reviewer.py` → actions queue transition guards (rejected only from review/pending_approval)
+- [x] **Email placeholder-recipient + social profile-key guards** (FILL) — `backend/app/services/execution.py` → outbox.execute_action provider guards (honest errors, labelled placeholder sends)
+- [x] **Execution HTTP surface with layered error mapping** (MERGE) — `backend/app/routers/execution.py` → execution API routes over content engine + outbox + actions queue (404/409/502 mapping kept)
+- [x] **Hands: format-aware text drafting (blog/email/social)** (MERGE) — `backend/app/agents/hands.py` → their content engine (adds blog/email formats + media payloads they never built)
+- [x] **Lint-clean house style + em-dash stripping** (MERGE) — `backend/app/agents/hands.py` → content engine system prompt + deterministic post-pass
+- [x] **One automatic revise-and-rescore loop** (MERGE) — `backend/app/agents/reviewer.py` → voice-QA gate + content engine (single retry, new artifact version, annotations on their queue)
+- [x] **Owner work view (opportunity -> draft -> impact)** (MERGE) — `backend/app/services/execution.py` → actions queue views (their queue UI survives; join adds opportunity/routing/metrics columns)
+- [x] **Publish step with honest-failure semantics** (FILL) — `backend/app/services/execution.py` → outbox.execute_action (dormant) — bm2.0 publish code IS the missing executor
+- [x] **Reviewer gate leg 1: deterministic AI-ism lint** (MERGE) — `backend/app/agents/reviewer.py` → james-os voice-QA gate (new deterministic lint leg, zero tolerance)
+- [x] **Reviewer gate leg 2: guardrail substring check** (MERGE) — `backend/app/agents/reviewer.py` → voice-QA gate (learned-guardrails leg reading profile_fields guardrails.*)
+- [x] **Reviewer gate leg 3: voice-fidelity LLM judge** (MERGE) — `backend/app/agents/reviewer.py` → voice-QA gate (their voice engine is stronger; our threshold/cold-start semantics folded in)
+- [x] **Reviewer gate leg 4: fact-check on specific claims** (MERGE) — `backend/app/agents/reviewer.py` → voice-QA gate (new best-effort fact-check leg vs order evidence)
+- [x] **Rewrite door pipeline (R5.2)** (MERGE) — `backend/app/services/execution.py` → content engine (source='rewrite' orders through their queue + merged QA gates)
+- [x] **Rewrite-of prompt path (R5.2)** (MERGE) — `backend/app/agents/hands.py` → content engine (new rewrite path through the same QA gates)
+- [x] **Video/image routing to james-os** (MERGE) — `backend/app/services/execution.py` → their media production pipelines (cross-project hand-off becomes direct in-process dispatch; pipelines KEEP-theirs)
+- [x] **Voice-strict drafting context** (MERGE) — `backend/app/agents/hands.py` → their content engine + voice engine (theirs stronger; harvested-profile injection + no-fake-voice rule folded in)
+- [x] **execute_opportunity: ActionItem -> WorkOrder -> draft** (MERGE) — `backend/app/services/execution.py` → content engine + actions queue (opportunity -> source='opportunity' order -> engine draft; outcome noted on action_items)
 
 ### bm2.0 · onboarding
 
-- [ ] **Account connect endpoints + one profile-key per brand** (MERGE) — `backend/app/routers/accounts.py` → postproxy.py + connections.py (they have read/analytics; adds connect flow + key healing on brand settings)
-- [ ] **Aggregator group list/bind/sync** (MERGE) — `backend/app/routers/accounts.py` → postproxy.py + connections.py (group list/bind; sync upserts into their connections rows)
-- [ ] **Answer intake as user_stated writes** (REPLACE) — `backend/app/services/onboarding.py` → intake_agent.py answers -> profile_fields (source=user_stated, list parsing kept)
-- [ ] **Answerer: researched answer suggestion (draft-only)** (REPLACE) — `backend/app/agents/answerer.py` → intake_agent.py + brand_questions (draft suggestion; human accept -> profile_fields user_stated)
-- [ ] **Aspirational-peer seeding from answers (pre-approved)** (FILL) — `backend/app/services/onboarding.py` → research_roster (status='tracked', platform='unknown'; existing candidates upgraded not duplicated)
-- [ ] **Async confirmed-research flow with double-run guard** (REPLACE) — `backend/app/routers/onboarding.py` → research API routes over brand_research.py (202 + status poll + 409 in-flight, on their API layer)
-- [ ] **Auto-answer batch endpoints with stale-draft filtering** (REPLACE) — `backend/app/routers/onboarding.py` → intake API routes + brand_questions (202 batch, stale-draft filtering, 409 concurrent)
-- [ ] **Auto-answer sweep saves interview budget** (REPLACE) — `backend/app/agents/interviewer.py` → intake_agent.py + brand_questions (state=auto_answered)
-- [ ] **Batch auto-answer over all open questions** (REPLACE) — `backend/app/agents/answerer.py` → intake_agent.py + brand_questions; drafts stored on job-run record for review screen
-- [ ] **Brand creation + question materialization (D3)** (REPLACE) — `backend/app/services/onboarding.py` → intake_agent.py on their tenant/brand creation; templates materialize into brand_questions
-- [ ] **Citation validation gate on every extraction** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py extraction path; citations enforced into profile_fields envelope
-- [ ] **Competitor candidates -> PeerEntity inserts (no metrics)** (FILL) — `backend/app/agents/researcher.py` → research_roster (0 rows): status='candidate' rows, deduped by (platform, handle)
-- [ ] **Computed next-steps checklist** (MERGE) — `backend/app/routers/next_steps.py` → their onboarding-checklist (recomputed from live DB state on every call, no stored flags)
-- [ ] **Confirmed research 7-lane parallel fan-out** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py / research.py (multi-lane D11 engine replaces the stub)
-- [ ] **Connect-URL passthrough with stale-key self-heal** (MERGE) — `backend/app/routers/accounts.py` → postproxy.py + connections.py (white-label OAuth URL + mint-and-retry self-heal)
-- [ ] **Cross-lane field merge with citation union** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py merge step; multi-citation bonus computed by envelope rubric
-- [ ] **Deep-research lane, provenance-guarded** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py deep lane (their Perplexity pass demoted to one guarded lane)
-- [ ] **Entity discovery ('Is this your brand?')** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py / research.py (supersedes their single Perplexity pass; candidates stay human-confirmed)
-- [ ] **Exemplar quality gates + cost caps** (PORT) — `backend/app/agents/voice_harvester.py` → voice harvester module; caps into james-os config; dedupe against the shared corpus
-- [ ] **Interview endpoints (next/suggest/answer)** (REPLACE) — `backend/app/routers/onboarding.py` → intake API routes over intake_agent.py + brand_questions
-- [ ] **Interview question selection (3-tier priority)** (REPLACE) — `backend/app/agents/interviewer.py` → intake_agent.py + brand_questions (0 rows)
-- [ ] **News lane (90-day lookback extraction)** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py news lane; cited fields -> profile_fields
-- [ ] **Onboarding question cap (<=25) + budget switch** (REPLACE) — `backend/app/agents/interviewer.py` → intake_agent.py + brand_questions (cap keyed to brand/tenant onboarding status)
-- [ ] **Onboarding-to-active advancement rule (single source)** (REPLACE) — `backend/app/services/onboarding.py` → intake_agent.py + brand_questions settle check (must-asks settled OR cap consumed)
-- [ ] **Places lane for physical assets/institutions** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py places lane; channels.local.* -> profile_fields
-- [ ] **Reddit lane: SERP-level community signal** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py reddit lane (SERP-only, secondary confidence) -> profile_fields
-- [ ] **Research seed persistence** (REPLACE) — `backend/app/routers/onboarding.py` → brand settings (research_seed) on their tenant brand record
-- [ ] **Spoken-voice harvest (transcribe own uploads)** (PORT) — `backend/app/agents/voice_harvester.py` → alongside voice_ingest.py (theirs uploads, ours auto-pulls); exemplars -> shared voice corpus tagged origin=harvested
-- [ ] **Voice harvest endpoints (background + poll)** (PORT) — `backend/app/routers/voice.py` → voice API routes alongside voice_ingest.py (harvest/add-source background + GET voice profile/status)
-- [ ] **Voice-profile distillation to voice.* fields** (PORT) — `backend/app/agents/voice_harvester.py` → profile_fields voice.* (source=researched, cited); complements their voice rules
-- [ ] **Web lane: confirmed pages + angle searches** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py web lane; fields -> profile_fields envelope
-- [ ] **Wikipedia lane with absence-as-finding** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py wiki lane; positioning.wikipedia_presence -> profile_fields
-- [ ] **Written-voice harvest from own posts** (PORT) — `backend/app/agents/voice_harvester.py` → alongside voice_ingest.py; connected accounts via postproxy.py, fallback public handles
-- [ ] **YouTube lane: locate-then-stat, never guess handles** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py youtube lane via ported providers.video (D9 1-unit endpoints)
+- [x] **Account connect endpoints + one profile-key per brand** (MERGE) — `backend/app/routers/accounts.py` → postproxy.py + connections.py (they have read/analytics; adds connect flow + key healing on brand settings)
+- [x] **Aggregator group list/bind/sync** (MERGE) — `backend/app/routers/accounts.py` → postproxy.py + connections.py (group list/bind; sync upserts into their connections rows)
+- [x] **Answer intake as user_stated writes** (REPLACE) — `backend/app/services/onboarding.py` → intake_agent.py answers -> profile_fields (source=user_stated, list parsing kept)
+- [x] **Answerer: researched answer suggestion (draft-only)** (REPLACE) — `backend/app/agents/answerer.py` → intake_agent.py + brand_questions (draft suggestion; human accept -> profile_fields user_stated)
+- [x] **Aspirational-peer seeding from answers (pre-approved)** (FILL) — `backend/app/services/onboarding.py` → research_roster (status='tracked', platform='unknown'; existing candidates upgraded not duplicated)
+- [x] **Async confirmed-research flow with double-run guard** (REPLACE) — `backend/app/routers/onboarding.py` → research API routes over brand_research.py (202 + status poll + 409 in-flight, on their API layer)
+- [x] **Auto-answer batch endpoints with stale-draft filtering** (REPLACE) — `backend/app/routers/onboarding.py` → intake API routes + brand_questions (202 batch, stale-draft filtering, 409 concurrent)
+- [x] **Auto-answer sweep saves interview budget** (REPLACE) — `backend/app/agents/interviewer.py` → intake_agent.py + brand_questions (state=auto_answered)
+- [x] **Batch auto-answer over all open questions** (REPLACE) — `backend/app/agents/answerer.py` → intake_agent.py + brand_questions; drafts stored on job-run record for review screen
+- [x] **Brand creation + question materialization (D3)** (REPLACE) — `backend/app/services/onboarding.py` → intake_agent.py on their tenant/brand creation; templates materialize into brand_questions
+- [x] **Citation validation gate on every extraction** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py extraction path; citations enforced into profile_fields envelope
+- [x] **Competitor candidates -> PeerEntity inserts (no metrics)** (FILL) — `backend/app/agents/researcher.py` → research_roster (0 rows): status='candidate' rows, deduped by (platform, handle)
+- [x] **Computed next-steps checklist** (MERGE) — `backend/app/routers/next_steps.py` → their onboarding-checklist (recomputed from live DB state on every call, no stored flags)
+- [x] **Confirmed research 7-lane parallel fan-out** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py / research.py (multi-lane D11 engine replaces the stub)
+- [x] **Connect-URL passthrough with stale-key self-heal** (MERGE) — `backend/app/routers/accounts.py` → postproxy.py + connections.py (white-label OAuth URL + mint-and-retry self-heal)
+- [x] **Cross-lane field merge with citation union** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py merge step; multi-citation bonus computed by envelope rubric
+- [x] **Deep-research lane, provenance-guarded** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py deep lane (their Perplexity pass demoted to one guarded lane)
+- [x] **Entity discovery ('Is this your brand?')** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py / research.py (supersedes their single Perplexity pass; candidates stay human-confirmed)
+- [x] **Exemplar quality gates + cost caps** (PORT) — `backend/app/agents/voice_harvester.py` → voice harvester module; caps into james-os config; dedupe against the shared corpus
+- [x] **Interview endpoints (next/suggest/answer)** (REPLACE) — `backend/app/routers/onboarding.py` → intake API routes over intake_agent.py + brand_questions
+- [x] **Interview question selection (3-tier priority)** (REPLACE) — `backend/app/agents/interviewer.py` → intake_agent.py + brand_questions (0 rows)
+- [x] **News lane (90-day lookback extraction)** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py news lane; cited fields -> profile_fields
+- [x] **Onboarding question cap (<=25) + budget switch** (REPLACE) — `backend/app/agents/interviewer.py` → intake_agent.py + brand_questions (cap keyed to brand/tenant onboarding status)
+- [x] **Onboarding-to-active advancement rule (single source)** (REPLACE) — `backend/app/services/onboarding.py` → intake_agent.py + brand_questions settle check (must-asks settled OR cap consumed)
+- [x] **Places lane for physical assets/institutions** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py places lane; channels.local.* -> profile_fields
+- [x] **Reddit lane: SERP-level community signal** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py reddit lane (SERP-only, secondary confidence) -> profile_fields
+- [x] **Research seed persistence** (REPLACE) — `backend/app/routers/onboarding.py` → brand settings (research_seed) on their tenant brand record
+- [x] **Spoken-voice harvest (transcribe own uploads)** (PORT) — `backend/app/agents/voice_harvester.py` → alongside voice_ingest.py (theirs uploads, ours auto-pulls); exemplars -> shared voice corpus tagged origin=harvested
+- [x] **Voice harvest endpoints (background + poll)** (PORT) — `backend/app/routers/voice.py` → voice API routes alongside voice_ingest.py (harvest/add-source background + GET voice profile/status)
+- [x] **Voice-profile distillation to voice.* fields** (PORT) — `backend/app/agents/voice_harvester.py` → profile_fields voice.* (source=researched, cited); complements their voice rules
+- [x] **Web lane: confirmed pages + angle searches** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py web lane; fields -> profile_fields envelope
+- [x] **Wikipedia lane with absence-as-finding** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py wiki lane; positioning.wikipedia_presence -> profile_fields
+- [x] **Written-voice harvest from own posts** (PORT) — `backend/app/agents/voice_harvester.py` → alongside voice_ingest.py; connected accounts via postproxy.py, fallback public handles
+- [x] **YouTube lane: locate-then-stat, never guess handles** (REPLACE) — `backend/app/agents/researcher.py` → brand_research.py youtube lane via ported providers.video (D9 1-unit endpoints)
 
 ### bm2.0 · platform
 
-- [ ] **AI-ism lint lexicon (deterministic, pure)** (PORT) — `backend/app/data/ai_isms.py` → new pure module under their content QA, consumed by the voice-QA lint leg
-- [ ] **Per-brand source contribution report** (PORT) — `backend/app/routers/sources.py` → provider layer + researcher job-run records (per-lane field counts mapped to streams)
-- [ ] **james-os handoff export** (MERGE) — `backend/app/routers/brands.py` → brand_profiles flat VIEW/projection (the export shape becomes the internal projection; cross-project import door retires)
+- [x] **AI-ism lint lexicon (deterministic, pure)** (PORT) — `backend/app/data/ai_isms.py` → new pure module under their content QA, consumed by the voice-QA lint leg
+- [x] **Per-brand source contribution report** (PORT) — `backend/app/routers/sources.py` → provider layer + researcher job-run records (per-lane field counts mapped to streams)
+- [x] **james-os handoff export** (MERGE) — `backend/app/routers/brands.py` → brand_profiles flat VIEW/projection (the export shape becomes the internal projection; cross-project import door retires)
 
 ### bm2.0 · providers
 
-- [ ] **GET /brands/{id}/sources — per-brand contribution** (PORT) — `backend/app/routers/sources.py` → james-os API sources route (tenant-scoped) — reads researcher-run lane_stats + profile_fields section counts
-- [ ] **PostProxyConnector (primary social vendor)** (MERGE) — `backend/app/adapters/live.py` → james-os postproxy.py + connections.py — theirs keeps read/analytics; fold in connect-URL flow, group binding, post-history paging, and publish
-- [ ] **ResendEmailProvider (live email hand)** (FILL) — `backend/app/adapters/live.py` → james-os outbox.execute_action — the email leg of the missing outbox executor
-- [ ] **WebhookBlogPublisher (live blog hand)** (FILL) — `backend/app/adapters/live.py` → james-os outbox.execute_action — the blog leg of the missing outbox executor (fills PRD R8.1)
+- [x] **GET /brands/{id}/sources — per-brand contribution** (PORT) — `backend/app/routers/sources.py` → james-os API sources route (tenant-scoped) — reads researcher-run lane_stats + profile_fields section counts
+- [x] **PostProxyConnector (primary social vendor)** (MERGE) — `backend/app/adapters/live.py` → james-os postproxy.py + connections.py — theirs keeps read/analytics; fold in connect-URL flow, group binding, post-history paging, and publish
+- [x] **ResendEmailProvider (live email hand)** (FILL) — `backend/app/adapters/live.py` → james-os outbox.execute_action — the email leg of the missing outbox executor
+- [x] **WebhookBlogPublisher (live blog hand)** (FILL) — `backend/app/adapters/live.py` → james-os outbox.execute_action — the blog leg of the missing outbox executor (fills PRD R8.1)
 
 ### james-os · analytics
 
-- [ ] **PostProxy unified social-API client (11 platforms)** (MERGE) — `src/james_os/postproxy.py` → src/james_os/postproxy.py — read/analytics side survives; bm2.0 adds the white-label connect-URL flow + PUBLISH path (theirs is read-only today), feeding the outbox executor
-- [ ] **Unified connections view (Meta + PostProxy merged)** (MERGE) — `src/james_os/connections.py` → src/james_os/connections.py — bm2.0 connect flow folds into the unified profile shape; best-effort merged listing survives
+- [x] **PostProxy unified social-API client (11 platforms)** (MERGE) — `src/james_os/postproxy.py` → src/james_os/postproxy.py — read/analytics side survives; bm2.0 adds the white-label connect-URL flow + PUBLISH path (theirs is read-only today), feeding the outbox executor
+- [x] **Unified connections view (Meta + PostProxy merged)** (MERGE) — `src/james_os/connections.py` → src/james_os/connections.py — bm2.0 connect flow folds into the unified profile shape; best-effort merged listing survives
 
 ### james-os · intelligence
 
-- [ ] **Agentic intake — interviewer agent (10,000-question interview)** (REPLACE) — `src/james_os/intake_agent.py` → src/james_os/intake_agent.py — bm2.0 interviewer + seeded question bank (batch auto-answer + review) replaces the dormant 10-dimension generator; post-intake cadence re-registered on the scheduler
-- [ ] **Agentic intake — researcher agent ('is this your brand?')** (REPLACE) — `src/james_os/intake_agent.py` → src/james_os/intake_agent.py — bm2.0's live/tested answerer + 'is this your brand?' research agent ports onto their tables (brand_questions); dormant stub retired
-- [ ] **Brand profile store (who this tenant IS)** (MERGE) — `src/james_os/brands.py; src/james_os/main.py` → brand_profiles (src/james_os/brands.py) — becomes the flat snapshot projection/VIEW over the new PORTed profile_fields append-only envelope; existing readers (content/autopilot/Ask) keep working unchanged
-- [ ] **Web research provider (Perplexity sonar + stub)** (REPLACE) — `src/james_os/research.py; src/james_os/main.py` → src/james_os/research.py — bm2.0 D11 multi-lane researcher (web/news/wiki/youtube/places/reddit/deep, provenance rules) lands here; findings stay category:research events; single Perplexity pass retired
-- [ ] **brand_questions ledger -> memory filing** (FILL) — `src/james_os/intake_agent.py; src/james_os/main.py` → brand_questions table (0 rows) + /intake/questions confirm/dismiss endpoints — bm2.0 question bank and confirm/correct flow fill it; confirmed answers still file as citable events
+- [x] **Agentic intake — interviewer agent (10,000-question interview)** (REPLACE) — `src/james_os/intake_agent.py` → src/james_os/intake_agent.py — bm2.0 interviewer + seeded question bank (batch auto-answer + review) replaces the dormant 10-dimension generator; post-intake cadence re-registered on the scheduler
+- [x] **Agentic intake — researcher agent ('is this your brand?')** (REPLACE) — `src/james_os/intake_agent.py` → src/james_os/intake_agent.py — bm2.0's live/tested answerer + 'is this your brand?' research agent ports onto their tables (brand_questions); dormant stub retired
+- [x] **Brand profile store (who this tenant IS)** (MERGE) — `src/james_os/brands.py; src/james_os/main.py` → brand_profiles (src/james_os/brands.py) — becomes the flat snapshot projection/VIEW over the new PORTed profile_fields append-only envelope; existing readers (content/autopilot/Ask) keep working unchanged
+- [x] **Web research provider (Perplexity sonar + stub)** (REPLACE) — `src/james_os/research.py; src/james_os/main.py` → src/james_os/research.py — bm2.0 D11 multi-lane researcher (web/news/wiki/youtube/places/reddit/deep, provenance rules) lands here; findings stay category:research events; single Perplexity pass retired
+- [x] **brand_questions ledger -> memory filing** (FILL) — `src/james_os/intake_agent.py; src/james_os/main.py` → brand_questions table (0 rows) + /intake/questions confirm/dismiss endpoints — bm2.0 question bank and confirm/correct flow fill it; confirmed answers still file as citable events
 
 ### james-os · memory
 
-- [ ] **Durable voice ingest jobs API** (KEEP) — `src/james_os/voice_ingest_api.py` → stays: src/james_os/voice_ingest_api.py
-- [ ] **Voice Studio — Drive folder ingest to voice corpus** (KEEP) — `src/james_os/voice_ingest.py` → stays: src/james_os/voice_ingest.py (bm2.0 Voice Harvester PORTs alongside as the auto-pull door; one voice_corpus tagged by origin)
+- [x] **Durable voice ingest jobs API** (KEEP) — `src/james_os/voice_ingest_api.py` → stays: src/james_os/voice_ingest_api.py
+- [x] **Voice Studio — Drive folder ingest to voice corpus** (KEEP) — `src/james_os/voice_ingest.py` → stays: src/james_os/voice_ingest.py (bm2.0 Voice Harvester PORTs alongside as the auto-pull door; one voice_corpus tagged by origin)
 
 ### james-os · platform
 
-- [ ] **Whisper transcription service** (KEEP) — `src/james_os/transcription.py` → stays: src/james_os/transcription.py (ported bm2.0 voice harvester reuses it for its transcript path)
+- [x] **Whisper transcription service** (KEEP) — `src/james_os/transcription.py` → stays: src/james_os/transcription.py (ported bm2.0 voice harvester reuses it for its transcript path)
 
 ### james-os · production
 
-- [ ] **Independent voice-QA gate (second LLM)** (KEEP) — `src/james_os/content.py` → stays: src/james_os/content.py voice-QA gate — merge TARGET: absorbs bm2.0 lint + learned-guardrails + fact-check reviewer legs
-- [ ] **On-voice content engine (memory-grounded writing)** (KEEP) — `src/james_os/content.py` → stays: src/james_os/content.py — merge TARGET: absorbs bm2.0 blog/email hands + rewrite door (their voice engine is stronger, 1,344 exemplars)
+- [x] **Independent voice-QA gate (second LLM)** (KEEP) — `src/james_os/content.py` → stays: src/james_os/content.py voice-QA gate — merge TARGET: absorbs bm2.0 lint + learned-guardrails + fact-check reviewer legs
+- [x] **On-voice content engine (memory-grounded writing)** (KEEP) — `src/james_os/content.py` → stays: src/james_os/content.py — merge TARGET: absorbs bm2.0 blog/email hands + rewrite door (their voice engine is stronger, 1,344 exemplars)
 
 ## P5 — Unified frontend (bm2.0 design language) — 90 rows
 

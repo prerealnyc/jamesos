@@ -310,3 +310,12 @@ async def latest_collab() -> dict:
     if not report:
         return {"generated": False, "plays": [], "visibility_plays": []}
     return {"generated": True, **report}
+
+
+# ── research: entity discovery → confirmed 7-lane fan-out ────────────────────
+# The researcher routes live in research_api.py (own require_manager_v2 gate);
+# riding this router keeps them registered without touching main.py, which
+# only includes manager_api_router.
+from .research_api import router as research_router  # noqa: E402
+
+router.include_router(research_router)

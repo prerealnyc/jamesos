@@ -208,4 +208,81 @@ async def list_profile_posts(
     return {"error": f"unknown provider: {provider}", "posts": []}
 
 
-__all__ = ["list_all_connections", "list_profile_posts"]
+# ── stored connection rows (bm2.0 accounts port) ────────────────────
+#
+# The live merge view above stays untouched. These helpers own the
+# `connections` TABLE row shape (one row per platform, RLS tenant-scoped)
+# for the aggregator sync in manager/accounts_api.py, mirroring the
+# dashboard settings vocabulary: status is 'not_connected' | 'configured'
+# | 'connected'; the bound group id rides in config['aggregator_profile_key'].
+
+
+def _row_out(r: dict) -> dict:
+    cfg = r.get("config")
+    if isinstance(cfg, str):
+        import json
+
+        cfg = json.loads(cfg or "{}")
+    cfg = cfg or {}
+    return {
+        "platform": r["platform"],
+        "handle": r.get("handle") or "",
+        "enabled": bool(r.get("enabled")),
+        "status": r.get("status") or "not_connected",
+        "aggregator_profile_key": cfg.get("aggregator_profile_key") or "",
+        "connected_at": r["created_at"].isoformat() if r.get("created_at") else None,
+        "updated_at": r["updated_at"].isoformat() if r.get("updated_at") else None,
+    }
+
+
+async def list_stored_connections(conn) -> list[dict]:
+    """Every stored connection row for the current tenant, oldest first
+    (donor ordering: ConnectedAccount.connected_at)."""
+    rows = await conn.fetch(
+        "SELECT platform, handle, enabled, status, config, created_at, updated_at "
+        "FROM connections ORDER BY created_at"
+    )
+    return [_row_out(dict(r)) for r in rows]
+
+
+async def upsert_synced_connection(
+    conn, platform: str, handle: str, profile_key: str, status: str = "connected",
+) -> dict:
+    """Idempotent upsert of one aggregator-synced account into the
+    connections table. The table is UNIQUE (tenant_id, platform), so a second
+    handle on the same platform replaces the first — the aggregator group is
+    the source of truth for which handle is live."""
+    import json
+
+    row = await conn.fetchrow(
+        "INSERT INTO connections (platform, handle, enabled, status, config) "
+        "VALUES ($1, $2, true, $3, $4::jsonb) "
+        "ON CONFLICT (tenant_id, platform) DO UPDATE SET "
+        "handle = $2, enabled = true, status = $3, "
+        "config = coalesce(connections.config, '{}'::jsonb) || $4::jsonb, "
+        "updated_at = now() "
+        "RETURNING platform, handle, enabled, status, config, created_at, updated_at",
+        platform,
+        handle,
+        status,
+        json.dumps({"aggregator_profile_key": profile_key}),
+    )
+    return _row_out(dict(row))
+
+
+async def set_stored_profile_key(conn, profile_key: str) -> None:
+    """Stamp the (re)minted aggregator group id onto every stored connection
+    row — the donor's stale-key heal for mock->live and vendor switches."""
+    import json
+
+    await conn.execute(
+        "UPDATE connections SET "
+        "config = coalesce(config, '{}'::jsonb) || $1::jsonb, updated_at = now()",
+        json.dumps({"aggregator_profile_key": profile_key}),
+    )
+
+
+__all__ = [
+    "list_all_connections", "list_profile_posts",
+    "list_stored_connections", "upsert_synced_connection", "set_stored_profile_key",
+]

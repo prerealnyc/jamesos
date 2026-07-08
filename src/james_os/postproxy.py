@@ -215,8 +215,101 @@ async def inspect() -> dict:
     }
 
 
+# ── connect flow + white-label groups + publish (bm2.0 port) ────────
+#
+# The read/analytics surface above stays untouched. Everything below is
+# the WRITE side ported from bm2.0: minting a per-brand profile group,
+# handing the user the white-label OAuth connect page, and publishing.
+# All of it delegates to the manager provider's PostProxyConnector
+# (manager/providers/live.py) — one implementation of the HTTP surface,
+# imported lazily so this module keeps zero import-time dependency on
+# the manager package (and no cycle: manager modules import postproxy's
+# read side).
+
+
+def _connector():
+    """The ported manager-provider connector. Raises PostProxyNotConfigured
+    (this module's own error) before any HTTP when no key is set, so callers
+    keep one exception vocabulary for the whole module."""
+    _token()  # PostProxyNotConfigured early — connector raises bare RuntimeError
+    from .manager.providers.live import PostProxyConnector
+
+    return PostProxyConnector()
+
+
+async def create_profile_group(brand_name: str) -> str:
+    """Mint (or reuse, at the plan's group limit) one PostProxy profile
+    group for this brand. The returned group id is the profile_key that
+    tenants.config['postproxy_profile_key'] stores and the auditor /
+    learning / voice modules read."""
+    try:
+        return await _connector().create_profile(brand_name)
+    except RuntimeError as exc:
+        raise PostProxyError(str(exc)) from exc
+
+
+async def connect_url(profile_key: str, platform: str = "instagram") -> str:
+    """White-label OAuth connect page for one platform inside the brand's
+    profile group. Send the user here; call the accounts sync when they
+    return."""
+    try:
+        return await _connector().connect_url(profile_key, platform)
+    except RuntimeError as exc:
+        raise PostProxyError(str(exc)) from exc
+
+
+async def list_profile_groups() -> list[dict]:
+    """Every profile group in the workspace + the accounts already connected
+    in each — so a brand can bind to the group that holds its data (accounts
+    connected in PostProxy's own dashboard, or plan-limit group reuse)."""
+    try:
+        groups = await _connector().list_groups()
+    except RuntimeError as exc:
+        raise PostProxyError(str(exc)) from exc
+    return [
+        {
+            "group_id": g.group_id,
+            "name": g.name,
+            "account_count": len(g.accounts),
+            "accounts": [
+                {"platform": a.platform, "handle": a.handle, "display_name": a.display_name}
+                for a in g.accounts
+            ],
+        }
+        for g in groups
+    ]
+
+
+async def group_accounts(profile_key: str) -> list[dict]:
+    """The accounts connected inside one profile group (the sync source)."""
+    try:
+        accounts = await _connector().list_accounts(profile_key)
+    except RuntimeError as exc:
+        raise PostProxyError(str(exc)) from exc
+    return [
+        {"platform": a.platform, "handle": a.handle, "display_name": a.display_name}
+        for a in accounts
+    ]
+
+
+async def publish_post(
+    profile_key: str,
+    platforms: list[str],
+    text: str,
+    media_urls: list[str] | None = None,
+) -> dict:
+    """Publish passthrough — POST /api/posts scoped to the brand's group.
+    Approval gating is the caller's job (nothing here auto-publishes)."""
+    try:
+        return await _connector().publish(profile_key, platforms, text, media_urls or [])
+    except RuntimeError as exc:
+        raise PostProxyError(str(exc)) from exc
+
+
 __all__ = [
     "PostProxyNotConfigured", "PostProxyError",
     "list_profiles", "get_profile", "profile_stats",
     "list_posts", "post_stats", "inspect",
+    "create_profile_group", "connect_url", "list_profile_groups",
+    "group_accounts", "publish_post",
 ]
