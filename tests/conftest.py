@@ -78,7 +78,11 @@ async def fresh_pool():
         # rather than silently skipping the core truncate above.
         await conn.execute(
             "TRUNCATE profile_fields, action_items, daily_digests, job_runs, "
-            "brand_questions RESTART IDENTITY CASCADE"
+            "brand_questions, content_suggestions, peer_snapshots, "
+            "platform_playbooks, prescriptions, scheduled_jobs "
+            "RESTART IDENTITY CASCADE"
         )
+        # manager tests toggle per-tenant flags in tenants.config — reset it
+        await conn.execute("UPDATE tenants SET config = '{}'::jsonb")
     yield
     await close_pool()

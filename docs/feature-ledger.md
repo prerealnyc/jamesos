@@ -43,7 +43,7 @@ All 431 rows now have a final disposition — zero open items.
 ### bm2.0 · platform
 
 - [x] **AgentRun bookkeeping around every agent** (PORT) — `backend/app/services/runs.py` → job-run records on their scheduled_jobs scheduler (agent_runs migration; asyncpg pattern removes the SQLite lock dance)
-- [ ] **App shell: provider wiring, scheduler lifecycle, health** (MERGE) — `backend/app/main.py` → james-os app startup (their shell KEEP; provider wiring + scheduler job registration folded into their lifespan)
+- [x] **App shell: provider wiring, scheduler lifecycle, health** (MERGE) — `backend/app/main.py` → james-os app startup (their shell KEEP; provider wiring + scheduler job registration folded into their lifespan)
 - [ ] **Brand CRUD + cascade delete + settings** (MERGE) — `backend/app/routers/brands.py` → their tenant/brand management (auth/tenancy/RLS KEEP-theirs; settings toggles + RLS-scoped cascade delete folded in)
 - [x] **Captions-first video transcription** (PORT) — `backend/app/adapters/live.py` → provider module transcription provider (captions -> AssemblyAI; feeds the ported voice harvester)
 - [x] **Computed confidence (D2 rubric)** (PORT) — `backend/app/schemas/contracts.py` → profile_fields envelope contracts module (deterministic rubric, never model-reported)
@@ -55,10 +55,10 @@ All 431 rows now have a final disposition — zero open items.
 - [x] **Profile envelope: append-only versioned writes** (PORT) — `backend/app/services/profile.py` → NEW migration profile_fields; their brand_profiles becomes flat VIEW/projection (non-negotiable, never flattened)
 - [x] **Provider protocol layer (D8)** (PORT) — `backend/app/adapters/base.py` → new james-os provider module (13 Protocols, mock/live by env — keeps merged product demo-able without keys)
 - [x] **Settings: env-driven keys, voice caps, model tiers** (MERGE) — `backend/app/core/config.py` → james-os config/env system (vendor keys, LLM tier ids, voice caps, scheduler toggle, manager_v2 flag)
-- [ ] **Staleness TTLs + nightly mark_stale** (PORT) — `backend/app/services/profile.py` → profile_fields TTL logic + nightly scheduled_jobs entry
+- [x] **Staleness TTLs + nightly mark_stale** (PORT) — `backend/app/services/profile.py` → profile_fields TTL logic + nightly scheduled_jobs entry
 - [x] **Tiered LLM routing + JSON enforcement** (PORT) — `backend/app/adapters/live.py` → provider module LLM router (extract/content/strategy tiers, no native tools, complete_json retry)
 - [x] **Token accounting via active-run contextvar** (MERGE) — `backend/app/services/runs.py` → their credit metering (per-run tokens_in/tokens_out accrual feeds existing meter)
-- [ ] **run_agent wrapper (failed runs survive as 502)** (PORT) — `backend/app/routers/brands.py` → API-layer job wrapper on their routes (failed job-run committed, 502 surfaced)
+- [x] **run_agent wrapper (failed runs survive as 502)** (PORT) — `backend/app/routers/brands.py` → API-layer job wrapper on their routes (failed job-run committed, 502 surfaced)
 
 ### bm2.0 · providers
 
@@ -231,80 +231,88 @@ All 431 rows now have a final disposition — zero open items.
 
 ## P2 — Eyes & heartbeat — 54 rows
 
+> **Progress 2026-07-09:** manager/heartbeat.py (daily cycle: mark_stale → algorithm →
+> 5 eyes → autopilot(opt-in, via existing content engine) → digest+email), scheduler
+> registry swapped (5 dormant kinds retired, manager_daily_cycle + manager_peer_snapshot
+> registered per opted-in tenant), manager/eyes/ (5 eyes), manager/{algorithm,peers,
+> auditor,contact_research,ai_isms}.py, manager_api.py (17 routes: actions, digest,
+> triggers, peers 202/poll/409). 7 new tests green. Open: autopilot _gather_intel rewire
+> (james-os MERGE row) — lands when its virality path is next touched.
+
 
 ### bm2.0 · execution
 
-- [ ] **Action follow-up endpoints** (PORT) — `backend/app/routers/actions.py` → actions API routes over action_items (status/note/snooze/delete, research-contact, manual daily-cycle, daily-digest)
-- [ ] **Autopilot (opt-in drafting, human gate intact)** (PORT) — `backend/app/services/scheduler.py` → scheduler step -> their content engine + their approval queue (nothing auto-publishes)
-- [ ] **Contact-research agent (public outreach paths)** (PORT) — `backend/app/agents/contact_research.py` → new job (no james-os equivalent); results -> action_items updates + meta.contact_paths
-- [ ] **Daily digest ('chunk for the day') assembly** (PORT) — `backend/app/services/actions.py` → scheduler digest step over action_items (one upserted digest per brand/date)
-- [ ] **Due-followups computation** (PORT) — `backend/app/services/actions.py` → action_items module feeding the daily digest scheduler step
+- [x] **Action follow-up endpoints** (PORT) — `backend/app/routers/actions.py` → actions API routes over action_items (status/note/snooze/delete, research-contact, manual daily-cycle, daily-digest)
+- [x] **Autopilot (opt-in drafting, human gate intact)** (PORT) — `backend/app/services/scheduler.py` → scheduler step -> their content engine + their approval queue (nothing auto-publishes)
+- [x] **Contact-research agent (public outreach paths)** (PORT) — `backend/app/agents/contact_research.py` → new job (no james-os equivalent); results -> action_items updates + meta.contact_paths
+- [x] **Daily digest ('chunk for the day') assembly** (PORT) — `backend/app/services/actions.py` → scheduler digest step over action_items (one upserted digest per brand/date)
+- [x] **Due-followups computation** (PORT) — `backend/app/services/actions.py` → action_items module feeding the daily digest scheduler step
 
 ### bm2.0 · intelligence
 
-- [ ] **Algorithm staleness cadence (7-day)** (FILL) — `backend/app/agents/algorithm.py` → platform_playbooks + scheduled_jobs (refresh only when stale)
-- [ ] **Appearances Agent (guest-appearance ladder)** (FILL) — `backend/app/agents/appearances.py` → content_suggestions + scheduled_jobs; items -> action_items appearance:{title}
-- [ ] **Aspirational-tier benchmarks + own-vs-peer observations** (FILL) — `backend/app/agents/peer.py` → peer_snapshots + profile_fields competitors.benchmarks; snapshot_count on job-run output
-- [ ] **Async peer discovery endpoints** (FILL) — `backend/app/routers/peers.py` → peers API routes over research_roster (202 + status poll + 409 in-flight)
-- [ ] **Baseline audit per connected account** (PORT) — `backend/app/agents/auditor.py` → new audit job on their scheduled_jobs scheduler; reads postproxy.py analytics; writes profile_fields channels.* (source=audited)
-- [ ] **Content Opportunity Radar (Reddit problem mining)** (FILL) — `backend/app/agents/opportunities.py` → content_suggestions (0 rows) + scheduled_jobs registry; items -> action_items radar:{title}
-- [ ] **Degraded audit modes as notes, never failures** (PORT) — `backend/app/agents/auditor.py` → audit job report notes (per-platform degradation, no hard fail)
-- [ ] **Discovery dedupe against every existing peer** (FILL) — `backend/app/agents/peer_discovery.py` → research_roster dedupe (handle + display-name keys across candidate/tracked/rejected)
-- [ ] **Exemplar promotion seeds the voice corpus** (MERGE) — `backend/app/agents/auditor.py` → james-os voice exemplar corpus (one corpus, tagged origin=audited; additive to their 1,344 exemplars)
-- [ ] **Intelligence trigger endpoints (one per eye/brain)** (PORT) — `backend/app/routers/planning.py` → james-os API layer: manual-trigger routes over the registered eye/brain jobs (commit-on-success/502-on-failure)
-- [ ] **Peer approve/reject human gate endpoints** (FILL) — `backend/app/routers/peers.py` → peers API routes: research_roster candidate->tracked/rejected (rejected also inactive; stale-snapshot leak guard)
-- [ ] **Peer discovery into 4 relationship buckets** (FILL) — `backend/app/agents/peer_discovery.py` → research_roster (status='candidate' + relationship kind + reason)
-- [ ] **Peer metric writes as source=derived (D4 sole writer)** (FILL) — `backend/app/agents/peer.py` → profile_fields competitors.* via envelope with peer_snapshot citations (peer job = sole Section 6 writer)
-- [ ] **Peer snapshotting of approved peers only** (FILL) — `backend/app/agents/peer.py` → research_roster + peer_snapshots (0 rows); registered scheduler job, human gate kept
-- [ ] **Per-peer failure isolation + empty-digest degradation** (FILL) — `backend/app/agents/peer.py` → peer snapshot job (observation notes + honest empty digest)
-- [ ] **Per-platform algorithm briefs (R2)** (FILL) — `backend/app/agents/algorithm.py` → platform_playbooks (1 row): cited briefs with confidence/freshness via envelope
-- [ ] **Post-history import to brand memory** (PORT) — `backend/app/agents/auditor.py` → events substrate (kind='post' chunks, embedded and Ask-retrievable for free)
-- [ ] **Press Agent (amplify content-worthy coverage)** (FILL) — `backend/app/agents/press.py` → content_suggestions + scheduled_jobs; items -> action_items press:{title}
-- [ ] **Public-baseline fallback (honest provenance)** (PORT) — `backend/app/agents/auditor.py` → audit job fallback path; profile_fields source=researched data_basis='public_scrape'
-- [ ] **Search-Questions Agent (AEO eye)** (FILL) — `backend/app/agents/questions.py` → content_suggestions + scheduled_jobs; items -> action_items question:{title}
-- [ ] **Trend Agent (industry news to timely angles)** (FILL) — `backend/app/agents/trends.py` → content_suggestions + scheduled_jobs; items -> action_items trend:{title}
-- [ ] **Unknown-platform peer resolution** (FILL) — `backend/app/agents/peer.py` → research_roster (platform/display-name backfill on first snapshot)
+- [x] **Algorithm staleness cadence (7-day)** (FILL) — `backend/app/agents/algorithm.py` → platform_playbooks + scheduled_jobs (refresh only when stale)
+- [x] **Appearances Agent (guest-appearance ladder)** (FILL) — `backend/app/agents/appearances.py` → content_suggestions + scheduled_jobs; items -> action_items appearance:{title}
+- [x] **Aspirational-tier benchmarks + own-vs-peer observations** (FILL) — `backend/app/agents/peer.py` → peer_snapshots + profile_fields competitors.benchmarks; snapshot_count on job-run output
+- [x] **Async peer discovery endpoints** (FILL) — `backend/app/routers/peers.py` → peers API routes over research_roster (202 + status poll + 409 in-flight)
+- [x] **Baseline audit per connected account** (PORT) — `backend/app/agents/auditor.py` → new audit job on their scheduled_jobs scheduler; reads postproxy.py analytics; writes profile_fields channels.* (source=audited)
+- [x] **Content Opportunity Radar (Reddit problem mining)** (FILL) — `backend/app/agents/opportunities.py` → content_suggestions (0 rows) + scheduled_jobs registry; items -> action_items radar:{title}
+- [x] **Degraded audit modes as notes, never failures** (PORT) — `backend/app/agents/auditor.py` → audit job report notes (per-platform degradation, no hard fail)
+- [x] **Discovery dedupe against every existing peer** (FILL) — `backend/app/agents/peer_discovery.py` → research_roster dedupe (handle + display-name keys across candidate/tracked/rejected)
+- [x] **Exemplar promotion seeds the voice corpus** (MERGE) — `backend/app/agents/auditor.py` → james-os voice exemplar corpus (one corpus, tagged origin=audited; additive to their 1,344 exemplars)
+- [x] **Intelligence trigger endpoints (one per eye/brain)** (PORT) — `backend/app/routers/planning.py` → james-os API layer: manual-trigger routes over the registered eye/brain jobs (commit-on-success/502-on-failure)
+- [x] **Peer approve/reject human gate endpoints** (FILL) — `backend/app/routers/peers.py` → peers API routes: research_roster candidate->tracked/rejected (rejected also inactive; stale-snapshot leak guard)
+- [x] **Peer discovery into 4 relationship buckets** (FILL) — `backend/app/agents/peer_discovery.py` → research_roster (status='candidate' + relationship kind + reason)
+- [x] **Peer metric writes as source=derived (D4 sole writer)** (FILL) — `backend/app/agents/peer.py` → profile_fields competitors.* via envelope with peer_snapshot citations (peer job = sole Section 6 writer)
+- [x] **Peer snapshotting of approved peers only** (FILL) — `backend/app/agents/peer.py` → research_roster + peer_snapshots (0 rows); registered scheduler job, human gate kept
+- [x] **Per-peer failure isolation + empty-digest degradation** (FILL) — `backend/app/agents/peer.py` → peer snapshot job (observation notes + honest empty digest)
+- [x] **Per-platform algorithm briefs (R2)** (FILL) — `backend/app/agents/algorithm.py` → platform_playbooks (1 row): cited briefs with confidence/freshness via envelope
+- [x] **Post-history import to brand memory** (PORT) — `backend/app/agents/auditor.py` → events substrate (kind='post' chunks, embedded and Ask-retrievable for free)
+- [x] **Press Agent (amplify content-worthy coverage)** (FILL) — `backend/app/agents/press.py` → content_suggestions + scheduled_jobs; items -> action_items press:{title}
+- [x] **Public-baseline fallback (honest provenance)** (PORT) — `backend/app/agents/auditor.py` → audit job fallback path; profile_fields source=researched data_basis='public_scrape'
+- [x] **Search-Questions Agent (AEO eye)** (FILL) — `backend/app/agents/questions.py` → content_suggestions + scheduled_jobs; items -> action_items question:{title}
+- [x] **Trend Agent (industry news to timely angles)** (FILL) — `backend/app/agents/trends.py` → content_suggestions + scheduled_jobs; items -> action_items trend:{title}
+- [x] **Unknown-platform peer resolution** (FILL) — `backend/app/agents/peer.py` → research_roster (platform/display-name backfill on first snapshot)
 
 ### bm2.0 · platform
 
-- [ ] **Daily full-cycle heartbeat (sense-think-act-learn)** (PORT) — `backend/app/services/scheduler.py` → their scheduled_jobs table-driven scheduler (registered steps; their 5 dormant intelligence jobs retired — one brain)
-- [ ] **Digest email delivery (opt-in)** (PORT) — `backend/app/services/scheduler.py` → scheduler step via ported email provider (Resend)
+- [x] **Daily full-cycle heartbeat (sense-think-act-learn)** (PORT) — `backend/app/services/scheduler.py` → their scheduled_jobs table-driven scheduler (registered steps; their 5 dormant intelligence jobs retired — one brain)
+- [x] **Digest email delivery (opt-in)** (PORT) — `backend/app/services/scheduler.py` → scheduler step via ported email provider (Resend)
 
 ### james-os · analytics
 
-- [ ] **Accounts leaderboard + platform performance** (KEEP) — `src/james_os/analytics.py; src/james_os/main.py` → stays: src/james_os/analytics.py; src/james_os/main.py
-- [ ] **Apify trend-scraping provider** (KEEP) — `src/james_os/apify.py` → stays: src/james_os/apify.py (bm2.0 trends eye consumes this provider instead of shipping a second scraper)
-- [ ] **Brand accounts registry (owned handles)** (KEEP) — `src/james_os/brand_accounts.py` → stays: src/james_os/brand_accounts.py (bm2.0 onboarding connect step writes into it)
-- [ ] **Brand-scoped scraped-post analytics** (KEEP) — `src/james_os/analytics.py; src/james_os/main.py` → stays: src/james_os/analytics.py; src/james_os/main.py (bm2.0 auto-measure/what_worked step reads these aggregates)
-- [ ] **Live connector-backed analytics dashboard** (KEEP) — `src/james_os/analytics_live.py` → stays: src/james_os/analytics_live.py (feeds bm2.0 north-star/goal-check baselines)
-- [ ] **Meta Graph read-side client** (KEEP) — `src/james_os/meta_graph.py` → stays: src/james_os/meta_graph.py
-- [ ] **Saved trending posts curation shelf** (KEEP) — `src/james_os/social_saved.py` → stays: src/james_os/social_saved.py
-- [ ] **Social listening API + draft-from-post** (KEEP) — `src/james_os/xpoz_api.py` → stays: src/james_os/xpoz_api.py (draft path keeps routing through their content engine + voice-QA gate)
-- [ ] **Trend layer: viral scoring + trends-as-memory** (KEEP) — `src/james_os/trends.py` → stays: src/james_os/trends.py (stronger substrate; bm2.0 trend eye files its findings as suggestions on top)
-- [ ] **Watchlist (peer/competitor creators) + cohort trends** (KEEP) — `src/james_os/trends.py; src/james_os/main.py` → stays: src/james_os/trends.py; src/james_os/main.py (bm2.0 peer discover->approve->track fills research_roster/peer_snapshots alongside, human-approval gate kept)
-- [ ] **Xpoz cross-platform social listening adapter** (KEEP) — `src/james_os/xpoz_intel.py` → stays: src/james_os/xpoz_intel.py (available as a provider to the bm2.0 trends/press/AEO eyes)
+- [x] **Accounts leaderboard + platform performance** (KEEP) — `src/james_os/analytics.py; src/james_os/main.py` → stays: src/james_os/analytics.py; src/james_os/main.py
+- [x] **Apify trend-scraping provider** (KEEP) — `src/james_os/apify.py` → stays: src/james_os/apify.py (bm2.0 trends eye consumes this provider instead of shipping a second scraper)
+- [x] **Brand accounts registry (owned handles)** (KEEP) — `src/james_os/brand_accounts.py` → stays: src/james_os/brand_accounts.py (bm2.0 onboarding connect step writes into it)
+- [x] **Brand-scoped scraped-post analytics** (KEEP) — `src/james_os/analytics.py; src/james_os/main.py` → stays: src/james_os/analytics.py; src/james_os/main.py (bm2.0 auto-measure/what_worked step reads these aggregates)
+- [x] **Live connector-backed analytics dashboard** (KEEP) — `src/james_os/analytics_live.py` → stays: src/james_os/analytics_live.py (feeds bm2.0 north-star/goal-check baselines)
+- [x] **Meta Graph read-side client** (KEEP) — `src/james_os/meta_graph.py` → stays: src/james_os/meta_graph.py
+- [x] **Saved trending posts curation shelf** (KEEP) — `src/james_os/social_saved.py` → stays: src/james_os/social_saved.py
+- [x] **Social listening API + draft-from-post** (KEEP) — `src/james_os/xpoz_api.py` → stays: src/james_os/xpoz_api.py (draft path keeps routing through their content engine + voice-QA gate)
+- [x] **Trend layer: viral scoring + trends-as-memory** (KEEP) — `src/james_os/trends.py` → stays: src/james_os/trends.py (stronger substrate; bm2.0 trend eye files its findings as suggestions on top)
+- [x] **Watchlist (peer/competitor creators) + cohort trends** (KEEP) — `src/james_os/trends.py; src/james_os/main.py` → stays: src/james_os/trends.py; src/james_os/main.py (bm2.0 peer discover->approve->track fills research_roster/peer_snapshots alongside, human-approval gate kept)
+- [x] **Xpoz cross-platform social listening adapter** (KEEP) — `src/james_os/xpoz_intel.py` → stays: src/james_os/xpoz_intel.py (available as a provider to the bm2.0 trends/press/AEO eyes)
 
 ### james-os · intelligence
 
-- [ ] **Background intelligence job runner** (KEEP) — `src/james_os/intelligence.py` → stays: src/james_os/intelligence.py
-- [ ] **Content suggestions store + accept/dismiss rail** (FILL) — `src/james_os/brands.py; src/james_os/main.py` → content_suggestions table (0 rows) + /suggestions accept/dismiss rail — bm2.0's 5 eyes file findings here; accept still routes into their production + approval queue
-- [ ] **Corpus coverage check (skip-the-sweep gate)** (KEEP) — `src/james_os/intelligence.py` → stays: src/james_os/intelligence.py
-- [ ] **Cross-silo portfolio synthesis** (KEEP) — `src/james_os/intelligence.py; src/james_os/main.py` → stays: src/james_os/intelligence.py; src/james_os/main.py
-- [ ] **Daily brand research job -> content suggestions** (REPLACE) — `src/james_os/brand_research.py` → src/james_os/brand_research.py — retired; bm2.0's 5 eyes + daily cycle produce the suggestions (each with a WHY, deduped), landing in content_suggestions via the scheduler
-- [ ] **Strategy engine — versioned platform algorithm playbooks** (REPLACE) — `src/james_os/strategy.py` → src/james_os/strategy.py run_playbook_refresh — retired; bm2.0 cadence-refreshed cited algorithm briefs FILL platform_playbooks (versioned diff/change-detection semantics kept)
-- [ ] **Topic Intelligence deep-research machine** (KEEP) — `src/james_os/intelligence.py` → stays: src/james_os/intelligence.py (its GATHER stage consumes the researcher that P4 replaces in research.py; interface unchanged)
-- [ ] **Weekly thesis -> intelligence -> white paper pipeline** (KEEP) — `src/james_os/thesis.py; src/james_os/main.py` → stays: src/james_os/thesis.py; src/james_os/main.py (whitepapers are explicit KEEP-THEIRS production)
+- [x] **Background intelligence job runner** (KEEP) — `src/james_os/intelligence.py` → stays: src/james_os/intelligence.py
+- [x] **Content suggestions store + accept/dismiss rail** (FILL) — `src/james_os/brands.py; src/james_os/main.py` → content_suggestions table (0 rows) + /suggestions accept/dismiss rail — bm2.0's 5 eyes file findings here; accept still routes into their production + approval queue
+- [x] **Corpus coverage check (skip-the-sweep gate)** (KEEP) — `src/james_os/intelligence.py` → stays: src/james_os/intelligence.py
+- [x] **Cross-silo portfolio synthesis** (KEEP) — `src/james_os/intelligence.py; src/james_os/main.py` → stays: src/james_os/intelligence.py; src/james_os/main.py
+- [x] **Daily brand research job -> content suggestions** (REPLACE) — `src/james_os/brand_research.py` → src/james_os/brand_research.py — retired; bm2.0's 5 eyes + daily cycle produce the suggestions (each with a WHY, deduped), landing in content_suggestions via the scheduler
+- [x] **Strategy engine — versioned platform algorithm playbooks** (REPLACE) — `src/james_os/strategy.py` → src/james_os/strategy.py run_playbook_refresh — retired; bm2.0 cadence-refreshed cited algorithm briefs FILL platform_playbooks (versioned diff/change-detection semantics kept)
+- [x] **Topic Intelligence deep-research machine** (KEEP) — `src/james_os/intelligence.py` → stays: src/james_os/intelligence.py (its GATHER stage consumes the researcher that P4 replaces in research.py; interface unchanged)
+- [x] **Weekly thesis -> intelligence -> white paper pipeline** (KEEP) — `src/james_os/thesis.py; src/james_os/main.py` → stays: src/james_os/thesis.py; src/james_os/main.py (whitepapers are explicit KEEP-THEIRS production)
 
 ### james-os · platform
 
-- [ ] **Scheduled job registry (5 kinds)** (REPLACE) — `src/james_os/scheduler.py` → scheduled_jobs table — the 5 dormant intelligence kinds (daily_brand_research, brand_interview, playbook_refresh, peer_snapshot, weekly_prescription) are retired; bm2.0 daily cycle + eyes jobs registered in their place (one brain, no duplicate spend)
-- [ ] **Table-driven recurring-job scheduler** (KEEP) — `src/james_os/scheduler.py` → stays: src/james_os/scheduler.py (bm2.0 daily cycle + 5 eyes + goal-miss/promote scans register as jobs on this loop)
+- [x] **Scheduled job registry (5 kinds)** (REPLACE) — `src/james_os/scheduler.py` → scheduled_jobs table — the 5 dormant intelligence kinds (daily_brand_research, brand_interview, playbook_refresh, peer_snapshot, weekly_prescription) are retired; bm2.0 daily cycle + eyes jobs registered in their place (one brain, no duplicate spend)
+- [x] **Table-driven recurring-job scheduler** (KEEP) — `src/james_os/scheduler.py` → stays: src/james_os/scheduler.py (bm2.0 daily cycle + 5 eyes + goal-miss/promote scans register as jobs on this loop)
 
 ### james-os · production
 
-- [ ] **Auto-compose video (research -> editable scene plan)** (KEEP) — `src/james_os/video_compose.py` → stays: src/james_os/video_compose.py (trending-intel input re-sourced from the unified bm2.0 eyes once they land — no duplicate research spend)
-- [ ] **Autopilot daily autonomous batches** (KEEP) — `src/james_os/autopilot.py` → stays: src/james_os/autopilot.py (run_batch invoked as the 'autopilot' step of the unified daily cycle on their scheduled_jobs scheduler)
-- [ ] **Autopilot per-tenant config slot** (KEEP) — `src/james_os/autopilot.py` → stays: tenants.config['autopilot'] (read by the unified daily cycle)
+- [x] **Auto-compose video (research -> editable scene plan)** (KEEP) — `src/james_os/video_compose.py` → stays: src/james_os/video_compose.py (trending-intel input re-sourced from the unified bm2.0 eyes once they land — no duplicate research spend)
+- [x] **Autopilot daily autonomous batches** (KEEP) — `src/james_os/autopilot.py` → stays: src/james_os/autopilot.py (run_batch invoked as the 'autopilot' step of the unified daily cycle on their scheduled_jobs scheduler)
+- [x] **Autopilot per-tenant config slot** (KEEP) — `src/james_os/autopilot.py` → stays: tenants.config['autopilot'] (read by the unified daily cycle)
 - [ ] **Virality-first intel gathering** (MERGE) — `src/james_os/autopilot.py` → src/james_os/autopilot.py _gather_intel rewired to consume bm2.0 5-eyes output (content_suggestions + scheduler jobs) — one set of eyes, no duplicate research spend; honest-None behavior kept
 
 ## P3 — Brain & learning — 38 rows

@@ -298,12 +298,17 @@ async def set_watchlist(
     Extra fields (name, interests) are preserved on the watchlist so the UI
     can show human labels and the content engine can match a brief's topic
     to creators whose interests overlap.
+
+    Peer-intelligence entries (manager/peers.py) additionally carry
+    display_name/status/kind/reason/discovered_at — preserved verbatim; their
+    platform may legitimately be empty until the first snapshot resolves it,
+    so status-carrying entries are kept without a platform.
     """
     clean: list[dict] = []
     for c in creators:
         platform = (c.get("platform") or "").strip()
         handle = (c.get("handle") or "").strip().lstrip("@")
-        if not platform or not handle:
+        if not handle or (not platform and not c.get("status")):
             continue
         entry = {"platform": platform, "handle": handle}
         name = (c.get("name") or "").strip()
@@ -314,6 +319,10 @@ async def set_watchlist(
             interests = [s.strip() for s in interests.split(",") if s.strip()]
         if interests:
             entry["interests"] = list(interests)
+        for key in ("display_name", "status", "kind", "reason", "discovered_at"):
+            value = c.get(key)
+            if value:
+                entry[key] = value
         clean.append(entry)
     async with acquire(tenant_id) as conn:
         await conn.execute(
@@ -453,6 +462,13 @@ async def list_cohort_trends(
 def watchlist_by_platform(creators: list[dict]) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for c in creators:
+        # Peer-intelligence entries (manager/peers.py): only human-approved
+        # ('tracked') peers get scraped — candidates awaiting review and
+        # rejected entries never spend Apify credits. Entries pre-dating the
+        # merge carry no status and count as tracked. Platform-less entries
+        # (unresolved candidates) can't be scraped either way.
+        if str(c.get("status") or "tracked") != "tracked" or not c.get("platform"):
+            continue
         out.setdefault(c["platform"], []).append(c["handle"])
     return out
 

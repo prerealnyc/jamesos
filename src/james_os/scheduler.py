@@ -26,19 +26,17 @@ _MAX_CONCURRENT = 3          # recurring jobs are background work, not a race
 
 async def _registry() -> dict:
     # Imported lazily so module import order can't bite at startup.
-    from .brand_research import run_daily_brand_research
-    from .intake_agent import run_brand_interview
-    from .strategy import (
-        run_peer_snapshot,
-        run_playbook_refresh,
-        run_weekly_prescription,
-    )
+    #
+    # The five pre-merge intelligence kinds (daily_brand_research,
+    # brand_interview, playbook_refresh, peer_snapshot, weekly_prescription)
+    # are RETIRED per the unification plan (P2): the bm2.0 daily cycle + eyes
+    # replace them — one brain, no duplicate research spend. Their handler
+    # modules survive untouched; heartbeat.ensure_manager_jobs() removes any
+    # lingering rows so no dormant job double-spends.
+    from .manager.heartbeat import run_daily_cycle, run_peer_snapshot
     return {
-        "daily_brand_research": run_daily_brand_research,
-        "brand_interview": run_brand_interview,
-        "playbook_refresh": run_playbook_refresh,
-        "peer_snapshot": run_peer_snapshot,
-        "weekly_prescription": run_weekly_prescription,
+        "manager_daily_cycle": run_daily_cycle,
+        "manager_peer_snapshot": run_peer_snapshot,
     }
 
 
@@ -91,6 +89,12 @@ async def scheduler_loop() -> None:
     """Started from the FastAPI lifespan; cancelled on shutdown."""
     registry = await _registry()
     sem = asyncio.Semaphore(_MAX_CONCURRENT)
+    try:
+        from .manager.heartbeat import ensure_manager_jobs
+
+        await ensure_manager_jobs()
+    except Exception as e:  # noqa: BLE001 — registration must never kill the loop
+        print(f"[scheduler] manager job registration failed: {e}")
     print("[scheduler] loop started")
     while True:
         try:
