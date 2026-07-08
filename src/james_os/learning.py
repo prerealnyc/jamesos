@@ -96,6 +96,9 @@ def approval_to_event(payload: dict) -> EventCreate | None:
             "text": text,
             "category": "voice_corpus",
             "source": APPROVED_EXEMPLAR_SOURCE,
+            # one corpus, tagged by origin (harvested/uploaded/approved/audited)
+            # — the bm2.0 merge convention, so the reviewer can weigh them.
+            "origin": "approved",
             "approved": True,
             "platform": platform,
             "format": fmt,
@@ -169,7 +172,62 @@ async def record_rejection(
 
     event = rejection_to_event(payload or {}, reason)
     stored = await ingest_many([event], tenant_id)
+    await _distill_learned_avoid(payload or {}, reason, action_id, tenant_id)
     return str(stored[0].id) if stored else None
+
+
+_DISTILL_SYSTEM = (
+    "You distill one content rejection into durable never-again rules. From the "
+    "rejection reason and the rejected draft, extract the short phrases or topics "
+    "the brand should never publish again. Return JSON only: "
+    '{"terms": [str (each a short literal phrase/topic to avoid, max 6 words)]}. '
+    "Max 3 terms; empty list if the rejection is about quality, not content."
+)
+
+
+async def _distill_learned_avoid(
+    payload: dict, reason: str, action_id: UUID, tenant_id: UUID | None
+) -> None:
+    """bm2.0 merge (PRD R6.1): besides the frustration event above, distill the
+    rejection into avoid-terms on the profile envelope
+    (guardrails.learned_avoid, source=queue_signal) so the ported reviewer's
+    substring gate and the strategist read the same permanent rule. Best
+    effort — a reject must never fail because the distillation hiccuped."""
+    try:
+        from .manager.contracts import Citation, FieldWrite, Source
+        from .manager.profile import write_field
+        from .manager.providers import get_providers
+
+        draft = str(payload.get("content") or payload.get("caption") or "")[:600]
+        raw = await get_providers().llm.complete_json(
+            "extract", _DISTILL_SYSTEM,
+            "Distill this rejection into never-again rules.\n"
+            f"Reason: {reason[:300]}\n"
+            f"Rejected draft (excerpt): {draft}",
+        )
+        terms = [str(t).strip() for t in (raw.get("terms") or []) if str(t).strip()][:3]
+        if not terms:
+            return
+        slug = "".join(ch if ch.isalnum() else "-" for ch in terms[0].lower()).strip("-")[:60]
+        async with acquire(tenant_id) as conn:
+            await write_field(
+                conn,
+                FieldWrite(
+                    section="guardrails",
+                    field_key="guardrails.learned_avoid",
+                    item_key=slug or f"action-{str(action_id)[:8]}",
+                    value=terms,
+                    source=Source.QUEUE_SIGNAL,
+                    citations=[Citation(ref=f"action:{action_id}", note=f"rejected: {reason[:80]}")],
+                    updated_by="queue_learning",
+                ),
+            )
+    except Exception:  # noqa: BLE001
+        import logging
+
+        logging.getLogger("learning").exception(
+            "rejection distillation failed for action %s", action_id
+        )
 
 
 EDIT_FEEDBACK_SOURCE = "edit_feedback"

@@ -5,17 +5,17 @@ One registered job per tenant (kind='manager_daily_cycle') runs the
 sense→think→act→learn loop, every step best-effort — one failing step never
 blocks the rest:
 
-  0. HYGIENE     — nightly mark_stale on the profile envelope (D2 TTLs)
-  1. ALGORITHM   — per-platform ranking briefs re-researched when stale (R2, 7d)
-  2. THE EYES    — content radar, trends, press, questions, appearances
-  3. AUTOPILOT   — opt-in: top fresh suggestions are drafted through the
+  1. MEASURE     — auto-pull analytics for published work (R7), notice goal
+                   misses and replan (rate-limited nag + corrective draft),
+                   put spend behind measured winners (promote scan)
+  2. HYGIENE     — nightly mark_stale on the profile envelope (D2 TTLs)
+  3. ALGORITHM   — per-platform ranking briefs re-researched when stale (R2, 7d)
+  4. THE EYES    — content radar, trends, press, questions, appearances
+  5. AUTOPILOT   — opt-in: top fresh suggestions are drafted through the
                    EXISTING content engine (voice-QA'd, into the approval
                    queue). Nothing publishes; the human gate never moves.
-  4. DIGEST      — the 'chunk for the day' assembled, and emailed when the
+  6. DIGEST      — the 'chunk for the day' assembled, and emailed when the
                    tenant opted in.
-
-The P3 steps (auto-measure, goal-check, promote scan) slot in at the top of
-this cycle when the learning port lands — the step list is the contract.
 
 A second registered job (kind='manager_peer_snapshot', weekly) snapshots the
 human-approved peers. The five pre-merge dormant intelligence kinds are
@@ -47,6 +47,9 @@ RETIRED_KINDS = (
 MANAGER_JOBS = (
     ("manager_daily_cycle", 24),
     ("manager_peer_snapshot", 24 * 7),
+    # James's R2 rhythm: the strategist produces the weekly quantified
+    # prescription ON THE CLOCK — draft only; activation stays human.
+    ("manager_weekly_strategist", 24 * 7),
 )
 
 
@@ -66,14 +69,34 @@ async def run_daily_cycle(tenant_id: UUID | None = None, config: dict | None = N
     report: dict = {}
     tcfg = await _tenant_config(tenant_id)
 
-    try:  # 0 — envelope hygiene (D2 staleness TTLs, the 'nightly mark_stale')
+    try:  # 1 — learn from what's out there before planning more (R7)
+        from . import learning
+
+        report["auto_measure"] = await learning.auto_measure(tenant_id)
+    except Exception:
+        logger.exception("auto-measure failed for tenant %s", tenant_id)
+        report["auto_measure"] = "failed"
+
+    try:  # 1b — notice a goal miss and replan (the deepest "it thinks" move)
+        report["goal_misses"] = await _goal_check(tenant_id)
+    except Exception:
+        logger.exception("goal check failed for tenant %s", tenant_id)
+        report["goal_misses"] = "failed"
+
+    try:  # 1c — put spend behind measured winners (promote suggestions)
+        report["promote_candidates"] = await _promote_scan(tenant_id)
+    except Exception:
+        logger.exception("promote scan failed for tenant %s", tenant_id)
+        report["promote_candidates"] = "failed"
+
+    try:  # 2 — envelope hygiene (D2 staleness TTLs, the 'nightly mark_stale')
         async with db.acquire(tenant_id) as conn:
             report["stale_marked"] = await profile_svc.mark_stale(conn)
     except Exception:
         logger.exception("mark_stale failed for tenant %s", tenant_id)
         report["stale_marked"] = "failed"
 
-    try:  # 1 — weekly algorithm cadence (R2.5): refresh only when stale
+    try:  # 3 — weekly algorithm cadence (R2.5): refresh only when stale
         from . import algorithm
 
         async with db.acquire(tenant_id) as conn:
@@ -188,11 +211,83 @@ async def _deliver_digest(tenant_id: UUID | None, tcfg: dict, digest: dict) -> b
     return bool(result.ok)
 
 
+async def _goal_check(tenant_id: UUID | None) -> int:
+    """PRD 'it has to think': when a north-star goal is tracking off pace, the
+    manager NOTICES and replans by itself — a flagged action item for the owner
+    plus a fresh draft weekly plan (activation stays human). Replans at most
+    once per ISO week so a persistent miss nags, not spams."""
+    from datetime import datetime, timedelta, timezone
+
+    from . import learning
+
+    async with db.acquire(tenant_id) as conn:
+        misses = await learning.goal_gap(conn)
+        if not misses:
+            return 0
+        week = datetime.now(timezone.utc).strftime("%G-W%V")
+        for m in misses:
+            await actions.upsert_action(
+                conn,
+                kind="general",
+                title=f"Off pace: {m['platform']} {m['metric'].replace('_', ' ')}",
+                detail=(
+                    f"At {m['elapsed_pct']}% of the goal horizon you're at {m['current']} but should be "
+                    f"near {m['expected_now']} to hit {m['target']}. I've drafted a corrective weekly "
+                    "plan — review and activate it."
+                ),
+                meta={"source": "goal_check", **m},
+                dedupe_key=f"goalmiss:{week}:{m['platform']}.{m['metric']}",
+            )
+        newest = await conn.fetchval(
+            "SELECT max(created_at) FROM prescriptions"
+        )
+    # one corrective draft plan per week, and only if this week hasn't produced one
+    now = datetime.now(timezone.utc)
+    if newest is None or (now - (newest if newest.tzinfo else newest.replace(tzinfo=timezone.utc))) > timedelta(days=6):
+        from . import strategist
+
+        await strategist.run(tenant_id, {"trigger": "goal_miss"})
+        logger.info("goal miss -> corrective weekly plan drafted for tenant %s", tenant_id)
+    return len(misses)
+
+
+async def _promote_scan(tenant_id: UUID | None) -> int:
+    """Put spend behind measured winners: every clear over-performer becomes a
+    visibility action item (dedupe on the work order, so it suggests once)."""
+    from . import learning
+
+    async with db.acquire(tenant_id) as conn:
+        cands = await learning.promote_candidates(conn)
+        for cand in cands:
+            await actions.upsert_action(
+                conn,
+                kind="visibility",
+                title=f"Boost the winner: {cand['topic'][:120]}",
+                detail=(
+                    f"This piece did {cand['ratio']}x your median engagement "
+                    f"({cand['engagement']:.0f} vs median {cand['median']}). Put promote spend "
+                    f"behind it while it's warm.{' ' + cand['url'] if cand['url'] else ''}"
+                ),
+                meta={"source": "promote", "work_order_id": cand["work_order_id"],
+                      "platform": cand["platform"], "ratio": cand["ratio"]},
+                dedupe_key=f"promote:{cand['work_order_id']}",
+            )
+    return len(cands)
+
+
 async def run_peer_snapshot(tenant_id: UUID | None = None, config: dict | None = None) -> dict:
     """Weekly: snapshot the human-approved peers (the P2 peers module)."""
     from . import peers
 
     return await peers.snapshot_all(tenant_id, config)
+
+
+async def run_weekly_strategist(tenant_id: UUID | None = None, config: dict | None = None) -> dict:
+    """Weekly: the strategist drafts the quantified prescription on the clock.
+    Draft only — activation stays human (D5)."""
+    from . import strategist
+
+    return await strategist.run(tenant_id, {**(config or {}), "trigger": "schedule"})
 
 
 async def ensure_manager_jobs() -> int:

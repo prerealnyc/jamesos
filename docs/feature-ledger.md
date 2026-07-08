@@ -317,64 +317,70 @@ All 431 rows now have a final disposition — zero open items.
 
 ## P3 — Brain & learning — 38 rows
 
+> **Progress 2026-07-09:** manager/{learning,goal,daily_plan,growth,collaboration,
+> strategist}.py + planning_api.py; heartbeat gains measure→goal-check→promote steps and
+> the Monday manager_weekly_strategist job; james_os/learning.py MERGE (origin=approved
+> tag + rejection→guardrails.learned_avoid distillation). R7 performance→strategy closes
+> via what_worked read-back into strategist/daily-plan prompts. 15 new tests green.
+
 
 ### bm2.0 · intelligence
 
-- [ ] **Competitor growth trajectory computation** (REPLACE) — `backend/app/agents/growth.py` → strategy.py growth module over peer_snapshots deltas
-- [ ] **Growth-driver reasoning (what to borrow)** (REPLACE) — `backend/app/agents/growth.py` → strategy.py growth module (grounded LLM reasoning via ported provider tiers)
+- [x] **Competitor growth trajectory computation** (REPLACE) — `backend/app/agents/growth.py` → strategy.py growth module over peer_snapshots deltas
+- [x] **Growth-driver reasoning (what to borrow)** (REPLACE) — `backend/app/agents/growth.py` → strategy.py growth module (grounded LLM reasoning via ported provider tiers)
 
 ### bm2.0 · learning
 
-- [ ] **Approval teaches the voice corpus (R6.1)** (MERGE) — `backend/app/routers/queue.py` → learning.py approve hook -> shared voice corpus (tagged origin=approved, artifact:{id} dedupe)
-- [ ] **Goal-miss replanning (rate-limited nag)** (PORT) — `backend/app/services/scheduler.py` → scheduler step (no equivalent): nag -> action_items per ISO week; corrective draft -> prescriptions; activation stays human
-- [ ] **Measure step: predicted-vs-actual + insight memory** (MERGE) — `backend/app/services/execution.py` → learning.py + actions queue 'measured' status; insight chunks -> events substrate
-- [ ] **Rejection distilled into permanent guardrails (R6.1)** (MERGE) — `backend/app/routers/queue.py` → learning.py + feedback_changes; avoid-terms -> profile_fields guardrails.learned_avoid (source=queue_signal)
-- [ ] **auto_measure: analytics pulled for published posts** (MERGE) — `backend/app/services/learning.py` → learning.py + postproxy.py analytics (post-id matching, 24h delay, honest unmatched notes)
-- [ ] **goal_gap pace math ('it notices it's missing the goal')** (PORT) — `backend/app/services/learning.py` → scheduler goal-check step (no james-os equivalent) reading profile_fields goals.* + audited baselines
-- [ ] **promote_candidates (put spend behind winners)** (PORT) — `backend/app/services/learning.py` → scheduler promote-spend scan step (no james-os equivalent)
-- [ ] **what_worked read-back block for planning** (MERGE) — `backend/app/services/learning.py` → learning.py (closes their PRD gap R7: performance -> strategy); feeds strategy.py prompts
+- [x] **Approval teaches the voice corpus (R6.1)** (MERGE) — `backend/app/routers/queue.py` → learning.py approve hook -> shared voice corpus (tagged origin=approved, artifact:{id} dedupe)
+- [x] **Goal-miss replanning (rate-limited nag)** (PORT) — `backend/app/services/scheduler.py` → scheduler step (no equivalent): nag -> action_items per ISO week; corrective draft -> prescriptions; activation stays human
+- [x] **Measure step: predicted-vs-actual + insight memory** (MERGE) — `backend/app/services/execution.py` → learning.py + actions queue 'measured' status; insight chunks -> events substrate
+- [x] **Rejection distilled into permanent guardrails (R6.1)** (MERGE) — `backend/app/routers/queue.py` → learning.py + feedback_changes; avoid-terms -> profile_fields guardrails.learned_avoid (source=queue_signal)
+- [x] **auto_measure: analytics pulled for published posts** (MERGE) — `backend/app/services/learning.py` → learning.py + postproxy.py analytics (post-id matching, 24h delay, honest unmatched notes)
+- [x] **goal_gap pace math ('it notices it's missing the goal')** (PORT) — `backend/app/services/learning.py` → scheduler goal-check step (no james-os equivalent) reading profile_fields goals.* + audited baselines
+- [x] **promote_candidates (put spend behind winners)** (PORT) — `backend/app/services/learning.py` → scheduler promote-spend scan step (no james-os equivalent)
+- [x] **what_worked read-back block for planning** (MERGE) — `backend/app/services/learning.py` → learning.py (closes their PRD gap R7: performance -> strategy); feeds strategy.py prompts
 
 ### bm2.0 · strategy
 
-- [ ] **Collab generate + persist as action items** (PORT) — `backend/app/routers/peers.py` → collab API routes over the ported collaboration job; plays/levers -> action_items; GET serves latest job-run report
-- [ ] **Collaboration plays matched to relationship kind** (PORT) — `backend/app/agents/collaboration.py` → new strategy job (no james-os equivalent); plays -> action_items collab:{kind}:{handle}:{play_type}
-- [ ] **D5 plan-item contract enforcement** (REPLACE) — `backend/app/agents/strategist.py` → strategy.py post-parse validation -> prescriptions (rationale/evidence/predicted_metrics guaranteed)
-- [ ] **Daily activities plan (content + non-content moves)** (REPLACE) — `backend/app/agents/daily_plan.py` → strategy.py daily module; activities -> action_items (dedupe daily:{day}:{title})
-- [ ] **Morning brief (deterministic assembly)** (REPLACE) — `backend/app/agents/strategist.py` → strategy.py brief assembly (reads actions queue, peer_snapshots, profile_fields staleness)
-- [ ] **North-star goal negotiation** (REPLACE) — `backend/app/agents/goal.py` → strategy.py goal module; goals -> profile_fields goals.{platform}.{metric} (source=negotiated)
-- [ ] **Partial plan acceptance + idempotent activation** (REPLACE) — `backend/app/agents/strategist.py` → strategy.py activation path (item_indices, idempotent re-activate, 409 on superseded)
-- [ ] **Peer digest recompute excludes rejected peers** (REPLACE) — `backend/app/agents/strategist.py` → strategy.py digest over peer_snapshots (tracked+active only, gate honored at read time)
-- [ ] **Plan activation + D5 replan semantics** (REPLACE) — `backend/app/agents/strategist.py` → strategy.py activation; materialized orders -> actions queue (supersede/reattach semantics)
-- [ ] **Planning endpoints (weekly plan / activate / brief)** (REPLACE) — `backend/app/routers/planning.py` → planning API routes over strategy.py + prescriptions (partial acceptance, 409 on superseded)
-- [ ] **Visibility-plays floor (never dead-ends)** (PORT) — `backend/app/agents/collaboration.py` → collaboration job fallback; full report stored on the job-run record
-- [ ] **Weekly plan generation (single strategy-tier call)** (REPLACE) — `backend/app/agents/strategist.py` → strategy.py; plans -> prescriptions (0 rows, keep their evidence[] format)
-- [ ] **Weekly prescription cron (Monday strategist)** (REPLACE) — `backend/app/services/scheduler.py` → scheduled_jobs Monday entry -> strategy.py -> prescriptions (replaces their dormant weekly intelligence job; draft-only)
+- [x] **Collab generate + persist as action items** (PORT) — `backend/app/routers/peers.py` → collab API routes over the ported collaboration job; plays/levers -> action_items; GET serves latest job-run report
+- [x] **Collaboration plays matched to relationship kind** (PORT) — `backend/app/agents/collaboration.py` → new strategy job (no james-os equivalent); plays -> action_items collab:{kind}:{handle}:{play_type}
+- [x] **D5 plan-item contract enforcement** (REPLACE) — `backend/app/agents/strategist.py` → strategy.py post-parse validation -> prescriptions (rationale/evidence/predicted_metrics guaranteed)
+- [x] **Daily activities plan (content + non-content moves)** (REPLACE) — `backend/app/agents/daily_plan.py` → strategy.py daily module; activities -> action_items (dedupe daily:{day}:{title})
+- [x] **Morning brief (deterministic assembly)** (REPLACE) — `backend/app/agents/strategist.py` → strategy.py brief assembly (reads actions queue, peer_snapshots, profile_fields staleness)
+- [x] **North-star goal negotiation** (REPLACE) — `backend/app/agents/goal.py` → strategy.py goal module; goals -> profile_fields goals.{platform}.{metric} (source=negotiated)
+- [x] **Partial plan acceptance + idempotent activation** (REPLACE) — `backend/app/agents/strategist.py` → strategy.py activation path (item_indices, idempotent re-activate, 409 on superseded)
+- [x] **Peer digest recompute excludes rejected peers** (REPLACE) — `backend/app/agents/strategist.py` → strategy.py digest over peer_snapshots (tracked+active only, gate honored at read time)
+- [x] **Plan activation + D5 replan semantics** (REPLACE) — `backend/app/agents/strategist.py` → strategy.py activation; materialized orders -> actions queue (supersede/reattach semantics)
+- [x] **Planning endpoints (weekly plan / activate / brief)** (REPLACE) — `backend/app/routers/planning.py` → planning API routes over strategy.py + prescriptions (partial acceptance, 409 on superseded)
+- [x] **Visibility-plays floor (never dead-ends)** (PORT) — `backend/app/agents/collaboration.py` → collaboration job fallback; full report stored on the job-run record
+- [x] **Weekly plan generation (single strategy-tier call)** (REPLACE) — `backend/app/agents/strategist.py` → strategy.py; plans -> prescriptions (0 rows, keep their evidence[] format)
+- [x] **Weekly prescription cron (Monday strategist)** (REPLACE) — `backend/app/services/scheduler.py` → scheduled_jobs Monday entry -> strategy.py -> prescriptions (replaces their dormant weekly intelligence job; draft-only)
 
 ### james-os · intelligence
 
-- [ ] **Strategy engine — peer benchmarking snapshot** (REPLACE) — `src/james_os/strategy.py` → src/james_os/strategy.py run_peer_snapshot — retired; bm2.0 peer discover->approve->track FILLs research_roster + peer_snapshots (human-approval gate semantics kept)
-- [ ] **Strategy engine — weekly Prescription** (REPLACE) — `src/james_os/strategy.py; src/james_os/main.py` → src/james_os/strategy.py run_weekly_prescription — retired; bm2.0 weekly strategist (grounded in baselines + algorithm + what-worked) FILLs prescriptions, keeping their evidence[] line format and accept->production routing
+- [x] **Strategy engine — peer benchmarking snapshot** (REPLACE) — `src/james_os/strategy.py` → src/james_os/strategy.py run_peer_snapshot — retired; bm2.0 peer discover->approve->track FILLs research_roster + peer_snapshots (human-approval gate semantics kept)
+- [x] **Strategy engine — weekly Prescription** (REPLACE) — `src/james_os/strategy.py; src/james_os/main.py` → src/james_os/strategy.py run_weekly_prescription — retired; bm2.0 weekly strategist (grounded in baselines + algorithm + what-worked) FILLs prescriptions, keeping their evidence[] line format and accept->production routing
 
 ### james-os · learning
 
-- [ ] **Approval -> positive exemplar learning** (MERGE) — `src/james_os/learning.py` → src/james_os/learning.py — bm2.0 approve->exemplar folds in; one exemplar corpus tagged by origin (harvested/uploaded/approved)
-- [ ] **Changes board API** (KEEP) — `src/james_os/feedback_changes_api.py` → stays: src/james_os/feedback_changes_api.py
-- [ ] **Feedback -> change store ('What's changing next' roadmap)** (MERGE) — `src/james_os/feedback_changes.py` → feedback_changes table (src/james_os/feedback_changes.py) — bm2.0 auto-measure/what_worked performance->strategy learning folds in (their PRD's known gap R7)
-- [ ] **Feedback interpreter (reason -> live knob or queued change)** (KEEP) — `src/james_os/feedback_interpreter.py` → stays: src/james_os/feedback_interpreter.py
-- [ ] **Human-edit diff learning** (KEEP) — `src/james_os/learning.py` → stays: src/james_os/learning.py (no bm2.0 twin)
-- [ ] **Recent guardrails feed** (KEEP) — `src/james_os/learning.py` → stays: src/james_os/learning.py (backs guardrail display in the P5 unified UI)
-- [ ] **Rejection -> frustration guardrail learning loop** (MERGE) — `src/james_os/learning.py` → src/james_os/learning.py — bm2.0 reject->guardrail plus the reviewer learned-guardrails leg fold in; human decisions keep full confidence
-- [ ] **SHIPPED_FIXES already-built ledger** (KEEP) — `src/james_os/feedback_changes.py` → stays: src/james_os/feedback_changes.py
+- [x] **Approval -> positive exemplar learning** (MERGE) — `src/james_os/learning.py` → src/james_os/learning.py — bm2.0 approve->exemplar folds in; one exemplar corpus tagged by origin (harvested/uploaded/approved)
+- [x] **Changes board API** (KEEP) — `src/james_os/feedback_changes_api.py` → stays: src/james_os/feedback_changes_api.py
+- [x] **Feedback -> change store ('What's changing next' roadmap)** (MERGE) — `src/james_os/feedback_changes.py` → feedback_changes table (src/james_os/feedback_changes.py) — bm2.0 auto-measure/what_worked performance->strategy learning folds in (their PRD's known gap R7)
+- [x] **Feedback interpreter (reason -> live knob or queued change)** (KEEP) — `src/james_os/feedback_interpreter.py` → stays: src/james_os/feedback_interpreter.py
+- [x] **Human-edit diff learning** (KEEP) — `src/james_os/learning.py` → stays: src/james_os/learning.py (no bm2.0 twin)
+- [x] **Recent guardrails feed** (KEEP) — `src/james_os/learning.py` → stays: src/james_os/learning.py (backs guardrail display in the P5 unified UI)
+- [x] **Rejection -> frustration guardrail learning loop** (MERGE) — `src/james_os/learning.py` → src/james_os/learning.py — bm2.0 reject->guardrail plus the reviewer learned-guardrails leg fold in; human decisions keep full confidence
+- [x] **SHIPPED_FIXES already-built ledger** (KEEP) — `src/james_os/feedback_changes.py` → stays: src/james_os/feedback_changes.py
 
 ### james-os · platform
 
-- [ ] **Agent run API** (KEEP) — `src/james_os/main.py` → stays: src/james_os/main.py (/agent/* endpoints)
-- [ ] **Agent tool suite (24 registered tools)** (KEEP) — `src/james_os/agent.py` → stays: src/james_os/agent.py (existing 24 tools survive as-is; registry extends, never shrinks)
-- [ ] **Claude tool-use agent loop** (KEEP) — `src/james_os/agent.py` → stays: src/james_os/agent.py (gains new tools wrapping bm2.0 strategy/eyes modules as they land)
+- [x] **Agent run API** (KEEP) — `src/james_os/main.py` → stays: src/james_os/main.py (/agent/* endpoints)
+- [x] **Agent tool suite (24 registered tools)** (KEEP) — `src/james_os/agent.py` → stays: src/james_os/agent.py (existing 24 tools survive as-is; registry extends, never shrinks)
+- [x] **Claude tool-use agent loop** (KEEP) — `src/james_os/agent.py` → stays: src/james_os/agent.py (gains new tools wrapping bm2.0 strategy/eyes modules as they land)
 
 ### james-os · production
 
-- [ ] **Frustration-ledger guardrail injection** (KEEP) — `src/james_os/content.py` → stays: src/james_os/content.py (_recent_frustrations; reconciled with bm2.0 reject->guardrail loop merging into learning.py)
+- [x] **Frustration-ledger guardrail injection** (KEEP) — `src/james_os/content.py` → stays: src/james_os/content.py (_recent_frustrations; reconciled with bm2.0 reject->guardrail loop merging into learning.py)
 - [ ] **Story-framed ideation with pillar quotas** (MERGE) — `src/james_os/autopilot.py` → unified brain ideation: generate_ideas steered by bm2.0 daily plan/prescriptions (prescriptions + content_suggestions); pillar quotas, story-arc scoring and trend_steer folded in — one strategist
 
 ## P4 — Onboarding, voice & publish — 72 rows

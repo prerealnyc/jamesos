@@ -361,8 +361,10 @@ app.include_router(brand_kit_router)
 app.include_router(xpoz_router)
 # Brand Manager layer (bm2.0 merge, P1+) — all routes gated on manager_v2.
 from .manager.manager_api import router as manager_api_router  # noqa: E402
+from .manager.planning_api import router as manager_planning_router  # noqa: E402
 app.include_router(manager_sources_router)
 app.include_router(manager_api_router)
+app.include_router(manager_planning_router)
 
 
 @app.get("/", include_in_schema=False)

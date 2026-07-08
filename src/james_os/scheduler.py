@@ -33,10 +33,15 @@ async def _registry() -> dict:
     # replace them — one brain, no duplicate research spend. Their handler
     # modules survive untouched; heartbeat.ensure_manager_jobs() removes any
     # lingering rows so no dormant job double-spends.
-    from .manager.heartbeat import run_daily_cycle, run_peer_snapshot
+    from .manager.heartbeat import (
+        run_daily_cycle,
+        run_peer_snapshot,
+        run_weekly_strategist,
+    )
     return {
         "manager_daily_cycle": run_daily_cycle,
         "manager_peer_snapshot": run_peer_snapshot,
+        "manager_weekly_strategist": run_weekly_strategist,
     }
 
 

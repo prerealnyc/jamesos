@@ -274,3 +274,39 @@ async def snapshot_peers() -> dict:
         return await peers.snapshot_all(config={"trigger": "manual"})
     except Exception as exc:  # noqa: BLE001
         raise _502("peer", exc) from exc
+
+
+# ── collaboration: per-peer plays + the visibility floor ────────────────────
+
+
+@router.post("/manager/collab/generate")
+async def generate_collab() -> dict:
+    """Collaboration Strategy agent: a per-tracked-peer play + a visibility
+    floor (always a next action, even with zero collaboration targets). The
+    agent persists the plays as deduped action_items and stores the full
+    report on its job_run."""
+    from . import collaboration
+
+    try:
+        return await collaboration.run(config={"trigger": "manual"})
+    except Exception as exc:  # noqa: BLE001
+        raise _502("collaboration", exc) from exc
+
+
+@router.get("/manager/collab/latest")
+async def latest_collab() -> dict:
+    """Latest collaboration report (from the newest succeeded run), or an
+    empty shell if none generated yet."""
+    async with db.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT output FROM job_runs
+               WHERE agent = 'collaboration' AND status = 'succeeded'
+               ORDER BY started_at DESC LIMIT 1"""
+        )
+    output = row["output"] if row else None
+    if isinstance(output, str):
+        output = json.loads(output or "{}")
+    report = (output or {}).get("report")
+    if not report:
+        return {"generated": False, "plays": [], "visibility_plays": []}
+    return {"generated": True, **report}
