@@ -243,6 +243,11 @@ class Settings(BaseSettings):
     llm_content_model: str = "claude-sonnet-5"
     llm_strategy_model: str = "claude-opus-4-8"
 
+    # DEV ONLY: open the login door — every request runs as the default
+    # tenant. For local feature testing (launch.json 'unified-backend' sets
+    # it); hard-refused against Supabase URLs in the middleware.
+    dev_autologin: bool = False
+
     log_level: str = "INFO"
 
     # Retrieval tuning

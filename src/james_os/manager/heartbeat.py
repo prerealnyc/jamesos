@@ -63,11 +63,21 @@ async def _tenant_config(tenant_id: UUID | None) -> dict:
     return cfg or {}
 
 
+async def _onboarded(tcfg: dict) -> bool:
+    """The heartbeat only beats for brands that finished onboarding — a fresh
+    tenant must meet the interviewer before the eyes/strategist write anything
+    (a startup-scheduled cycle on an empty tenant used to fake 'onboarded' to
+    the front door). intake_agent sets onboarding_status='active'."""
+    return (tcfg or {}).get("onboarding_status") == "active"
+
+
 async def run_daily_cycle(tenant_id: UUID | None = None, config: dict | None = None) -> dict:
     """The scheduler handler. Returns a step→outcome report (also useful for
     the manual trigger endpoint)."""
     report: dict = {}
     tcfg = await _tenant_config(tenant_id)
+    if not _is_manual(config) and not await _onboarded(tcfg):
+        return {"skipped": "onboarding not complete — the cycle starts after Brand Setup"}
 
     try:  # 1 — learn from what's out there before planning more (R7)
         from . import learning
@@ -275,10 +285,18 @@ async def _promote_scan(tenant_id: UUID | None) -> int:
     return len(cands)
 
 
+def _is_manual(config: dict | None) -> bool:
+    """A human pressing the button overrides the onboarding gate — the
+    scheduled heartbeat does not."""
+    return (config or {}).get("trigger") == "manual"
+
+
 async def run_peer_snapshot(tenant_id: UUID | None = None, config: dict | None = None) -> dict:
     """Weekly: snapshot the human-approved peers (the P2 peers module)."""
     from . import peers
 
+    if not _is_manual(config) and not await _onboarded(await _tenant_config(tenant_id)):
+        return {"skipped": "onboarding not complete"}
     return await peers.snapshot_all(tenant_id, config)
 
 
@@ -287,6 +305,8 @@ async def run_weekly_strategist(tenant_id: UUID | None = None, config: dict | No
     Draft only — activation stays human (D5)."""
     from . import strategist
 
+    if not _is_manual(config) and not await _onboarded(await _tenant_config(tenant_id)):
+        return {"skipped": "onboarding not complete"}
     return await strategist.run(tenant_id, {**(config or {}), "trigger": "schedule"})
 
 

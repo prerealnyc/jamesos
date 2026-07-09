@@ -319,6 +319,17 @@ async def auth_middleware(request: _Req, call_next):
         return await call_next(request)
     token = request.cookies.get(_AUTH_COOKIE) or ""
     sess = await _auth_get_session(token) if token else None
+    if sess is None and settings.dev_autologin:
+        # DEV_AUTOLOGIN=true (local testing only, launch.json local profile):
+        # every request runs as the default tenant — the login door is open.
+        # NEVER set in a deployed environment; refused when the DB looks like
+        # Supabase as a hard backstop.
+        if "supabase" not in settings.database_url:
+            _db_set_tenant(settings.default_tenant_id)
+            request.state.tenant_id = settings.default_tenant_id
+            request.state.user_id = None
+            request.state.user_email = "dev@local"
+            return await call_next(request)
     if sess is None:
         return _JSON(
             {"detail": "not authenticated"},

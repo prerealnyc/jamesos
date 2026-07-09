@@ -115,11 +115,33 @@ async def test_ensure_manager_jobs_skips_unopted_tenants():
 # ── the full daily cycle ────────────────────────────────────────────────────
 
 
+async def test_scheduled_cycle_skips_unonboarded_brand():
+    """A fresh tenant must meet the interviewer before the heartbeat writes
+    anything — otherwise a startup-scheduled cycle fakes 'onboarded' to the
+    front door (found live on a factory-fresh install)."""
+    from james_os.manager import heartbeat
+
+    report = await heartbeat.run_daily_cycle(TENANT)  # onboarding_status unset
+    assert "skipped" in report
+    async with acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM content_suggestions") == 0
+        assert await conn.fetchval("SELECT count(*) FROM prescriptions") == 0
+    # a human pressing the button still works pre-onboarding (manual override)
+    manual = await heartbeat.run_daily_cycle(TENANT, {"trigger": "manual"})
+    assert "skipped" not in manual
+
+
 async def test_full_daily_cycle_on_mocks():
     from james_os.manager import heartbeat
 
     async with acquire() as conn:
         await _seed_niche(conn)
+        # the heartbeat only beats for onboarded brands (the gate a fresh
+        # install exposed); scheduled cycles skip pre-onboarding tenants
+        await conn.execute(
+            "UPDATE tenants SET config = jsonb_set(coalesce(config,'{}'::jsonb), "
+            "'{onboarding_status}', '\"active\"') WHERE id = $1", TENANT,
+        )
     report = await heartbeat.run_daily_cycle(TENANT)
 
     # every step reported, none hard-failed the cycle
