@@ -1,13 +1,22 @@
+import os
 from uuid import UUID
 
 from dotenv import load_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Force .env to win over already-set-but-empty shell env vars.
+# Force .env to win over already-set-but-EMPTY shell env vars.
 # Without override=True, an empty ANTHROPIC_API_KEY=" " inherited from a
 # parent shell (Claude Desktop, IDE, etc.) silently beats the .env value.
+#
+# But explicit NON-EMPTY environment variables must beat .env (12-factor) —
+# otherwise a process launched with DATABASE_URL=<production> gets silently
+# re-pointed at the repo's local .env (find_dotenv walks up from THIS file's
+# directory, so no working-directory trick escapes it; this bit us pointing
+# a local instance at production). Capture real env first, re-apply after.
+_explicit_env = {k: v for k, v in os.environ.items() if v.strip()}
 load_dotenv(override=True)
+os.environ.update(_explicit_env)
 
 
 class Settings(BaseSettings):
