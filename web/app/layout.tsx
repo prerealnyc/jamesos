@@ -11,15 +11,16 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark theme-manager">
+    <html lang="en" className="theme-manager">
       <head>
-        {/* Apply the saved theme choice before paint (no flash). Mission
-            Control (the unified P5 design) is the default; Classic remains
-            reachable via the switcher until cutover sign-off. */}
+        {/* Apply the saved theme choice before paint (no flash). Brand
+            Manager 2.0's design (light, stone/paper, terracotta) is the
+            default; Classic (the pre-merge dark look) remains reachable
+            via the switcher until cutover sign-off. */}
         <script
           dangerouslySetInnerHTML={{
             __html:
-              "try{if(localStorage.getItem('jos-theme-preview')==='classic')document.documentElement.classList.remove('theme-manager')}catch(e){}",
+              "try{if(localStorage.getItem('jos-theme-preview')==='classic'){var c=document.documentElement.classList;c.remove('theme-manager');c.add('dark')}}catch(e){}",
           }}
         />
         {/* Same typefaces as the approved dashboard build */}

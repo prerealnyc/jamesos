@@ -92,6 +92,14 @@ async def _run_one(job: dict, registry: dict) -> None:
 
 async def scheduler_loop() -> None:
     """Started from the FastAPI lifespan; cancelled on shutdown."""
+    from .config import settings
+
+    if not settings.manager_scheduler_enabled:
+        # Kill-switch (MANAGER_SCHEDULER_ENABLED=false): a secondary instance
+        # pointed at a shared/production DB must NEVER claim scheduled_jobs
+        # rows — the deployed instance owns the heartbeat.
+        print("[scheduler] disabled by MANAGER_SCHEDULER_ENABLED — no jobs will run here")
+        return
     registry = await _registry()
     sem = asyncio.Semaphore(_MAX_CONCURRENT)
     try:

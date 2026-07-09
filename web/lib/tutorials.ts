@@ -13,7 +13,7 @@ export type Tutorial = {
 };
 
 export const TUTORIALS: Record<string, Tutorial> = {
-  "/": {
+  "/ask": {
     title: "Ask the memory",
     what: "The front door to your brand's memory: ask anything and get a grounded, cited answer built ONLY from what the system actually knows — your documents, meetings, research, and learned rules.",
     when: "Use this for quick one-shot questions from anywhere. For a back-and-forth conversation over your company documents (with follow-up questions), use the Ask box on the Knowledge Base page.",

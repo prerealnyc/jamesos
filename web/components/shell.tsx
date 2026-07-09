@@ -35,36 +35,27 @@ const RESEARCH_SUBROUTES = ["/social-listening", "/market-research", "/social-co
 // Brand = rules + voice studio + health, tab-unified via HubTabs.
 const BRAND_SUBROUTES = ["/brand", "/voice-studio", "/jp-live"];
 
+// The 2.0 journey is the product (Roy, 2026-07-09): the brand's own surfaces
+// lead the rail; the production studio is the backend workshop underneath.
 const NAV: Group[] = [
   {
-    title: "Manager",
+    title: "Brand Manager",
     items: [
-      // The strategy home from the bm2.0 merge (P5): today's brief, the
-      // radar, north star, competitors, the work and follow-ups — one screen.
       { href: "/manager", label: "Mission Control", sub: "Today, radar, plan & the work", icon: "market", live: true },
-    ],
-  },
-  {
-    title: "Memory",
-    items: [
+      { href: "/intake", label: "Brand Setup", sub: "Onboard the brand — research, interview, voice", icon: "design", live: true },
       { href: "/brief", label: "Morning Brief", sub: "The brand manager's plan for you today", icon: "market", live: true },
-      { href: "/", label: "Ask the memory", sub: "Grounded, cited Q&A", icon: "ask", live: true },
+      { href: "/brand", label: "Brand Voice", sub: "Voice rules, voice studio & health", icon: "voice", live: true, match: BRAND_SUBROUTES },
     ],
   },
   {
-    title: "Create",
+    title: "Production Studio",
     items: [
       { href: "/create", label: "Create", sub: "Posts, videos, images & batches — one place", icon: "design", live: true, match: CREATE_SUBROUTES },
-      { href: "/content-library", label: "Content Library", sub: "Footage → clippable reels, auto-clipped to the queue", icon: "clips", live: true },
-    ],
-  },
-  {
-    title: "Review & Library",
-    items: [
       { href: "/queue", label: "Approval Queue", sub: "Review, edit & approve every piece", icon: "queue", live: true },
+      { href: "/content-library", label: "Content Library", sub: "Footage → clippable reels, auto-clipped to the queue", icon: "clips", live: true },
       { href: "/library", label: "Output Library", sub: "Finished content — download & share", icon: "clips", live: true },
-      { href: "/updates", label: "What's Next", sub: "Feedback → changes: live + queued", icon: "design", live: true },
       { href: "/jp-clips", label: "Assets", sub: "Footage, hero, B-roll, audio & styles", icon: "clips", live: true, match: ASSETS_SUBROUTES },
+      { href: "/updates", label: "What's Next", sub: "Feedback → changes: live + queued", icon: "design", live: true },
     ],
   },
   {
@@ -75,17 +66,9 @@ const NAV: Group[] = [
     ],
   },
   {
-    title: "Brand",
+    title: "Memory",
     items: [
-      { href: "/brand", label: "Brand", sub: "Voice rules, voice studio & health", icon: "voice", live: true, match: BRAND_SUBROUTES },
-      { href: "/intake", label: "Brand Setup", sub: "Who this brand is — goals, topics, peers", icon: "design", live: true },
-    ],
-  },
-  // Newest features live at the BOTTOM of the rail while they're still
-  // being polished — promote them up once they've been battle-tested.
-  {
-    title: "New",
-    items: [
+      { href: "/ask", label: "Ask the memory", sub: "Grounded, cited Q&A", icon: "ask", live: true },
       { href: "/knowledge", label: "Knowledge Base", sub: "Company docs → private, askable memory", icon: "ask", live: true },
       { href: "/thesis", label: "Weekly Thesis", sub: "Drop the thesis → research + white paper", icon: "market", live: true },
     ],

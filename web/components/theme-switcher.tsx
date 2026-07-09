@@ -20,11 +20,13 @@ export function ThemeSwitcher() {
     const on = localStorage.getItem(KEY) !== "classic";
     setMc(on);
     document.documentElement.classList.toggle("theme-manager", on);
+    document.documentElement.classList.toggle("dark", !on); // Classic = the pre-merge dark look
   }, []);
 
   function set(on: boolean) {
     setMc(on);
     document.documentElement.classList.toggle("theme-manager", on);
+    document.documentElement.classList.toggle("dark", !on);
     localStorage.setItem(KEY, on ? "manager" : "classic");
   }
 
@@ -52,7 +54,7 @@ export function ThemeSwitcher() {
           mc ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
         }`}
       >
-        Mission Control
+        2.0
       </button>
     </div>
   );

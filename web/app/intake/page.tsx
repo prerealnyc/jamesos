@@ -504,7 +504,7 @@ export default function IntakePage() {
                   "Start research"
                 )}
               </Button>
-              <Link href="/" className="text-sm text-muted-foreground hover:text-foreground">
+              <Link href="/manager" className="text-sm text-muted-foreground hover:text-foreground">
                 Cancel
               </Link>
             </div>
@@ -746,7 +746,7 @@ export default function IntakePage() {
             <Link href="/manager" className={BTN_LINK}>
               Go to Mission Control
             </Link>
-            <Link href="/" className="text-sm text-muted-foreground hover:text-foreground">
+            <Link href="/manager" className="text-sm text-muted-foreground hover:text-foreground">
               Back to home
             </Link>
           </div>
