@@ -28,6 +28,7 @@ export default function SignupPage() {
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [invite, setInvite] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -47,6 +48,7 @@ export default function SignupPage() {
         email: email.trim(),
         password,
         display_name: displayName.trim(),
+        ...(invite.trim() ? { invite_code: invite.trim() } : {}),
       });
       window.location.replace("/");
     } catch (e) {
@@ -104,6 +106,17 @@ export default function SignupPage() {
                 autoComplete="new-password"
                 value={confirm}
                 onChange={(e) => setConfirm(e.target.value)}
+                className="mt-1"
+              />
+            </label>
+            <label className="block">
+              <span className="text-[12px] text-muted-foreground">
+                Invite code <span className="opacity-70">(needed after the first workspace)</span>
+              </span>
+              <Input
+                value={invite}
+                onChange={(e) => setInvite(e.target.value)}
+                placeholder="from your administrator"
                 className="mt-1"
               />
             </label>

@@ -1025,7 +1025,7 @@ export const api = {
       display_name: string; role: string;
     }>;
   },
-  signup: (body: { email: string; password: string; display_name?: string }) =>
+  signup: (body: { email: string; password: string; display_name?: string; invite_code?: string }) =>
     jpost<{
       id: string; tenant_id: string; email: string;
       display_name: string; role: string;
