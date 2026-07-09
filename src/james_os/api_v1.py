@@ -157,6 +157,10 @@ class GenerateRequest(BaseModel):
     title: str | None = None
     image_kind: Literal["james", "designed"] = "james"   # post only
     video_template: str = ""                              # video only
+    # video only: force a real avatar render even if the brand's avatar_videos
+    # default is off (costs render credits; needs HeyGen configured). Default
+    # false → a reel SCRIPT draft, matching the safe product default.
+    render: bool = False
     callback_url: str | None = None
 
 
@@ -202,10 +206,10 @@ async def _run_generate(job_id: str, tenant_id: UUID, req: GenerateRequest) -> N
             "pillar": "",
         }
         if req.type == "video":
-            # Respect the brand's avatar_videos policy exactly like the bulk path:
-            # OFF (default, "unapproved") => a reel SCRIPT draft, not a render.
+            # Render only when the caller explicitly asks (render=true) OR the
+            # brand's avatar_videos policy is on. Otherwise a reel SCRIPT draft.
             cfg = await get_config(tenant_id)
-            if bool(cfg.get("avatar_videos", False)):
+            if req.render or bool(cfg.get("avatar_videos", False)):
                 made = await _make_video(
                     idea, req.platform, tenant_id, video_template=req.video_template)
                 job["result"] = {
@@ -393,90 +397,124 @@ async def v1_queue(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
 async def v1_post_approve(
     action_id: UUID, body: Decision, tenant_id: TenantDep,
 ) -> dict[str, Any]:
-    async with acquire(tenant_id) as conn:
-        # Mandatory voice-QA gate (mirrors the dashboard): a draft that failed
-        # voice-QA must not one-click approve — require an explicit override.
-        gate = await conn.fetchrow(
-            "SELECT payload FROM actions WHERE id=$1 AND status='pending'", action_id)
-        if gate is not None and not body.override:
-            gp = gate["payload"]
-            if isinstance(gp, str):
-                gp = json.loads(gp)
-            gp = gp or {}
-            if gp.get("flagged") is True or gp.get("qa_passed") is False:
-                raise HTTPException(
-                    409,
-                    "qa_flagged: this draft failed voice-QA — approve again with "
-                    "override=true to publish it anyway.")
-        reason = body.reason or "approved via /v1"
-        if body.override:
-            reason = f"[QA-OVERRIDE] {reason}"
-        tag = await conn.execute(
-            "UPDATE actions SET status='approved', approval_reason=$2, "
-            "decided_at=now() WHERE id=$1 AND status='pending'", action_id, reason)
-    if not tag.endswith(" 1"):
+    res = await _do_approve_post(action_id, tenant_id, override=body.override, reason=body.reason)
+    if res["outcome"] == "qa_flagged":
+        raise HTTPException(409, "qa_flagged: this draft failed voice-QA — approve "
+                                 "again with override=true to publish it anyway.")
+    if res["outcome"] != "approved":
         raise HTTPException(404, "post not found or not pending")
-    # Positive half of the learning loop — best-effort.
-    reinforced = False
-    try:
-        from .learning import record_approval
-        reinforced = bool(await record_approval(action_id, tenant_id))
-    except Exception as e:  # noqa: BLE001
-        print(f"[v1] record_approval failed: {e}")
-    return {"ok": True, "id": str(action_id), "status": "approved", "reinforced": reinforced}
+    return {"ok": True, "id": res["id"], "status": "approved",
+            "reinforced": res.get("reinforced", False)}
 
 
 @router.post("/queue/post/{action_id}/reject")
 async def v1_post_reject(
     action_id: UUID, body: Decision, tenant_id: TenantDep,
 ) -> dict[str, Any]:
-    reason = body.reason or "rejected via /v1"
-    async with acquire(tenant_id) as conn:
-        tag = await conn.execute(
-            "UPDATE actions SET status='rejected', rejection_reason_code=$2, "
-            "decided_at=now() WHERE id=$1 AND status='pending'", action_id, reason)
-    if not tag.endswith(" 1"):
+    res = await _do_reject_post(action_id, tenant_id, reason=body.reason)
+    if res["outcome"] != "rejected":
         raise HTTPException(404, "post not found or not pending")
-    # Close the learning loop: reason -> guardrail memory (+ video feedback if this
-    # queued item was a video). Best-effort — never fail the rejection over it.
-    learned = False
-    try:
-        from .learning import record_rejection
-        learned = bool(await record_rejection(action_id, reason, tenant_id))
-        from .video_feedback import record_video_feedback
-        async with acquire(tenant_id) as conn:
-            prod_id = await conn.fetchval(
-                "SELECT id FROM video_productions WHERE queued_action_id=$1", action_id)
-        if prod_id:
-            await record_video_feedback(prod_id, reason, status="rejected", tenant_id=tenant_id)
-        from .feedback_interpreter import kick_interpret_background
-        kick_interpret_background(tenant_id)
-    except Exception as e:  # noqa: BLE001
-        print(f"[v1] reject learning failed: {e}")
-    return {"ok": True, "id": str(action_id), "status": "rejected", "learned": learned}
+    return {"ok": True, "id": res["id"], "status": "rejected",
+            "learned": res.get("learned", False)}
 
 
 @router.post("/queue/video/{production_id}/approve")
 async def v1_video_approve(
     production_id: UUID, body: Decision, tenant_id: TenantDep,
 ) -> dict[str, Any]:
-    from .video_feedback import set_production_review
+    res = await _do_approve_video(production_id, tenant_id, reason=body.reason)
+    if res["outcome"] == "not_ready":
+        raise HTTPException(409, f"production not ready to approve ({res['detail']})")
+    if res["outcome"] != "approved":
+        raise HTTPException(404, "production not found")
+    return {"ok": True, "id": res["id"], "status": res.get("status", "approved")}
 
-    # Only a SUCCEEDED render can be approved (not queued/rendering/failed).
+
+@router.post("/queue/video/{production_id}/reject")
+async def v1_video_reject(
+    production_id: UUID, body: Decision, tenant_id: TenantDep,
+) -> dict[str, Any]:
+    res = await _do_reject_video(production_id, tenant_id, reason=body.reason)
+    if res["outcome"] != "rejected":
+        raise HTTPException(404, "production not found")
+    return {"ok": True, "id": res["id"], "status": "rejected"}
+
+
+# ── shared approve/reject core (used by the single-item AND bulk endpoints) ──
+# These never raise for business conditions — they return an outcome dict so the
+# bulk path can collect per-item results instead of failing the whole batch.
+
+async def _do_approve_post(action_id: UUID, tenant_id: UUID, *,
+                           override: bool, reason: str) -> dict[str, Any]:
+    async with acquire(tenant_id) as conn:
+        gate = await conn.fetchrow(
+            "SELECT payload FROM actions WHERE id=$1 AND status='pending'", action_id)
+        if gate is None:
+            return {"id": str(action_id), "outcome": "skipped", "detail": "not found or not pending"}
+        if not override:
+            gp = gate["payload"]
+            if isinstance(gp, str):
+                gp = json.loads(gp)
+            gp = gp or {}
+            if gp.get("flagged") is True or gp.get("qa_passed") is False:
+                return {"id": str(action_id), "outcome": "qa_flagged",
+                        "detail": "failed voice-QA; pass override=true to approve anyway"}
+        r = (f"[QA-OVERRIDE] {reason or 'approved via /v1'}"
+             if override else (reason or "approved via /v1"))
+        tag = await conn.execute(
+            "UPDATE actions SET status='approved', approval_reason=$2, "
+            "decided_at=now() WHERE id=$1 AND status='pending'", action_id, r)
+    if not tag.endswith(" 1"):
+        return {"id": str(action_id), "outcome": "skipped", "detail": "not pending"}
+    reinforced = False
+    try:
+        from .learning import record_approval
+        reinforced = bool(await record_approval(action_id, tenant_id))
+    except Exception as e:  # noqa: BLE001
+        print(f"[v1] record_approval failed: {e}")
+    return {"id": str(action_id), "outcome": "approved", "reinforced": reinforced}
+
+
+async def _do_reject_post(action_id: UUID, tenant_id: UUID, *, reason: str) -> dict[str, Any]:
+    r = reason or "rejected via /v1"
+    async with acquire(tenant_id) as conn:
+        tag = await conn.execute(
+            "UPDATE actions SET status='rejected', rejection_reason_code=$2, "
+            "decided_at=now() WHERE id=$1 AND status='pending'", action_id, r)
+    if not tag.endswith(" 1"):
+        return {"id": str(action_id), "outcome": "skipped", "detail": "not found or not pending"}
+    learned = False
+    try:
+        from .learning import record_rejection
+        learned = bool(await record_rejection(action_id, r, tenant_id))
+        from .video_feedback import record_video_feedback
+        async with acquire(tenant_id) as conn:
+            prod_id = await conn.fetchval(
+                "SELECT id FROM video_productions WHERE queued_action_id=$1", action_id)
+        if prod_id:
+            await record_video_feedback(prod_id, r, status="rejected", tenant_id=tenant_id)
+        from .feedback_interpreter import kick_interpret_background
+        kick_interpret_background(tenant_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"[v1] reject learning failed: {e}")
+    return {"id": str(action_id), "outcome": "rejected", "learned": learned}
+
+
+async def _do_approve_video(production_id: UUID, tenant_id: UUID, *, reason: str) -> dict[str, Any]:
+    from .video_feedback import set_production_review
     async with acquire(tenant_id) as conn:
         render_status = await conn.fetchval(
             "SELECT status FROM video_productions WHERE id=$1", production_id)
     if render_status is None:
-        raise HTTPException(404, "production not found")
+        return {"id": str(production_id), "outcome": "skipped", "detail": "production not found"}
     if render_status != "succeeded":
-        raise HTTPException(
-            409, f"production not ready to approve (render status={render_status})")
-
-    note = (body.reason or "").strip()
+        return {"id": str(production_id), "outcome": "not_ready",
+                "detail": f"render status={render_status}"}
+    note = (reason or "").strip()
     status = "approved_with_notes" if note else "approved"
     ok = await set_production_review(production_id, status, note, tenant_id=tenant_id)
     if not ok:
-        raise HTTPException(404, "production not found")
+        return {"id": str(production_id), "outcome": "skipped", "detail": "production not found"}
     if note:
         try:
             from .video_feedback import record_video_feedback
@@ -484,24 +522,75 @@ async def v1_video_approve(
                 production_id, note, status="approved_with_notes", tenant_id=tenant_id)
         except Exception as e:  # noqa: BLE001
             print(f"[v1] record_video_feedback (approve) failed: {e}")
-    return {"ok": True, "id": str(production_id), "status": status}
+    return {"id": str(production_id), "outcome": "approved", "status": status}
 
 
-@router.post("/queue/video/{production_id}/reject")
-async def v1_video_reject(
-    production_id: UUID, body: Decision, tenant_id: TenantDep,
-) -> dict[str, Any]:
+async def _do_reject_video(production_id: UUID, tenant_id: UUID, *, reason: str) -> dict[str, Any]:
     from .video_feedback import record_video_feedback, set_production_review
-
-    reason = (body.reason or "").strip()
-    ok = await set_production_review(production_id, "rejected", reason, tenant_id=tenant_id)
+    r = (reason or "").strip()
+    ok = await set_production_review(production_id, "rejected", r, tenant_id=tenant_id)
     if not ok:
-        raise HTTPException(404, "production not found")
-    # Feed the renderer's learning loop so the next render steers off the reason.
+        return {"id": str(production_id), "outcome": "skipped", "detail": "production not found"}
     try:
-        await record_video_feedback(production_id, reason, status="rejected", tenant_id=tenant_id)
+        await record_video_feedback(production_id, r, status="rejected", tenant_id=tenant_id)
         from .feedback_interpreter import kick_interpret_background
         kick_interpret_background(tenant_id)
     except Exception as e:  # noqa: BLE001
         print(f"[v1] video reject learning failed: {e}")
-    return {"ok": True, "id": str(production_id), "status": "rejected"}
+    return {"id": str(production_id), "outcome": "rejected"}
+
+
+# ── bulk approve / reject ──
+
+class BulkDecision(BaseModel):
+    posts: list[UUID] = []          # action ids
+    videos: list[UUID] = []         # production ids
+    all: bool = False               # act on EVERYTHING currently pending/reviewable
+    override: bool = False          # approve past the voice-QA gate (posts)
+    reason: str = ""
+
+
+_BULK_CAP = 500   # safety ceiling per bulk call
+
+
+async def _bulk_ids(tenant_id: UUID, body: BulkDecision, *,
+                    only_succeeded_videos: bool) -> tuple[list, list]:
+    post_ids = list(body.posts)
+    video_ids = list(body.videos)
+    if body.all:
+        vq = ("SELECT id FROM video_productions WHERE review_status IS NULL "
+              + ("AND status='succeeded' " if only_succeeded_videos else "")
+              + "ORDER BY created_at DESC LIMIT $1")
+        async with acquire(tenant_id) as conn:
+            prows = await conn.fetch(
+                "SELECT id FROM actions WHERE action_type='content' AND status='pending' "
+                "ORDER BY created_at DESC LIMIT $1", _BULK_CAP)
+            vrows = await conn.fetch(vq, _BULK_CAP)
+        post_ids += [r["id"] for r in prows]
+        video_ids += [r["id"] for r in vrows]
+    return post_ids[:_BULK_CAP], video_ids[:_BULK_CAP]
+
+
+@router.post("/queue/approve")
+async def v1_bulk_approve(body: BulkDecision, tenant_id: TenantDep) -> dict[str, Any]:
+    """Approve many items at once: pass posts[]/videos[] ids, or all=true to approve
+    every pending post + succeeded video. QA-flagged posts need override=true.
+    Runs inline (approval is fast — no rendering), capped at 500 items/call."""
+    post_ids, video_ids = await _bulk_ids(tenant_id, body, only_succeeded_videos=True)
+    results = [await _do_approve_post(a, tenant_id, override=body.override, reason=body.reason)
+               for a in post_ids]
+    results += [await _do_approve_video(v, tenant_id, reason=body.reason) for v in video_ids]
+    approved = sum(1 for r in results if r["outcome"] == "approved")
+    return {"approved": approved, "requested": len(results),
+            "skipped": [r for r in results if r["outcome"] != "approved"]}
+
+
+@router.post("/queue/reject")
+async def v1_bulk_reject(body: BulkDecision, tenant_id: TenantDep) -> dict[str, Any]:
+    """Reject many items at once: posts[]/videos[] ids, or all=true (any un-reviewed)."""
+    post_ids, video_ids = await _bulk_ids(tenant_id, body, only_succeeded_videos=False)
+    results = [await _do_reject_post(a, tenant_id, reason=body.reason) for a in post_ids]
+    results += [await _do_reject_video(v, tenant_id, reason=body.reason) for v in video_ids]
+    rejected = sum(1 for r in results if r["outcome"] == "rejected")
+    return {"rejected": rejected, "requested": len(results),
+            "skipped": [r for r in results if r["outcome"] != "rejected"]}
