@@ -580,6 +580,7 @@ async def synthesize_portfolio(
 # synthesis pass — minutes, not seconds; the gateway kills ~50s sync calls) ──
 
 _JOBS: dict[str, dict] = {}
+_JOB_OWNER: dict[str, str] = {}   # job_id -> tenant, for the cross-tenant poll guard
 _TASKS: set = set()
 _JOBS_MAX = 40
 
@@ -590,6 +591,7 @@ def _prune() -> None:
     done = [k for k, v in _JOBS.items() if v.get("status") != "running"]
     for k in done[: len(_JOBS) - _JOBS_MAX]:
         _JOBS.pop(k, None)
+        _JOB_OWNER.pop(k, None)
 
 
 def start_intelligence_job(
@@ -603,6 +605,7 @@ def start_intelligence_job(
     tenant_id = tenant_id or _request_tenant.get()
     job_id = _uuid.uuid4().hex[:12]
     _JOBS[job_id] = {"status": "running", "topic": topic}
+    _JOB_OWNER[job_id] = str(tenant_id or "")
     _prune()
 
     async def _run() -> None:
@@ -622,8 +625,14 @@ def start_intelligence_job(
     return job_id
 
 
-def get_intelligence_job(job_id: str) -> dict | None:
-    return _JOBS.get(job_id)
+def get_intelligence_job(job_id: str, tenant_id=None) -> dict | None:
+    job = _JOBS.get(job_id)
+    if job is None:
+        return None
+    owner = _JOB_OWNER.get(job_id)
+    if tenant_id is not None and owner and owner != str(tenant_id):
+        return None   # cross-tenant poll — pretend it doesn't exist
+    return job
 
 
 __all__ = [

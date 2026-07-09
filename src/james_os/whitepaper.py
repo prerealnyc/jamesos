@@ -321,6 +321,7 @@ import asyncio as _asyncio
 import uuid as _uuid
 
 _WP_JOBS: dict[str, dict] = {}
+_WP_OWNER: dict[str, str] = {}   # job_id -> tenant, for the cross-tenant poll guard
 _WP_TASKS: set = set()   # strong refs so detached jobs aren't GC'd
 _WP_JOBS_MAX = 40        # keep memory bounded; oldest finished jobs pruned
 
@@ -331,6 +332,7 @@ def _prune_jobs() -> None:
     finished = [k for k, v in _WP_JOBS.items() if v.get("status") != "running"]
     for k in finished[: len(_WP_JOBS) - _WP_JOBS_MAX]:
         _WP_JOBS.pop(k, None)
+        _WP_OWNER.pop(k, None)
 
 
 def start_whitepaper_job(
@@ -347,6 +349,7 @@ def start_whitepaper_job(
     tenant_id = tenant_id or _request_tenant.get()
     job_id = _uuid.uuid4().hex[:12]
     _WP_JOBS[job_id] = {"status": "running", "topic": topic}
+    _WP_OWNER[job_id] = str(tenant_id or "")
     _prune_jobs()
 
     async def _run() -> None:
@@ -365,8 +368,14 @@ def start_whitepaper_job(
     return job_id
 
 
-def get_whitepaper_job(job_id: str) -> dict | None:
-    return _WP_JOBS.get(job_id)
+def get_whitepaper_job(job_id: str, tenant_id=None) -> dict | None:
+    job = _WP_JOBS.get(job_id)
+    if job is None:
+        return None
+    owner = _WP_OWNER.get(job_id)
+    if tenant_id is not None and owner and owner != str(tenant_id):
+        return None   # cross-tenant poll — pretend it doesn't exist
+    return job
 
 
 __all__ = ["generate_whitepaper", "start_whitepaper_job", "get_whitepaper_job"]

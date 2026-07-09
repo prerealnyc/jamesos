@@ -120,6 +120,7 @@ async def generate_content_pack(
 # ── background job wrapper (start/poll, per-doc dedupe) ──
 
 _PACK_JOBS: dict[str, dict] = {}
+_PACK_OWNER: dict[str, str] = {}   # job_id -> tenant, for the cross-tenant poll guard
 _PACK_TASKS: set = set()
 _PACK_JOBS_MAX = 40
 
@@ -130,6 +131,7 @@ def _prune_jobs() -> None:
     finished = [k for k, v in _PACK_JOBS.items() if v.get("status") != "running"]
     for k in finished[: len(_PACK_JOBS) - _PACK_JOBS_MAX]:
         _PACK_JOBS.pop(k, None)
+        _PACK_OWNER.pop(k, None)
 
 
 def start_content_pack_job(
@@ -144,6 +146,7 @@ def start_content_pack_job(
     job_id = _uuid.uuid4().hex[:12]
     _PACK_JOBS[job_id] = {"status": "running", "stage": "angles",
                           "doc_id": str(doc_id)}
+    _PACK_OWNER[job_id] = str(tenant_id or "")
     _prune_jobs()
 
     def _on_stage(stage: str) -> None:
@@ -173,8 +176,14 @@ def start_content_pack_job(
     return job_id
 
 
-def get_content_pack_job(job_id: str) -> dict | None:
-    return _PACK_JOBS.get(job_id)
+def get_content_pack_job(job_id: str, tenant_id=None) -> dict | None:
+    job = _PACK_JOBS.get(job_id)
+    if job is None:
+        return None
+    owner = _PACK_OWNER.get(job_id)
+    if tenant_id is not None and owner and owner != str(tenant_id):
+        return None   # cross-tenant poll — pretend it doesn't exist
+    return job
 
 
 __all__ = [

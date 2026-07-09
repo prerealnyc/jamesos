@@ -111,8 +111,8 @@ MANAGED_FIELDS: list[ManagedField] = [
     ),
     # Google Drive auto-importer for James's real clips
     ManagedField(
-        "google_service_account_json", "Google service account JSON path", "Storage",
-        secret=False, placeholder="/Users/.../service-account.json",
+        "google_service_account_json", "Google service account JSON (path or inline)", "Storage",
+        secret=True, placeholder="/Users/.../service-account.json or inline JSON",
     ),
     ManagedField(
         "google_drive_folder_id", "Google Drive folder id (clips)", "Storage",

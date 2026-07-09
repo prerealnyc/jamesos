@@ -102,8 +102,29 @@ async def ask(req: AskRequest, tenant_id: UUID | None = None) -> AskResponse:
         # that does contain knowledge-base content.
         from .sensitivity import policy_for, sensitivity_map_for
         sens_map = await sensitivity_map_for(retrieved, tenant_id)
-        if retrieved:
-            system = f"{system}\n\n{policy_for(getattr(req, 'audience', 'internal'))}"
+        # Structural sensitivity gate (defense-in-depth beyond the prompt policy):
+        # never place NDA-Protected passages in the prompt, and for a PUBLIC
+        # audience also drop Restricted. Non-KB memory has no tier and is kept.
+        _aud = getattr(req, "audience", "internal")
+        _blocked = {"NDA-Protected", "Restricted"} if _aud == "public" else {"NDA-Protected"}
+        retrieved = [ev for ev in retrieved
+                     if sens_map.get(str(ev.event_id)) not in _blocked]
+        if not retrieved:
+            # Everything relevant was filtered out for this audience — refuse
+            # cleanly instead of generating against an empty corpus.
+            return await _persist_and_return(
+                req,
+                AskResponse(
+                    response="I don't have anything shareable on that for this audience.",
+                    citations=[], refused=True,
+                    refusal_reason="no_shareable_events_for_audience",
+                    confidence=0.0, retrieved_event_ids=[],
+                    model=get_llm().model_name,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                ),
+                retrieved, tenant_id,
+            )
+        system = f"{system}\n\n{policy_for(_aud)}"
         t = time.perf_counter()
         answer = await _generate(req.question, retrieved, system, sens_map,
                                  history=history)

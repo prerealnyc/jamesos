@@ -268,6 +268,9 @@ async def get_hero_photo_files(
     async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
         for i, url in enumerate(ctx.photo_urls[:_REF_MAX_COUNT]):
             try:
+                from .netguard import url_is_public
+                if not await url_is_public(url, allow_http=True):
+                    continue  # SSRF guard: skip internal/private-IP URLs
                 r = await c.get(url, follow_redirects=True)
                 r.raise_for_status()
                 shrunk = _shrink_image(r.content)

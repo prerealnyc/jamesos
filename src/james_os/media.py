@@ -254,6 +254,9 @@ async def fetch_media_local(
     url = (uri or "").strip()
     if not url.startswith("http"):
         return None, None  # external page URL (YouTube etc.) — not a media file
+    from .netguard import url_is_public
+    if not await url_is_public(url, allow_http=True):
+        return None, None  # SSRF guard: refuse internal/private-IP media URLs
     import shutil
     import tempfile
 

@@ -167,6 +167,7 @@ async def develop_thesis(
 # ── background job wrapper (mirrors whitepaper's start/poll pattern) ──
 
 _DEV_JOBS: dict[str, dict] = {}
+_DEV_OWNER: dict[str, str] = {}   # job_id -> tenant, for the cross-tenant poll guard
 _DEV_TASKS: set = set()   # strong refs so detached jobs aren't GC'd
 _DEV_JOBS_MAX = 40
 
@@ -177,6 +178,7 @@ def _prune_jobs() -> None:
     finished = [k for k, v in _DEV_JOBS.items() if v.get("status") != "running"]
     for k in finished[: len(_DEV_JOBS) - _DEV_JOBS_MAX]:
         _DEV_JOBS.pop(k, None)
+        _DEV_OWNER.pop(k, None)
 
 
 def start_develop_job(
@@ -195,6 +197,7 @@ def start_develop_job(
     job_id = _uuid.uuid4().hex[:12]
     _DEV_JOBS[job_id] = {"status": "running", "stage": "reading",
                          "doc_id": str(doc_id), "full": full}
+    _DEV_OWNER[job_id] = str(tenant_id or "")
     _prune_jobs()
 
     def _on_stage(stage: str) -> None:
@@ -226,8 +229,14 @@ def start_develop_job(
     return job_id
 
 
-def get_develop_job(job_id: str) -> dict | None:
-    return _DEV_JOBS.get(job_id)
+def get_develop_job(job_id: str, tenant_id=None) -> dict | None:
+    job = _DEV_JOBS.get(job_id)
+    if job is None:
+        return None
+    owner = _DEV_OWNER.get(job_id)
+    if tenant_id is not None and owner and owner != str(tenant_id):
+        return None   # cross-tenant poll — pretend it doesn't exist
+    return job
 
 
 __all__ = ["develop_thesis", "start_develop_job", "get_develop_job"]

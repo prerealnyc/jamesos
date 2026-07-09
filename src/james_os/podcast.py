@@ -166,6 +166,7 @@ async def list_podcasts(tenant_id: UUID | None = None) -> list[dict]:
 # ── background job wrapper (start/poll, per-doc dedupe) ──
 
 _POD_JOBS: dict[str, dict] = {}
+_POD_OWNER: dict[str, str] = {}   # job_id -> tenant, for the cross-tenant poll guard
 _POD_TASKS: set = set()
 _POD_JOBS_MAX = 40
 
@@ -176,6 +177,7 @@ def _prune_jobs() -> None:
     finished = [k for k, v in _POD_JOBS.items() if v.get("status") != "running"]
     for k in finished[: len(_POD_JOBS) - _POD_JOBS_MAX]:
         _POD_JOBS.pop(k, None)
+        _POD_OWNER.pop(k, None)
 
 
 def start_podcast_job(doc_id: UUID, tenant_id: UUID | None = None) -> str:
@@ -189,6 +191,7 @@ def start_podcast_job(doc_id: UUID, tenant_id: UUID | None = None) -> str:
     job_id = _uuid.uuid4().hex[:12]
     _POD_JOBS[job_id] = {"status": "running", "stage": "scripting",
                          "doc_id": str(doc_id)}
+    _POD_OWNER[job_id] = str(tenant_id or "")
     _prune_jobs()
 
     def _on_stage(stage: str) -> None:
@@ -218,8 +221,14 @@ def start_podcast_job(doc_id: UUID, tenant_id: UUID | None = None) -> str:
     return job_id
 
 
-def get_podcast_job(job_id: str) -> dict | None:
-    return _POD_JOBS.get(job_id)
+def get_podcast_job(job_id: str, tenant_id=None) -> dict | None:
+    job = _POD_JOBS.get(job_id)
+    if job is None:
+        return None
+    owner = _POD_OWNER.get(job_id)
+    if tenant_id is not None and owner and owner != str(tenant_id):
+        return None   # cross-tenant poll — pretend it doesn't exist
+    return job
 
 
 __all__ = [

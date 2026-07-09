@@ -79,6 +79,16 @@ class Settings(BaseSettings):
     twitter_bearer_token: str = "" # X/Twitter
     xpoz_api_key: str = ""         # social engagement read
 
+    # ─── Public /v1 service API ───
+    # Shared secret another platform (e.g. the 2.0 experience layer) presents as
+    # `Authorization: Bearer <key>` to drive JAMES OS headlessly. UNSET = the /v1
+    # API is disabled (returns 503) — secure default.
+    service_api_key: str = ""
+    # The key is BOUND to exactly this tenant (defaults to default_tenant_id). The
+    # caller cannot choose the tenant — that would let one shared key act as any
+    # brand. Per-consumer/per-brand keys are a future hardening (key→tenant map).
+    service_api_tenant_id: UUID | None = None
+
     # ─── Video generation ───
     # Generative clips (Runway Gen-3/4). Provider-abstracted with a stub
     # so the durable job pipeline (submit → poll → land in approval queue)

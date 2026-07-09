@@ -52,6 +52,7 @@ from .prompts import (
 )
 from .rerank import rerank
 from .retrieval import search
+from .sensitivity import policy_for, sensitivity_map_for
 
 # Internal vocabulary that must NEVER reach audience-facing copy. James:
 # "'just james clip' is a vertical of content we talk about in the backend —
@@ -149,7 +150,15 @@ async def assemble_memory(
     # first so the per-bucket cap never crowds them out), exactly like the
     # frustration ledger is always included.
     guides = await _brand_guidelines(tenant_id)
-    for ev in [*guides, *exemplars, *voice_hits, *topic_hits]:
+    # Sensitivity gate: content.py produces PUBLIC-facing posts/reels, so drop
+    # BOTH NDA-Protected and Restricted knowledge structurally (mirrors ask.py's
+    # public path). A prompt policy alone can't gate what the model can't see
+    # labeled. Non-KB memory (voice/frustration/thesis) has no tier and stays.
+    _all = [*guides, *exemplars, *voice_hits, *topic_hits]
+    _sens = await sensitivity_map_for(_all, tenant_id)
+    _blocked = {"NDA-Protected", "Restricted"}
+    merged = [ev for ev in _all if _sens.get(str(ev.event_id)) not in _blocked]
+    for ev in merged:
         if ev.event_id in seen:
             continue
         seen.add(ev.event_id)
@@ -455,6 +464,9 @@ async def generate_content(
     system = await build_content_system_prompt(
         brief.platform, brief.format, tenant_id
     )
+    # Public-facing output: append the read-vs-reproduce policy so Restricted
+    # material informs but is never reproduced in the post/reel.
+    system = f"{system}\n\n{policy_for('public')}"
     brief_block = (
         f"<brief>\n"
         f"platform: {brief.platform}\n"

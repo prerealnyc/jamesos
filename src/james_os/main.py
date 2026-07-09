@@ -303,6 +303,9 @@ from .db import set_request_tenant as _db_set_tenant
 _EXTRA_PUBLIC = (
     "/dashboard/", "/media-files/", "/static/",
     "/favicon.ico", "/robots.txt",
+    # Public /v1 service API: bypasses the browser cookie gate; the /v1 router
+    # enforces its own service-API-key auth (see api_v1.require_service).
+    "/v1/",
 )
 
 
@@ -332,6 +335,42 @@ async def auth_middleware(request: _Req, call_next):
     return await call_next(request)
 
 
+# Security headers on every response + a body-size guard for the document-ingest
+# endpoints. Large video uploads legitimately stream GBs, so those paths are NOT
+# capped here (streaming-to-disk is the proper fix for those). Registered after
+# auth_middleware so it runs OUTERMOST and its headers wrap every response
+# (including the /media-files static mount — nosniff kills MIME-sniff XSS there).
+# Only /ingest/document is a pure text-doc path safe to cap. /knowledge/ingest
+# legitimately accepts (and preserves) large video files, so it is NOT capped
+# here — its zip path is bounded separately by the decompression-bomb guard.
+_DOC_INGEST_PATHS = ("/ingest/document",)
+_MAX_DOC_BYTES = 100 * 1024 * 1024
+
+
+@app.middleware("http")
+async def security_headers(request: _Req, call_next):
+    if request.url.path in _DOC_INGEST_PATHS:
+        cl = request.headers.get("content-length")
+        if cl and cl.isdigit() and int(cl) > _MAX_DOC_BYTES:
+            return _JSON(
+                {"detail": "file too large (documents are capped at 100 MB)"},
+                status_code=413)
+    resp = await call_next(request)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    # SAMEORIGIN (not DENY) so the app's own same-origin embeds still work while
+    # cross-origin clickjacking is blocked.
+    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers.setdefault("Content-Security-Policy", "frame-ancestors 'self'")
+    # Behind Railway's TLS-terminating proxy uvicorn sees http, so trust the
+    # forwarded proto too — else HSTS never fires in production.
+    if (request.url.scheme == "https"
+            or request.headers.get("x-forwarded-proto") == "https"):
+        resp.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return resp
+
+
 # ─────────────────────────────────────────────────────────────────────── ui ──
 
 _STATIC = Path(__file__).parent / "static"
@@ -350,6 +389,7 @@ from .templates_api import router as templates_router
 from .feedback_changes_api import router as feedback_changes_router
 from .brand_kit_api import router as brand_kit_router
 from .xpoz_api import router as xpoz_router
+from .api_v1 import router as v1_router
 app.include_router(autopilot_bulk_router)
 app.include_router(analytics_live_router)
 app.include_router(research_roster_router)
@@ -358,6 +398,9 @@ app.include_router(templates_router)
 app.include_router(feedback_changes_router)
 app.include_router(brand_kit_router)
 app.include_router(xpoz_router)
+# Public /v1 service façade (API-key auth) — lets another platform drive
+# JAMES OS headlessly. See api_v1.py.
+app.include_router(v1_router)
 
 
 @app.get("/", include_in_schema=False)
@@ -407,8 +450,8 @@ async def create_event(event: EventCreate) -> Event:
 @app.get("/events", response_model=list[Event])
 async def list_events(
     event_type: str | None = None,
-    limit: int = Query(default=50, le=200),
-    offset: int = 0,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ) -> list[Event]:
     sql = """
         SELECT id, tenant_id, event_type, payload, raw_content,
@@ -634,10 +677,10 @@ async def knowledge_whitepaper(req: WhitepaperRequest) -> dict[str, Any]:
 
 
 @app.get("/knowledge/whitepaper/{job_id}")
-async def knowledge_whitepaper_status(job_id: str) -> dict[str, Any]:
+async def knowledge_whitepaper_status(job_id: str, request: Request) -> dict[str, Any]:
     """Poll a white-paper job: {status: running|done|failed, result?, error?}."""
     from .whitepaper import get_whitepaper_job
-    job = get_whitepaper_job(job_id)
+    job = get_whitepaper_job(job_id, getattr(request.state, "tenant_id", None))
     if job is None:
         raise HTTPException(
             status_code=404,
@@ -914,10 +957,10 @@ async def knowledge_content_pack(body: dict = Body(default={})) -> dict[str, Any
 
 
 @app.get("/knowledge/content-pack/{job_id}")
-async def knowledge_content_pack_status(job_id: str) -> dict[str, Any]:
+async def knowledge_content_pack_status(job_id: str, request: Request) -> dict[str, Any]:
     """Poll: {status, stage?: angles|posts|reels, result?, error?}."""
     from .content_pack import get_content_pack_job
-    job = get_content_pack_job(job_id)
+    job = get_content_pack_job(job_id, getattr(request.state, "tenant_id", None))
     if job is None:
         raise HTTPException(
             status_code=404,
@@ -927,11 +970,11 @@ async def knowledge_content_pack_status(job_id: str) -> dict[str, Any]:
 
 
 @app.get("/knowledge/thesis/develop/{job_id}")
-async def knowledge_thesis_develop_status(job_id: str) -> dict[str, Any]:
+async def knowledge_thesis_develop_status(job_id: str, request: Request) -> dict[str, Any]:
     """Poll: {status: running|done|failed, stage?: reading|researching|writing,
     result?, error?}."""
     from .thesis import get_develop_job
-    job = get_develop_job(job_id)
+    job = get_develop_job(job_id, getattr(request.state, "tenant_id", None))
     if job is None:
         raise HTTPException(
             status_code=404,
@@ -970,11 +1013,11 @@ async def knowledge_podcasts() -> dict[str, Any]:
 
 
 @app.get("/knowledge/podcast/{job_id}")
-async def knowledge_podcast_status(job_id: str) -> dict[str, Any]:
+async def knowledge_podcast_status(job_id: str, request: Request) -> dict[str, Any]:
     """Poll: {status: running|done|failed, stage?: scripting|narrating|
     publishing, result?, error?}."""
     from .podcast import get_podcast_job
-    job = get_podcast_job(job_id)
+    job = get_podcast_job(job_id, getattr(request.state, "tenant_id", None))
     if job is None:
         raise HTTPException(
             status_code=404,
@@ -1062,9 +1105,9 @@ async def knowledge_intelligence(req: _IntelRequest) -> dict[str, Any]:
 
 
 @app.get("/knowledge/intelligence/{job_id}")
-async def knowledge_intelligence_status(job_id: str) -> dict[str, Any]:
+async def knowledge_intelligence_status(job_id: str, request: Request) -> dict[str, Any]:
     from .intelligence import get_intelligence_job
-    job = get_intelligence_job(job_id)
+    job = get_intelligence_job(job_id, getattr(request.state, "tenant_id", None))
     if job is None:
         raise HTTPException(
             status_code=404,
@@ -1245,7 +1288,14 @@ async def auth_change_password(
             "UPDATE users SET password_hash = $2 WHERE id = $1",
             sess["user_id"], hash_password(req.new_password),
         )
-    return {"ok": True}
+        # Revoke ALL of this user's sessions so a stolen cookie can't survive a
+        # password change (the user re-logs in with the new password).
+        await conn.execute(
+            "UPDATE sessions SET revoked_at = now() "
+            "WHERE user_id = $1 AND revoked_at IS NULL",
+            sess["user_id"],
+        )
+    return {"ok": True, "sessions_revoked": True}
 
 
 @app.post("/ask", response_model=AskResponse)

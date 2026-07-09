@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -175,7 +176,9 @@ async def fetch_from_drive_then_ingest(
         )
 
     with tempfile.TemporaryDirectory(dir=big_file_tmp_dir()) as td:
-        local_path = f"{td}/{filename}"
+        # basename only: a Drive object name can contain '/' or '..' and would
+        # otherwise escape the temp dir (arbitrary-write path traversal).
+        local_path = os.path.join(td, os.path.basename(filename) or "source")
         try:
             await fetch_drive_file_to_path(drive_file_id, local_path)
         except Exception as e:  # noqa: BLE001

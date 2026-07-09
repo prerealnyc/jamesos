@@ -64,6 +64,18 @@ def _one_of(value, allowed: list[str], fallback: str) -> str:
     return s if s in allowed else fallback
 
 
+def _clamp_sensitivity(tier: str) -> str:
+    """The auto-classifier may RAISE sensitivity but must never LOWER it below
+    the safe default without human sign-off — a document whose own (attacker-
+    controllable) text says 'cleared for public release' cannot silently
+    downgrade itself. SENSITIVITIES is ordered least->most restrictive."""
+    try:
+        return SENSITIVITIES[max(SENSITIVITIES.index(tier),
+                                 SENSITIVITIES.index(DEFAULT_SENSITIVITY))]
+    except ValueError:
+        return DEFAULT_SENSITIVITY
+
+
 async def classify_document(
     *,
     filename: str,
@@ -145,7 +157,8 @@ async def classify_document(
         descriptor=safe_descriptor(str(p.get("descriptor") or "")) or "Doc",
         date=date,
         status=_one_of(p.get("status"), STATUSES, "Current"),
-        sensitivity=_one_of(p.get("sensitivity"), SENSITIVITIES, DEFAULT_SENSITIVITY),
+        sensitivity=_clamp_sensitivity(
+            _one_of(p.get("sensitivity"), SENSITIVITIES, DEFAULT_SENSITIVITY)),
         silo_id=silo_id,
         entity_id=entity_id,
         entity_name=entity_name,

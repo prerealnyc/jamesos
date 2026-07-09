@@ -303,13 +303,18 @@ async def get_session(token: str) -> Optional[dict]:
 # ── FastAPI dependency ──────────────────────────────────────────────
 
 
-_PUBLIC_PREFIXES = (
-    "/auth/", "/health", "/healthz", "/openapi", "/docs", "/redoc",
-)
+# Exact public paths — a bare startswith("/openapi") would ALSO expose a future
+# route like /openapi-admin or /docs-export, so match these exactly.
+_PUBLIC_EXACT = frozenset({
+    "/health", "/healthz", "/openapi.json", "/docs", "/redoc",
+    "/docs/oauth2-redirect",
+})
+# True prefixes (must end in '/', so a boundary is enforced).
+_PUBLIC_PREFIXES = ("/auth/",)
 
 
 def is_public_path(path: str) -> bool:
-    return any(path == p.rstrip("/") or path.startswith(p) for p in _PUBLIC_PREFIXES)
+    return path in _PUBLIC_EXACT or any(path.startswith(p) for p in _PUBLIC_PREFIXES)
 
 
 async def require_user(
@@ -569,9 +574,10 @@ async def login_user(
 
 
 def _cookie_secure() -> bool:
-    """Secure flag only in prod (HTTPS). Set JOS_SECURE_COOKIE=1 to
-    force it on (e.g. behind a TLS-terminating proxy)."""
-    return (os.environ.get("JOS_SECURE_COOKIE", "") or "").strip() in ("1", "true", "yes")
+    """Secure BY DEFAULT (prod is HTTPS). Set JOS_SECURE_COOKIE=0 only for local
+    HTTP dev, where a Secure cookie wouldn't be sent over http://localhost."""
+    v = (os.environ.get("JOS_SECURE_COOKIE", "") or "").strip().lower()
+    return v not in ("0", "false", "no")
 
 
 def set_session_cookie(response: Response, token: str) -> None:

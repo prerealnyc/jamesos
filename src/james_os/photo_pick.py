@@ -99,6 +99,9 @@ _URL_SHARPNESS: dict[str, float] = {}   # hero libraries are small + stable
 async def _url_sharpness(url: str) -> float:
     if url not in _URL_SHARPNESS:
         try:
+            from .netguard import url_is_public
+            if not await url_is_public(url, allow_http=True):
+                raise ValueError("blocked non-public url")  # SSRF guard
             import httpx
             async with httpx.AsyncClient(timeout=20.0) as c:
                 r = await c.get(url, follow_redirects=True)

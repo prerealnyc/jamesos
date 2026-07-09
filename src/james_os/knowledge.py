@@ -58,6 +58,12 @@ MIME_BY_EXT = {
 MAX_ZIP_BYTES = 50 * 1024 * 1024
 MAX_FILES_PER_ZIP = 60
 CONCURRENCY = 2
+# Decompression-bomb guard: bound the UNCOMPRESSED output, not just the
+# compressed input (DEFLATE reaches ~1000:1, so a 30 MB zip can expand to tens
+# of GB and OOM the process).
+MAX_UNZIPPED_BYTES = 500 * 1024 * 1024   # total decompressed across all entries (primary guard)
+MAX_ZIP_RATIO = 1000                     # per-entry ratio; near DEFLATE's ~1032:1 max so
+                                         # legit compressible text (logs/CSV) isn't rejected
 _VERSION_TRIES = 99
 _COMMIT_TASKS: set = set()   # strong refs for detached commitment-mining tasks
 
@@ -357,6 +363,21 @@ async def ingest_zip(
         raise ValueError(
             f"zip has {len(names)} files; cap is {MAX_FILES_PER_ZIP}. "
             "Split it into smaller zips.")
+
+    # Decompression-bomb guard: reject before inflating anything if the declared
+    # uncompressed total is huge or any entry's compression ratio is implausible.
+    total_unzipped = 0
+    for n in names:
+        info = zf.getinfo(n)
+        if info.compress_size and (info.file_size / info.compress_size) > MAX_ZIP_RATIO:
+            raise ValueError(
+                f"zip entry '{n}' has an implausible compression ratio "
+                "(possible zip bomb) — refusing.")
+        total_unzipped += info.file_size
+        if total_unzipped > MAX_UNZIPPED_BYTES:
+            raise ValueError(
+                f"zip expands to over {MAX_UNZIPPED_BYTES // (1024 * 1024)} MB "
+                "decompressed — refusing (possible zip bomb).")
 
     sem = asyncio.Semaphore(CONCURRENCY)
 
