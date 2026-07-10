@@ -164,6 +164,11 @@ class Settings(BaseSettings):
     # (still SAVED to the library for deliberate, named reuse later). Flip on
     # to restore credit-saving automatic substitution.
     broll_reuse_enabled: bool = False
+    # Master B-roll switch for the reel / talking-head-overlay path. OFF → NO
+    # cutaways are planned or rendered; the reel is just the captioned talking
+    # footage. Set BROLL_ENABLED=false to turn it off (e.g. when cutaways are
+    # cutting badly); flip back on to restore B-roll.
+    broll_enabled: bool = True
     # Style prefix applied to every B-roll seed image prompt — pushes the
     # output away from cartoon/illustration toward real-looking footage.
     image_style: str = (

@@ -2373,20 +2373,26 @@ async def build_engaging_avatar_assets(
         cadence, min_dur, max_dur = preset["cadence"], preset["min_dur"], preset["max_dur"]
     else:
         cadence, min_dur, max_dur = _INSERT_CADENCE_S, _rt["broll_insert_min_dur"], _rt["broll_insert_max_dur"]
-    inserts = await pick_insert_points(
-        audio_duration=tr.duration,
-        words=tr.words,
-        brand_context=brand_context,
-        hero_description=hero_description,
-        avoid=broll_avoid,
-        cadence_s=cadence,
-        min_dur=min_dur,
-        max_dur=max_dur,
-        industry=settings.brand_industry,
-        color_grade=settings.broll_color_grade,
-        content_aware=(broll_pacing or "").strip().lower() != "punchy",
-        broll_style=broll_style,
-    )
+    # Master B-roll switch (settings.broll_enabled). OFF → plan NO cutaways, so
+    # the reel is just the captioned talking footage. Used to disable B-roll
+    # wholesale when the automatic cutaways are cutting badly.
+    if not settings.broll_enabled:
+        inserts = []
+    else:
+        inserts = await pick_insert_points(
+            audio_duration=tr.duration,
+            words=tr.words,
+            brand_context=brand_context,
+            hero_description=hero_description,
+            avoid=broll_avoid,
+            cadence_s=cadence,
+            min_dur=min_dur,
+            max_dur=max_dur,
+            industry=settings.brand_industry,
+            color_grade=settings.broll_color_grade,
+            content_aware=(broll_pacing or "").strip().lower() != "punchy",
+            broll_style=broll_style,
+        )
 
     if inserts:
         await gen_insert_images(
