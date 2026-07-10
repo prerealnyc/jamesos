@@ -344,9 +344,16 @@ async def auth_middleware(request: _Req, call_next):
     # through to the browser cookie gate below (→ 401 without a session).
     authz = request.headers.get("authorization") or ""
     if authz.lower().startswith("bearer ") and _service_key_allowed(path):
-        from .api_v1 import service_key_tenant
+        from .api_v1 import is_platform_key, service_key_tenant, tenant_is_real
         tid = service_key_tenant(authz, request.headers.get("x-tenant-id"))
         if tid is not None:
+            # A platform key may name any tenant; reject a bad/stale X-Tenant-Id
+            # cleanly instead of writing/reading under a nonexistent (ghost) tenant.
+            if is_platform_key(authz) and not await tenant_is_real(tid):
+                return _JSON(
+                    {"detail": "unknown tenant: X-Tenant-Id does not match any "
+                               "provisioned tenant"},
+                    status_code=404)
             _db_set_tenant(str(tid))
             request.state.tenant_id = str(tid)
             request.state.user_id = None

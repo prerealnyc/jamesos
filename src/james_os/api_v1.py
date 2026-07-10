@@ -91,7 +91,28 @@ def is_platform_key(authorization: str | None) -> bool:
     return bool(token) and hmac.compare_digest(token, platform)
 
 
-def require_service(
+# Platform-key calls may name ANY tenant via X-Tenant-Id. Cache the ids we have
+# already confirmed real so the existence guard costs a DB round-trip only the
+# first time each tenant is seen (grow-only; unknown/typo'd ids are never cached,
+# so they are always re-checked and rejected).
+_KNOWN_TENANTS: set[str] = set()
+
+
+async def tenant_is_real(tenant_id: UUID) -> bool:
+    """True iff tenant_id is a provisioned tenant. Goes through the SECURITY
+    DEFINER tenant_exists() because the app role only sees its own tenant row
+    under the tenants RLS policy (a direct SELECT would reject every OTHER tenant)."""
+    key = str(tenant_id)
+    if key in _KNOWN_TENANTS:
+        return True
+    async with acquire() as conn:
+        ok = bool(await conn.fetchval("SELECT tenant_exists($1)", tenant_id))
+    if ok:
+        _KNOWN_TENANTS.add(key)
+    return ok
+
+
+async def require_service(
     authorization: str | None = Header(default=None),
     x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
 ) -> UUID:
@@ -103,6 +124,11 @@ def require_service(
     if tid is None:
         raise HTTPException(
             401, "invalid key, or platform key missing/invalid X-Tenant-Id header")
+    # A platform key may name any tenant; reject a bad/stale X-Tenant-Id cleanly
+    # instead of running the request under a nonexistent (ghost) tenant scope.
+    if is_platform_key(authorization) and not await tenant_is_real(tid):
+        raise HTTPException(
+            404, "unknown tenant: X-Tenant-Id does not match any provisioned tenant")
     return tid
 
 
@@ -252,8 +278,9 @@ async def v1_create_tenant(
             row = await conn.fetchrow(
                 "SELECT id, name, slug FROM provision_tenant($1, $2)",
                 body.name, body.slug)
-        except Exception as exc:  # noqa: BLE001 — surface provisioning failure, don't 500 blind
-            raise HTTPException(500, f"tenant provisioning failed: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001 — log detail server-side, don't leak DB internals
+            print(f"[v1] provision_tenant failed: {exc}")
+            raise HTTPException(500, "tenant provisioning failed") from exc
     if row is None:
         raise HTTPException(500, "tenant provisioning returned no row")
     return {"tenant_id": str(row["id"]), "name": row["name"], "slug": row["slug"]}
