@@ -53,21 +53,28 @@ router = APIRouter(prefix="/v1", tags=["v1"])
 
 # ─────────────────────────────────────────────────────────────── auth ──
 
-def require_service(authorization: str | None = Header(default=None)) -> UUID:
-    """Validate the service API key (constant-time) and return the bound tenant.
-
-    The tenant is server-configured, NOT caller-supplied — one shared key can only
-    ever act as its own brand.
-    """
+def service_key_tenant(authorization: str | None) -> UUID | None:
+    """If `authorization` is a valid `Bearer <SERVICE_API_KEY>`, return the bound
+    tenant; else None. Shared with the auth middleware so the SAME key authorizes
+    the allowlisted internal API too, not just /v1. Tenant is server-configured,
+    never caller-supplied — one key only ever acts as its own brand."""
     key = (settings.service_api_key or "").strip()
-    if not key:
+    if not key or not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    token = authorization[7:].strip()
+    if token and hmac.compare_digest(token, key):
+        return settings.service_api_tenant_id or settings.default_tenant_id
+    return None
+
+
+def require_service(authorization: str | None = Header(default=None)) -> UUID:
+    """FastAPI dependency for /v1 routes: validate the key, return the bound tenant."""
+    if not (settings.service_api_key or "").strip():
         raise HTTPException(503, "service API is disabled (SERVICE_API_KEY unset)")
-    token = ""
-    if authorization and authorization.lower().startswith("bearer "):
-        token = authorization[7:].strip()
-    if not token or not hmac.compare_digest(token, key):
+    tid = service_key_tenant(authorization)
+    if tid is None:
         raise HTTPException(401, "invalid or missing service API key")
-    return settings.service_api_tenant_id or settings.default_tenant_id
+    return tid
 
 
 # Injected into every /v1 route: validates the key and yields the bound tenant.

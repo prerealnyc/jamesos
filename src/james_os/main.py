@@ -315,11 +315,43 @@ def _request_is_public(path: str) -> bool:
     return any(path.startswith(p) for p in _EXTRA_PUBLIC)
 
 
+# The service API key (machine-to-machine) may drive these product-feature path
+# families, NOT just /v1. It is an EXPLICIT ALLOWLIST — anything not listed
+# (credentials, connections, integrations, the autonomous agent, /auth, /api/*
+# admin/debug/seed, /plug-ins) stays cookie-only and unreachable by the key.
+_SERVICE_ALLOWED = (
+    "/ask", "/ingest", "/knowledge", "/content-library", "/research", "/trends",
+    "/analytics", "/media", "/suggestions", "/changes", "/voice", "/hero",
+    "/higgsfield", "/templates", "/speakers", "/brand-profile", "/brand-kit",
+    "/intake", "/post", "/video", "/long-form", "/autopilot", "/compositions",
+    "/events", "/strategy", "/generate", "/generate-multi", "/generate-script",
+    "/images",
+)
+
+
+def _service_key_allowed(path: str) -> bool:
+    # Boundary match so "/video" can't also open "/videox".
+    return any(path == p or path.startswith(p + "/") for p in _SERVICE_ALLOWED)
+
+
 @app.middleware("http")
 async def auth_middleware(request: _Req, call_next):
     path = request.url.path
     if _request_is_public(path):
         return await call_next(request)
+    # Machine-to-machine: a valid service key authorizes the allowlisted product
+    # API as the key's bound tenant. Invalid key / non-allowlisted path falls
+    # through to the browser cookie gate below (→ 401 without a session).
+    authz = request.headers.get("authorization") or ""
+    if authz.lower().startswith("bearer ") and _service_key_allowed(path):
+        from .api_v1 import service_key_tenant
+        tid = service_key_tenant(authz)
+        if tid is not None:
+            _db_set_tenant(str(tid))
+            request.state.tenant_id = str(tid)
+            request.state.user_id = None
+            request.state.user_email = ""
+            return await call_next(request)
     token = request.cookies.get(_AUTH_COOKIE) or ""
     sess = await _auth_get_session(token) if token else None
     if sess is None:
