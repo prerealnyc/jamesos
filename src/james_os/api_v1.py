@@ -35,7 +35,6 @@ import asyncio
 import hmac
 import ipaddress
 import json
-import re
 import socket
 import uuid
 from datetime import UTC, datetime
@@ -233,11 +232,6 @@ class TenantCreate(BaseModel):
     slug: str | None = None
 
 
-def _slugify(s: str) -> str:
-    out = re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
-    return out or "client"
-
-
 @router.post("/tenants", status_code=201)
 async def v1_create_tenant(
     body: TenantCreate, authorization: str | None = Header(default=None),
@@ -245,24 +239,24 @@ async def v1_create_tenant(
     """Provision a new client tenant (fully isolated). PLATFORM KEY ONLY — a brand
     key cannot create tenants. Returns the tenant_id to send as X-Tenant-Id on that
     client's subsequent calls. The client then uploads their own hero/knowledge/voice
-    into this tenant and all their content is produced from it."""
+    into this tenant and all their content is produced from it.
+
+    The tenants table is RLS-scoped (id = app.current_tenant), so the app role
+    cannot INSERT a new-id row directly; provisioning goes through the
+    SECURITY DEFINER `provision_tenant()` function (slug + uniqueness handled
+    server-side)."""
     if not is_platform_key(authorization):
         raise HTTPException(403, "tenant provisioning requires the platform API key")
-    base = _slugify(body.slug or body.name)
     async with acquire() as conn:
-        slug = base
-        for _ in range(6):
-            if not await conn.fetchval("SELECT 1 FROM tenants WHERE slug=$1", slug):
-                try:
-                    row = await conn.fetchrow(
-                        "INSERT INTO tenants (id, name, slug, config) "
-                        "VALUES (gen_random_uuid(), $1, $2, '{}'::jsonb) "
-                        "RETURNING id, name, slug", body.name, slug)
-                    return {"tenant_id": str(row["id"]), "name": row["name"], "slug": row["slug"]}
-                except Exception:  # noqa: BLE001 — slug race; retry with a suffix
-                    pass
-            slug = f"{base}-{uuid.uuid4().hex[:4]}"
-    raise HTTPException(500, "could not allocate a unique tenant slug")
+        try:
+            row = await conn.fetchrow(
+                "SELECT id, name, slug FROM provision_tenant($1, $2)",
+                body.name, body.slug)
+        except Exception as exc:  # noqa: BLE001 — surface provisioning failure, don't 500 blind
+            raise HTTPException(500, f"tenant provisioning failed: {exc}") from exc
+    if row is None:
+        raise HTTPException(500, "tenant provisioning returned no row")
+    return {"tenant_id": str(row["id"]), "name": row["name"], "slug": row["slug"]}
 
 
 # ─────────────────────────────────────────────────── generation ──
