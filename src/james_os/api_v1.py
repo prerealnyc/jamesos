@@ -35,6 +35,7 @@ import asyncio
 import hmac
 import ipaddress
 import json
+import re
 import socket
 import uuid
 from datetime import UTC, datetime
@@ -53,27 +54,56 @@ router = APIRouter(prefix="/v1", tags=["v1"])
 
 # ─────────────────────────────────────────────────────────────── auth ──
 
-def service_key_tenant(authorization: str | None) -> UUID | None:
-    """If `authorization` is a valid `Bearer <SERVICE_API_KEY>`, return the bound
-    tenant; else None. Shared with the auth middleware so the SAME key authorizes
-    the allowlisted internal API too, not just /v1. Tenant is server-configured,
-    never caller-supplied — one key only ever acts as its own brand."""
-    key = (settings.service_api_key or "").strip()
-    if not key or not authorization or not authorization.lower().startswith("bearer "):
+def service_key_tenant(authorization: str | None, x_tenant_id: str | None = None) -> UUID | None:
+    """Resolve a service-key request to its tenant, or None if unauthenticated.
+    Shared by /v1 AND the allowlisted internal API (via the auth middleware).
+
+    - BRAND key   -> its one bound tenant (X-Tenant-Id ignored).
+    - PLATFORM key -> the X-Tenant-Id header — a trusted multi-tenant control plane
+      (e.g. the 2.0 backend) picks the tenant; RLS still isolates each tenant's data.
+
+    The tenant is NEVER browser-chosen: only a holder of these server-side keys can
+    set it, and only the platform key may cross tenants."""
+    if not authorization or not authorization.lower().startswith("bearer "):
         return None
     token = authorization[7:].strip()
-    if token and hmac.compare_digest(token, key):
+    if not token:
+        return None
+    brand = (settings.service_api_key or "").strip()
+    if brand and hmac.compare_digest(token, brand):
         return settings.service_api_tenant_id or settings.default_tenant_id
+    platform = (settings.service_api_platform_key or "").strip()
+    if platform and hmac.compare_digest(token, platform):
+        if not x_tenant_id:
+            return None
+        try:
+            return UUID(x_tenant_id)
+        except ValueError:
+            return None
     return None
 
 
-def require_service(authorization: str | None = Header(default=None)) -> UUID:
-    """FastAPI dependency for /v1 routes: validate the key, return the bound tenant."""
-    if not (settings.service_api_key or "").strip():
-        raise HTTPException(503, "service API is disabled (SERVICE_API_KEY unset)")
-    tid = service_key_tenant(authorization)
+def is_platform_key(authorization: str | None) -> bool:
+    """True iff the bearer is the platform key (gates tenant provisioning)."""
+    platform = (settings.service_api_platform_key or "").strip()
+    if not platform or not authorization or not authorization.lower().startswith("bearer "):
+        return False
+    token = authorization[7:].strip()
+    return bool(token) and hmac.compare_digest(token, platform)
+
+
+def require_service(
+    authorization: str | None = Header(default=None),
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
+) -> UUID:
+    """FastAPI dependency for /v1 routes: validate the key, return the target tenant."""
+    if not ((settings.service_api_key or "").strip()
+            or (settings.service_api_platform_key or "").strip()):
+        raise HTTPException(503, "service API is disabled (no SERVICE_API_KEY set)")
+    tid = service_key_tenant(authorization, x_tenant_id)
     if tid is None:
-        raise HTTPException(401, "invalid or missing service API key")
+        raise HTTPException(
+            401, "invalid key, or platform key missing/invalid X-Tenant-Id header")
     return tid
 
 
@@ -191,8 +221,48 @@ class Decision(BaseModel):
 
 @router.get("/ping")
 async def v1_ping(tenant_id: TenantDep) -> dict[str, Any]:
-    """Cheap auth + connectivity check for the calling platform."""
+    """Cheap auth + connectivity check. Echoes the resolved tenant so a platform-key
+    caller can confirm its X-Tenant-Id routed correctly."""
     return {"ok": True, "tenant_id": str(tenant_id)}
+
+
+# ─────────────────────────────────────────────── tenant provisioning ──
+
+class TenantCreate(BaseModel):
+    name: str = Field(..., min_length=1)
+    slug: str | None = None
+
+
+def _slugify(s: str) -> str:
+    out = re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
+    return out or "client"
+
+
+@router.post("/tenants", status_code=201)
+async def v1_create_tenant(
+    body: TenantCreate, authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Provision a new client tenant (fully isolated). PLATFORM KEY ONLY — a brand
+    key cannot create tenants. Returns the tenant_id to send as X-Tenant-Id on that
+    client's subsequent calls. The client then uploads their own hero/knowledge/voice
+    into this tenant and all their content is produced from it."""
+    if not is_platform_key(authorization):
+        raise HTTPException(403, "tenant provisioning requires the platform API key")
+    base = _slugify(body.slug or body.name)
+    async with acquire() as conn:
+        slug = base
+        for _ in range(6):
+            if not await conn.fetchval("SELECT 1 FROM tenants WHERE slug=$1", slug):
+                try:
+                    row = await conn.fetchrow(
+                        "INSERT INTO tenants (id, name, slug, config) "
+                        "VALUES (gen_random_uuid(), $1, $2, '{}'::jsonb) "
+                        "RETURNING id, name, slug", body.name, slug)
+                    return {"tenant_id": str(row["id"]), "name": row["name"], "slug": row["slug"]}
+                except Exception:  # noqa: BLE001 — slug race; retry with a suffix
+                    pass
+            slug = f"{base}-{uuid.uuid4().hex[:4]}"
+    raise HTTPException(500, "could not allocate a unique tenant slug")
 
 
 # ─────────────────────────────────────────────────── generation ──

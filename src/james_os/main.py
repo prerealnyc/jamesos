@@ -345,7 +345,7 @@ async def auth_middleware(request: _Req, call_next):
     authz = request.headers.get("authorization") or ""
     if authz.lower().startswith("bearer ") and _service_key_allowed(path):
         from .api_v1 import service_key_tenant
-        tid = service_key_tenant(authz)
+        tid = service_key_tenant(authz, request.headers.get("x-tenant-id"))
         if tid is not None:
             _db_set_tenant(str(tid))
             request.state.tenant_id = str(tid)

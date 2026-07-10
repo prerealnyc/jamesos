@@ -84,10 +84,13 @@ class Settings(BaseSettings):
     # `Authorization: Bearer <key>` to drive JAMES OS headlessly. UNSET = the /v1
     # API is disabled (returns 503) — secure default.
     service_api_key: str = ""
-    # The key is BOUND to exactly this tenant (defaults to default_tenant_id). The
-    # caller cannot choose the tenant — that would let one shared key act as any
-    # brand. Per-consumer/per-brand keys are a future hardening (key→tenant map).
+    # BRAND key is BOUND to exactly this tenant (defaults to default_tenant_id) and
+    # ignores X-Tenant-Id — one brand's key can only ever act as that brand.
     service_api_tenant_id: UUID | None = None
+    # PLATFORM key is multi-tenant: it REQUIRES an X-Tenant-Id header and acts as
+    # that tenant. Held ONLY by a trusted control plane (e.g. the 2.0 backend),
+    # which maps its logged-in users to their client's tenant. Unset = disabled.
+    service_api_platform_key: str = ""
 
     # ─── Video generation ───
     # Generative clips (Runway Gen-3/4). Provider-abstracted with a stub
