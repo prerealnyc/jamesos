@@ -108,6 +108,20 @@ _FACE_X_SYSTEM = (
     "found=false. This is used to re-center a vertical crop, so be precise."
 )
 
+_SUBJECT_X_SYSTEM = (
+    "You locate the MAIN VISUAL SUBJECT in frames sampled from ONE short video "
+    "clip that has NO speaking person — it shows scenery, a place, a property, a "
+    "product, or an object. Return STRICT JSON {\"found\": boolean, \"center_x\": "
+    "number, \"subject\": string}. center_x is the horizontal center of the single "
+    "most important subject — the building, room, product, landmark, sign, vehicle, "
+    "or focal element the shot is ABOUT — as a fraction 0.0 (far LEFT edge) to 1.0 "
+    "(far RIGHT edge), AVERAGED across the frames. Pick the ONE element a viewer's "
+    "eye is drawn to and the shot is composed around; if it drifts across frames, "
+    "average its position. subject is a 2-5 word label of it. If the frame is an "
+    "even texture with no focal subject (open sky, flat water, blank wall, abstract "
+    "pattern), set found=false. This re-centers a vertical crop, so be precise."
+)
+
 
 async def detect_speaker_center_x(
     video_path: str, duration_s: float = 0.0, samples: int = 3,
@@ -154,6 +168,57 @@ async def detect_speaker_center_x(
                 return None
             x = float(data.get("center_x"))
             return x if 0.0 <= x <= 1.0 else None
+    except Exception:  # noqa: BLE001 — detection is best-effort; never break a render
+        return None
+
+
+async def detect_subject_center_x(
+    video_path: str, duration_s: float = 0.0, samples: int = 3,
+) -> tuple[float, str] | None:
+    """Best-effort: when a clip has NO speaking face, sample a few mid-clip frames
+    and ask vision for the MAIN VISUAL SUBJECT's horizontal center 0..1 (the
+    object / scenery the shot is about), so a vertical crop pans to IT instead of a
+    blind center crop. ONE vision call. Returns (center_x, subject_label) or None
+    on ANY failure — must never break a render."""
+    client = _client()
+    if client is None:
+        return None
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            frames = await _extract_center_frames(
+                video_path, Path(td), duration_s, samples,
+            )
+            if not frames:
+                return None
+            content: list[dict] = [{
+                "type": "text",
+                "text": (f"{len(frames)} frames from ONE scenery/b-roll clip, in "
+                         "order. Give the main visual subject's horizontal center "
+                         "(0=left, 1=right), averaged across them."),
+            }]
+            for f in frames:
+                b64 = base64.b64encode(f.read_bytes()).decode()
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}",
+                                  "detail": "low"},
+                })
+            res = await client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": _SUBJECT_X_SYSTEM},
+                    {"role": "user", "content": content},
+                ],
+                max_tokens=120, temperature=0.0,
+                response_format={"type": "json_object"},
+            )
+            data = json.loads(res.choices[0].message.content or "{}")
+            if not data.get("found"):
+                return None
+            x = float(data.get("center_x"))
+            if not (0.0 <= x <= 1.0):
+                return None
+            return x, str(data.get("subject") or "subject")[:60]
     except Exception:  # noqa: BLE001 — detection is best-effort; never break a render
         return None
 

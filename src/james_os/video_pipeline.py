@@ -1260,13 +1260,21 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
                 elif _src_ar > _out_ar * 1.05:          # source is meaningfully wider
                     source_overflow_pct = round(_src_ar / _out_ar * 100.0, 1)
                     from .perception import detect_speaker_center_x
-                    speaker_face_x = await detect_speaker_center_x(
-                        out_path, await probe_duration(out_path),
-                    )
+                    _dur = await probe_duration(out_path)
+                    speaker_face_x = await detect_speaker_center_x(out_path, _dur)
+                    # No speaking face (scenery / object footage): pan to the main
+                    # visual SUBJECT the shot is about, instead of a blind center crop.
+                    if speaker_face_x is None and settings.subject_focus_enabled:
+                        from .perception import detect_subject_center_x
+                        _subj = await detect_subject_center_x(out_path, _dur)
+                        if _subj is not None:
+                            speaker_face_x = _subj[0]
+                            print(f"[long_form] centering: no face → SUBJECT "
+                                  f"'{_subj[1]}' at x={_subj[0]} → pan to it")
                     print(
                         f"[long_form] centering: cut {_cw}x{_ch} (ar {_src_ar:.2f}) "
                         f"→ overflow {source_overflow_pct}%, face_x={speaker_face_x} "
-                        f"({'PAN to center' if speaker_face_x is not None else 'no face → center crop'})"
+                        f"({'PAN to subject/center' if speaker_face_x is not None else 'no subject → center crop'})"
                     )
                 else:
                     print(f"[long_form] centering: cut ar {_src_ar:.2f} ≤ target "

@@ -158,6 +158,13 @@ class Settings(BaseSettings):
     speaker_follow_min_turn_s: float = 1.2   # ignore turns shorter than this (no jitter)
     speaker_follow_ramp_s: float = 0.4       # ease duration for each pan (seconds)
     speaker_follow_left_bias: float = 0.42   # active speaker's face target (0..1, center-LEFT)
+    # ─── Subject focus for footage with NO people (scenery / objects / b-roll) ───
+    # When a wide cut is reframed to 9:16 and NO speaking face is found, don't
+    # fall back to a blind center crop: detect the main visual SUBJECT (the
+    # object, building, product, or landmark the shot is about) and pan the crop
+    # to center IT — so scenery/object clips are framed on their subject, not
+    # sliced through the middle. Best-effort vision call; None → center crop.
+    subject_focus_enabled: bool = True
     # Auto-reuse of previously-rendered B-roll across videos. OFF: per human
     # feedback the same clips kept reappearing and drifting off the spoken
     # words, so every reel now generates fresh, transcript-grounded B-roll
