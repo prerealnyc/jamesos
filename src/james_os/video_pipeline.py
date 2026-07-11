@@ -21,6 +21,7 @@ Honest limits (flagged, not hidden):
 
 import asyncio
 import json
+import os
 from uuid import UUID
 
 import httpx
@@ -36,7 +37,11 @@ from .video_feedback import video_avoid_block
 from .video_plan import generate_scene_plan
 
 _POLL_EVERY = 5.0
-_MAX_POLLS = 60  # ~5 min ceiling for Creatomate assembly polls
+# ~15 min ceiling: a heavy multi-track assembly under provider load runs well over
+# 5 min, and Creatomate bills + finishes it anyway — the old 5-min cap threw away a
+# paid, near-complete render (render_id isn't persisted, so it couldn't re-poll).
+# Matches the B-roll ceiling.
+_MAX_POLLS = 180  # ~15 min ceiling for Creatomate assembly polls
 # B-roll engines vary a lot: Runway finishes a 5s clip in <3 min, Higgsfield
 # (dop/standard) takes 5-7 min (measured). The loop exits on success, so the
 # generous ceiling only binds when the provider is genuinely slow.
@@ -49,6 +54,22 @@ _AVATAR_MAX_POLLS = 240  # ~20 min ceiling for HeyGen avatar renders
 # consecutive transient failures (network blip, provider 5xx/429) before
 # declaring the render dead.
 _MAX_TRANSIENT_POLL_ERRORS = 3
+
+# A batch (a Drive import fanning out N clips, a bulk autopilot run) can spawn many
+# run_production tasks at once; each downloads a multi-GB source to the instance's
+# ephemeral disk and runs ffmpeg + minutes of provider polls. N-at-once exhausts
+# disk/RAM on the single Railway container, and an OOM restart fails ALL of them.
+# Cap how many render concurrently — the rest queue on this semaphore. Env-tunable
+# (raise on a bigger instance). Lazily created so it binds to the running loop.
+_RENDER_CONCURRENCY = max(1, int(os.getenv("RENDER_CONCURRENCY", "2") or 2))
+_RENDER_SEM: "asyncio.Semaphore | None" = None
+
+
+def _render_semaphore() -> "asyncio.Semaphore":
+    global _RENDER_SEM
+    if _RENDER_SEM is None:
+        _RENDER_SEM = asyncio.Semaphore(_RENDER_CONCURRENCY)
+    return _RENDER_SEM
 
 # Runway gen4_turbo accepts a fixed set of ratios; map our aspect to one.
 _RUNWAY_RATIO = {"9:16": "720:1280", "16:9": "1280:720", "1:1": "960:960"}
@@ -1461,6 +1482,16 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
 
 
 async def run_production(production_id: UUID, tenant_id: UUID | None = None) -> None:
+    """Public entry: throttle concurrent renders behind a process-wide semaphore.
+    A batch (a Drive import fanning out N clips, a bulk autopilot run) spawns many
+    run_production tasks at once; each downloads a multi-GB source and runs ffmpeg
+    + minutes of provider polls, so N-at-once exhausts disk/RAM on the single
+    instance. Queued renders wait here for a slot; the render itself is unchanged."""
+    async with _render_semaphore():
+        await _run_production(production_id, tenant_id)
+
+
+async def _run_production(production_id: UUID, tenant_id: UUID | None = None) -> None:
     """The worker. Advances the production through every stage."""
     pid = production_id
     try:
