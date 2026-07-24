@@ -14,12 +14,33 @@ from uuid import UUID
 from .db import acquire
 from .feedback_changes import record_change
 from .llm import get_llm
-from .render_tuning import get_render_tuning
+from .render_tuning import KNOBS, get_render_tuning
 
 # Knob key → (min, max). The ONLY knobs the interpreter may set live.
-_KNOB_RANGE = {
-    "broll_insert_min_dur": (1.0, 4.0),
-    "broll_insert_max_dur": (1.0, 4.0),
+# Derived from render_tuning.KNOBS: a hand-maintained copy would drift, and a
+# knob missing from here is silently downgraded to a queued note — which is
+# exactly how image feedback used to die (the catalog held b-roll durations
+# only, so every complaint about a picture became a to-do nobody actioned).
+_KNOB_RANGE = {k: (v["min"], v["max"]) for k, v in KNOBS.items()}
+
+# Knobs that only take effect in ONE card layout.
+#
+# The three designed layouts have different geometry: hero_quote puts the photo
+# in a tall narrow panel beside the text, statement frames a wide photo under
+# the words, and brand_quote has no photo at all. A single knob cannot mean the
+# same thing in all three, and only hero_quote_card reads these.
+#
+# Without this gate, rejecting a brand_quote card for "he's too small" set
+# image_photo_width, feedback_changes marked it 'applied' and told the owner it
+# was fixed, and the next render was byte-identical — the reject-loop this
+# catalog exists to end. The layout is checked deterministically rather than
+# hinted in the prompt, because a hint is something a model can talk itself out
+# of. Unknown layout is treated as a mismatch: queuing a note is always safe.
+_KNOB_LAYOUT = {
+    "image_photo_width": "hero_quote",
+    "image_text_gutter": "hero_quote",
+    "image_quote_max_pt": "hero_quote",
+    "image_photo_focus_x": "hero_quote",
 }
 
 _SYSTEM = (
@@ -41,30 +62,42 @@ _SYSTEM = (
     "key.\n\n"
     "Return STRICT JSON: {\"kind\": \"live_config\"|\"code_change\", "
     "\"area\": \"broll\"|\"captions\"|\"music\"|\"pacing\"|\"voice\"|\"layout\"|"
-    "\"text\"|\"general\", \"diagnosis\": \"<short: what was disliked>\", "
+    "\"image\"|\"text\"|\"general\", \"diagnosis\": \"<short: what was disliked>\", "
     "\"plain_english\": \"<what is changing or queued, plain user-facing English; "
     "PRESENT tense if live_config (it's applied now), INTENT/FUTURE tense if "
     "code_change (it's queued). e.g. 'B-roll clips now stay on screen longer "
     "(2s to 4s)' or 'Add a split-screen layout — speaker on top, text/visual "
     "below'>\", \"config_key\": \"<a KNOWN_KNOBS key, or empty>\", "
     "\"config_value\": <number or null>, \"confidence\": <0.0-1.0>}.\n"
-    "Example: feedback 'the 2-second B-roll inserts feel too short' → "
-    "kind=live_config, area=broll, config_key=broll_insert_max_dur, "
-    "config_value=4, confidence~0.9. Feedback 'captions overlap his face / need a "
-    "split-screen' → code_change."
+    "Feedback on a generated IMAGE (a post card: the person's photo with the "
+    "brand quote set over it) is usually a knob, not new code — reach for "
+    "KNOWN_KNOBS first and use area='image'. Map the complaint to the physical "
+    "cause: 'he's too small / hidden / hard to see' → a WIDER photo; 'the text "
+    "covers him / is crowding him' → a BIGGER gutter; 'the text is too big / "
+    "shouty' → a SMALLER max type size; 'his head is cut off' → a LOWER photo "
+    "focus point. Only queue a code_change for an image when it needs a layout "
+    "or element that does not exist yet.\n"
+    "Examples: 'the 2-second B-roll inserts feel too short' → live_config, "
+    "area=broll, config_key=broll_insert_max_dur, config_value=4, "
+    "confidence~0.9. 'James is half hidden behind the text, make him clearly "
+    "visible' → live_config, area=image, config_key=image_photo_width, "
+    "config_value=0.58, confidence~0.85. 'the writing sits right on his face' → "
+    "live_config, area=image, config_key=image_text_gutter, config_value=120. "
+    "'put his photo in a circle at the top' → code_change (no such layout)."
 )
 
 
 def _known_knobs_text(knobs: dict) -> str:
-    return (
-        f"- broll_insert_min_dur: B-roll insert MIN on-screen seconds. "
-        f"current={knobs['broll_insert_min_dur']}, range 1.0-4.0, unit=seconds\n"
-        f"- broll_insert_max_dur: B-roll insert MAX on-screen seconds. "
-        f"current={knobs['broll_insert_max_dur']}, range 1.0-4.0, unit=seconds"
+    """Render the catalog from render_tuning.KNOBS, so adding a knob there is
+    all it takes for the interpreter to be able to reach for it."""
+    return "\n".join(
+        f"- {key}: {spec['help']} current={knobs.get(key, spec['default'])}, "
+        f"range {spec['min']}-{spec['max']}, unit={spec['unit']}"
+        for key, spec in KNOBS.items()
     )
 
 
-def _guard(out: dict) -> dict | None:
+def _guard(out: dict, layout: str = "") -> dict | None:
     if not isinstance(out, dict):
         return None
     plain = str(out.get("plain_english") or "").strip()
@@ -78,10 +111,16 @@ def _guard(out: dict) -> dict | None:
     except (TypeError, ValueError):
         conf = 0.0
     rng = _KNOB_RANGE.get(ck or "")
+    # A layout-scoped knob is only live when the rejected image used that exact
+    # layout. Otherwise the value would be stored, announced as applied, and
+    # change nothing that the owner can see.
+    needs_layout = _KNOB_LAYOUT.get(ck or "")
+    layout_ok = needs_layout is None or needs_layout == (layout or "")
     valid_live = (
         kind == "live_config" and rng is not None
         and isinstance(cv, (int, float))
         and rng[0] <= float(cv) <= rng[1] and conf >= 0.75
+        and layout_ok
     )
     if not valid_live:
         kind, ck, cv = "code_change", None, None
@@ -100,11 +139,14 @@ async def interpret_one(reason: str, context: dict, knobs: dict) -> dict | None:
     reason = (reason or "").strip()
     if not reason or reason.lower() in ("rejected", "reject"):
         return None
+    layout = str(context.get("image_format") or "")
     user = (
         f"FEEDBACK: {reason}\n"
         f"CONTEXT: mode={context.get('mode', '')}, "
         f"caption_style={context.get('caption_style', '')}, "
-        f"status={context.get('status', '')}\n\n"
+        f"status={context.get('status', '')}"
+        + (f", image_layout={layout}" if layout else "")
+        + "\n\n"
         f"KNOWN_KNOBS (the only things changeable live):\n{_known_knobs_text(knobs)}\n\n"
         "Return the JSON decision."
     )
@@ -117,7 +159,7 @@ async def interpret_one(reason: str, context: dict, knobs: dict) -> dict | None:
         )
     except Exception:  # noqa: BLE001 — a parse/LLM failure just skips this item
         return None
-    return _guard(out)
+    return _guard(out, layout)
 
 
 async def interpret_recent_feedback(tenant_id: UUID | None = None, limit: int = 40) -> dict:
@@ -185,6 +227,11 @@ async def interpret_recent_feedback(tenant_id: UUID | None = None, limit: int = 
             "mode": f"text post ({(payload or {}).get('format', 'post')})",
             "caption_style": "",
             "status": "rejected",
+            # Which card layout was rendered — stamped by
+            # main._generate_designed_post_image. Absent on older rows and on
+            # plain photo posts, which _guard treats as "cannot verify", so an
+            # image knob stays a queued note rather than a silent no-op.
+            "image_format": (payload or {}).get("image_format", ""),
         }
         await _do(r["reason"], ctx, None, source_event_id=r["id"])
 

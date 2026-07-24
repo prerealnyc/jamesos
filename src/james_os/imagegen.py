@@ -246,7 +246,10 @@ _DESIGN_DIRECTOR_SYSTEM = (
 )
 
 
-async def direct_designed_image(draft_text: str, topic: str = "", avoid: str = "") -> dict:
+async def direct_designed_image(
+    draft_text: str, topic: str = "", avoid: str = "",
+    feedback: str = "", force_format: str = "",
+) -> dict:
     """LLM art director → {format, quote, top_text, bottom_text, bg_prompt,
     bg_kind} for the multi-format image machine. Best-effort: falls back to a
     quote built from the draft's first line so the machine never hard-depends
@@ -255,15 +258,34 @@ async def direct_designed_image(draft_text: str, topic: str = "", avoid: str = "
     `avoid` is a soft variety hint (a format name like "quote") used when
     creating many posts in one batch: it nudges the art director toward a
     DIFFERENT format so a batch doesn't emit the same card type over and over,
-    while still letting content win when a post clearly fits the avoided one."""
+    while still letting content win when a post clearly fits the avoided one.
+
+    `feedback` is the owner's own words about what was wrong with the image
+    they just rejected ("he's half hidden behind the text"). Unlike `avoid`
+    it is a CORRECTION, not a preference, so it goes in as a requirement the
+    art director has to satisfy.
+
+    `force_format` pins the layout outright. The two hints above are things a
+    model may talk itself out of — the docstring above admits `avoid` loses to
+    content — so when a regeneration must come back visibly different, the
+    caller names the format and the model does not get a vote."""
     text = (draft_text or topic or "").strip()
+    _FMTS = {"quote": "brand_quote", "meme": "brand_quote",
+             "brand_quote": "brand_quote", "hero_quote": "hero_quote",
+             "statement": "statement"}
+    _fb_fmt = _FMTS.get(str(force_format).lower(), "brand_quote") if force_format else "brand_quote"
+    _fb_quote = (text.split(". ")[0] if text else (topic or "")).strip()[:140]
     fallback = {
-        "format": "brand_quote",
-        "quote": (text.split(". ")[0] if text else (topic or "")).strip()[:140],
+        # A pinned format has to survive the fallback too — otherwise an LLM
+        # hiccup silently returns the same brand_quote layout the owner just
+        # rejected, and the regeneration looks like it did nothing.
+        "format": _fb_fmt,
+        "quote": _fb_quote,
         "emphasis": "",
-        "top_text": "", "bottom_text": "", "statement": "",
+        "top_text": "", "bottom_text": "",
+        "statement": _fb_quote if _fb_fmt == "statement" else "",
         "bg_prompt": (topic or "").strip(),
-        "bg_kind": "none",
+        "bg_kind": "none" if _fb_fmt == "brand_quote" else "hero",
     }
     if not text:
         return fallback
@@ -276,6 +298,17 @@ async def direct_designed_image(draft_text: str, topic: str = "", avoid: str = "
                 f"\n\n[Variety note: recent posts in this batch already used the "
                 f"'{avoid}' format. Prefer a DIFFERENT format for THIS post "
                 f"UNLESS its content clearly fits '{avoid}' best.]"
+            )
+        if feedback:
+            # Stated as a requirement, not a preference: this is a redo of an
+            # image a human already turned down for this reason.
+            user_content += (
+                f"\n\n[REQUIRED CORRECTION — the previous image for this post was "
+                f"REJECTED by the brand owner for this reason: \"{feedback[:400]}\". "
+                f"Your layout and text choices MUST fix it. If the complaint is "
+                f"that the person is hidden, obscured or hard to see, choose a "
+                f"format that gives the photo room and keep the on-image text "
+                f"short so it cannot cover him.]"
             )
         out = await get_llm().complete_json(
             system=_DESIGN_DIRECTOR_SYSTEM,
@@ -292,6 +325,10 @@ async def direct_designed_image(draft_text: str, topic: str = "", avoid: str = "
                 "brand_quote": "brand_quote", "hero_quote": "hero_quote",
                 "statement": "statement"}
         fmt = _MAP.get(raw_fmt, "brand_quote")
+        # A pinned format wins over whatever the model picked — coerced through
+        # the same map so an unknown name can never reach the compositors.
+        if force_format:
+            fmt = _MAP.get(str(force_format).lower(), fmt)
         # bg_kind: brand_quote → none (self-contained navy card); hero_quote &
         # statement → hero (James's REAL uploaded photo, never AI-generated).
         bg_kind = "none" if fmt == "brand_quote" else "hero"

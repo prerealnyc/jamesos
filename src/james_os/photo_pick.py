@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import io
 import random
+from collections.abc import Sequence
 from uuid import UUID
 
 import numpy as np
@@ -70,12 +71,19 @@ def _least_used(keys: list[str], counts: dict[str, int]) -> str:
 
 async def pick_hero_bytes(
     refs: list[tuple[str, bytes]], tenant_id: UUID | None = None,
+    exclude: Sequence[str] = (),
 ) -> tuple[str, bytes] | None:
     """Pick from in-memory photo refs [(name, bytes)] with both gates.
     Returns (hero_photo_key, bytes). The ref NAME (the source URL from
     hero_context) is the reuse key, so bytes- and URL-path uses of the
     same photo share ONE ledger entry; non-URL names fall back to a
-    content hash."""
+    content hash.
+
+    `exclude` drops photo keys from the running BEFORE either gate — a
+    regeneration passes the key the owner just rejected so it cannot come
+    back. Returns None when excluding empties the pool, which is the honest
+    answer ("this library has nothing else"): the caller then changes the
+    layout instead of silently re-serving the rejected photo."""
     if not refs:
         return None
     scored = [
@@ -83,6 +91,11 @@ async def pick_hero_bytes(
          sharpness_score(b))
         for name, b in refs
     ]
+    if exclude:
+        blocked = set(exclude)
+        scored = [s for s in scored if s[0] not in blocked]
+        if not scored:
+            return None
     sharp = [s for s in scored if s[2] >= _SHARP_FLOOR]
     if not sharp:
         # Everything is soft — use the least-bad rather than nothing.
@@ -114,12 +127,24 @@ async def _url_sharpness(url: str) -> float:
 
 async def pick_hero_url(
     urls: list[str], tenant_id: UUID | None = None,
+    exclude: Sequence[str] = (),
 ) -> str | None:
     """Pick from photo URLs with BOTH gates (bytes fetched once per URL and
     the sharpness cached — the 'blurry image' rejections came through this
-    photo-post path too)."""
+    photo-post path too).
+
+    `exclude` drops URLs before the gates so a regeneration cannot re-serve
+    the photo the owner just rejected. On ties `_least_used` picks at random,
+    so re-running alone is NOT enough to get a different photo — excluding is
+    what makes "it must not come back the same" a guarantee rather than a
+    coin flip. Returns None when the exclusion empties the pool."""
     if not urls:
         return None
+    if exclude:
+        blocked = set(exclude)
+        urls = [u for u in urls if u not in blocked]
+        if not urls:
+            return None
     scores = {u: await _url_sharpness(u) for u in urls}
     sharp = [u for u in urls if scores[u] >= _SHARP_FLOOR]
     if not sharp:

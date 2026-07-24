@@ -1842,12 +1842,21 @@ async def _generate_designed_post_image(
 
     _q = (spec.get("quote") or "").strip() or (draft_text or topic or "").split(". ")[0]
     _emph = (spec.get("emphasis") or "").strip()
+    # Live render knobs for this tenant — photo width, text gutter, type size
+    # and crop point. Feedback like "he's hidden behind the text" is applied
+    # here, on the next card, with no deploy. Never let a config read stop a
+    # render: an empty dict is exactly the shipped defaults.
+    try:
+        from .render_tuning import get_render_tuning
+        _tuning = await get_render_tuning(tenant_id)
+    except Exception:  # noqa: BLE001
+        _tuning = {}
     if fmt == "brand_quote":
         out = brand_quote_card(_q, kit, _emph)
     elif fmt == "hero_quote":
         # Needs James's photo; if we couldn't fetch one, fall back to the
         # text-only branded card so the render never fails.
-        out = (hero_quote_card(_q, hero_bytes, kit, emphasis=_emph)
+        out = (hero_quote_card(_q, hero_bytes, kit, emphasis=_emph, tuning=_tuning)
                if hero_bytes else brand_quote_card(_q, kit, _emph))
     elif fmt == "statement" and hero_bytes:
         out = statement_card(
@@ -1879,6 +1888,12 @@ async def _generate_designed_post_image(
             json.dumps({
                 "image_url": served_uri, "media_url": served_uri,
                 "has_image": True,
+                # Which card layout was rendered. The three layouts have
+                # different geometry, so the live render knobs only apply to the
+                # one they were measured against — without this stamp a
+                # rejection could set a knob that layout never reads, and the
+                # owner would be told it was fixed while nothing changed.
+                "image_format": fmt,
                 # Reuse memory: which hero photo this post consumed, so the
                 # picker can rotate away from it on the next posts.
                 **({"hero_photo_key": hero_key} if hero_key else {}),

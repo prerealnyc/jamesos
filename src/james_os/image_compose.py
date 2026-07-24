@@ -423,27 +423,51 @@ def brand_quote_card(quote: str, brand_kit: dict | None = None,
 
 
 def hero_quote_card(quote: str, hero_bytes: bytes, brand_kit: dict | None = None,
-                    kicker: str = "LOOK WITHIN", emphasis: str = "") -> bytes:
+                    kicker: str = "LOOK WITHIN", emphasis: str = "",
+                    tuning: dict | None = None) -> bytes:
     """Hero photo on the RIGHT (edge faded softly into the navy) + quote in a
     fixed LEFT column. The text lives entirely inside that column with firm
     margins and a real gutter to the photo — it is auto-fit so even a long line
     stays inside the column and NEVER crosses onto the photo. Clean, professional,
-    margined. (The 'YOU WEREN'T BORN TO PLAY SMALL' design.)"""
+    margined. (The 'YOU WEREN'T BORN TO PLAY SMALL' design.)
+
+    `tuning` is the tenant's live render knobs (render_tuning.KNOBS). The four
+    numbers below used to be literals, which meant "he's too small" or "the text
+    is sitting on his face" could only be answered by a deploy. They default to
+    exactly those literals, so an absent or empty dict renders identically to
+    before; a knob set from feedback takes effect on the next card."""
     bk = brand_kit or {}
+    tn = tuning or {}
+
+    def _knob(key: str, fallback: float) -> float:
+        """Tolerate junk in the config slot — a bad value must never break a
+        render, it just falls back to the shipped literal."""
+        try:
+            v = tn.get(key)
+            return fallback if v is None else float(v)
+        except (TypeError, ValueError):
+            return fallback
+
     base = _navy_bg((0.66, 0.40), 430)
 
     M = 96                              # outer margin on every side
-    pw = int(W * 0.46)                 # photo panel width (right side)
+    pw = int(W * _knob("image_photo_width", 0.46))   # photo panel width (right)
     photo_left = W - pw
-    gutter = 48                         # guaranteed clear gap: text ↔ photo
+    gutter = int(_knob("image_text_gutter", 48))     # clear gap: text ↔ photo
     text_left = M
     text_w = max(300, photo_left - gutter - text_left)   # the text's hard column
+    # Horizontal, because this panel is tall and narrow: a normal photo is
+    # cropped left/right to cover it, so the X centering is the one that decides
+    # what stays in frame. (The Y value below is only reached by a photo taller
+    # than ~1:2.7, so knobbing it would have done nothing on real photos.)
+    focus_x = _knob("image_photo_focus_x", 0.5)
+    quote_max_pt = int(_knob("image_quote_max_pt", 86))
 
     # ── hero photo on the right; its LEFT edge fades into navy so the seam is
     #    invisible and the whole text column stays on clean navy ──
     if hero_bytes:
         photo = _cover_safe(_open_rgb(hero_bytes), pw, H,
-                            centering=(0.5, 0.26))
+                            centering=(focus_x, 0.26))
         grad = Image.new("L", (pw, 1), 0)
         for x in range(pw):
             # transparent across the left ~40% of the panel, then ramp to opaque
@@ -456,7 +480,7 @@ def hero_quote_card(quote: str, hero_bytes: bytes, brand_kit: dict | None = None
     #    the column, then HARD-GUARANTEE containment by re-wrapping if needed ──
     lines, emph = _lines_for(quote, emphasis, 3)
     qfont, _ = _fit(draw, max(lines, key=len), _ARCHIVO, text_w, int(H * 0.44),
-                    start=86, minimum=34)
+                    start=quote_max_pt, minimum=34)
     if max((_text_w(draw, ln, qfont) for ln in lines), default=0) > text_w:
         qfont, lines = _fit(draw, " ".join(lines), _ARCHIVO, text_w,
                             int(H * 0.44), start=qfont.size, minimum=30)

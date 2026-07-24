@@ -491,6 +491,64 @@ async def v1_queue(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
     }
 
 
+@router.get("/queue/rejected")
+async def v1_queue_rejected(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
+    """Posts that were turned down — what was rejected, why, and what replaced it.
+
+    v1_queue only ever returns status='pending', so a rejected post disappeared
+    the moment it was rejected: the row stayed in `actions` with the owner's
+    words in rejection_reason_code, and nothing in either product read them
+    back. This is that missing read side.
+
+    Each entry carries its `replacements` — regenerated posts whose payload
+    names it in `regen_of` — so a redo appears under the original it fixes
+    rather than as an unrelated new card in the main queue."""
+    lim = max(1, min(200, limit))
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            "SELECT id, payload->>'platform' AS platform, "
+            "payload->>'format' AS format, payload->>'caption' AS caption, "
+            "payload->>'image_url' AS image_url, "
+            "rejection_reason_code AS reason, created_at, decided_at "
+            "FROM actions WHERE action_type='content' AND status='rejected' "
+            "ORDER BY decided_at DESC NULLS LAST, created_at DESC LIMIT $1", lim)
+        ids = [str(r["id"]) for r in rows]
+        # Regenerations pointing back at any of them. Deliberately NOT limited to
+        # pending: a redo that was itself approved or rejected still belongs in
+        # this history, or the trail goes cold exactly where it matters most.
+        regens = await conn.fetch(
+            "SELECT id, status, payload->>'platform' AS platform, "
+            "payload->>'caption' AS caption, payload->>'image_url' AS image_url, "
+            "payload->>'regen_of' AS regen_of, payload->>'version' AS version, "
+            "payload->>'regen_feedback' AS regen_feedback, created_at "
+            "FROM actions WHERE action_type='content' "
+            "  AND payload->>'regen_of' = ANY($1::text[]) "
+            "ORDER BY created_at ASC", ids,
+        ) if ids else []
+
+    by_parent: dict[str, list[dict[str, Any]]] = {}
+    for r in regens:
+        ver = str(r["version"] or "")
+        by_parent.setdefault(str(r["regen_of"]), []).append({
+            "id": str(r["id"]), "status": r["status"], "platform": r["platform"],
+            "caption": r["caption"], "image_url": r["image_url"],
+            "version": int(ver) if ver.isdigit() else 2,
+            "regen_feedback": r["regen_feedback"],
+            "created_at": r["created_at"].isoformat(),
+        })
+
+    return {
+        "posts": [{
+            "id": str(r["id"]), "status": "rejected", "platform": r["platform"],
+            "format": r["format"], "caption": r["caption"],
+            "image_url": r["image_url"], "reason": r["reason"],
+            "created_at": r["created_at"].isoformat(),
+            "decided_at": r["decided_at"].isoformat() if r["decided_at"] else None,
+            "replacements": by_parent.get(str(r["id"]), []),
+        } for r in rows],
+    }
+
+
 @router.post("/queue/post/{action_id}/approve")
 async def v1_post_approve(
     action_id: UUID, body: Decision, tenant_id: TenantDep,
