@@ -1723,13 +1723,20 @@ _DESIGNED_JOBS: dict[str, dict] = {}
 
 async def _generate_designed_post_image(
     action_id, topic: str, draft_text: str, tenant_id, avoid: str = "",
+    feedback: str = "", force_format: str = "", exclude_photos: tuple[str, ...] = (),
 ) -> tuple[str, str]:
     """Art-director → text-free background (Soul James or cinematic scene) →
     Pillow-composited quote card / meme → persist + attach to the action.
 
     Returns (served_uri, format) — the format ("quote" | "meme" | "statement")
     is surfaced so batch callers can vary it across many posts. `avoid` is a
-    soft variety hint forwarded to the art director."""
+    soft variety hint forwarded to the art director.
+
+    The last three are the regeneration path (v1_post_regenerate): `feedback` is
+    the owner's own words about what was wrong, stated to the art director as a
+    correction it must satisfy; `force_format` pins the layout outright; and
+    `exclude_photos` drops the hero photo they just rejected from the running,
+    so the redo cannot serve the same picture back."""
     import httpx
 
     from .brand_kit import get_brand_kit
@@ -1741,7 +1748,10 @@ async def _generate_designed_post_image(
     from .media import create_media
     from .media import storage as media_storage
 
-    spec = await direct_designed_image(draft_text or "", topic or "", avoid=avoid)
+    spec = await direct_designed_image(
+        draft_text or "", topic or "", avoid=avoid,
+        feedback=feedback, force_format=force_format,
+    )
     fmt = spec.get("format") or "quote"
     bg_prompt = (spec.get("bg_prompt") or topic or "cinematic golden-hour scene").strip()
     bg_kind = spec.get("bg_kind") or "scene"
@@ -1757,7 +1767,19 @@ async def _generate_designed_post_image(
             # Gated pick (James's rejections): skip blurry photos, prefer the
             # least-recently-used one instead of random choice.
             from .photo_pick import pick_hero_bytes
-            _picked = await pick_hero_bytes(_refs, tenant_id)
+            _picked = await pick_hero_bytes(_refs, tenant_id, exclude=exclude_photos)
+            if _picked is None and exclude_photos:
+                # The library has nothing else. Better an honest repeat than a
+                # silent one: fall back to the full set, and the layout change
+                # driven by `feedback` is what makes the redo differ.
+                # This module has no logger of its own — a bare `logger` here
+                # would NameError on the very path meant to recover, and the
+                # enclosing `except` would swallow it into a blank image.
+                import logging as _logging
+                _logging.getLogger(__name__).info(
+                    "hero library exhausted by exclusion; reusing an existing photo"
+                )
+                _picked = await pick_hero_bytes(_refs, tenant_id)
             if _picked:
                 hero_key, hero_bytes = _picked
         except Exception:  # noqa: BLE001

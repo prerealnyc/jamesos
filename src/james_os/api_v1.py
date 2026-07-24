@@ -35,6 +35,7 @@ import asyncio
 import hmac
 import ipaddress
 import json
+import logging
 import socket
 import uuid
 from datetime import UTC, datetime
@@ -47,6 +48,12 @@ from pydantic import BaseModel, Field
 
 from .config import settings
 from .db import acquire
+
+# This module had no logger: the background regenerate job and the caption-edit
+# learning leg both swallow exceptions, and without one a failure there would be
+# silent (or, worse, raise NameError inside the handler that was meant to
+# recover from it).
+_log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1", tags=["v1"])
 
@@ -547,6 +554,159 @@ async def v1_queue_rejected(tenant_id: TenantDep, limit: int = 50) -> dict[str, 
             "replacements": by_parent.get(str(r["id"]), []),
         } for r in rows],
     }
+
+
+class RegenerateBody(BaseModel):
+    feedback: str = ""
+    force_format: str = ""
+
+
+async def _run_regenerate(
+    job_id: str, tenant_id: UUID, parent_id: UUID, feedback: str, force_format: str,
+) -> None:
+    """Rebuild the IMAGE for a rejected post, keeping its words.
+
+    Only the picture is redone: the caption was written in the brand's voice and
+    is edited by hand (PATCH /v1/queue/post/{id}), so regenerating it would
+    throw away good copy to fix a bad photo.
+
+    The redo is a NEW row rather than an overwrite, so the original and the
+    reason it was rejected stay readable — /v1/queue/rejected joins them through
+    payload.regen_of."""
+    from . import main as _main
+
+    job = _JOBS.get(job_id)
+    if job is None:
+        return
+    job["status"] = "running"
+    job["updated_at"] = _now()
+    try:
+        async with acquire(tenant_id) as conn:
+            parent = await conn.fetchrow(
+                "SELECT payload, rejection_reason_code FROM actions "
+                "WHERE id=$1 AND action_type='content'", parent_id)
+        if parent is None:
+            raise ValueError("post not found")
+        payload = parent["payload"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        payload = payload or {}
+
+        # Their words: an explicit feedback argument wins, else the reason they
+        # gave when rejecting — so "Regenerate" needs no retyping.
+        reason = (feedback or "").strip() or (parent["rejection_reason_code"] or "").strip()
+        prev_photo = str(payload.get("hero_photo_key") or "")
+        version = int(str(payload.get("version") or "1") if str(payload.get("version") or "1").isdigit() else 1)
+
+        # The new row carries the SAME copy and points back at what it replaces.
+        new_payload = {
+            **payload,
+            "regen_of": str(parent_id),
+            "version": version + 1,
+            "regen_feedback": reason,
+        }
+        # The parent's own image must not be inherited if the redo fails to make
+        # one — a v2 showing v1's rejected picture is the worst possible outcome.
+        for k in ("image_url", "media_url", "has_image", "hero_photo_key", "image_format"):
+            new_payload.pop(k, None)
+
+        async with acquire(tenant_id) as conn:
+            new_id = await conn.fetchval(
+                "INSERT INTO actions (proposed_by, action_type, payload, status) "
+                "VALUES ('regenerate', 'content', $1::jsonb, 'pending') RETURNING id",
+                json.dumps(new_payload),
+            )
+
+        served, fmt = await _main._generate_designed_post_image(
+            new_id,
+            str(payload.get("topic") or ""),
+            str(payload.get("content") or payload.get("caption") or ""),
+            tenant_id,
+            feedback=reason,
+            force_format=force_format,
+            # Never serve back the photo they just turned down.
+            exclude_photos=(prev_photo,) if prev_photo else (),
+        )
+        job["result"] = {
+            "action_id": str(new_id), "regen_of": str(parent_id),
+            "version": version + 1, "image_url": served, "image_format": fmt,
+            "feedback": reason,
+        }
+        job["status"] = "done"
+    except Exception as exc:  # noqa: BLE001
+        job["status"] = "failed"
+        job["error"] = str(exc)[:500]
+        _log.exception("regenerate failed for %s", parent_id)
+    finally:
+        job["updated_at"] = _now()
+
+
+@router.post("/queue/post/{action_id}/regenerate", status_code=202)
+async def v1_post_regenerate(
+    action_id: UUID, body: RegenerateBody, tenant_id: TenantDep,
+) -> dict[str, Any]:
+    """Redo the image for a post that was rejected, using the owner's feedback.
+
+    Returns a job_id immediately; poll /v1/jobs/{id}. The result is a NEW
+    pending post whose payload names the original in regen_of, so it appears
+    under it in /v1/queue/rejected instead of as an unrelated card."""
+    job = {
+        "id": str(uuid.uuid4()), "type": "regenerate", "tenant_id": str(tenant_id),
+        "status": "queued", "result": None, "error": None,
+        "created_at": _now(), "updated_at": _now(),
+    }
+    _put_job(job)
+    _spawn(_run_regenerate(
+        job["id"], tenant_id, action_id, body.feedback, body.force_format))
+    return {"job_id": job["id"], "status": "queued"}
+
+
+class CaptionBody(BaseModel):
+    caption: str = Field(min_length=1)
+
+
+@router.patch("/queue/post/{action_id}")
+async def v1_post_edit_caption(
+    action_id: UUID, body: CaptionBody, tenant_id: TenantDep,
+) -> dict[str, Any]:
+    """Edit a pending post's caption by hand.
+
+    Captions are corrected, not regenerated — instant, free, and exactly what
+    was wanted, where a rewrite would gamble good copy. The legacy dashboard had
+    a PATCH for this but it was unusable from the service API: it wrote
+    payload.content while every reader (v1_queue, postgen_adopt) reads
+    payload.caption, it set an updated_at column this table does not have, and
+    it was cookie-authenticated only.
+
+    Both keys are written here, because content.py seeds both at creation and
+    different consumers read different ones — updating one would leave the post
+    disagreeing with itself."""
+    text = body.caption.strip()
+    if not text:
+        raise HTTPException(422, "caption must not be blank")
+    async with acquire(tenant_id) as conn:
+        # record_edit turns the before -> after delta into a corrective style
+        # rule, so it needs the copy as it was. RETURNING yields the row AFTER
+        # the update, which would hand it the new text as the "old" and teach a
+        # no-op — the self-join captures the pre-update snapshot instead.
+        row = await conn.fetchrow(
+            "UPDATE actions a SET payload = a.payload || $2::jsonb "
+            "FROM actions prev "
+            "WHERE prev.id = a.id AND a.id = $1 "
+            "  AND a.action_type='content' AND a.status='pending' "
+            "RETURNING coalesce(prev.payload->>'content', prev.payload->>'caption', '') AS old",
+            action_id,
+            json.dumps({"caption": text, "content": text, "edited_by_owner": True}),
+        )
+    if row is None:
+        raise HTTPException(404, "post not found, or no longer pending")
+    # The edit itself is a lesson: what they changed teaches the writer.
+    try:
+        from . import learning
+        await learning.record_edit(action_id, row["old"] or "", text, tenant_id=tenant_id)
+    except Exception:  # noqa: BLE001 — never fail an edit on the learning leg
+        _log.exception("could not record caption edit for %s", action_id)
+    return {"ok": True, "id": str(action_id), "caption": text}
 
 
 @router.post("/queue/post/{action_id}/approve")
