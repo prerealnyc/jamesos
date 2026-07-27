@@ -474,7 +474,8 @@ async def v1_queue(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
         posts = await conn.fetch(
             "SELECT id, status, payload->>'platform' AS platform, "
             "payload->>'format' AS format, payload->>'caption' AS caption, "
-            "payload->>'image_url' AS image_url, created_at FROM actions "
+            "payload->>'image_url' AS image_url, payload->'media_urls' AS media_urls, "
+            "payload->>'image_format' AS image_format, created_at FROM actions "
             "WHERE action_type='content' AND status='pending' "
             "ORDER BY created_at DESC LIMIT $1", lim)
         # Only SUCCEEDED renders are approvable; queued/rendering/failed are not.
@@ -483,10 +484,22 @@ async def v1_queue(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
             "created_at FROM video_productions "
             "WHERE review_status IS NULL AND status='succeeded' "
             "ORDER BY created_at DESC LIMIT $1", lim)
+    def _arr(v):
+        # payload->'media_urls' comes back as jsonb text under asyncpg — parse it
+        # so a carousel surfaces its full ordered slide list to the adopter.
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (ValueError, TypeError):
+                return None
+        return v
+
     return {
         "posts": [{
             "id": str(r["id"]), "status": r["status"], "platform": r["platform"],
             "format": r["format"], "caption": r["caption"], "image_url": r["image_url"],
+            "media_urls": _arr(r["media_urls"]) or None,
+            "image_format": r["image_format"],
             "created_at": r["created_at"].isoformat(),
         } for r in posts],
         "videos": [{
