@@ -275,6 +275,153 @@ async def set_brand_palette(palette, tenant_id=None):
     return True
 
 
+# ── automatic per-brand palette ───────────────────────────────────────────
+# Every brand renders in ITS OWN colours from the very first post — never
+# James's. When no theme has been accepted yet, derive one cheaply (pure Pillow)
+# from the brand's own assets, persist it, and use it. This is the hard-coded
+# floor that makes "its own branded content" true for EVERY new brand.
+
+# Absolute last resort: a neutral dark editorial system with a warm neutral
+# accent — deliberately NOT James's navy/blue, so a brand with zero derivable
+# assets still reads as its own clean identity rather than inheriting his.
+_NEUTRAL_PALETTE = [
+    {"role": "background", "hex": "#14161A", "label": "Charcoal"},
+    {"role": "ink", "hex": "#F4F6F8", "label": "Off-white"},
+    {"role": "accent", "hex": "#C8A46B", "label": "Warm sand"},
+    {"role": "surface", "hex": "#242832", "label": "Slate"},
+]
+# James Prendamano's signature navy — applied ONLY to his own tenant.
+_JAMES_PALETTE = [
+    {"role": "background", "hex": "#070B14", "label": "Deep space"},
+    {"role": "ink", "hex": "#F5F8FC", "label": "White"},
+    {"role": "accent", "hex": "#2E80E4", "label": "Brand blue"},
+    {"role": "surface", "hex": "#1C3E74", "label": "Navy"},
+]
+
+
+def _lum(c) -> float:
+    return (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255.0
+
+
+def _sat(c) -> float:
+    mx, mn = max(c), min(c)
+    return 0.0 if mx == 0 else (mx - mn) / mx
+
+
+def _mixc(a, b, t):
+    return tuple(int(round(a[i] * (1 - t) + b[i] * t)) for i in range(3))
+
+
+def _hx(c) -> str:
+    return "#%02x%02x%02x" % (int(c[0]), int(c[1]), int(c[2]))
+
+
+def derive_palette_from_images(images: list[bytes]) -> list[dict] | None:
+    """A brand's OWN theme, derived cheaply from its OWN pixels (logo/photos):
+    the most ownable accent (saturated), a dark ground, a high-contrast ink, and
+    a surface between them. Deterministic, no LLM, no network. Returns a
+    role-list [{role,hex,label}] or None when nothing decodes."""
+    cols: list[tuple] = []
+    for img in images:
+        if not img:
+            continue
+        for c in extract_palette(img, k=6):
+            rgb = _hex(c.get("hex"), None)
+            if rgb:
+                cols.append((rgb, float(c.get("proportion") or 0)))
+    if not cols:
+        return None
+
+    # accent: the most ownable colour — saturated, not too dark, weighted a
+    # little by how much of the brand it covers.
+    def _accent_score(t):
+        rgb, prop = t
+        return _sat(rgb) * (0.35 + 0.65 * min(1.0, _lum(rgb) * 1.6)) * (0.6 + prop)
+
+    accent = max(cols, key=_accent_score)[0]
+    if _sat(accent) < 0.12:                      # brand is essentially greyscale
+        accent = _hex("#C8A46B", None)           # a restrained neutral accent
+    # background: the brand's darkest real colour if dark enough, else a
+    # near-black tinted slightly toward the dominant colour.
+    darks = [rgb for rgb, _ in cols if _lum(rgb) < 0.26]
+    bg = min(darks, key=_lum) if darks else _mixc((10, 12, 16), cols[0][0], 0.18)
+    ink = (245, 247, 250) if _lum(bg) < 0.5 else (16, 18, 22)
+    surface = _mixc(bg, accent, 0.24)
+    # guarantee the accent stands off the ground; lift or deepen it if too close.
+    if abs(_lum(accent) - _lum(bg)) < 0.22:
+        accent = _mixc(accent, (255, 255, 255), 0.45) if _lum(bg) < 0.5 \
+            else _mixc(accent, (0, 0, 0), 0.35)
+    return [
+        {"role": "background", "hex": _hx(bg), "label": "Background"},
+        {"role": "ink", "hex": _hx(ink), "label": "Ink"},
+        {"role": "accent", "hex": _hx(accent), "label": "Accent"},
+        {"role": "surface", "hex": _hx(surface), "label": "Surface"},
+    ]
+
+
+async def _brand_source_images(tenant_id, kit, hint_image) -> list[bytes]:
+    """The brand's OWN pixels to derive a palette from: an uploaded logo first
+    (the truest brand colours), a caller-supplied image already in hand, then a
+    hero photo. Cheap and best-effort — any failure just yields fewer."""
+    import httpx
+    imgs: list[bytes] = []
+    logo_url = ((kit or {}).get("logo_url") or "").strip()
+    if logo_url.startswith("http"):
+        try:
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+                r = await c.get(logo_url)
+                r.raise_for_status()
+                imgs.append(r.content)
+        except Exception:  # noqa: BLE001
+            pass
+    if hint_image:
+        imgs.append(hint_image)
+    if not imgs:
+        try:
+            from .hero_context import get_hero_photo_files
+            from .photo_pick import pick_hero_bytes
+            refs = await get_hero_photo_files(tenant_id=tenant_id)
+            picked = await pick_hero_bytes(refs, tenant_id) if refs else None
+            if picked:
+                imgs.append(picked[1])
+        except Exception:  # noqa: BLE001
+            pass
+    return imgs
+
+
+async def ensure_brand_palette(tenant_id=None, *, kit=None, hint_image=None) -> list[dict]:
+    """The palette generation renders THIS brand in — guaranteed brand-specific.
+    Order: the brand's stored theme → (James's tenant) his signature navy → a
+    palette derived from the brand's OWN logo/photos → a neutral floor. Derived
+    palettes are persisted so they are stable across posts and can be refined
+    later via the brand-look panel; the neutral floor is NOT persisted, so a
+    later logo/photo upload still gets a real palette derived from it."""
+    stored = await get_brand_palette(tenant_id)
+    if stored:
+        return stored
+    # James's own tenant keeps his signature navy without any derivation.
+    try:
+        from .db import acquire
+        async with acquire(tenant_id) as conn:
+            tid = await conn.fetchval(
+                "SELECT id FROM tenants WHERE id = "
+                "current_setting('app.current_tenant', true)::uuid")
+        if tid is not None and tid == settings.default_tenant_id:
+            await set_brand_palette(_JAMES_PALETTE, tenant_id)
+            return _JAMES_PALETTE
+    except Exception:  # noqa: BLE001
+        pass
+    imgs = await _brand_source_images(tenant_id, kit, hint_image)
+    palette = derive_palette_from_images(imgs)
+    if palette:
+        try:
+            await set_brand_palette(palette, tenant_id)
+        except Exception:  # noqa: BLE001
+            pass
+        return palette
+    return _NEUTRAL_PALETTE
+
+
 async def get_design_intel_enabled(tenant_id=None) -> bool:
     """Per-tenant design-intelligence switch. Falls back to the global default
     (settings.design_intel_enabled) when the tenant hasn't set one — so the

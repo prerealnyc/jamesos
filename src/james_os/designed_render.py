@@ -25,14 +25,16 @@ ALL_FORMATS = frozenset({
     "full_bleed", "editorial_split", "big_stat", "minimal_over", "framed_print",
 })
 
-# When a brand has no stored palette, the new (v2) layouts default to James's
-# navy/blue rather than compositors_v2's neutral space default — so an unstyled
-# James render stays on-brand on the new formats too. A brand palette overrides.
-_JAMES_ROLES = [
-    {"role": "background", "hex": "#070B14"},
-    {"role": "ink", "hex": "#F5F8FC"},
-    {"role": "accent", "hex": "#2E80E4"},
-    {"role": "surface", "hex": "#1C3E74"},
+# Absolute last-resort palette when a render reaches this pure module with NO
+# palette on the kit at all (the tenant-aware layer normally resolves a
+# brand-specific palette upstream via ensure_brand_palette). Deliberately a
+# NEUTRAL charcoal system — never James's navy — so a fallback can never stamp
+# one brand's colours onto another. A real brand palette always overrides this.
+_NEUTRAL_ROLES = [
+    {"role": "background", "hex": "#14161A"},
+    {"role": "ink", "hex": "#F4F6F8"},
+    {"role": "accent", "hex": "#C8A46B"},
+    {"role": "surface", "hex": "#242832"},
 ]
 
 
@@ -43,7 +45,8 @@ def needs_photo(fmt: str) -> bool:
 def _v2_palette(kit: dict | None, palette) -> dict:
     """The palette dict the v2 compositors expect. A role-list (brand_identity's
     shape) or a flat {bg,ink,accent} both work; falls back to the brand kit's
-    palette, then to James's navy so the new layouts are never off-brand."""
+    palette, then to a NEUTRAL floor (never James's navy) so a missing palette
+    can never leak one brand's colours onto another."""
     if isinstance(palette, dict) and (palette.get("palette") or palette.get("bg")):
         return palette
     if isinstance(palette, list) and palette:
@@ -56,7 +59,7 @@ def _v2_palette(kit: dict | None, palette) -> dict:
                             for k, r in (("bg", "background"), ("ink", "ink"),
                                          ("accent", "accent"), ("surface", "surface"))
                             if kit["colors"].get(k)]}
-    return {"palette": _JAMES_ROLES}
+    return {"palette": _NEUTRAL_ROLES}
 
 
 def render_designed(

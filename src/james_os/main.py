@@ -1736,8 +1736,10 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id) -> tu
 
     kit = await get_brand_kit(tenant_id)
     try:
-        from .brand_identity import get_brand_palette
-        _palette = await get_brand_palette(tenant_id)
+        # Guarantee a brand-specific palette: stored theme, else derived from the
+        # brand's OWN logo/photos, else neutral — NEVER James's navy (D10).
+        from .brand_identity import ensure_brand_palette
+        _palette = await ensure_brand_palette(tenant_id, kit=kit)
         if _palette:
             kit["palette"] = _palette
     except Exception:  # noqa: BLE001
@@ -1935,12 +1937,13 @@ async def _generate_designed_post_image(
         bg_bytes = png
 
     kit = await get_brand_kit(tenant_id)
-    # Brand palette from the brand-identity engine (stored per-tenant). Merged
-    # into the kit so BOTH the shipped navy cards and the v2 layouts render in
-    # the brand's OWN colours; absent → James's navy (byte-identical).
+    # Brand palette from the brand-identity engine. Merged into the kit so BOTH
+    # the shipped cards and the v2 layouts render in the brand's OWN colours:
+    # stored theme → derived from THIS brand's logo/photos (the hero already in
+    # hand seeds it) → neutral floor. Never another brand's palette (D10).
     try:
-        from .brand_identity import get_brand_palette
-        _palette = await get_brand_palette(tenant_id)
+        from .brand_identity import ensure_brand_palette
+        _palette = await ensure_brand_palette(tenant_id, kit=kit, hint_image=hero_bytes)
         if _palette:
             kit["palette"] = _palette
     except Exception:  # noqa: BLE001 — a palette read must never stop a render

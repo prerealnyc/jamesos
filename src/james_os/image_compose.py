@@ -424,11 +424,13 @@ def brand_quote_card(quote: str, brand_kit: dict | None = None,
     draw = ImageDraw.Draw(base)
     cx = W // 2
 
-    # ── brand name (letter-spaced kicker) ──
-    name = (bk.get("display_name") or "James Prendamano").upper()
-    nf = _font(_ARCHIVO, 34)
-    nw = _spaced_w(draw, name, nf, 10)
-    _spaced(draw, (cx - nw / 2, 92), name, nf, pal["accent"], 10)
+    # ── brand name (letter-spaced kicker) — omit entirely when the brand has
+    #    no name yet, rather than forging one from another brand ──
+    name = (bk.get("display_name") or "").strip().upper()
+    if name:
+        nf = _font(_ARCHIVO, 34)
+        nw = _spaced_w(draw, name, nf, 10)
+        _spaced(draw, (cx - nw / 2, 92), name, nf, pal["accent"], 10)
 
     # ── ripple emblem ──
     ey, er = 262, 60
@@ -454,13 +456,15 @@ def brand_quote_card(quote: str, brand_kit: dict | None = None,
         draw.text((cx - _text_w(draw, ln, f) / 2, y), ln, font=f, fill=fill)
         y += heights[i]
 
-    # ── footer: website · tagline ──
-    site = (bk.get("website") or "prendamanoacademy.com").strip()
-    tag = (bk.get("footer_tagline") or "free forever").strip()
-    foot = f"{site}   ·   {tag}"
-    ff = _font(_ARCHIVO, 26)
-    fw = _spaced_w(draw, foot, ff, 3)
-    _spaced(draw, (cx - fw / 2, H - 118), foot, ff, pal["muted"], 3)
+    # ── footer: website · tagline — only what the brand actually supplies;
+    #    no hardcoded fallback, so a brand without a site/tagline shows neither ──
+    site = (bk.get("website") or "").strip()
+    tag = (bk.get("footer_tagline") or "").strip()
+    foot = "   ·   ".join([p for p in (site, tag) if p])
+    if foot:
+        ff = _font(_ARCHIVO, 26)
+        fw = _spaced_w(draw, foot, ff, 3)
+        _spaced(draw, (cx - fw / 2, H - 118), foot, ff, pal["muted"], 3)
     return _png(base)
 
 
@@ -556,12 +560,14 @@ def hero_quote_card(quote: str, hero_bytes: bytes, brand_kit: dict | None = None
                   fill=(pal["accent"] if i == emph else pal["ink"]))
         y += lh
 
-    # ── @handle bottom-left, aligned to the text column ──
-    handle = (bk.get("handle") or "@j_prendamano").strip()
-    if not handle.startswith("@"):
-        handle = "@" + handle
-    hf = _font(_ARCHIVO, 26)
-    draw.text((text_left, H - M - 18), handle, font=hf, fill=pal["muted"])
+    # ── @handle bottom-left — drawn only when the brand has one; never a
+    #    hardcoded default (that is how @j_prendamano leaked onto other brands) ──
+    handle = (bk.get("handle") or "").strip()
+    if handle:
+        if not handle.startswith("@"):
+            handle = "@" + handle
+        hf = _font(_ARCHIVO, 26)
+        draw.text((text_left, H - M - 18), handle, font=hf, fill=pal["muted"])
     return _png(base)
 
 

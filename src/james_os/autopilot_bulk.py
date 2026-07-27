@@ -200,7 +200,14 @@ async def _make_text_post(
                     draft.draft or idea.get("topic", ""), tenant_id, avoid=avoid_fmt,
                     force_format=force_format,
                 )
-            except Exception:  # noqa: BLE001 — designed failed → James photo below
+            except Exception as _exc:  # noqa: BLE001 — designed failed → hero photo below
+                # Loudly, not silently: a swallowed failure here is exactly why a
+                # "Build carousel" could quietly come back as a plain photo post.
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "designed image failed (force_format=%r) — falling back to a "
+                    "hero photo: %s", force_format, _exc,
+                )
                 image_url, fmt = None, None
         if not image_url:
             image_url = await _attach_image_to_action(
