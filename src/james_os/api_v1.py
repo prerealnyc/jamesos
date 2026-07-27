@@ -918,6 +918,17 @@ async def v1_brand_theme_apply(body: ThemeApplyBody, tenant_id: TenantDep) -> di
     return {"ok": True, "palette_set": bool(body.palette), "enabled": bool(body.enable)}
 
 
+@router.get("/brand/theme")
+async def v1_brand_theme_get(tenant_id: TenantDep) -> dict[str, Any]:
+    """Current brand theme state — cheap read (no vision), for the panel to show
+    whether the design brain is on and which palette it uses."""
+    from . import brand_identity as bi
+    return {
+        "palette": await bi.get_brand_palette(tenant_id),
+        "design_intel_enabled": await bi.get_design_intel_enabled(tenant_id),
+    }
+
+
 # ── bulk approve / reject ──
 
 class BulkDecision(BaseModel):
