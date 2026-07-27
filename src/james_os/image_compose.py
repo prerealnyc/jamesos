@@ -35,6 +35,44 @@ _NAVY_BASE = (7, 11, 20)        # deep navy background
 _NAVY_GLOW = (28, 62, 116)      # soft blue glow behind the subject/text
 
 
+def _hex(s, fb):
+    s = (s or "").strip().lstrip("#")
+    try:
+        return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+    except (ValueError, IndexError, TypeError):
+        return fb
+
+
+def _lighten(c, t=0.18):
+    return tuple(int(c[i] + (255 - c[i]) * t) for i in range(3))
+
+
+def _colors(brand_kit: dict | None) -> dict:
+    """Per-brand palette for the navy templates. With NO colours in brand_kit
+    every value is the EXACT James literal, so the render is byte-identical to
+    before this existed. A brand supplies colours via brand_kit['colors']
+    {bg,ink,accent,glow,muted} OR a role-list brand_kit['palette'] (exactly the
+    shape brand_identity.assess_and_propose emits) — so a proposed theme flows
+    straight into generation with no translation."""
+    bk = brand_kit or {}
+    c = dict(bk.get("colors") or {})
+    if not c and isinstance(bk.get("palette"), list):
+        roles = {p.get("role"): p.get("hex") for p in bk["palette"] if isinstance(p, dict)}
+        c = {"bg": roles.get("background"), "ink": roles.get("ink"),
+             "accent": roles.get("accent"), "glow": roles.get("surface")}
+    accent = _hex(c.get("accent"), _BRAND_BLUE)
+    return {
+        "base": _hex(c.get("bg"), _NAVY_BASE),
+        "glow": _hex(c.get("glow"), _NAVY_GLOW),
+        "accent": accent,
+        # James's emblem mid-ring is a specific tint; keep it exact when no brand
+        # accent is set, else derive a lighter accent.
+        "accent_light": _lighten(accent) if c.get("accent") else (70, 150, 240),
+        "ink": _hex(c.get("ink"), _BRAND_WHITE),
+        "muted": _hex(c.get("muted"), _BRAND_MUTED),
+    }
+
+
 def _font(path: str, size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(path, size)
 
@@ -285,9 +323,12 @@ def statement_card(bg_bytes: bytes, statement: str, handle: str = "",
 # ── branded navy templates (James Prendamano look) ───────────────────
 
 def _navy_bg(glow_xy: tuple[float, float] = (0.5, 0.42), radius: int = 540,
-             glow_color: tuple[int, int, int] = _NAVY_GLOW) -> Image.Image:
-    """Deep-navy canvas with one soft blue glow — the brand background."""
-    base = Image.new("RGBA", (W, H), (*_NAVY_BASE, 255))
+             glow_color: tuple[int, int, int] = _NAVY_GLOW,
+             base_color: tuple[int, int, int] = _NAVY_BASE) -> Image.Image:
+    """Deep-navy canvas with one soft blue glow — the brand background.
+    `base_color`/`glow_color` default to James's navy, so an unstyled call is
+    byte-identical; a brand palette recolours the whole ground."""
+    base = Image.new("RGBA", (W, H), (*base_color, 255))
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     gx, gy = int(W * glow_xy[0]), int(H * glow_xy[1])
     ImageDraw.Draw(layer).ellipse(
@@ -378,7 +419,8 @@ def brand_quote_card(quote: str, brand_kit: dict | None = None,
     a big stacked quote with ONE line in brand blue, footer website + tagline.
     (The 'WE ARE / ALL / ONE' design.) Generates its own background."""
     bk = brand_kit or {}
-    base = _navy_bg((0.5, 0.5), 560)
+    pal = _colors(bk)
+    base = _navy_bg((0.5, 0.5), 560, glow_color=pal["glow"], base_color=pal["base"])
     draw = ImageDraw.Draw(base)
     cx = W // 2
 
@@ -386,14 +428,14 @@ def brand_quote_card(quote: str, brand_kit: dict | None = None,
     name = (bk.get("display_name") or "James Prendamano").upper()
     nf = _font(_ARCHIVO, 34)
     nw = _spaced_w(draw, name, nf, 10)
-    _spaced(draw, (cx - nw / 2, 92), name, nf, _BRAND_BLUE, 10)
+    _spaced(draw, (cx - nw / 2, 92), name, nf, pal["accent"], 10)
 
     # ── ripple emblem ──
     ey, er = 262, 60
     for i, rr in enumerate((er, int(er * 0.62), int(er * 0.30))):
-        col = _BRAND_BLUE if i != 1 else (70, 150, 240)
-        draw.ellipse((cx - rr, ey - rr, cx + rr, ey + rr), outline=col, width=6)
-    draw.ellipse((cx - 11, ey - 11, cx + 11, ey + 11), fill=_BRAND_BLUE)
+        ring = pal["accent"] if i != 1 else pal["accent_light"]
+        draw.ellipse((cx - rr, ey - rr, cx + rr, ey + rr), outline=ring, width=6)
+    draw.ellipse((cx - 11, ey - 11, cx + 11, ey + 11), fill=pal["accent"])
 
     # ── stacked quote, one line in brand blue ──
     lines, emph = _lines_for(quote, emphasis, 3)
@@ -408,7 +450,7 @@ def brand_quote_card(quote: str, brand_kit: dict | None = None,
     y = zone_top + max(0.0, (zone_bottom - zone_top - sum(heights)) / 2.0)
     for i, ln in enumerate(lines):
         f = emph_font if i == emph else base_font
-        fill = _BRAND_BLUE if i == emph else _BRAND_WHITE
+        fill = pal["accent"] if i == emph else pal["ink"]
         draw.text((cx - _text_w(draw, ln, f) / 2, y), ln, font=f, fill=fill)
         y += heights[i]
 
@@ -418,7 +460,7 @@ def brand_quote_card(quote: str, brand_kit: dict | None = None,
     foot = f"{site}   ·   {tag}"
     ff = _font(_ARCHIVO, 26)
     fw = _spaced_w(draw, foot, ff, 3)
-    _spaced(draw, (cx - fw / 2, H - 118), foot, ff, _BRAND_MUTED, 3)
+    _spaced(draw, (cx - fw / 2, H - 118), foot, ff, pal["muted"], 3)
     return _png(base)
 
 
@@ -437,6 +479,7 @@ def hero_quote_card(quote: str, hero_bytes: bytes, brand_kit: dict | None = None
     exactly those literals, so an absent or empty dict renders identically to
     before; a knob set from feedback takes effect on the next card."""
     bk = brand_kit or {}
+    pal = _colors(bk)
     tn = tuning or {}
 
     def _knob(key: str, fallback: float) -> float:
@@ -448,7 +491,7 @@ def hero_quote_card(quote: str, hero_bytes: bytes, brand_kit: dict | None = None
         except (TypeError, ValueError):
             return fallback
 
-    base = _navy_bg((0.66, 0.40), 430)
+    base = _navy_bg((0.66, 0.40), 430, glow_color=pal["glow"], base_color=pal["base"])
 
     M = 96                              # outer margin on every side
     pw = int(W * _knob("image_photo_width", 0.46))   # photo panel width (right)
@@ -503,14 +546,14 @@ def hero_quote_card(quote: str, hero_bytes: bytes, brand_kit: dict | None = None
     # kicker + underline (aligned to the column)
     kf = _font(_ARCHIVO, 28)
     kw = _spaced_w(draw, kicker.upper(), kf, 8)
-    _spaced(draw, (text_left, top), kicker.upper(), kf, _BRAND_BLUE, 8)
+    _spaced(draw, (text_left, top), kicker.upper(), kf, pal["accent"], 8)
     draw.line((text_left, top + 44, text_left + min(kw, 160), top + 44),
-              fill=_BRAND_BLUE, width=4)
+              fill=pal["accent"], width=4)
 
     y = top + kick_gap
     for i, ln in enumerate(lines):
         draw.text((text_left, y), ln, font=qfont,
-                  fill=(_BRAND_BLUE if i == emph else _BRAND_WHITE))
+                  fill=(pal["accent"] if i == emph else pal["ink"]))
         y += lh
 
     # ── @handle bottom-left, aligned to the text column ──
@@ -518,7 +561,7 @@ def hero_quote_card(quote: str, hero_bytes: bytes, brand_kit: dict | None = None
     if not handle.startswith("@"):
         handle = "@" + handle
     hf = _font(_ARCHIVO, 26)
-    draw.text((text_left, H - M - 18), handle, font=hf, fill=_BRAND_MUTED)
+    draw.text((text_left, H - M - 18), handle, font=hf, fill=pal["muted"])
     return _png(base)
 
 
