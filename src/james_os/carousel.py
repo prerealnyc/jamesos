@@ -50,13 +50,18 @@ def carousel_cover(photo, headline, count_promise="", kicker="", handle="",
                    palette=None, total=7, focus=(0.5, 0.40)) -> bytes:
     pal = _pal(palette)
     headline, count_promise, kicker = _clip(headline, 8), _clip(count_promise, 4), _clip(kicker, 4)
-    base = _auto_scrim(_cover_safe(_open_rgb(photo), W, H, centering=focus), 0.60, pal["ink"])
+    if photo:
+        base = _auto_scrim(_cover_safe(_open_rgb(photo), W, H, centering=focus), 0.60, pal["ink"])
+    else:
+        # No photo in the library → a solid brand-colour cover, so a carousel
+        # still renders (great for stat/list decks) instead of failing.
+        base = Image.new("RGB", (W, H), pal["bg"])
     d = ImageDraw.Draw(base)
     hf, lines = _fit(d, headline.upper(), _ANTON, W - 2 * M, int(H * 0.34), start=126, minimum=66)
     lh = _line_h(d, hf, 1.02)
     bottom = H - 172
     top = bottom - lh * len(lines)
-    ink = _ink_for(_region_lum(base, (M, top, W - M, int(bottom))), pal["ink"])
+    ink = (_ink_for(_region_lum(base, (M, top, W - M, int(bottom))), pal["ink"]) if photo else pal["ink"])
     if count_promise:
         _spaced(d, (M, top - 100), count_promise.upper(), _font(_ARCHIVO, 34), pal["accent"], 6)
     if kicker:

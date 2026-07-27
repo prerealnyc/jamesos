@@ -1759,6 +1759,11 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id) -> tu
     async def _pick():
         try:
             p = await pick_hero_bytes(refs, tenant_id, exclude=tuple(used))
+            if p is None and refs:
+                # Small library — recycle so every photo slide still gets a photo
+                # (build with whatever hero content there is), rather than blanks.
+                used.clear()
+                p = await pick_hero_bytes(refs, tenant_id, exclude=())
             if p:
                 used.append(p[0])
                 return p[1]
@@ -1766,7 +1771,9 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id) -> tu
             pass
         return None
 
-    deck_r: dict = {"cover": {**deck["cover"], "photo": await _pick()}, "slides": [], "cta": deck["cta"]}
+    cover_photo = await _pick()
+    cover_key = used[-1] if used else None
+    deck_r: dict = {"cover": {**deck["cover"], "photo": cover_photo}, "slides": [], "cta": deck["cta"]}
     for s in deck["slides"]:
         if s.get("kind") == "photo":
             deck_r["slides"].append({"section_label": s.get("section_label", ""),
@@ -1805,7 +1812,7 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id) -> tu
                 # card, thumbnails) still show the cover.
                 "media_urls": urls,
                 "has_image": True, "image_format": "carousel", "slide_count": len(urls),
-                **({"hero_photo_key": used[0]} if used else {}),
+                **({"hero_photo_key": cover_key} if cover_key else {}),
             }),
         )
     return cover_url, "carousel"
