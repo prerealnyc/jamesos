@@ -241,4 +241,39 @@ def _wrap(draw, xy, text, font, fill, max_w):
         draw.text((x, y), line, font=font, fill=fill)
 
 
-__all__ = ["extract_palette", "assess_and_propose", "render_palette_card"]
+# ── persist the accepted theme so generation renders in the brand's colours ──
+# (DB imports kept inside so this module stays importable without a database —
+# the extract/render helpers and the pure demo path need no connection.)
+
+async def get_brand_palette(tenant_id=None):
+    """The brand's stored theme palette (a role-list [{role,hex}]) or None. Read
+    by the image generator so every render uses the brand's own colours."""
+    import json as _json
+
+    from .db import acquire
+    async with acquire(tenant_id) as conn:
+        cfg = await conn.fetchval(
+            "SELECT config FROM tenants WHERE id = "
+            "current_setting('app.current_tenant', true)::uuid")
+    if isinstance(cfg, str):
+        cfg = _json.loads(cfg)
+    return (cfg or {}).get("brand_palette") or None
+
+
+async def set_brand_palette(palette, tenant_id=None):
+    """Store the brand's theme palette (a role-list [{role,hex}], exactly the
+    shape assess_and_propose emits) in tenant config, so generation renders in
+    these colours from now on. Call this when an owner accepts a proposed theme."""
+    import json as _json
+
+    from .db import acquire
+    async with acquire(tenant_id) as conn:
+        await conn.execute(
+            "UPDATE tenants SET config = coalesce(config, '{}'::jsonb) || $1::jsonb "
+            "WHERE id = current_setting('app.current_tenant', true)::uuid",
+            _json.dumps({"brand_palette": palette}))
+    return True
+
+
+__all__ = ["extract_palette", "assess_and_propose", "render_palette_card",
+           "get_brand_palette", "set_brand_palette"]

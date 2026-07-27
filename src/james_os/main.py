@@ -1740,10 +1740,8 @@ async def _generate_designed_post_image(
     import httpx
 
     from .brand_kit import get_brand_kit
+    from .designed_render import ALL_FORMATS, PHOTO_FORMATS, render_designed
     from .hero_context import get_hero_photo_files
-    from .image_compose import (
-        brand_quote_card, hero_quote_card, meme_card, quote_card, statement_card,
-    )
     from .imagegen import direct_designed_image, generate_post_image
     from .media import create_media
     from .media import storage as media_storage
@@ -1761,7 +1759,7 @@ async def _generate_designed_post_image(
     # one is picked for variety (and to fit different concepts across a batch).
     hero_bytes: bytes | None = None
     hero_key: str | None = None
-    if fmt in ("hero_quote", "statement"):
+    if fmt in PHOTO_FORMATS:
         try:
             _refs = await get_hero_photo_files(tenant_id=tenant_id)
             # Gated pick (James's rejections): skip blurry photos, prefer the
@@ -1787,7 +1785,7 @@ async def _generate_designed_post_image(
 
     bg_bytes: bytes | None = None
     soul = (settings.higgsfield_soul_id or "").strip()
-    if fmt in ("brand_quote", "hero_quote", "statement"):
+    if fmt in ALL_FORMATS:
         pass                                  # real photo / type only; no AI gen
     elif bg_kind == "james" and soul:
         from . import higgsfield_souls as hs
@@ -1818,7 +1816,7 @@ async def _generate_designed_post_image(
                 r = await c.get(url)
                 r.raise_for_status()
                 bg_bytes = r.content
-    if bg_bytes is None and fmt not in ("brand_quote", "hero_quote", "statement"):
+    if bg_bytes is None and fmt not in ALL_FORMATS:
         png, _meta, err = await generate_post_image(
             topic=bg_prompt + " — photoreal cinematic scene, absolutely no text, "
             "no words, no letters, no signs",
@@ -1830,6 +1828,16 @@ async def _generate_designed_post_image(
         bg_bytes = png
 
     kit = await get_brand_kit(tenant_id)
+    # Brand palette from the brand-identity engine (stored per-tenant). Merged
+    # into the kit so BOTH the shipped navy cards and the v2 layouts render in
+    # the brand's OWN colours; absent → James's navy (byte-identical).
+    try:
+        from .brand_identity import get_brand_palette
+        _palette = await get_brand_palette(tenant_id)
+        if _palette:
+            kit["palette"] = _palette
+    except Exception:  # noqa: BLE001 — a palette read must never stop a render
+        pass
     handle = (kit.get("handle") or "").strip()
     # Profile mark next to the @handle: prefer the brand LOGO (PreReal emblem,
     # uploaded on the Brand page → brand_kit.logo_url); fall back to James's
@@ -1862,8 +1870,6 @@ async def _generate_designed_post_image(
         except Exception:  # noqa: BLE001
             profile_bytes = None
 
-    _q = (spec.get("quote") or "").strip() or (draft_text or topic or "").split(". ")[0]
-    _emph = (spec.get("emphasis") or "").strip()
     # Live render knobs for this tenant — photo width, text gutter, type size
     # and crop point. Feedback like "he's hidden behind the text" is applied
     # here, on the next card, with no deploy. Never let a config read stop a
@@ -1873,22 +1879,17 @@ async def _generate_designed_post_image(
         _tuning = await get_render_tuning(tenant_id)
     except Exception:  # noqa: BLE001
         _tuning = {}
-    if fmt == "brand_quote":
-        out = brand_quote_card(_q, kit, _emph)
-    elif fmt == "hero_quote":
-        # Needs James's photo; if we couldn't fetch one, fall back to the
-        # text-only branded card so the render never fails.
-        out = (hero_quote_card(_q, hero_bytes, kit, emphasis=_emph, tuning=_tuning)
-               if hero_bytes else brand_quote_card(_q, kit, _emph))
-    elif fmt == "statement" and hero_bytes:
-        out = statement_card(
-            hero_bytes,
-            spec.get("statement") or spec.get("quote") or topic,
-            handle, profile_bytes, profile_is_logo,
-        )
-    else:
-        # statement with no hero photo → render the line on a clean navy card
-        out = brand_quote_card((spec.get("statement") or "").strip() or _q, kit, _emph)
+    # Backfill the quote the shipped cards rely on, then route to the right
+    # compositor (shipped OR v2), threading the brand palette. render_designed
+    # returns the format it ACTUALLY rendered — a photo layout with no photo
+    # falls back to a text card — so the stamp below reflects reality.
+    if not (spec.get("quote") or "").strip():
+        spec["quote"] = ((draft_text or topic or "").split(". ")[0]).strip()
+    out, fmt = render_designed(
+        fmt, spec, kit=kit, hero_bytes=hero_bytes,
+        profile_bytes=profile_bytes, profile_is_logo=profile_is_logo,
+        handle=handle, tuning=_tuning, palette=kit.get("palette"),
+    )
 
     tenant = str(tenant_id or settings.default_tenant_id)
     served_uri, file_path = await asyncio.to_thread(

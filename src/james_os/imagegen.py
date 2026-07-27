@@ -217,32 +217,62 @@ async def direct_image_scene(story: str, fallback_topic: str = "") -> str:
         return fallback_topic
 
 
+# raw / legacy format name → canonical compositor format. Drives both the
+# force_format map and the coercion of whatever the model returns, so an unknown
+# name can never reach the compositors.
+_FORMAT_MAP = {
+    "quote": "brand_quote", "meme": "brand_quote", "brand_quote": "brand_quote",
+    "hero_quote": "hero_quote", "statement": "statement", "big_stat": "big_stat",
+    "full_bleed": "full_bleed", "full_bleed_hero": "full_bleed",
+    "editorial_split": "editorial_split", "editorial": "editorial_split",
+    "minimal_over": "minimal_over", "minimal": "minimal_over",
+    "framed_print": "framed_print", "framed": "framed_print",
+}
+# Formats that place the brand's REAL photo (everything except the two text-only
+# cards). Used to decide bg_kind and whether to fetch a hero photo.
+_TEXT_ONLY_FORMATS = {"brand_quote", "big_stat"}
+
 _DESIGN_DIRECTOR_SYSTEM = (
     "You are the art director for a scroll-stopping Instagram IMAGE that "
-    "accompanies a personal-brand post by a real-estate broker who teaches "
-    "mindset, ownership and accountability. Pick the single best visual "
-    "FORMAT for THIS post and extract the on-image text. The text is overlaid "
-    "later in perfect type — so NEVER put any words in bg_prompt.\n\n"
-    "Return STRICT JSON:\n"
+    "accompanies a brand's post. Choose the single best visual FORMAT for THIS "
+    "post and write the short on-image text. Text is overlaid later in perfect "
+    "type — write it, never describe it, and keep on-image copy to ONE short "
+    "idea (a stranger should grasp it in under 1.5 seconds).\n\n"
+    "EIGHT formats — ALL use clean brand type over the brand's REAL photo or a "
+    "solid brand-colour card, NEVER an AI-generated scene:\n"
+    "  * brand_quote — text-only card for a short punchy mantra / identity line "
+    "(no photo). Best for a crisp quotable line.\n"
+    "  * big_stat — ONE huge number or claim: a first, a ranking, a count, a span "
+    "of years, a superlative (no photo). Use when the post has a strong number "
+    "or 'first/only/most'.\n"
+    "  * full_bleed — the brand's striking photo edge-to-edge with a short bold "
+    "headline. Use when the PHOTO is dramatic and carries the post.\n"
+    "  * editorial_split — the photo in a clean band above a brand-colour band "
+    "with a headline. A confident, magazine-style statement over a good photo.\n"
+    "  * minimal_over — a beautiful photo with small, airy type. For an "
+    "aspirational / atmospheric moment where less is more.\n"
+    "  * framed_print — the photo matted inside a brand frame with a short "
+    "caption. To showcase ONE great image.\n"
+    "  * hero_quote — the person's photo beside a quote. For a personal "
+    "motivational line where a face adds authority.\n"
+    "  * statement — a bold declarative statement with the photo framed below.\n\n"
+    "Return STRICT JSON with ALL keys (fill only what the chosen format needs, "
+    "leave the rest \"\"):\n"
     "{\n"
-    '  "format": "brand_quote" | "hero_quote" | "statement",\n'
-    '  "quote": "<brand_quote / hero_quote: the on-image line in the author\'s '
-    "voice — a punchy mantra / identity / one-liner, <= 12 words>\",\n"
-    '  "emphasis": "<the 1-3 KEY words inside quote to highlight in brand blue '
-    "(must appear verbatim in quote)>\",\n"
-    '  "statement": "<statement format: a bold declarative statement / hot '
-    "take / identity line in the author's voice, <= 16 words>\"\n"
-    "}\n\n"
-    "There are THREE formats, ALL using clean brand type on a navy card or the "
-    "hero's REAL photo — NEVER an AI-generated scene:\n"
-    "  * 'brand_quote' — a text-only navy card for a short punchy mantra / "
-    "identity / one-liner. PREFER this for crisp quotable lines.\n"
-    "  * 'hero_quote' — the branded look with JAMES's real photo beside the "
-    "quote; for motivational lines where his presence adds authority.\n"
-    "  * 'statement' — a bold declarative statement / hot take with James's "
-    "real photo framed below it.\n"
-    "Pick the format that best fits THIS post. Match the author's voice; no "
-    "clichés, no hype words."
+    '  "format": "brand_quote"|"big_stat"|"full_bleed"|"editorial_split"|'
+    '"minimal_over"|"framed_print"|"hero_quote"|"statement",\n'
+    '  "quote": "<brand_quote/hero_quote line, <=12 words>",\n'
+    '  "emphasis": "<1-3 KEY words from quote to highlight, verbatim>",\n'
+    '  "statement": "<statement line, <=16 words>",\n'
+    '  "headline": "<full_bleed/editorial_split/minimal_over bold line, <=8 words>",\n'
+    '  "kicker": "<tiny label above a headline, <=4 words, optional>",\n'
+    '  "stat": "<big_stat huge number/word, e.g. 1ST, 20 YRS, 18K FT, <=3 words>",\n'
+    '  "stat_label": "<big_stat: what it means, <=6 words>",\n'
+    '  "stat_sub": "<big_stat: a short supporting line, optional>",\n'
+    '  "caption": "<framed_print caption, <=8 words>"\n'
+    "}\n"
+    "Match the brand's voice from the draft. No clichés, no hype words. Pick the "
+    "format that fits THIS post best — vary format across a batch."
 )
 
 
@@ -270,10 +300,7 @@ async def direct_designed_image(
     content — so when a regeneration must come back visibly different, the
     caller names the format and the model does not get a vote."""
     text = (draft_text or topic or "").strip()
-    _FMTS = {"quote": "brand_quote", "meme": "brand_quote",
-             "brand_quote": "brand_quote", "hero_quote": "hero_quote",
-             "statement": "statement"}
-    _fb_fmt = _FMTS.get(str(force_format).lower(), "brand_quote") if force_format else "brand_quote"
+    _fb_fmt = _FORMAT_MAP.get(str(force_format).lower(), "brand_quote") if force_format else "brand_quote"
     _fb_quote = (text.split(". ")[0] if text else (topic or "")).strip()[:140]
     fallback = {
         # A pinned format has to survive the fallback too — otherwise an LLM
@@ -284,8 +311,15 @@ async def direct_designed_image(
         "emphasis": "",
         "top_text": "", "bottom_text": "",
         "statement": _fb_quote if _fb_fmt == "statement" else "",
+        # New v2 formats: a pinned format keeps its own layout in the fallback by
+        # borrowing the first line, instead of collapsing to a plain card.
+        "headline": _fb_quote if _fb_fmt in ("full_bleed", "editorial_split", "minimal_over") else "",
+        "kicker": "",
+        "stat": _fb_quote[:16] if _fb_fmt == "big_stat" else "",
+        "stat_label": "", "stat_sub": "",
+        "caption": _fb_quote if _fb_fmt == "framed_print" else "",
         "bg_prompt": (topic or "").strip(),
-        "bg_kind": "none" if _fb_fmt == "brand_quote" else "hero",
+        "bg_kind": "none" if _fb_fmt in _TEXT_ONLY_FORMATS else "hero",
     }
     if not text:
         return fallback
@@ -317,21 +351,15 @@ async def direct_designed_image(
         )
         out = out or {}
         raw_fmt = str(out.get("format", "")).lower()
-        # Designed images now use REAL photos or clean type ONLY — no AI-scene
-        # backgrounds. Coerce any legacy format the model still returns into the
-        # three real templates: quote/meme → brand_quote (text card),
-        # statement → statement (real James photo at the bottom).
-        _MAP = {"quote": "brand_quote", "meme": "brand_quote",
-                "brand_quote": "brand_quote", "hero_quote": "hero_quote",
-                "statement": "statement"}
-        fmt = _MAP.get(raw_fmt, "brand_quote")
-        # A pinned format wins over whatever the model picked — coerced through
-        # the same map so an unknown name can never reach the compositors.
+        # Coerce whatever the model returns into a KNOWN compositor format, so an
+        # unknown/legacy name can never reach the compositors.
+        fmt = _FORMAT_MAP.get(raw_fmt, "brand_quote")
+        # A pinned format wins over whatever the model picked.
         if force_format:
-            fmt = _MAP.get(str(force_format).lower(), fmt)
-        # bg_kind: brand_quote → none (self-contained navy card); hero_quote &
-        # statement → hero (James's REAL uploaded photo, never AI-generated).
-        bg_kind = "none" if fmt == "brand_quote" else "hero"
+            fmt = _FORMAT_MAP.get(str(force_format).lower(), fmt)
+        # bg_kind: text-only cards → none; every other format places the brand's
+        # REAL uploaded photo (never AI-generated).
+        bg_kind = "none" if fmt in _TEXT_ONLY_FORMATS else "hero"
         spec = {
             "format": fmt,
             "quote": str(out.get("quote") or "").strip(),
@@ -339,16 +367,30 @@ async def direct_designed_image(
             "top_text": str(out.get("top_text") or "").strip(),
             "bottom_text": str(out.get("bottom_text") or "").strip(),
             "statement": str(out.get("statement") or "").strip(),
+            "headline": str(out.get("headline") or "").strip(),
+            "kicker": str(out.get("kicker") or "").strip(),
+            "stat": str(out.get("stat") or "").strip(),
+            "stat_label": str(out.get("stat_label") or "").strip(),
+            "stat_sub": str(out.get("stat_sub") or "").strip(),
+            "caption": str(out.get("caption") or "").strip(),
             "bg_prompt": str(out.get("bg_prompt") or "").strip() or fallback["bg_prompt"],
             "bg_kind": bg_kind,
         }
-        # Guards: each format needs its text or it falls back to a quote.
-        if fmt in ("quote", "brand_quote", "hero_quote") and not spec["quote"]:
-            spec["quote"] = fallback["quote"]
-        if fmt == "meme" and not (spec["top_text"] or spec["bottom_text"]):
-            return fallback
+        # Guards: each format needs its own text, or borrows the quote/first line
+        # so a render never comes back blank.
+        line = spec["quote"] or fallback["quote"]
+        if fmt in ("brand_quote", "hero_quote") and not spec["quote"]:
+            spec["quote"] = line
         if fmt == "statement" and not spec["statement"]:
-            spec["statement"] = spec["quote"] or fallback["quote"]
+            spec["statement"] = line
+        if fmt in ("full_bleed", "editorial_split", "minimal_over") and not spec["headline"]:
+            spec["headline"] = line
+        if fmt == "framed_print" and not spec["caption"]:
+            spec["caption"] = line
+        if fmt == "big_stat" and not spec["stat"]:
+            # No clear number → don't fake a stat card; render a quote card.
+            spec.update(format="brand_quote", bg_kind="none",
+                        quote=(spec["quote"] or line))
         return spec
     except Exception:  # noqa: BLE001
         return fallback
