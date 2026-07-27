@@ -225,6 +225,9 @@ class GenerateRequest(BaseModel):
     platform: str = "instagram"
     title: str | None = None
     image_kind: Literal["james", "designed"] = "james"   # post only
+    # post/designed only: pin the layout for an explicit build (e.g. 'carousel').
+    # An explicit force is honored even when the design switch is off.
+    force_format: str = ""
     video_template: str = ""                              # video only
     # video only: force a real avatar render even if the brand's avatar_videos
     # default is off (costs render credits; needs HeyGen configured). Default
@@ -333,7 +336,8 @@ async def _run_generate(job_id: str, tenant_id: UUID, req: GenerateRequest) -> N
                 }
         else:
             made = await _make_text_post(
-                idea, req.platform, tenant_id, image_kind=req.image_kind)
+                idea, req.platform, tenant_id, image_kind=req.image_kind,
+                force_format=req.force_format)
             job["result"] = {
                 "kind": "post",
                 "action_id": made.get("action_id"),

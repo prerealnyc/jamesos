@@ -316,7 +316,9 @@ async def direct_designed_image(
     # Per-call override (from the tenant switch) wins; else the global default.
     enabled = settings.design_intel_enabled if allow_v2 is None else bool(allow_v2)
     _fb_fmt = _FORMAT_MAP.get(str(force_format).lower(), "brand_quote") if force_format else "brand_quote"
-    if not enabled:
+    # An explicit force_format is a user opt-in — honor it even when the design
+    # switch is off (the switch gates AUTONOMOUS picks, not explicit builds).
+    if not enabled and not force_format:
         _fb_fmt = _V2_TO_LEGACY.get(_fb_fmt, _fb_fmt)
     _fb_quote = (text.split(". ")[0] if text else (topic or "")).strip()[:140]
     fallback = {
@@ -374,9 +376,9 @@ async def direct_designed_image(
         # A pinned format wins over whatever the model picked.
         if force_format:
             fmt = _FORMAT_MAP.get(str(force_format).lower(), fmt)
-        # Gate the v2 layouts behind the design-intelligence switch so prod
-        # output stays unchanged until it is turned on.
-        if not enabled:
+        # Gate AUTONOMOUS v2 picks behind the design switch; an explicit
+        # force_format is a user opt-in and is honored regardless.
+        elif not enabled:
             fmt = _V2_TO_LEGACY.get(fmt, fmt)
         # bg_kind: text-only cards → none; every other format places the brand's
         # REAL uploaded photo (never AI-generated).

@@ -166,7 +166,7 @@ _IMAGE_MIX = ["designed", "james", "designed", "designed", "james"]
 
 async def _make_text_post(
     idea: dict, platform: str, tenant_id: UUID | None,
-    image_kind: str = "james", avoid_fmt: str = "",
+    image_kind: str = "james", avoid_fmt: str = "", force_format: str = "",
 ) -> dict:
     """One text+image post: on-voice draft → queue → attach an image.
 
@@ -198,6 +198,7 @@ async def _make_text_post(
                 image_url, fmt = await _generate_designed_post_image(
                     draft.action_id, idea.get("topic", ""),
                     draft.draft or idea.get("topic", ""), tenant_id, avoid=avoid_fmt,
+                    force_format=force_format,
                 )
             except Exception:  # noqa: BLE001 — designed failed → James photo below
                 image_url, fmt = None, None
