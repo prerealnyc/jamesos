@@ -227,6 +227,7 @@ _FORMAT_MAP = {
     "editorial_split": "editorial_split", "editorial": "editorial_split",
     "minimal_over": "minimal_over", "minimal": "minimal_over",
     "framed_print": "framed_print", "framed": "framed_print",
+    "carousel": "carousel",
 }
 # Formats that place the brand's REAL photo (everything except the two text-only
 # cards). Used to decide bg_kind and whether to fetch a hero photo.
@@ -237,7 +238,7 @@ _TEXT_ONLY_FORMATS = {"brand_quote", "big_stat"}
 _V2_TO_LEGACY = {
     "full_bleed": "statement", "editorial_split": "statement",
     "framed_print": "statement", "minimal_over": "hero_quote",
-    "big_stat": "brand_quote",
+    "big_stat": "brand_quote", "carousel": "statement",
 }
 
 _DESIGN_DIRECTOR_SYSTEM = (
@@ -263,12 +264,16 @@ _DESIGN_DIRECTOR_SYSTEM = (
     "caption. To showcase ONE great image.\n"
     "  * hero_quote — the person's photo beside a quote. For a personal "
     "motivational line where a face adds authority.\n"
-    "  * statement — a bold declarative statement with the photo framed below.\n\n"
+    "  * statement — a bold declarative statement with the photo framed below.\n"
+    "  * carousel — a multi-slide SET (up to 10) for a list ('N ways/reasons'), "
+    "a step-by-step, or several proof points/stats: pick this when the post has "
+    "SEVERAL distinct points that each deserve their own slide. Its slides are "
+    "written separately — just choose this format.\n\n"
     "Return STRICT JSON with ALL keys (fill only what the chosen format needs, "
     "leave the rest \"\"):\n"
     "{\n"
     '  "format": "brand_quote"|"big_stat"|"full_bleed"|"editorial_split"|'
-    '"minimal_over"|"framed_print"|"hero_quote"|"statement",\n'
+    '"minimal_over"|"framed_print"|"hero_quote"|"statement"|"carousel",\n'
     '  "quote": "<brand_quote/hero_quote line, <=12 words>",\n'
     '  "emphasis": "<1-3 KEY words from quote to highlight, verbatim>",\n'
     '  "statement": "<statement line, <=16 words>",\n'
@@ -408,6 +413,90 @@ async def direct_designed_image(
             spec.update(format="brand_quote", bg_kind="none",
                         quote=(spec["quote"] or line))
         return spec
+    except Exception:  # noqa: BLE001
+        return fallback
+
+
+_CAROUSEL_SYSTEM = (
+    "You are the art director for an Instagram CAROUSEL (a swipeable multi-slide "
+    "set). From the post, choose a narrative arc and write a COVER, 3–6 inner "
+    "SLIDES (ONE idea each), and a CTA. Photos come from the brand's own library "
+    "— you only choose whether each inner slide is a 'photo' slide or a 'stat' "
+    "slide (one big number/word), and write its short text.\n\n"
+    "Return STRICT JSON:\n"
+    "{\n"
+    '  "arc": "listicle"|"steps"|"proof"|"before_after"|"myth_fact",\n'
+    '  "cover": {"headline": "<=8 words", "count_promise": "e.g. 6 REASONS / 5 '
+    'STEPS — <=3 words; MUST equal the number of inner slides", "kicker": '
+    '"<=3 words"},\n'
+    '  "slides": [{"kind": "photo"|"stat", "section_label": "<=3 words", '
+    '"headline": "<=9 words", "stat": "<stat kind only: 1–3 words, e.g. 1ST, 20 '
+    'YRS, 90%>"}],\n'
+    '  "cta": {"action": "1–2 words, e.g. VISIT, BOOK, FOLLOW", "ask": '
+    '"<=10 words"}\n'
+    "}\n"
+    "3–6 inner slides. The cover count_promise MUST match the number of inner "
+    "slides. One atomic idea per slide. Match the brand voice; no fluff."
+)
+
+
+async def direct_carousel_deck(draft_text: str, topic: str = "", brand_name: str = "") -> dict:
+    """LLM → a structured carousel deck {arc, cover, slides[], cta}. Photos are
+    assigned later from the brand's library; the model only writes text and picks
+    photo-vs-stat per slide. Best-effort with a deck built from the draft."""
+    text = (draft_text or topic or "").strip()
+    parts = [p.strip() for p in text.split(". ") if p.strip()]
+    fb_slides = [{"kind": "photo", "section_label": "", "headline": p[:80], "stat": ""}
+                 for p in parts[1:5]]
+    fallback = {
+        "arc": "listicle",
+        "cover": {"headline": (parts[0][:80] if parts else (topic or "")),
+                  "count_promise": "", "kicker": brand_name[:24]},
+        "slides": fb_slides if len(fb_slides) >= 2 else [
+            {"kind": "photo", "section_label": "", "headline": (parts[0][:80] if parts else topic), "stat": ""},
+            {"kind": "photo", "section_label": "", "headline": (topic or "")[:80], "stat": ""},
+        ],
+        "cta": {"action": "LEARN MORE", "ask": ""},
+    }
+    if not text:
+        return fallback
+    try:
+        from .llm import get_llm
+        out = await get_llm().complete_json(
+            system=_CAROUSEL_SYSTEM,
+            messages=[{"role": "user", "content": text[:2500]}],
+            max_tokens=800, temperature=0.6,
+        )
+        out = out or {}
+        slides = []
+        for s in (out.get("slides") or [])[:8]:
+            if not isinstance(s, dict):
+                continue
+            row = {
+                "kind": "stat" if str(s.get("kind")).lower() == "stat" else "photo",
+                "section_label": str(s.get("section_label") or "").strip(),
+                "headline": str(s.get("headline") or "").strip(),
+                "stat": str(s.get("stat") or "").strip(),
+            }
+            if row["headline"] or row["stat"]:
+                slides.append(row)
+        if len(slides) < 2:
+            return fallback
+        cover = out.get("cover") or {}
+        cta = out.get("cta") or {}
+        return {
+            "arc": str(out.get("arc") or "listicle"),
+            "cover": {
+                "headline": str(cover.get("headline") or "").strip() or fallback["cover"]["headline"],
+                "count_promise": str(cover.get("count_promise") or "").strip(),
+                "kicker": (str(cover.get("kicker") or "").strip() or brand_name)[:24],
+            },
+            "slides": slides,
+            "cta": {
+                "action": str(cta.get("action") or "LEARN MORE").strip(),
+                "ask": str(cta.get("ask") or "").strip(),
+            },
+        }
     except Exception:  # noqa: BLE001
         return fallback
 

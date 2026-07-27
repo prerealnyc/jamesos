@@ -1721,6 +1721,96 @@ async def post_soul_image_get(job_id: str) -> dict:
 _DESIGNED_JOBS: dict[str, dict] = {}
 
 
+async def _generate_carousel_post(action_id, topic, draft_text, tenant_id) -> tuple[str, str]:
+    """Render a designed CAROUSEL: art-director deck → N palette-aware slides
+    (cover → inner → CTA) on the brand's OWN photos → store all N and attach a
+    `media_urls` list to the action. Returns (cover_url, "carousel"). Only reached
+    when the tenant's design brain is on (the art director gates 'carousel')."""
+    from .brand_kit import get_brand_kit
+    from .carousel import carousel as render_carousel
+    from .hero_context import get_hero_photo_files
+    from .imagegen import direct_carousel_deck
+    from .media import create_media
+    from .media import storage as media_storage
+    from .photo_pick import pick_hero_bytes
+
+    kit = await get_brand_kit(tenant_id)
+    try:
+        from .brand_identity import get_brand_palette
+        _palette = await get_brand_palette(tenant_id)
+        if _palette:
+            kit["palette"] = _palette
+    except Exception:  # noqa: BLE001
+        pass
+    palette = kit.get("palette")
+    handle = (kit.get("handle") or "").strip()
+    brand_name = (kit.get("display_name") or "").strip()
+
+    deck = await direct_carousel_deck(draft_text or "", topic or "", brand_name)
+
+    # Assign DISTINCT photos from the brand's library to the cover + each photo
+    # slide (stat slides need none) — least-recently-used, blur-gated, no repeats.
+    try:
+        refs = await get_hero_photo_files(tenant_id=tenant_id)
+    except Exception:  # noqa: BLE001
+        refs = []
+    used: list[str] = []
+
+    async def _pick():
+        try:
+            p = await pick_hero_bytes(refs, tenant_id, exclude=tuple(used))
+            if p:
+                used.append(p[0])
+                return p[1]
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    deck_r: dict = {"cover": {**deck["cover"], "photo": await _pick()}, "slides": [], "cta": deck["cta"]}
+    for s in deck["slides"]:
+        if s.get("kind") == "photo":
+            deck_r["slides"].append({"section_label": s.get("section_label", ""),
+                                     "headline": s.get("headline", ""), "photo": await _pick()})
+        else:
+            deck_r["slides"].append({"section_label": s.get("section_label", ""),
+                                     "headline": s.get("headline", ""), "stat": s.get("stat", "")})
+
+    slides = render_carousel(deck_r, palette, handle)
+    tenant = str(tenant_id or settings.default_tenant_id)
+    urls: list[str] = []
+    cover_fp = ""
+    for i, png in enumerate(slides):
+        u, fp = await asyncio.to_thread(media_storage().save, tenant, png, f"carousel-{i}.png")
+        urls.append(u)
+        if i == 0:
+            cover_fp = fp
+    cover_url = urls[0] if urls else ""
+    try:
+        await create_media(
+            role="post_image", source_type="upload", uri=cover_url, file_path=cover_fp,
+            title=(topic or "carousel")[:120], platform="instagram", mime="image/png",
+            tags=["style:designed_carousel", "designed", "carousel"],
+            notes=(deck["cover"].get("headline") or "")[:300], tenant_id=tenant_id,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    async with acquire(tenant_id) as conn:
+        await conn.execute(
+            "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1",
+            action_id,
+            json.dumps({
+                "image_url": cover_url, "media_url": cover_url,
+                # The full ordered set of slide images — the carousel itself. The
+                # cover is mirrored into image_url so single-image readers (queue
+                # card, thumbnails) still show the cover.
+                "media_urls": urls,
+                "has_image": True, "image_format": "carousel", "slide_count": len(urls),
+                **({"hero_photo_key": used[0]} if used else {}),
+            }),
+        )
+    return cover_url, "carousel"
+
+
 async def _generate_designed_post_image(
     action_id, topic: str, draft_text: str, tenant_id, avoid: str = "",
     feedback: str = "", force_format: str = "", exclude_photos: tuple[str, ...] = (),
@@ -1758,6 +1848,9 @@ async def _generate_designed_post_image(
         feedback=feedback, force_format=force_format, allow_v2=_allow_v2,
     )
     fmt = spec.get("format") or "quote"
+    # A carousel is a MULTI-image post — a wholly separate render/store path.
+    if fmt == "carousel":
+        return await _generate_carousel_post(action_id, topic, draft_text, tenant_id)
     bg_prompt = (spec.get("bg_prompt") or topic or "cinematic golden-hour scene").strip()
     bg_kind = spec.get("bg_kind") or "scene"
 
