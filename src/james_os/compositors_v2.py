@@ -45,7 +45,10 @@ def _pal(p: dict | None) -> dict:
     """Brand palette with a DERIVED ramp: a brand need only give bg/ink/accent —
     surface (a raised bg) and muted (a quiet ink) are derived when absent, so
     every compositor gets depth from ONE small palette instead of ad-hoc greys.
-    Also accepts a role-list palette (exactly brand_identity's shape)."""
+    Also accepts a role-list palette (exactly brand_identity's shape) — whether
+    passed bare ([{role,hex},...], as carousel() does) or wrapped ({'palette':[...]})."""
+    if isinstance(p, list):                       # bare role-list → wrap it
+        p = {"palette": p}
     p = dict(p or {})
     if isinstance(p.get("palette"), list):
         roles = {r.get("role"): r.get("hex") for r in p["palette"] if isinstance(r, dict)}
