@@ -232,6 +232,14 @@ _FORMAT_MAP = {
 # cards). Used to decide bg_kind and whether to fetch a hero photo.
 _TEXT_ONLY_FORMATS = {"brand_quote", "big_stat"}
 
+# When the design-intelligence switch is OFF, coerce a v2 layout the model may
+# still name back to the nearest shipped format, so prod output stays unchanged.
+_V2_TO_LEGACY = {
+    "full_bleed": "statement", "editorial_split": "statement",
+    "framed_print": "statement", "minimal_over": "hero_quote",
+    "big_stat": "brand_quote",
+}
+
 _DESIGN_DIRECTOR_SYSTEM = (
     "You are the art director for a scroll-stopping Instagram IMAGE that "
     "accompanies a brand's post. Choose the single best visual FORMAT for THIS "
@@ -301,6 +309,8 @@ async def direct_designed_image(
     caller names the format and the model does not get a vote."""
     text = (draft_text or topic or "").strip()
     _fb_fmt = _FORMAT_MAP.get(str(force_format).lower(), "brand_quote") if force_format else "brand_quote"
+    if not settings.design_intel_enabled:
+        _fb_fmt = _V2_TO_LEGACY.get(_fb_fmt, _fb_fmt)
     _fb_quote = (text.split(". ")[0] if text else (topic or "")).strip()[:140]
     fallback = {
         # A pinned format has to survive the fallback too — otherwise an LLM
@@ -357,6 +367,10 @@ async def direct_designed_image(
         # A pinned format wins over whatever the model picked.
         if force_format:
             fmt = _FORMAT_MAP.get(str(force_format).lower(), fmt)
+        # Gate the v2 layouts behind the design-intelligence switch so prod
+        # output stays unchanged until it is turned on.
+        if not settings.design_intel_enabled:
+            fmt = _V2_TO_LEGACY.get(fmt, fmt)
         # bg_kind: text-only cards → none; every other format places the brand's
         # REAL uploaded photo (never AI-generated).
         bg_kind = "none" if fmt in _TEXT_ONLY_FORMATS else "hero"

@@ -176,6 +176,13 @@ class Settings(BaseSettings):
     # footage. Set BROLL_ENABLED=false to turn it off (e.g. when cutaways are
     # cutting badly); flip back on to restore B-roll.
     broll_enabled: bool = True
+    # Design-intelligence master switch. OFF (default) → the post art director
+    # only offers the 3 shipped formats (brand_quote/hero_quote/statement), so
+    # prod output is unchanged. ON → it can also pick the 5 palette-aware v2
+    # layouts (full_bleed/editorial_split/big_stat/minimal_over/framed_print),
+    # and posts render in the brand's stored palette. Flip to true per env when
+    # the design brain is ready to steer generation.
+    design_intel_enabled: bool = False
     # Style prefix applied to every B-roll seed image prompt — pushes the
     # output away from cartoon/illustration toward real-looking footage.
     image_style: str = (
