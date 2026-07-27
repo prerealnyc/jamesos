@@ -462,6 +462,11 @@ def hero_quote_card(quote: str, hero_bytes: bytes, brand_kit: dict | None = None
     # than ~1:2.7, so knobbing it would have done nothing on real photos.)
     focus_x = _knob("image_photo_focus_x", 0.5)
     quote_max_pt = int(_knob("image_quote_max_pt", 86))
+    # How much of the photo's inner edge dissolves into the navy. At 0.40 the
+    # photo is only fully solid across its right ~26%; lower it and far more of
+    # him stays crisp. Clamped so the seam never fully vanishes (a hard edge) or
+    # eats the whole panel.
+    fade = min(0.55, max(0.08, _knob("image_photo_fade", 0.40)))
 
     # ── hero photo on the right; its LEFT edge fades into navy so the seam is
     #    invisible and the whole text column stays on clean navy ──
@@ -470,8 +475,9 @@ def hero_quote_card(quote: str, hero_bytes: bytes, brand_kit: dict | None = None
                             centering=(focus_x, 0.26))
         grad = Image.new("L", (pw, 1), 0)
         for x in range(pw):
-            # transparent across the left ~40% of the panel, then ramp to opaque
-            grad.putpixel((x, 0), min(255, int(255 * max(0.0, (x / pw - 0.40) / 0.34))))
+            # transparent across the left `fade` of the panel, then ramp to
+            # opaque over the next 0.34 — lowering `fade` keeps more of him crisp
+            grad.putpixel((x, 0), min(255, int(255 * max(0.0, (x / pw - fade) / 0.34))))
         base.paste(photo, (photo_left, 0), grad.resize((pw, H)))
 
     draw = ImageDraw.Draw(base)

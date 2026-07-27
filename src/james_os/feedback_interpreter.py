@@ -41,6 +41,7 @@ _KNOB_LAYOUT = {
     "image_text_gutter": "hero_quote",
     "image_quote_max_pt": "hero_quote",
     "image_photo_focus_x": "hero_quote",
+    "image_photo_fade": "hero_quote",
 }
 
 _SYSTEM = (
@@ -75,15 +76,26 @@ _SYSTEM = (
     "cause: 'he's too small / hidden / hard to see' → a WIDER photo; 'the text "
     "covers him / is crowding him' → a BIGGER gutter; 'the text is too big / "
     "shouty' → a SMALLER max type size; 'his head is cut off' → a LOWER photo "
-    "focus point. Only queue a code_change for an image when it needs a layout "
-    "or element that does not exist yet.\n"
+    "focus point; 'his face looks faded / washed out / soft at the edge / "
+    "half-dissolved / blended into the background / not crisp' → a SMALLER photo "
+    "FADE (image_photo_fade lower). CAUTION: 'faded / dissolving into the "
+    "background' is the fade knob; but if the PHOTO ITSELF is out of focus, "
+    "low-resolution, grainy or genuinely blurry (a camera problem, not the "
+    "edge), that is NOT a knob → code_change, area=image (the photo picker "
+    "already screens sharpness; a plain-English note is logged). Only queue a "
+    "code_change for an image when it needs a layout or element that does not "
+    "exist yet, OR to fix genuine source-photo blur.\n"
     "Examples: 'the 2-second B-roll inserts feel too short' → live_config, "
     "area=broll, config_key=broll_insert_max_dur, config_value=4, "
     "confidence~0.9. 'James is half hidden behind the text, make him clearly "
     "visible' → live_config, area=image, config_key=image_photo_width, "
     "config_value=0.58, confidence~0.85. 'the writing sits right on his face' → "
     "live_config, area=image, config_key=image_text_gutter, config_value=120. "
-    "'put his photo in a circle at the top' → code_change (no such layout)."
+    "'his face is all faded into the blue, make him clear' → live_config, "
+    "area=image, config_key=image_photo_fade, config_value=0.12, "
+    "confidence~0.85. 'the photo of him is blurry / out of focus' → code_change, "
+    "area=image (source sharpness, not a knob). 'put his photo in a circle at "
+    "the top' → code_change (no such layout)."
 )
 
 

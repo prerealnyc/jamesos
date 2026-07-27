@@ -532,6 +532,18 @@ async def v1_queue_rejected(tenant_id: TenantDep, limit: int = 50) -> dict[str, 
             "  AND payload->>'regen_of' = ANY($1::text[]) "
             "ORDER BY created_at ASC", ids,
         ) if ids else []
+        # What the feedback interpreter did with each rejection reason: applied a
+        # live knob, or logged a note it could not auto-apply. A text post's
+        # change carries the rejected action's id in source_event_id, so this is
+        # the read side that lets the card stop silently returning a near-
+        # identical redo — it can say "adjusted automatically" or "logged".
+        outcomes = await conn.fetch(
+            "SELECT DISTINCT ON (source_event_id) source_event_id::text AS src, "
+            "status, kind, plain_english, config_key "
+            "FROM feedback_changes "
+            "WHERE source_event_id::text = ANY($1::text[]) AND status <> 'dismissed' "
+            "ORDER BY source_event_id, created_at DESC", ids,
+        ) if ids else []
 
     by_parent: dict[str, list[dict[str, Any]]] = {}
     for r in regens:
@@ -544,6 +556,18 @@ async def v1_queue_rejected(tenant_id: TenantDep, limit: int = 50) -> dict[str, 
             "created_at": r["created_at"].isoformat(),
         })
 
+    # applied → a live knob moved (their next redo reflects it); queued/done →
+    # a note we could not auto-apply (source blur, a new layout). config_key
+    # lets the card name what moved without leaking the raw knob key.
+    outcome_by_src: dict[str, dict[str, Any]] = {
+        o["src"]: {
+            "state": o["status"],
+            "kind": o["kind"],
+            "summary": o["plain_english"],
+            "config_key": o["config_key"],
+        } for o in outcomes
+    }
+
     return {
         "posts": [{
             "id": str(r["id"]), "status": "rejected", "platform": r["platform"],
@@ -552,6 +576,7 @@ async def v1_queue_rejected(tenant_id: TenantDep, limit: int = 50) -> dict[str, 
             "created_at": r["created_at"].isoformat(),
             "decided_at": r["decided_at"].isoformat() if r["decided_at"] else None,
             "replacements": by_parent.get(str(r["id"]), []),
+            "feedback_outcome": outcome_by_src.get(str(r["id"])),
         } for r in rows],
     }
 

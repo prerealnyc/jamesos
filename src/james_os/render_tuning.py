@@ -61,6 +61,21 @@ KNOBS: dict[str, dict] = {
                  "left-to-right — 0 keeps the left edge, 1 the right. Move it when "
                  "he is cut off at the side or the crop lands wrong."),
     },
+    # How much of the photo's inner edge dissolves into the navy. At the default
+    # 0.40 the photo is only fully opaque across its RIGHT ~26% — the left 40%
+    # is transparent and the next 34% ramps up — which reads as "his face is
+    # faded / washed out / blurred into the background". LOWER keeps far more of
+    # him crisp. This changes the FADE, not the photo's own focus: a genuinely
+    # out-of-focus source photo is a picker problem (sharpness gate), not this.
+    "image_photo_fade": {
+        "default": 0.40, "min": 0.08, "max": 0.55, "unit": "fraction of photo panel",
+        "help": ("HERO-QUOTE LAYOUT ONLY: how much of the photo's inner edge fades "
+                 "into the navy background. LOWER when his face looks faded, washed "
+                 "out, soft at the edge, half-dissolved, or blended into the "
+                 "background — it keeps more of him crisp and clearly visible. "
+                 "(This reduces the fade only; it cannot sharpen a genuinely "
+                 "out-of-focus or low-resolution photo.)"),
+    },
 }
 
 # Defaults match the existing code literals, so an empty slot = exactly today's
