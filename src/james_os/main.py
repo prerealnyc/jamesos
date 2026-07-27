@@ -1746,9 +1746,16 @@ async def _generate_designed_post_image(
     from .media import create_media
     from .media import storage as media_storage
 
+    # Per-tenant design-intelligence switch: enables the 8-format brain + the
+    # brand palette for THIS brand only, without touching the rest.
+    try:
+        from .brand_identity import get_design_intel_enabled
+        _allow_v2 = await get_design_intel_enabled(tenant_id)
+    except Exception:  # noqa: BLE001
+        _allow_v2 = None
     spec = await direct_designed_image(
         draft_text or "", topic or "", avoid=avoid,
-        feedback=feedback, force_format=force_format,
+        feedback=feedback, force_format=force_format, allow_v2=_allow_v2,
     )
     fmt = spec.get("format") or "quote"
     bg_prompt = (spec.get("bg_prompt") or topic or "cinematic golden-hour scene").strip()

@@ -286,7 +286,7 @@ _DESIGN_DIRECTOR_SYSTEM = (
 
 async def direct_designed_image(
     draft_text: str, topic: str = "", avoid: str = "",
-    feedback: str = "", force_format: str = "",
+    feedback: str = "", force_format: str = "", allow_v2: bool | None = None,
 ) -> dict:
     """LLM art director → {format, quote, top_text, bottom_text, bg_prompt,
     bg_kind} for the multi-format image machine. Best-effort: falls back to a
@@ -308,8 +308,10 @@ async def direct_designed_image(
     content — so when a regeneration must come back visibly different, the
     caller names the format and the model does not get a vote."""
     text = (draft_text or topic or "").strip()
+    # Per-call override (from the tenant switch) wins; else the global default.
+    enabled = settings.design_intel_enabled if allow_v2 is None else bool(allow_v2)
     _fb_fmt = _FORMAT_MAP.get(str(force_format).lower(), "brand_quote") if force_format else "brand_quote"
-    if not settings.design_intel_enabled:
+    if not enabled:
         _fb_fmt = _V2_TO_LEGACY.get(_fb_fmt, _fb_fmt)
     _fb_quote = (text.split(". ")[0] if text else (topic or "")).strip()[:140]
     fallback = {
@@ -369,7 +371,7 @@ async def direct_designed_image(
             fmt = _FORMAT_MAP.get(str(force_format).lower(), fmt)
         # Gate the v2 layouts behind the design-intelligence switch so prod
         # output stays unchanged until it is turned on.
-        if not settings.design_intel_enabled:
+        if not enabled:
             fmt = _V2_TO_LEGACY.get(fmt, fmt)
         # bg_kind: text-only cards → none; every other format places the brand's
         # REAL uploaded photo (never AI-generated).

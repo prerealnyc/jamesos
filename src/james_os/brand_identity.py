@@ -275,5 +275,37 @@ async def set_brand_palette(palette, tenant_id=None):
     return True
 
 
+async def get_design_intel_enabled(tenant_id=None) -> bool:
+    """Per-tenant design-intelligence switch. Falls back to the global default
+    (settings.design_intel_enabled) when the tenant hasn't set one — so the
+    8-format brain can be turned on for ONE brand without touching the rest."""
+    import json as _json
+
+    from .config import settings
+    from .db import acquire
+    async with acquire(tenant_id) as conn:
+        cfg = await conn.fetchval(
+            "SELECT config FROM tenants WHERE id = "
+            "current_setting('app.current_tenant', true)::uuid")
+    if isinstance(cfg, str):
+        cfg = _json.loads(cfg)
+    v = (cfg or {}).get("design_intel_enabled")
+    return bool(v) if v is not None else bool(settings.design_intel_enabled)
+
+
+async def set_design_intel_enabled(enabled, tenant_id=None):
+    """Turn the design brain on/off for THIS brand (tenant config override)."""
+    import json as _json
+
+    from .db import acquire
+    async with acquire(tenant_id) as conn:
+        await conn.execute(
+            "UPDATE tenants SET config = coalesce(config, '{}'::jsonb) || $1::jsonb "
+            "WHERE id = current_setting('app.current_tenant', true)::uuid",
+            _json.dumps({"design_intel_enabled": bool(enabled)}))
+    return True
+
+
 __all__ = ["extract_palette", "assess_and_propose", "render_palette_card",
-           "get_brand_palette", "set_brand_palette"]
+           "get_brand_palette", "set_brand_palette",
+           "get_design_intel_enabled", "set_design_intel_enabled"]

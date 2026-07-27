@@ -881,6 +881,43 @@ async def _do_reject_video(production_id: UUID, tenant_id: UUID, *, reason: str)
     return {"id": str(production_id), "outcome": "rejected"}
 
 
+# ── brand theme (design intelligence): propose + apply a palette per brand ──
+
+class ThemeApplyBody(BaseModel):
+    palette: list = Field(default_factory=list)   # role-list [{role,hex,label}]
+    enable: bool = False
+
+
+@router.post("/brand/theme/propose")
+async def v1_brand_theme_propose(tenant_id: TenantDep) -> dict[str, Any]:
+    """Read the brand's OWN post photos and propose a theme (palette + verdict).
+    On-demand; costs one vision call. The `proposed_theme.palette` it returns is
+    exactly what /brand/theme/apply expects, so an owner can accept it as-is."""
+    from . import brand_identity as bi
+    from .hero_context import get_hero_photo_files
+    try:
+        refs = await get_hero_photo_files(tenant_id=tenant_id)
+    except Exception:  # noqa: BLE001
+        refs = []
+    imgs = [b for (_k, b) in (refs or []) if b][:5]
+    res = await bi.assess_and_propose(imgs, {})
+    res["current_palette"] = await bi.get_brand_palette(tenant_id)
+    res["design_intel_enabled"] = await bi.get_design_intel_enabled(tenant_id)
+    return res
+
+
+@router.post("/brand/theme/apply")
+async def v1_brand_theme_apply(body: ThemeApplyBody, tenant_id: TenantDep) -> dict[str, Any]:
+    """Store a brand palette (role-list) and switch the design brain on/off for
+    THIS brand — so every future post renders in these colours across the 8
+    layouts. Reversible: apply enable=false to revert to the shipped 3 formats."""
+    from . import brand_identity as bi
+    if body.palette:
+        await bi.set_brand_palette(body.palette, tenant_id)
+    await bi.set_design_intel_enabled(bool(body.enable), tenant_id)
+    return {"ok": True, "palette_set": bool(body.palette), "enabled": bool(body.enable)}
+
+
 # ── bulk approve / reject ──
 
 class BulkDecision(BaseModel):
