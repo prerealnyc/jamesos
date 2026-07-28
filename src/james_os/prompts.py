@@ -157,6 +157,9 @@ VOICE/STRUCTURE rules above (still one story, still no listicle scaffolding):
   them. Prefer inviting a reply/comment/save/share over "link in bio" (a
   comment-keyword prompt converts far better than a bio link). A pure
   brand-building post may carry NO CTA at all — that is a valid choice.
+- A <playbook> block, when present, is proven cross-brand craft in specifics
+  (hook patterns, structure, CTA mechanics). Use it to sharpen the draft, but
+  it NEVER overrides <voice_exemplars>, <thesis>, or <rules> — voice wins.
 
 If there are no voice exemplars and no thesis in memory, you cannot
 credibly write in this brand's voice. In that case set

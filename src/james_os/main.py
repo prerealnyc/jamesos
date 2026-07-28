@@ -240,6 +240,11 @@ async def lifespan(app: FastAPI):
     # and every future scheduled engine — playbooks, press scans, analytics).
     from .scheduler import scheduler_loop
     jobs_loop = asyncio.create_task(scheduler_loop())
+    # Load the shared marketing canon (Brand Intelligence Corpus) once —
+    # idempotent + version-gated, non-blocking so boot never waits on it. Every
+    # brand's generation + strategy grounds in it via house_knowledge.
+    from .house_knowledge import ensure_ingested
+    app.state.house_knowledge_task = asyncio.create_task(ensure_ingested())
     yield
     scheduler.cancel()
     jobs_loop.cancel()

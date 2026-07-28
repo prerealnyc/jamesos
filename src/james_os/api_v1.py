@@ -261,6 +261,23 @@ async def v1_ping(tenant_id: TenantDep) -> dict[str, Any]:
     return {"ok": True, "tenant_id": str(tenant_id)}
 
 
+@router.get("/house-knowledge/status")
+async def v1_house_knowledge_status(tenant_id: TenantDep) -> dict[str, Any]:
+    """How much shared marketing canon is loaded (chunks by layer). The canon is
+    global — the same for every brand — so tenant_id is only the auth gate."""
+    from .house_knowledge import status
+    return await status()
+
+
+@router.post("/house-knowledge/ingest")
+async def v1_house_knowledge_ingest(tenant_id: TenantDep, force: bool = False
+                                    ) -> dict[str, Any]:
+    """Load (or force re-load) the shared marketing canon. Idempotent; startup
+    also runs this, so it's here for manual (re)ingest without a redeploy."""
+    from .house_knowledge import ingest_corpus
+    return await ingest_corpus(force=force)
+
+
 # ─────────────────────────────────────────────── tenant provisioning ──
 
 class TenantCreate(BaseModel):

@@ -161,6 +161,12 @@ async def assemble_memory(
     for ev in merged:
         if ev.event_id in seen:
             continue
+        # Shared house canon lives in a separate tenant and reaches a draft ONLY
+        # through the explicit <playbook> grounding — never as THIS brand's own
+        # memory. Belt-and-suspenders against any RLS gap: drop it structurally
+        # so a brand's voice/facts buckets can never absorb generic canon.
+        if (ev.payload or {}).get("category") == "canon":
+            continue
         seen.add(ev.event_id)
         buckets[_bucket_of(ev)].append(ev)
 
@@ -477,10 +483,25 @@ async def generate_content(
         f"</brief>"
     )
     memory_block = format_content_memory(buckets)
+    # House knowledge: shared cross-brand craft (hooks, structure, CTA, specs)
+    # for THIS platform+format+topic — retrieved from the canon tenant, separate
+    # from this brand's own memory, and applied as craft that never overrides
+    # voice. Additive and best-effort: a miss just omits the block.
+    try:
+        from . import house_knowledge as _hk
+        playbook = await _hk.grounding_block(
+            f"{brief.platform} {brief.format}: hook, structure, CTA and best "
+            f"practice for {strip_internal_labels(brief.topic)}",
+            k=4,
+        )
+    except Exception:  # noqa: BLE001
+        playbook = ""
+    user_content = (f"{memory_block}\n\n{playbook}\n\n{brief_block}"
+                    if playbook else f"{memory_block}\n\n{brief_block}")
     try:
         gen = await llm.complete_json(
             system=system,
-            messages=[{"role": "user", "content": f"{memory_block}\n\n{brief_block}"}],
+            messages=[{"role": "user", "content": user_content}],
             max_tokens=2000,
             temperature=0.7,  # voice work needs some range; QA is the gate
         )

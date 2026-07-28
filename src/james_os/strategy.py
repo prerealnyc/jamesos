@@ -241,11 +241,25 @@ async def compose_prescription(tenant_id: UUID | None = None) -> dict:
         for p in playbooks) or "(no playbooks yet — ground in peers/inventory)"
     peers_block = await _latest_peer_block(tenant_id) or "(no peer snapshots yet)"
     inventory = await _inventory_block(tenant_id)
+    # Shared marketing canon (growth laws, content mix, benchmarks, platform
+    # specs) retrieved for this brand's niche — the strategist may cite it as
+    # "canon: …". Additive and best-effort.
+    try:
+        from . import house_knowledge as _hk
+        niche = str(profile.get("focus_area") or profile.get("industry")
+                    or profile.get("niche") or profile.get("brand") or "").strip()
+        canon_block = await _hk.grounding_block(
+            f"social media growth strategy, content mix, posting cadence, "
+            f"benchmarks and platform playbook for {niche or 'this brand'}",
+            k=5, layers=("playbook", "spec", "rule"))
+    except Exception:  # noqa: BLE001
+        canon_block = ""
+    canon_part = f"<canon>\n{canon_block}\n</canon>\n\n" if canon_block else ""
 
     out = await get_llm().complete_json(
         system=_PRESCRIPTION_SYSTEM,
         messages=[{"role": "user", "content":
-                   f"{block}\n\n<playbooks>\n{pb_block}\n</playbooks>\n\n"
+                   f"{block}\n\n{canon_part}<playbooks>\n{pb_block}\n</playbooks>\n\n"
                    f"<peer_benchmarks>\n{peers_block}\n</peer_benchmarks>\n\n"
                    f"<recent_output>\n{inventory}\n</recent_output>"}],
         max_tokens=2200, temperature=0.4,
