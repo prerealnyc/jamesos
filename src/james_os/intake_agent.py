@@ -47,6 +47,13 @@ _ANSWERED_THRESHOLD = 0.55     # research below this stays open for the human
 _QUESTIONS_PER_BATCH = 20
 _ANSWERS_PER_RUN = 15
 _OPEN_TARGET = 40              # keep this many open at most — never a wall
+# COST CAP: a question research can't answer used to stay 'open' and get
+# re-embedded + re-reranked (Cohere) + re-answered EVERY cadence forever. After
+# this window an open question is retired to 'needs_human' — research stops
+# touching it (the runaway), the open-pool slot frees so the interview keeps
+# progressing, and the human can still answer it (confirm_answer works on any
+# status; list_questions shows all statuses).
+_RESEARCH_WINDOW_HOURS = 48    # ~4 cadence passes, then hand it to the human
 
 _PROPOSE_SYSTEM = """You are a brand researcher. From the research briefing
 below, propose the brand profile for "{name}". Only state what the research
@@ -185,6 +192,14 @@ async def research_answers(
     tenant_id: UUID | None = None, limit: int = _ANSWERS_PER_RUN,
 ) -> dict:
     async with acquire(tenant_id) as conn:
+        # Retire questions that have been open past the research window BEFORE
+        # selecting — this is the cost cap (see _RESEARCH_WINDOW_HOURS): it stops
+        # the forever-retry, frees the open slot, and hands the question to the
+        # human. Retired rows fall out of the status='open' select below.
+        await conn.execute(
+            "UPDATE brand_questions SET status='needs_human' "
+            "WHERE status='open' AND created_at < now() - ($1 * interval '1 hour')",
+            _RESEARCH_WINDOW_HOURS)
         rows = await conn.fetch(
             "SELECT id, dimension, question FROM brand_questions "
             "WHERE status='open' ORDER BY created_at ASC LIMIT $1", limit)
