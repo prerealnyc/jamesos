@@ -19,16 +19,28 @@ from uuid import UUID
 from .db import acquire
 from .llm import get_llm
 
-_ANGLES_SYSTEM = """You are the content strategist reading a finished white
-paper (or research brief). Extract the {n_posts} strongest POST angles and
-{n_reels} strongest REEL angles — each a DISTINCT, specific claim or insight
-from the paper, phrased as a content topic in the AUTHOR'S direction (a
-position, not a summary; no two angles may cover the same point).
+_ANGLES_SYSTEM = """You are THIS BRAND'S content strategist. First read the
+brand's own voice/POV below, THEN read the finished white paper. Extract the
+{n_posts} strongest POST angles and {n_reels} strongest REEL angles — each a
+DISTINCT, specific claim or insight from the paper, SELECTED and FRAMED through
+the brand's point of view and vocabulary (a position the brand would take, not a
+neutral summary; no two angles may cover the same point).
+
+<brand_voice>
+{brand_voice}
+</brand_voice>
+
+Voice rules: the brand's POV decides WHICH insights become angles and HOW each
+topic is phrased. The paper is the SUBSTANCE (claims/facts); the brand voice is
+the LENS. Never let the paper's academic register override the brand's cadence
+or vocabulary. If the brand block is empty, stay neutral and factual — do not
+invent a voice.
 
 For each angle:
 * title — internal label (≤ 90 chars).
-* topic — the content brief a writer works from: the specific claim +
-  the supporting fact/number from the paper (≤ 220 chars).
+* topic — the content brief a writer works from: the specific claim + the
+  supporting fact/number from the paper, phrased in the BRAND'S own words/POV
+  (not the paper's academic phrasing) (≤ 220 chars).
 
 Return STRICT JSON:
 {{"posts": [{{"title": str, "topic": str}}, ...],
@@ -65,8 +77,20 @@ async def generate_content_pack(
 
     _stage("angles")
     row = await _read_source(doc_id, tenant_id)
+    # Voice first: the brand's own exemplars decide WHICH insights become angles
+    # and HOW they're framed — so the pack is the brand's take on the paper, not
+    # a generic strategist's. Empty → neutral/factual (safe).
+    from .content import _voice_exemplars
+    try:
+        _vx = await _voice_exemplars(tenant_id, 4)
+    except Exception:  # noqa: BLE001
+        _vx = []
+    _brand_voice = "\n\n".join((getattr(e, "raw_content", "") or "")[:600]
+                               for e in _vx).strip()
     out = await get_llm().complete_json(
-        system=_ANGLES_SYSTEM.format(n_posts=posts or 1, n_reels=reels or 1),
+        system=_ANGLES_SYSTEM.format(
+            n_posts=posts or 1, n_reels=reels or 1,
+            brand_voice=_brand_voice or "(no brand voice profile on file)"),
         messages=[{"role": "user", "content":
                    f'<paper filename="{row["filename"]}">\n'
                    f'{row["extracted_text"][:24000]}\n</paper>'}],

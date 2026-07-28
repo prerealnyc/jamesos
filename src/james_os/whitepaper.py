@@ -35,7 +35,7 @@ CHUNK_EXCERPT_MAX = 1100
 
 _WRITER_SYSTEM = """You are a senior analyst writing a professional, publication-grade WHITE PAPER for {brand}.
 
-Follow the STRUCTURAL GUIDANCE — it describes how the best, most credible white papers in this domain are actually built. Match that professional structure, narrative flow, depth, and tone. A white paper opens with framing/abstract, builds an evidence-based argument across well-developed sections, and closes with implications and a call to action.
+Follow the STRUCTURAL GUIDANCE for STRUCTURE and FLOW ONLY — section order, how the argument progresses, depth, and how data/figures/citations are used. It is proven craft for how a white paper is organized; it must NEVER override {brand}'s voice, vocabulary, phrasing or point of view. Take structure from the guidance; take voice from <voice_exemplars> when present. When they conflict, voice wins. A white paper opens with framing/abstract, builds an evidence-based argument across well-developed sections, and closes with implications and a call to action.
 
 Ground every substantive claim in the CORPUS (the brand's own documents + gathered research) provided below. Cite corpus documents inline as [n]. Do not invent facts; where the corpus is thin, write at an appropriate level of generality and state assumptions plainly.
 
@@ -212,6 +212,31 @@ async def generate_whitepaper(
     )
     brand = await _brand_label(tenant_id)
     guidelines = await _guidelines_block(tenant_id)
+    # Voice first: the brand's own exemplars, so even this formal paper reads as
+    # THIS brand and not a generic analyst. Empty pre-intake → the neutral
+    # analyst register stays (safe formal default), and no dangling block.
+    try:
+        from .content import _voice_exemplars
+        _exs = await _voice_exemplars(tenant_id, 4)
+    except Exception:  # noqa: BLE001
+        _exs = []
+    if _exs:
+        _vbody = "\n".join(f"<m>{(e.raw_content or '')[:1400]}</m>" for e in _exs)
+        voice_block = ("\n\n<voice_exemplars>  <!-- how the brand actually sounds "
+                       "— PRIMARY driver; imitate cadence/vocabulary/POV, never "
+                       f"copy verbatim -->\n{_vbody}\n</voice_exemplars>")
+        voice_directive = (
+            f"\n\nVOICE — primary driver (non-negotiable): You ARE {brand}. Write "
+            f"this paper in {brand}'s own voice — match the vocabulary, sentence "
+            f"rhythm, cadence and point of view in <voice_exemplars>. A white "
+            f"paper is a more formal register than a social post, but it must "
+            f"still unmistakably read as {brand}, never as a generic analyst. Ban "
+            "generic consultancy filler (\"In today's fast-paced world\", \"Let's "
+            "dive in\", \"game-changer\", rhetorical-question openers). Imitate the "
+            "voice, never copy verbatim. The STRUCTURAL GUIDANCE is craft for "
+            "STRUCTURE only; voice wins.")
+    else:
+        voice_block = voice_directive = ""
     thesis_block = (
         f'\n\nTHE AUTHOR\'S THESIS (cite as [T] — this paper ARGUES this '
         f'point of view; where the thesis asserts an opinion, present it as '
@@ -221,8 +246,10 @@ async def generate_whitepaper(
     )
     system = (
         _WRITER_SYSTEM.format(brand=brand)
+        + voice_directive
+        + voice_block
         + guidelines
-        + "\n\nSTRUCTURAL GUIDANCE (how the best white papers in this space are built):\n"
+        + "\n\nSTRUCTURAL GUIDANCE (STRUCTURE and FLOW ONLY — never voice; see VOICE above):\n"
         + structure_text
         + thesis_block
         + "\n\nCORPUS (cite as [n]):\n" + corpus_block

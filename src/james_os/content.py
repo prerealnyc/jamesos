@@ -359,34 +359,68 @@ def apply_caption_signoff(text: str, signoff: str) -> str:
 
 
 _VIDEO_CAPTION_SYSTEM = (
-    "You write the SOCIAL CAPTION that accompanies a short video by a "
-    "real-estate broker who teaches mindset, ownership and accountability. "
-    "Given the video's spoken content, write ONE scroll-stopping caption in "
-    "his first-person voice: a strong opening line, 1-3 short sentences total, "
-    "no emoji spam, at most a couple of relevant hashtags, no surrounding "
-    "quotes. Do NOT add a sign-off line — that is appended separately.\n\n"
+    "You write the SOCIAL CAPTION that accompanies a short video for a brand. "
+    "You are given <brand_voice> (how THIS brand actually sounds — its "
+    "vocabulary, cadence and point of view), an optional <playbook> (cross-brand "
+    "craft: hook, structure, CTA discipline — STRUCTURE ONLY), and the video's "
+    "spoken content. Write ONE scroll-stopping caption in the BRAND'S OWN voice: "
+    "a strong opening line, 1-3 short sentences total, no emoji spam, at most a "
+    "couple of relevant hashtags, no surrounding quotes. The playbook may shape "
+    "STRUCTURE only; it must NEVER override the brand's words, cadence or point "
+    "of view — voice wins. If <brand_voice> is empty, mirror the video's own "
+    "spoken wording rather than inventing a generic marketing voice. Do NOT add "
+    "a sign-off line — that is appended separately.\n\n"
     'Return STRICT JSON: {"caption": "<the caption>"}'
 )
+
+
+async def _voice_block(tenant_id: UUID | None, n: int = 3) -> str:
+    """A <brand_voice> block of the brand's own exemplars (how it actually
+    sounds), for the lighter generators that don't assemble full memory. Returns
+    "" when the brand has no voice on file — callers then degrade to the source's
+    own words rather than inventing a generic voice."""
+    try:
+        exs = await _voice_exemplars(tenant_id, n)
+    except Exception:  # noqa: BLE001
+        exs = []
+    if not exs:
+        return ""
+    body = "\n".join(f"<m>{(e.raw_content or '')[:1200]}</m>" for e in exs)
+    return ("<brand_voice>  <!-- how THIS brand actually sounds — PRIMARY driver; "
+            "lift its cadence/vocabulary/POV, never a generic voice -->\n"
+            f"{body}\n</brand_voice>")
+
+
+async def _hk_grounding(query: str, k: int = 4) -> str:
+    """Best-effort <playbook> craft block; "" on any miss."""
+    try:
+        from . import house_knowledge as _hk
+        return await _hk.grounding_block(query, k=k)
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 async def gen_video_caption(
     source_text: str, platform: str = "instagram", tenant_id: UUID | None = None
 ) -> str:
-    """A relevant social caption for a finished VIDEO, derived from its spoken
-    content/hook and ending with the brand sign-off. Best-effort: falls back to
-    the first line of the source + sign-off if the LLM is unavailable."""
+    """A relevant social caption for a finished VIDEO, in THIS brand's voice
+    (grounded on its exemplars, with the playbook as secondary structure),
+    ending with the brand sign-off. Best-effort: falls back to the first line of
+    the source + sign-off if the LLM or voice is unavailable."""
     kit = await get_brand_kit(tenant_id)
     signoff = kit.get("caption_signoff") or ""
     src = (source_text or "").strip()
     base = ""
     if src:
+        voice = await _voice_block(tenant_id, 3)
+        playbook = await _hk_grounding(
+            f"{platform} caption: hook, structure and CTA for a short video", k=4)
+        parts = [p for p in (voice, playbook,
+                             f"Platform: {platform}\nVideo content:\n{src[:1800]}") if p]
         try:
             out = await get_llm().complete_json(
                 system=_VIDEO_CAPTION_SYSTEM,
-                messages=[{
-                    "role": "user",
-                    "content": f"Platform: {platform}\nVideo content:\n{src[:1800]}",
-                }],
+                messages=[{"role": "user", "content": "\n\n".join(parts)}],
                 max_tokens=300, temperature=0.6,
             )
             base = str((out or {}).get("caption") or "").strip().strip('"')
@@ -399,24 +433,30 @@ async def gen_video_caption(
 
 _VIDEO_HOOK_SYSTEM = (
     "You write the 3-second ON-SCREEN HOOK for a short reel — the big bold text "
-    "that stops the scroll. Given the video's spoken content, return ONE punchy "
-    "hook of AT MOST 7 words: a bold question or claim that creates curiosity. "
-    "No hashtags, no emoji, no surrounding quotes, no trailing period. Plain "
-    "words.\n\n"
+    "that stops the scroll. You are given <brand_voice> (how THIS brand sounds) "
+    "and an optional <playbook> (cross-brand hook craft — STRUCTURE ONLY). "
+    "Return ONE punchy hook of AT MOST 7 words that creates curiosity, using the "
+    "BRAND'S own vocabulary and point of view. The playbook shapes the hook "
+    "PATTERN only; the brand's words and voice win. No hashtags, no emoji, no "
+    "surrounding quotes, no trailing period. Plain words.\n\n"
     'Return STRICT JSON: {"hook": "<the hook>"}'
 )
 
 
 async def gen_video_hook(source_text: str, tenant_id: UUID | None = None) -> str:
-    """A SHORT punchy on-screen hook (<= 7 words) for a reel, from its spoken
-    content. Best-effort: falls back to the first few words of the source."""
+    """A SHORT punchy on-screen hook (<= 7 words) for a reel, in THIS brand's
+    voice (grounded on its exemplars; playbook = pattern only). Best-effort:
+    falls back to the first few words of the source's OWN wording."""
     src = (source_text or "").strip()
     if not src:
         return ""
+    voice = await _voice_block(tenant_id, 3)
+    playbook = await _hk_grounding("3-second reel hook craft for a short video", k=3)
+    parts = [p for p in (voice, playbook, f"Video content:\n{src[:1500]}") if p]
     try:
         out = await get_llm().complete_json(
             system=_VIDEO_HOOK_SYSTEM,
-            messages=[{"role": "user", "content": src[:1500]}],
+            messages=[{"role": "user", "content": "\n\n".join(parts)}],
             max_tokens=60, temperature=0.7,
         )
         hook = str((out or {}).get("hook") or "").strip().strip('"').rstrip(".")

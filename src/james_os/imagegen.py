@@ -284,18 +284,25 @@ _DESIGN_DIRECTOR_SYSTEM = (
     '  "stat_sub": "<big_stat: a short supporting line, optional>",\n'
     '  "caption": "<framed_print caption, <=8 words>"\n'
     "}\n"
-    "On-image copy is a HOOK [measured ranking: story/contrarian/result beat a "
-    "question]: make a SPECIFIC claim — a number, a contrarian line, or a "
-    "concrete result — never a question or a vague adjective. Specific beats "
-    "adjective; a real number outperforms hype.\n"
-    "Match the brand's voice from the draft. No clichés, no hype words. Pick the "
-    "format that fits THIS post best — vary format across a batch."
+    "VOICE IS PRIMARY. The on-image line MUST sound like THIS brand: reuse the "
+    "brand's own words, phrases and cadence from the <brand_voice> block and the "
+    "<draft>. LIFT and tighten a real line the brand already wrote in the draft "
+    "rather than composing a fresh generic one; never introduce vocabulary the "
+    "brand would not use.\n"
+    "The hook guidance is SECONDARY craft — it governs STRUCTURE only (what to "
+    "lead with, one idea, format choice), never the brand's wording. When "
+    "structure and voice conflict, VOICE WINS.\n"
+    "Within the brand's own words, prefer a SPECIFIC claim — a number, a "
+    "contrarian line, or a concrete result ALREADY PRESENT in the draft — over a "
+    "question or a vague adjective. No clichés, no hype words. Pick the format "
+    "that fits THIS post best — vary format across a batch."
 )
 
 
 async def direct_designed_image(
     draft_text: str, topic: str = "", avoid: str = "",
     feedback: str = "", force_format: str = "", allow_v2: bool | None = None,
+    voice: str = "", brand_profile: str = "",
 ) -> dict:
     """LLM art director → {format, quote, top_text, bottom_text, bg_prompt,
     bg_kind} for the multi-format image machine. Best-effort: falls back to a
@@ -349,7 +356,16 @@ async def direct_designed_image(
     try:
         from .llm import get_llm
 
-        user_content = text[:2000]
+        # Voice first: the art director sees the brand's real cadence/vocabulary
+        # BEFORE the draft, and the prompt tells it to LIFT the card line from the
+        # brand's own words — so the headline sounds like the brand, not a hook
+        # template. Empty voice/profile → just the <draft>, safe as before.
+        vb = ""
+        if voice:
+            vb += f"<brand_voice>\n{voice[:1500]}\n</brand_voice>\n\n"
+        if brand_profile:
+            vb += f"{brand_profile}\n\n"
+        user_content = f"{vb}<draft>\n{text[:2000]}\n</draft>"
         if avoid:
             user_content += (
                 f"\n\n[Variety note: recent posts in this batch already used the "
@@ -451,11 +467,16 @@ _CAROUSEL_SYSTEM = (
     '"<=10 words"}\n'
     "}\n"
     "4–7 inner slides. The cover count_promise MUST match the number of inner "
-    "slides. One atomic idea per slide. Match the brand voice; no fluff."
+    "slides. One atomic idea per slide. VOICE IS PRIMARY: every cover line, slide "
+    "headline and CTA MUST use the brand's own words and cadence from the "
+    "<brand_voice> block and the <draft> — lift real phrases, never invent generic "
+    "ones. The swipe/cover/CTA rules above are SECONDARY structure only; when they "
+    "conflict with the brand's wording, VOICE WINS. No fluff."
 )
 
 
-async def direct_carousel_deck(draft_text: str, topic: str = "", brand_name: str = "") -> dict:
+async def direct_carousel_deck(draft_text: str, topic: str = "", brand_name: str = "",
+                               voice: str = "", brand_profile: str = "") -> dict:
     """LLM → a structured carousel deck {arc, cover, slides[], cta}. Photos are
     assigned later from the brand's library; the model only writes text and picks
     photo-vs-stat per slide. Best-effort with a deck built from the draft."""
@@ -479,7 +500,10 @@ async def direct_carousel_deck(draft_text: str, topic: str = "", brand_name: str
         from .llm import get_llm
         out = await get_llm().complete_json(
             system=_CAROUSEL_SYSTEM,
-            messages=[{"role": "user", "content": text[:2500]}],
+            messages=[{"role": "user", "content": (
+                (f"<brand_voice>\n{voice[:1500]}\n</brand_voice>\n\n" if voice else "")
+                + (f"{brand_profile}\n\n" if brand_profile else "")
+                + f"<draft>\n{text[:2500]}\n</draft>")}],
             max_tokens=800, temperature=0.6,
         )
         out = out or {}

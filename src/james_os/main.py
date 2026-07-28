@@ -1726,6 +1726,25 @@ async def post_soul_image_get(job_id: str) -> dict:
 _DESIGNED_JOBS: dict[str, dict] = {}
 
 
+async def _brand_voice_and_profile(tenant_id) -> tuple[str, str]:
+    """The brand's voice corpus + profile block for the image art directors, so
+    even the on-image card/carousel copy sounds like THIS brand (voice first,
+    the hook/CTA playbook second). Best-effort — a miss returns ('', '') and the
+    render proceeds voice-blind, exactly as before."""
+    voice = bp = ""
+    try:
+        from .autopilot import _voice_for_ideation
+        voice = (await _voice_for_ideation(tenant_id)) or ""
+    except Exception:  # noqa: BLE001 — voice is additive, never blocks a render
+        voice = ""
+    try:
+        from .brands import brand_profile_block
+        bp = (await brand_profile_block(tenant_id)) or ""
+    except Exception:  # noqa: BLE001
+        bp = ""
+    return voice, bp
+
+
 async def _generate_carousel_post(action_id, topic, draft_text, tenant_id) -> tuple[str, str]:
     """Render a designed CAROUSEL: art-director deck → N palette-aware slides
     (cover → inner → CTA) on the brand's OWN photos → store all N and attach a
@@ -1753,7 +1772,9 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id) -> tu
     handle = (kit.get("handle") or "").strip()
     brand_name = (kit.get("display_name") or "").strip()
 
-    deck = await direct_carousel_deck(draft_text or "", topic or "", brand_name)
+    _voice, _bp = await _brand_voice_and_profile(tenant_id)
+    deck = await direct_carousel_deck(draft_text or "", topic or "", brand_name,
+                                      voice=_voice, brand_profile=_bp)
 
     # Assign DISTINCT photos from the brand's library to the cover + each photo
     # slide (stat slides need none) — least-recently-used, blur-gated, no repeats.
@@ -1857,9 +1878,13 @@ async def _generate_designed_post_image(
         _allow_v2 = await get_design_intel_enabled(tenant_id)
     except Exception:  # noqa: BLE001
         _allow_v2 = None
+    # Voice first: give the art director THIS brand's real cadence so the card
+    # headline sounds like the brand, with the hook/CTA playbook as structure only.
+    _voice, _bp = await _brand_voice_and_profile(tenant_id)
     spec = await direct_designed_image(
         draft_text or "", topic or "", avoid=avoid,
         feedback=feedback, force_format=force_format, allow_v2=_allow_v2,
+        voice=_voice, brand_profile=_bp,
     )
     fmt = spec.get("format") or "quote"
     # A carousel is a MULTI-image post — a wholly separate render/store path.

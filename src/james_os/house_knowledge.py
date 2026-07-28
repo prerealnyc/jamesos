@@ -204,9 +204,12 @@ async def grounding_block(query: str, k: int = 4, layers: tuple[str, ...] | None
     hits = await search(query, k=k, layers=layers)
     if not hits:
         return ""
-    lines = ["<playbook>  <!-- proven cross-brand marketing craft (hooks, "
-             "structure, CTA, benchmarks). APPLY it, but the brand's VOICE and "
-             "<rules> always win. -->"]
+    lines = ["<playbook>  <!-- Proven cross-brand marketing craft: hook "
+             "PLACEMENT, structure, CTA mechanics, cadence, slide count, benchmarks. "
+             "It governs STRUCTURE and STRATEGY ONLY. ADAPT every pattern into this "
+             "brand's own vocabulary and cadence -- never lift a phrase, hook line, or "
+             "example wording verbatim. The brand's VOICE, <voice_exemplars>, <thesis> "
+             "and <rules> win every conflict about words, phrasing, or point of view. -->"]
     for h in hits:
         src = (h.payload or {}).get("title") or (h.payload or {}).get("file") or "canon"
         body = (h.raw_content or "").strip()

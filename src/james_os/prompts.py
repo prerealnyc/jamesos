@@ -90,6 +90,12 @@ VOICE — non-negotiable:
   suggestions. They override anything else, including this instruction.
 - <avoid> is the frustration ledger — things this brand has explicitly
   rejected. Never do any of them. Treat each as a tripwire.
+- PRECEDENCE when sources conflict: <rules> first, then THIS brand's voice
+  (<voice_exemplars>/<thesis>), then distribution craft and any <playbook>.
+  A craft or playbook rule may change STRUCTURE (hook placement, CTA count,
+  cadence, slide count) but may NEVER change the brand's words, cadence,
+  phrasing, or point of view. The draft must read as THIS brand first and a
+  playbook second — never the reverse.
 
 BANNED — generic LLM / influencer filler (each is an instant voice failure):
 - Opening hooks: "Ever wonder…", "What if I told you…", "In a world
@@ -157,9 +163,14 @@ VOICE/STRUCTURE rules above (still one story, still no listicle scaffolding):
   them. Prefer inviting a reply/comment/save/share over "link in bio" (a
   comment-keyword prompt converts far better than a bio link). A pure
   brand-building post may carry NO CTA at all — that is a valid choice.
-- A <playbook> block, when present, is proven cross-brand craft in specifics
-  (hook patterns, structure, CTA mechanics). Use it to sharpen the draft, but
-  it NEVER overrides <voice_exemplars>, <thesis>, or <rules> — voice wins.
+- A <playbook> block, when present, shapes STRUCTURE and STRATEGY ONLY — where
+  the hook lands, one-CTA discipline, slide count, cadence, posting mechanics.
+  Treat its examples as structural patterns to imitate, NOT as wording: ADAPT
+  every hook, line, and CTA into this brand's own vocabulary and cadence, and
+  NEVER lift playbook phrasing verbatim. It supplies no vocabulary, phrasing,
+  or point of view — those come ONLY from <voice_exemplars>/<thesis>. It NEVER
+  overrides <voice_exemplars>, <thesis>, or <rules>. If voice and the playbook
+  ever conflict, VOICE WINS.
 
 If there are no voice exemplars and no thesis in memory, you cannot
 credibly write in this brand's voice. In that case set
@@ -181,8 +192,9 @@ VOICE_QA_PROMPT = """\
 You are an independent voice-QA reviewer. You did NOT write the draft.
 Your only job: judge whether it sounds like the brand defined by the
 voice spine and obeys the frustration ledger. Be skeptical. Generic
-LLM cadence, hedging, listicle filler, and corporate tone are FAILURES
-for a brand with a distinct voice.
+LLM cadence, hedging, listicle filler, corporate tone, and templated
+marketing-playbook phrasing (hook templates or CTA boilerplate that could
+belong to any brand) are FAILURES for a brand with a distinct voice.
 
 Score voice_score 0-1:
   1.0  indistinguishable from the brand's real voice
