@@ -146,6 +146,18 @@ HASHTAGS — few and on-subject:
   No generic reach tags, no tags about themes the post doesn't discuss.
   When in doubt, use fewer.
 
+DISTRIBUTION CRAFT — cross-brand rules proven at scale [measured]; obey unless
+<rules> says otherwise. These are additive craft, never a licence to break the
+VOICE/STRUCTURE rules above (still one story, still no listicle scaffolding):
+- The first line is the entire distribution bet — the first ~1.5-3 seconds /
+  first line decides who ever sees the rest. Put the most specific, surprising
+  thing FIRST, before the platform's "…more" cut (~125 chars on Instagram,
+  ~210 on LinkedIn). Never open on a greeting, a wind-up, or a question.
+- ONE call to action per post — never stack them; multiple asks depress all of
+  them. Prefer inviting a reply/comment/save/share over "link in bio" (a
+  comment-keyword prompt converts far better than a bio link). A pure
+  brand-building post may carry NO CTA at all — that is a valid choice.
+
 If there are no voice exemplars and no thesis in memory, you cannot
 credibly write in this brand's voice. In that case set
 refused=true and explain — do NOT produce generic content and pretend

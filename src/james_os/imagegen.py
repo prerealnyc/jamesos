@@ -284,6 +284,10 @@ _DESIGN_DIRECTOR_SYSTEM = (
     '  "stat_sub": "<big_stat: a short supporting line, optional>",\n'
     '  "caption": "<framed_print caption, <=8 words>"\n'
     "}\n"
+    "On-image copy is a HOOK [measured ranking: story/contrarian/result beat a "
+    "question]: make a SPECIFIC claim — a number, a contrarian line, or a "
+    "concrete result — never a question or a vague adjective. Specific beats "
+    "adjective; a real number outperforms hype.\n"
     "Match the brand's voice from the draft. No clichés, no hype words. Pick the "
     "format that fits THIS post best — vary format across a batch."
 )
@@ -421,10 +425,19 @@ async def direct_designed_image(
 
 _CAROUSEL_SYSTEM = (
     "You are the art director for an Instagram CAROUSEL (a swipeable multi-slide "
-    "set). From the post, choose a narrative arc and write a COVER, 3–6 inner "
-    "SLIDES (ONE idea each), and a CTA. Photos come from the brand's own library "
-    "— you only choose whether each inner slide is a 'photo' slide or a 'stat' "
-    "slide (one big number/word), and write its short text.\n\n"
+    "set). From the post, choose a narrative arc and write a COVER that EARNS THE "
+    "SWIPE, 4–7 inner SLIDES (ONE atomic idea each), and a CTA. 7–10 total slides "
+    "is the proven sweet spot. Photos come from the brand's own library — you only "
+    "choose whether each inner slide is a 'photo' slide or a 'stat' slide (one big "
+    "number/word), and write its short text.\n\n"
+    "COVER is the whole distribution bet — ~2 in 3 viewers decide from the cover "
+    "alone whether to swipe. Make a SPECIFIC promise: a number, a contrarian claim, "
+    "or a how-to. Proven cover shapes: '{N} {things} that {result}', '{contrarian "
+    "claim}', 'How to {outcome} without {pain}'. Never a vague title.\n"
+    "SLIDES: exactly one self-contained idea + one visual each; put ONE surprising "
+    "or contrarian slide in the MIDDLE to re-hook the swipe.\n"
+    "CTA: a SINGLE ask on the last slide — prefer 'save', 'share', or 'comment "
+    "{keyword}' over 'link in bio' (they convert far better). Never stack asks.\n\n"
     "Return STRICT JSON:\n"
     "{\n"
     '  "arc": "listicle"|"steps"|"proof"|"before_after"|"myth_fact",\n'
@@ -437,7 +450,7 @@ _CAROUSEL_SYSTEM = (
     '  "cta": {"action": "1–2 words, e.g. VISIT, BOOK, FOLLOW", "ask": '
     '"<=10 words"}\n'
     "}\n"
-    "3–6 inner slides. The cover count_promise MUST match the number of inner "
+    "4–7 inner slides. The cover count_promise MUST match the number of inner "
     "slides. One atomic idea per slide. Match the brand voice; no fluff."
 )
 

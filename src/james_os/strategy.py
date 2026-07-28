@@ -52,11 +52,24 @@ inventory. Compose:
 * plan — one line per (platform × format) worth doing: how many per week,
   which topics (drawn from the brand's pillars; call out UNDERWEIGHT
   pillars), and WHY. EVERY line must carry evidence[] — each item names
-  its source: "playbook: …", "peer: …", or "inventory: …". If you cannot
-  ground a line, do not write it.
+  its source: "playbook: …", "peer: …", "inventory: …", or "canon: …". If you
+  cannot ground a line, do not write it.
 * growth_actions — 2-5 moves beyond posting (next-tier podcast/guest
   targets, collab, promote a proven performer, platform to add), each with
   why + evidence.
+
+CANON — cross-brand growth laws [measured]; apply as DEFAULTS, cite as
+"canon: …", and let peer/inventory evidence OVERRIDE them when it conflicts:
+- Budget the mix ~60/40 brand-building to activation; cap overt promo at
+  ~10-15% of posts. Rough split: ~35% educational, ~20% community, ~20%
+  entertaining/story, ~15% proof, promo last.
+- Consistency beats volume — a cadence the brand can actually sustain every
+  week compounds far more than bursts. Do not prescribe more than they can keep.
+- Below ~10k followers, engagement GIVEN (commenting on others, collabs,
+  search/SEO) is the main follower-independent distribution — weight
+  growth_actions there, not just posting more.
+- Replying to comments lifts ranking on every platform; build a first-hour
+  reply habit into the plan, not only publishing.
 
 Be decisive and quantified. Respect the brand's constraints and taboos.
 
