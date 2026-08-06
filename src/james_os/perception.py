@@ -100,12 +100,17 @@ _VISION_SYSTEM = (
 
 
 _FACE_X_SYSTEM = (
-    "You locate the MAIN speaking person in frames sampled from ONE short video "
-    "clip. Return STRICT JSON {\"found\": boolean, \"center_x\": number}. center_x "
-    "is the horizontal center of that person's FACE/HEAD as a fraction from 0.0 "
-    "(far LEFT edge of frame) to 1.0 (far RIGHT edge), AVERAGED across the frames. "
-    "If there is no single clear person (empty frame, crowd, pure B-roll), set "
-    "found=false. This is used to re-center a vertical crop, so be precise."
+    "You pick the ONE person to KEEP IN FRAME when a wide video is cropped to a "
+    "narrow vertical (9:16). Return STRICT JSON {\"found\": boolean, \"center_x\": "
+    "number}. center_x is that person's FACE/HEAD horizontal center as a fraction "
+    "from 0.0 (far LEFT edge of frame) to 1.0 (far RIGHT edge), AVERAGED across "
+    "the frames. If ONE person is present, use them. If TWO OR MORE people are "
+    "present (e.g. an interview or two-shot), you MUST still pick the SINGLE most "
+    "prominent one — the largest / most-central / clearly-speaking face — and give "
+    "ITS center, so at least one person stays in frame. NEVER return the empty gap "
+    "BETWEEN two people. Set found=false ONLY when there is NO person at all "
+    "(empty frame, scenery, pure B-roll). This re-centers a vertical crop; a wrong "
+    "answer crops the speaker off-screen, so be precise."
 )
 
 _SUBJECT_X_SYSTEM = (
@@ -126,11 +131,13 @@ _SUBJECT_X_SYSTEM = (
 async def detect_speaker_center_x(
     video_path: str, duration_s: float = 0.0, samples: int = 3,
 ) -> float | None:
-    """Best-effort: sample a few mid-clip frames and ask vision for the main
-    speaker's horizontal face-center as a fraction 0..1. ONE vision call.
+    """Best-effort: sample a few mid-clip frames and ask vision for the face-center
+    (fraction 0..1) of the ONE person to keep in frame — the sole speaker, or the
+    most prominent one in a two-shot/interview (so we pan to a person, never the
+    empty gap between two of them). ONE vision call.
 
-    Returns None on ANY failure (no key, ffmpeg/vision error, no clear face) so
-    the caller falls back to a centered crop — this must never break a render."""
+    Returns None on ANY failure (no key, ffmpeg/vision error, or genuinely NO
+    person) so the caller falls back to a centered crop — never breaks a render."""
     client = _client()
     if client is None:
         return None
@@ -144,8 +151,10 @@ async def detect_speaker_center_x(
             content: list[dict] = [{
                 "type": "text",
                 "text": (f"{len(frames)} frames from ONE clip, in order. Give the "
-                         "main speaker's face horizontal center (0=left, 1=right), "
-                         "averaged across them."),
+                         "face horizontal center (0=left, 1=right) of the single "
+                         "person to keep in frame — the most prominent / clearly-"
+                         "speaking one if there are two or more — averaged across "
+                         "them."),
             }]
             for f in frames:
                 b64 = base64.b64encode(f.read_bytes()).decode()

@@ -1263,11 +1263,14 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
 
         # Speaker re-centering (best-effort, never breaks the render). If the cut
         # is WIDER than the target reel aspect (16:9 podcast → 9:16), the default
-        # center-crop can slice James to the edge — so detect his horizontal
-        # position once and pan the crop to center him at assembly time.
-        # A stitched multi-segment cut can put the speaker in a DIFFERENT spot
-        # per segment — one static pan would mis-crop the others, so stitched
-        # cuts keep the safe center crop.
+        # center-crop can slice the speaker to the edge — so detect the face once
+        # and pan the crop to center it at assembly time. For a TWO-person shot
+        # this detector now returns the most prominent person (not "no single
+        # face" → blind center crop that lost BOTH), so at least one is framed;
+        # the active-speaker keyframes below still handle who's-talking when
+        # diarization is available. A stitched multi-segment cut can put the
+        # speaker in a DIFFERENT spot per segment — one static pan would mis-crop
+        # the others, so stitched cuts keep the safe center crop.
         try:
             from .audio_trim import probe_video_dims, probe_duration
             _dims = await probe_video_dims(out_path)
