@@ -18,11 +18,21 @@ Three slide archetypes, one shared frame:
 
 from __future__ import annotations
 
+import os
+
 from PIL import ImageDraw
 
-from .image_compose import (H, W, _ARCHIVO, _colors, _emph_word_idx, _fit,
-                            _fit_left, _font, _line_h, _navy_bg, _png, _spaced,
-                            _spaced_w, _text_w, _wrap_idx)
+from .image_compose import (H, W, _colors, _emph_word_idx, _fit, _fit_left,
+                            _font, _line_h, _navy_bg, _png, _spaced, _spaced_w,
+                            _text_w, _wrap_idx)
+
+# The locked visual system's face is Montserrat (bundled, OFL). ExtraBold carries
+# the big statements + stats, Bold the captions/website, SemiBold the small
+# letter-spaced labels (brand name, source, index, eyebrow).
+_FONT_DIR = os.path.join(os.path.dirname(__file__), "assets", "fonts")
+_MONT_XB = os.path.join(_FONT_DIR, "Montserrat-ExtraBold.ttf")
+_MONT_BD = os.path.join(_FONT_DIR, "Montserrat-Bold.ttf")
+_MONT_SB = os.path.join(_FONT_DIR, "Montserrat-SemiBold.ttf")
 
 M = 96  # side margin
 
@@ -46,14 +56,14 @@ def _auto_emphasis(headline: str) -> str:
 # ── shared frame: brand name top, N / total index, optional source ──
 def _frame(d, pal, name, index, total, source=""):
     if name:
-        nf = _font(_ARCHIVO, 30)
+        nf = _font(_MONT_SB, 30)
         nw = _spaced_w(d, name.upper(), nf, 8)
         _spaced(d, ((W - nw) / 2, 84), name.upper(), nf, pal["accent"], 8)
     itxt = f"{index}  /  {total}"
-    inf = _font(_ARCHIVO, 25)
-    d.text((W - M - _text_w(d, itxt, inf), H - 108), itxt, font=inf, fill=pal["muted"])
+    inf = _font(_MONT_SB, 25)
+    d.text((W - M - _text_w(d, itxt, inf), H - 104), itxt, font=inf, fill=pal["muted"])
     if source:
-        d.text((M, H - 104), source, font=_font(_ARCHIVO, 21), fill=pal["muted"])
+        d.text((M, H - 100), source, font=_font(_MONT_SB, 22), fill=pal["muted"])
 
 
 def _headline(d, pal, headline, emphasis, top, bottom, *, center_v):
@@ -62,9 +72,9 @@ def _headline(d, pal, headline, emphasis, top, bottom, *, center_v):
     if not words:
         return
     emph = _emph_word_idx(words, emphasis or "") or _emph_word_idx(words, _auto_emphasis(headline))
-    font = _fit_left(d, words, _ARCHIVO, W - 2 * M, bottom - top, start=128, minimum=42)
+    font = _fit_left(d, words, _MONT_XB, W - 2 * M, bottom - top, start=126, minimum=42)
     space = _text_w(d, " ", font)
-    lh = _line_h(d, font, 1.16)
+    lh = _line_h(d, font, 1.2)
     lines = _wrap_idx(d, words, font, W - 2 * M)
     y = top + max(0, (bottom - top - lh * len(lines)) / 2) if center_v else top
     for ln in lines:
@@ -87,14 +97,14 @@ def text_slide(pal, name, index, total, headline, emphasis="", source="") -> byt
 def stat_slide(pal, name, index, total, stat, caption, source="") -> bytes:
     base = _navy_bg((0.5, 0.40), 520, glow_color=pal["glow"], base_color=pal["base"])
     d = ImageDraw.Draw(base)
-    sf, sl = _fit(d, (stat or "").upper(), _ARCHIVO, W - 2 * M, int(H * 0.32), start=340, minimum=120)
+    sf, sl = _fit(d, (stat or "").upper(), _MONT_XB, W - 2 * M, int(H * 0.32), start=360, minimum=120)
     slh = _line_h(d, sf, 1.0)
-    sy = int(H * 0.34) - slh * len(sl)
+    sy = int(H * 0.33) - slh * len(sl)
     for ln in sl:
         d.text(((W - _text_w(d, ln, sf)) / 2, sy), ln, font=sf, fill=pal["accent"])
         sy += slh
-    cf, cl = _fit(d, caption or "", _ARCHIVO, int(W * 0.80), int(H * 0.36), start=60, minimum=32)
-    clh = _line_h(d, cf, 1.24)
+    cf, cl = _fit(d, caption or "", _MONT_BD, int(W * 0.80), int(H * 0.36), start=58, minimum=32)
+    clh = _line_h(d, cf, 1.3)
     cy = int(H * 0.50)
     for ln in cl:
         d.text(((W - _text_w(d, ln, cf)) / 2, cy), ln, font=cf, fill=pal["ink"])
@@ -115,14 +125,14 @@ def cover_slide(pal, name, index, total, headline, emphasis="", eyebrow="",
         offer, site = cta
         yb = H - 250
         if offer:
-            of_, ol = _fit(d, offer, _ARCHIVO, W - 2 * M, 130, start=40, minimum=24)
+            of_, ol = _fit(d, offer, _MONT_BD, W - 2 * M, 130, start=42, minimum=24)
             for ln in ol:
                 d.text((M, yb), ln, font=of_, fill=pal["ink"])
-                yb += _line_h(d, of_, 1.2)
+                yb += _line_h(d, of_, 1.28)
         if site:
-            d.text((M, yb + 8), site, font=_font(_ARCHIVO, 38), fill=pal["accent"])
+            d.text((M, yb + 8), site, font=_font(_MONT_BD, 40), fill=pal["accent"])
     elif eyebrow:
-        _spaced(d, (M, H - 152), eyebrow.upper(), _font(_ARCHIVO, 23), pal["accent"], 6)
+        _spaced(d, (M, H - 150), eyebrow.upper(), _font(_MONT_SB, 23), pal["accent"], 5)
     _frame(d, pal, name, index, total, "")
     return _png(base)
 
