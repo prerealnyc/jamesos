@@ -229,7 +229,9 @@ _FORMAT_MAP = {
     "editorial_split": "editorial_split", "editorial": "editorial_split",
     "minimal_over": "minimal_over", "minimal": "minimal_over",
     "framed_print": "framed_print", "framed": "framed_print",
-    "carousel": "carousel",
+    "carousel": "carousel", "photo_carousel": "carousel",
+    "text_carousel": "text_carousel", "type_carousel": "text_carousel",
+    "typographic_carousel": "text_carousel", "no_photo_carousel": "text_carousel",
 }
 # Formats that place the brand's REAL photo (everything except the text-only
 # cards). Used to decide bg_kind and whether to fetch a hero photo.
@@ -241,6 +243,7 @@ _V2_TO_LEGACY = {
     "full_bleed": "statement", "editorial_split": "statement",
     "framed_print": "statement", "minimal_over": "hero_quote",
     "big_stat": "brand_quote", "carousel": "statement",
+    "text_carousel": "bold_statement",
 }
 
 _DESIGN_DIRECTOR_SYSTEM = (
@@ -249,7 +252,7 @@ _DESIGN_DIRECTOR_SYSTEM = (
     "post and write the short on-image text. Text is overlaid later in perfect "
     "type — write it, never describe it, and keep on-image copy to ONE short "
     "idea (a stranger should grasp it in under 1.5 seconds).\n\n"
-    "NINE formats — ALL use clean brand type over the brand's REAL photo or a "
+    "The formats — ALL use clean brand type over the brand's REAL photo or a "
     "solid brand-colour card, NEVER an AI-generated scene:\n"
     "  * brand_quote — text-only card for a short punchy mantra / identity line "
     "(no photo). Best for a crisp quotable line.\n"
@@ -273,15 +276,20 @@ _DESIGN_DIRECTOR_SYSTEM = (
     "  * hero_quote — the person's photo beside a quote. For a personal "
     "motivational line where a face adds authority.\n"
     "  * statement — a bold declarative statement with the photo framed below.\n"
-    "  * carousel — a multi-slide SET (up to 10) for a list ('N ways/reasons'), "
-    "a step-by-step, or several proof points/stats: pick this when the post has "
-    "SEVERAL distinct points that each deserve their own slide. Its slides are "
-    "written separately — just choose this format.\n\n"
+    "  * carousel — a multi-slide SET (up to 10) ON THE BRAND'S PHOTOS for a list "
+    "('N ways/reasons'), a step-by-step, or several proof points/stats: pick this "
+    "when the post has SEVERAL distinct points that each deserve their own slide "
+    "AND photos help carry them. Its slides are written separately — just choose "
+    "this format.\n"
+    "  * text_carousel — the SAME multi-slide SET but TEXT-ONLY (no photos): each "
+    "point set as clean type on a brand-colour slide. Pick this for a list / "
+    "steps / points that stand on their words, or when the brand has no strong "
+    "photos for the topic.\n\n"
     "Return STRICT JSON with ALL keys (fill only what the chosen format needs, "
     "leave the rest \"\"):\n"
     "{\n"
     '  "format": "brand_quote"|"bold_statement"|"big_stat"|"full_bleed"|'
-    '"editorial_split"|"minimal_over"|"framed_print"|"hero_quote"|"statement"|"carousel",\n'
+    '"editorial_split"|"minimal_over"|"framed_print"|"hero_quote"|"statement"|"carousel"|"text_carousel",\n'
     '  "quote": "<brand_quote/hero_quote line, <=12 words>",\n'
     '  "emphasis": "<1-3 KEY words from quote to highlight, verbatim>",\n'
     '  "statement": "<statement line, <=16 words>",\n'
@@ -491,21 +499,27 @@ _CAROUSEL_SYSTEM = (
 
 
 async def direct_carousel_deck(draft_text: str, topic: str = "", brand_name: str = "",
-                               voice: str = "", brand_profile: str = "") -> dict:
+                               voice: str = "", brand_profile: str = "",
+                               text_only: bool = False) -> dict:
     """LLM → a structured carousel deck {arc, cover, slides[], cta}. Photos are
     assigned later from the brand's library; the model only writes text and picks
-    photo-vs-stat per slide. Best-effort with a deck built from the draft."""
+    photo-vs-stat per slide. Best-effort with a deck built from the draft.
+
+    `text_only` forces a PHOTOLESS deck: every inner slide is coerced to kind
+    "text" (pure typography on the brand ground), and no photo is assigned later —
+    the typographic carousel template."""
     text = (draft_text or topic or "").strip()
+    _slide_kind = "text" if text_only else "photo"
     parts = [p.strip() for p in text.split(". ") if p.strip()]
-    fb_slides = [{"kind": "photo", "section_label": "", "headline": p[:80], "stat": ""}
+    fb_slides = [{"kind": _slide_kind, "section_label": "", "headline": p[:80], "stat": ""}
                  for p in parts[1:5]]
     fallback = {
         "arc": "listicle",
         "cover": {"headline": (parts[0][:80] if parts else (topic or "")),
                   "count_promise": "", "kicker": brand_name[:24]},
         "slides": fb_slides if len(fb_slides) >= 2 else [
-            {"kind": "photo", "section_label": "", "headline": (parts[0][:80] if parts else topic), "stat": ""},
-            {"kind": "photo", "section_label": "", "headline": (topic or "")[:80], "stat": ""},
+            {"kind": _slide_kind, "section_label": "", "headline": (parts[0][:80] if parts else topic), "stat": ""},
+            {"kind": _slide_kind, "section_label": "", "headline": (topic or "")[:80], "stat": ""},
         ],
         "cta": {"action": "LEARN MORE", "ask": ""},
     }
@@ -526,8 +540,11 @@ async def direct_carousel_deck(draft_text: str, topic: str = "", brand_name: str
         for s in (out.get("slides") or [])[:8]:
             if not isinstance(s, dict):
                 continue
+            # text_only pins every slide to pure typography; otherwise the model
+            # picks stat-vs-photo per slide.
+            kind = "text" if text_only else ("stat" if str(s.get("kind")).lower() == "stat" else "photo")
             row = {
-                "kind": "stat" if str(s.get("kind")).lower() == "stat" else "photo",
+                "kind": kind,
                 "section_label": str(s.get("section_label") or "").strip(),
                 "headline": str(s.get("headline") or "").strip(),
                 "stat": str(s.get("stat") or "").strip(),

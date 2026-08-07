@@ -1745,11 +1745,16 @@ async def _brand_voice_and_profile(tenant_id) -> tuple[str, str]:
     return voice, bp
 
 
-async def _generate_carousel_post(action_id, topic, draft_text, tenant_id) -> tuple[str, str]:
+async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
+                                  text_only: bool = False) -> tuple[str, str]:
     """Render a designed CAROUSEL: art-director deck → N palette-aware slides
     (cover → inner → CTA) on the brand's OWN photos → store all N and attach a
     `media_urls` list to the action. Returns (cover_url, "carousel"). Only reached
-    when the tenant's design brain is on (the art director gates 'carousel')."""
+    when the tenant's design brain is on (the art director gates 'carousel').
+
+    `text_only` renders the TYPOGRAPHIC carousel: no photos at all — the cover and
+    every inner slide are clean type on the brand ground. Best for a list / steps /
+    points that stand on their words."""
     from .brand_kit import get_brand_kit
     from .carousel import carousel as render_carousel
     from .hero_context import get_hero_photo_files
@@ -1774,14 +1779,17 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id) -> tu
 
     _voice, _bp = await _brand_voice_and_profile(tenant_id)
     deck = await direct_carousel_deck(draft_text or "", topic or "", brand_name,
-                                      voice=_voice, brand_profile=_bp)
+                                      voice=_voice, brand_profile=_bp, text_only=text_only)
 
     # Assign DISTINCT photos from the brand's library to the cover + each photo
     # slide (stat slides need none) — least-recently-used, blur-gated, no repeats.
-    try:
-        refs = await get_hero_photo_files(tenant_id=tenant_id)
-    except Exception:  # noqa: BLE001
-        refs = []
+    # A text-only deck skips photos entirely.
+    refs: list = []
+    if not text_only:
+        try:
+            refs = await get_hero_photo_files(tenant_id=tenant_id)
+        except Exception:  # noqa: BLE001
+            refs = []
     used: list[str] = []
 
     async def _pick():
@@ -1799,11 +1807,14 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id) -> tu
             pass
         return None
 
-    cover_photo = await _pick()
+    cover_photo = None if text_only else await _pick()
     cover_key = used[-1] if used else None
     deck_r: dict = {"cover": {**deck["cover"], "photo": cover_photo}, "slides": [], "cta": deck["cta"]}
     for s in deck["slides"]:
-        if s.get("kind") == "photo":
+        if s.get("kind") == "text":  # typographic slide — no photo, no stat
+            deck_r["slides"].append({"kind": "text", "section_label": s.get("section_label", ""),
+                                     "headline": s.get("headline", "")})
+        elif s.get("kind") == "photo":
             deck_r["slides"].append({"section_label": s.get("section_label", ""),
                                      "headline": s.get("headline", ""), "photo": await _pick()})
         else:
@@ -1888,8 +1899,10 @@ async def _generate_designed_post_image(
     )
     fmt = spec.get("format") or "quote"
     # A carousel is a MULTI-image post — a wholly separate render/store path.
-    if fmt == "carousel":
-        return await _generate_carousel_post(action_id, topic, draft_text, tenant_id)
+    # text_carousel is the photoless (typographic) variant of the same path.
+    if fmt in ("carousel", "text_carousel"):
+        return await _generate_carousel_post(action_id, topic, draft_text, tenant_id,
+                                             text_only=(fmt == "text_carousel"))
     bg_prompt = (spec.get("bg_prompt") or topic or "cinematic golden-hour scene").strip()
     bg_kind = spec.get("bg_kind") or "scene"
 

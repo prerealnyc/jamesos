@@ -111,6 +111,31 @@ def carousel_slide(index, total, headline, section_label="", handle="",
     return _png(base)
 
 
+# ── text-only inner slide: pure typography on the brand ground, no photo/stat ──
+def carousel_text_slide(index, total, headline, section_label="", handle="",
+                        palette=None) -> bytes:
+    """A TEXT-ONLY inner slide — the typographic counterpart to the photo/stat
+    variants: the brand-colour ground, a small accent section label, and one big
+    statement set large and centred. For a photoless deck (a list / steps / points
+    that stand on their words), so a text carousel never shows an empty photo band."""
+    pal = _pal(palette)
+    headline, section_label = _clip(headline, 16), _clip(section_label, 5)
+    base = Image.new("RGB", (W, H), pal["bg"])
+    d = ImageDraw.Draw(base)
+    hf, hl = _fit(d, headline.upper(), _ANTON, W - 2 * M, int(H * 0.50), start=132, minimum=54)
+    lh = _line_h(d, hf, 1.04)
+    block_h = lh * len(hl)
+    top = int((H - block_h) / 2) + 24  # centred, nudged below the index token
+    if section_label:
+        _spaced(d, (M, top - 62), section_label.upper(), _font(_ARCHIVO, 28), pal["accent"], 8)
+    y = top
+    for ln in hl:
+        d.text((M, y), ln, font=hf, fill=pal["ink"])
+        y += lh
+    _carousel_frame(d, pal, handle, index, total)
+    return _png(base)
+
+
 # ── CTA: inverted ground, one action, enlarged brand mark, no swipe cues ──
 def carousel_cta(action, ask="", handle="", palette=None) -> bytes:
     pal = _pal(palette)
@@ -166,12 +191,16 @@ def carousel(deck: dict, palette=None, handle="") -> list[bytes]:
         c.get("photo"), c.get("headline", ""), c.get("count_promise", ""),
         c.get("kicker", ""), handle, palette, total, tuple(c.get("focus", (0.5, 0.40)))))
     for i, s in enumerate(slides, start=2):
-        out.append(carousel_slide(
-            i, total, s.get("headline", ""), s.get("section_label", ""), handle, palette,
-            photo=s.get("photo"), stat=s.get("stat", ""), focus=tuple(s.get("focus", (0.5, 0.42)))))
+        if s.get("kind") == "text":  # text-only deck — pure typography, no photo/stat
+            out.append(carousel_text_slide(
+                i, total, s.get("headline", ""), s.get("section_label", ""), handle, palette))
+        else:
+            out.append(carousel_slide(
+                i, total, s.get("headline", ""), s.get("section_label", ""), handle, palette,
+                photo=s.get("photo"), stat=s.get("stat", ""), focus=tuple(s.get("focus", (0.5, 0.42)))))
     cta = deck.get("cta") or {}
     out.append(carousel_cta(cta.get("action", "LEARN MORE"), cta.get("ask", ""), handle, palette))
     return out
 
 
-__all__ = ["carousel", "carousel_cover", "carousel_slide", "carousel_cta"]
+__all__ = ["carousel", "carousel_cover", "carousel_slide", "carousel_text_slide", "carousel_cta"]
