@@ -1781,47 +1781,47 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
     deck = await direct_carousel_deck(draft_text or "", topic or "", brand_name,
                                       voice=_voice, brand_profile=_bp, text_only=text_only)
 
-    # Assign DISTINCT photos from the brand's library to the cover + each photo
-    # slide (stat slides need none) — least-recently-used, blur-gated, no repeats.
-    # A text-only deck skips photos entirely.
-    refs: list = []
-    if not text_only:
+    if text_only:
+        # PREMIUM photoless carousel — the brand's locked visual system: a radial
+        # brand-palette ground, the name up top, a big statement with its key phrase
+        # in the accent, huge stat slides, an N/total index. NO photos at all.
+        from .carousel_text import render_text_carousel
+        slides = render_text_carousel(deck, kit, handle)
+        cover_key = None
+    else:
+        # Assign DISTINCT photos from the brand's library to the cover + each photo
+        # slide (stat slides need none) — least-recently-used, blur-gated, no repeats.
         try:
             refs = await get_hero_photo_files(tenant_id=tenant_id)
         except Exception:  # noqa: BLE001
             refs = []
-    used: list[str] = []
+        used: list[str] = []
 
-    async def _pick():
-        try:
-            p = await pick_hero_bytes(refs, tenant_id, exclude=tuple(used))
-            if p is None and refs:
-                # Small library — recycle so every photo slide still gets a photo
-                # (build with whatever hero content there is), rather than blanks.
-                used.clear()
-                p = await pick_hero_bytes(refs, tenant_id, exclude=())
-            if p:
-                used.append(p[0])
-                return p[1]
-        except Exception:  # noqa: BLE001
-            pass
-        return None
+        async def _pick():
+            try:
+                p = await pick_hero_bytes(refs, tenant_id, exclude=tuple(used))
+                if p is None and refs:
+                    # Small library — recycle so every photo slide still gets a photo.
+                    used.clear()
+                    p = await pick_hero_bytes(refs, tenant_id, exclude=())
+                if p:
+                    used.append(p[0])
+                    return p[1]
+            except Exception:  # noqa: BLE001
+                pass
+            return None
 
-    cover_photo = None if text_only else await _pick()
-    cover_key = used[-1] if used else None
-    deck_r: dict = {"cover": {**deck["cover"], "photo": cover_photo}, "slides": [], "cta": deck["cta"]}
-    for s in deck["slides"]:
-        if s.get("kind") == "text":  # typographic slide — no photo, no stat
-            deck_r["slides"].append({"kind": "text", "section_label": s.get("section_label", ""),
-                                     "headline": s.get("headline", "")})
-        elif s.get("kind") == "photo":
-            deck_r["slides"].append({"section_label": s.get("section_label", ""),
-                                     "headline": s.get("headline", ""), "photo": await _pick()})
-        else:
-            deck_r["slides"].append({"section_label": s.get("section_label", ""),
-                                     "headline": s.get("headline", ""), "stat": s.get("stat", "")})
-
-    slides = render_carousel(deck_r, palette, handle)
+        cover_photo = await _pick()
+        cover_key = used[-1] if used else None
+        deck_r: dict = {"cover": {**deck["cover"], "photo": cover_photo}, "slides": [], "cta": deck["cta"]}
+        for s in deck["slides"]:
+            if s.get("kind") == "photo":
+                deck_r["slides"].append({"section_label": s.get("section_label", ""),
+                                         "headline": s.get("headline", ""), "photo": await _pick()})
+            else:
+                deck_r["slides"].append({"section_label": s.get("section_label", ""),
+                                         "headline": s.get("headline", ""), "stat": s.get("stat", "")})
+        slides = render_carousel(deck_r, palette, handle)
     tenant = str(tenant_id or settings.default_tenant_id)
     urls: list[str] = []
     cover_fp = ""

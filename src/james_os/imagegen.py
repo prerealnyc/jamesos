@@ -480,15 +480,23 @@ _CAROUSEL_SYSTEM = (
     "Return STRICT JSON:\n"
     "{\n"
     '  "arc": "listicle"|"steps"|"proof"|"before_after"|"myth_fact",\n'
-    '  "cover": {"headline": "<=8 words", "count_promise": "e.g. 6 REASONS / 5 '
-    'STEPS — <=3 words; MUST equal the number of inner slides", "kicker": '
-    '"<=3 words"},\n'
+    '  "cover": {"headline": "<=8 words", "emphasis": "1–4 KEY words FROM the '
+    'headline to highlight, verbatim", "count_promise": "e.g. 6 REASONS / 5 STEPS '
+    '— <=3 words; MUST equal the number of inner slides", "kicker": "<=3 words"},\n'
     '  "slides": [{"kind": "photo"|"stat", "section_label": "<=3 words", '
-    '"headline": "<=9 words", "stat": "<stat kind only: 1–3 words, e.g. 1ST, 20 '
-    'YRS, 90%>"}],\n'
-    '  "cta": {"action": "1–2 words, e.g. VISIT, BOOK, FOLLOW", "ask": '
-    '"<=10 words"}\n'
+    '"headline": "<=14 words (the slide\'s full line)", "emphasis": "1–4 KEY words '
+    'FROM this headline to highlight, verbatim", "stat": "<stat kind only: 1–3 '
+    'words, e.g. 1ST, 20 YRS, 90%>", "source": "<stat kind only: the data source, '
+    '<=6 words, e.g. NAEP 2024>"}],\n'
+    '  "cta": {"headline": "<a strong closing statement, <=14 words>", "emphasis": '
+    '"1–4 KEY words FROM the cta headline, verbatim", "action": "1–2 words, e.g. '
+    'VISIT, BOOK, FOLLOW", "ask": "<the offer line, <=10 words>"}\n'
     "}\n"
+    "`emphasis` is the phrase set in the brand ACCENT colour — pick the words that "
+    "carry the punch (a contrast, a landing, the payoff), always a verbatim slice "
+    "of that same line. On a TEXT (photoless) carousel each headline stands on its "
+    "own words, so emphasis matters most there; a stat slide's `source` is the data "
+    "attribution shown small at the foot.\n"
     "4–7 inner slides. The cover count_promise MUST match the number of inner "
     "slides. One atomic idea per slide. VOICE IS PRIMARY: every cover line, slide "
     "headline and CTA MUST use the brand's own words and cadence from the "
@@ -540,14 +548,20 @@ async def direct_carousel_deck(draft_text: str, topic: str = "", brand_name: str
         for s in (out.get("slides") or [])[:8]:
             if not isinstance(s, dict):
                 continue
-            # text_only pins every slide to pure typography; otherwise the model
-            # picks stat-vs-photo per slide.
-            kind = "text" if text_only else ("stat" if str(s.get("kind")).lower() == "stat" else "photo")
+            is_stat = str(s.get("kind")).lower() == "stat" and str(s.get("stat") or "").strip()
+            # A text-only (photoless) deck keeps STAT slides (they're numbers, no
+            # photo) and turns every other slide into a pure-type slide; a photo
+            # deck picks stat-vs-photo per slide.
+            kind = "stat" if is_stat else ("text" if text_only else "photo")
             row = {
                 "kind": kind,
                 "section_label": str(s.get("section_label") or "").strip(),
                 "headline": str(s.get("headline") or "").strip(),
                 "stat": str(s.get("stat") or "").strip(),
+                "emphasis": str(s.get("emphasis") or "").strip(),
+                "source": str(s.get("source") or "").strip(),
+                # a stat slide's line IS its caption in the premium text carousel
+                "caption": str(s.get("headline") or "").strip(),
             }
             if row["headline"] or row["stat"]:
                 slides.append(row)
@@ -559,11 +573,15 @@ async def direct_carousel_deck(draft_text: str, topic: str = "", brand_name: str
             "arc": str(out.get("arc") or "listicle"),
             "cover": {
                 "headline": str(cover.get("headline") or "").strip() or fallback["cover"]["headline"],
+                "emphasis": str(cover.get("emphasis") or "").strip(),
                 "count_promise": str(cover.get("count_promise") or "").strip(),
                 "kicker": (str(cover.get("kicker") or "").strip() or brand_name)[:24],
+                "eyebrow": str(cover.get("kicker") or "").strip(),
             },
             "slides": slides,
             "cta": {
+                "headline": str(cta.get("headline") or "").strip(),
+                "emphasis": str(cta.get("emphasis") or "").strip(),
                 "action": str(cta.get("action") or "LEARN MORE").strip(),
                 "ask": str(cta.get("ask") or "").strip(),
             },
