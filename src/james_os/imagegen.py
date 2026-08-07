@@ -302,8 +302,15 @@ _DESIGN_DIRECTOR_SYSTEM = (
     "structure and voice conflict, VOICE WINS.\n"
     "Within the brand's own words, prefer a SPECIFIC claim — a number, a "
     "contrarian line, or a concrete result ALREADY PRESENT in the draft — over a "
-    "question or a vague adjective. No clichés, no hype words. Pick the format "
-    "that fits THIS post best — vary format across a batch."
+    "question or a vague adjective. No clichés, no hype words.\n"
+    "FORMAT PRIORITY: when two or more formats would fit this post well, PREFER "
+    "the newest template, `bold_statement` (the text + brand-name poster) — it is "
+    "the brand's current house style, so make it your default choice for any "
+    "declarative claim, contrast, hard truth or mantra. Only pass it over when the "
+    "post is CLEARLY better as another format: a dominant number/superlative → "
+    "big_stat, several distinct points → carousel, or a genuinely photo-led moment "
+    "where the image carries the post → full_bleed/minimal_over/framed_print. "
+    "Across a batch, still vary — but let bold_statement lead the rotation."
 )
 
 
