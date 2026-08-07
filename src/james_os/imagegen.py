@@ -223,15 +223,17 @@ async def direct_image_scene(story: str, fallback_topic: str = "") -> str:
 _FORMAT_MAP = {
     "quote": "brand_quote", "meme": "brand_quote", "brand_quote": "brand_quote",
     "hero_quote": "hero_quote", "statement": "statement", "big_stat": "big_stat",
+    "bold_statement": "bold_statement", "statement_poster": "bold_statement",
+    "poster": "bold_statement",
     "full_bleed": "full_bleed", "full_bleed_hero": "full_bleed",
     "editorial_split": "editorial_split", "editorial": "editorial_split",
     "minimal_over": "minimal_over", "minimal": "minimal_over",
     "framed_print": "framed_print", "framed": "framed_print",
     "carousel": "carousel",
 }
-# Formats that place the brand's REAL photo (everything except the two text-only
+# Formats that place the brand's REAL photo (everything except the text-only
 # cards). Used to decide bg_kind and whether to fetch a hero photo.
-_TEXT_ONLY_FORMATS = {"brand_quote", "big_stat"}
+_TEXT_ONLY_FORMATS = {"brand_quote", "big_stat", "bold_statement"}
 
 # When the design-intelligence switch is OFF, coerce a v2 layout the model may
 # still name back to the nearest shipped format, so prod output stays unchanged.
@@ -247,10 +249,16 @@ _DESIGN_DIRECTOR_SYSTEM = (
     "post and write the short on-image text. Text is overlaid later in perfect "
     "type — write it, never describe it, and keep on-image copy to ONE short "
     "idea (a stranger should grasp it in under 1.5 seconds).\n\n"
-    "EIGHT formats — ALL use clean brand type over the brand's REAL photo or a "
+    "NINE formats — ALL use clean brand type over the brand's REAL photo or a "
     "solid brand-colour card, NEVER an AI-generated scene:\n"
     "  * brand_quote — text-only card for a short punchy mantra / identity line "
     "(no photo). Best for a crisp quotable line.\n"
+    "  * bold_statement — text-only POSTER for a longer declarative statement or "
+    "observation (no photo): the brand name across the top, the statement set "
+    "large and left-aligned with its key phrase highlighted, a byline at the "
+    "foot. Best for a punchy multi-line claim/contrast that stands on its own "
+    "words (e.g. a hard truth, a 'we do X but not Y'). Put the line in "
+    "\"statement\" and the phrase to highlight in \"emphasis\".\n"
     "  * big_stat — ONE huge number or claim: a first, a ranking, a count, a span "
     "of years, a superlative (no photo). Use when the post has a strong number "
     "or 'first/only/most'.\n"
@@ -272,8 +280,8 @@ _DESIGN_DIRECTOR_SYSTEM = (
     "Return STRICT JSON with ALL keys (fill only what the chosen format needs, "
     "leave the rest \"\"):\n"
     "{\n"
-    '  "format": "brand_quote"|"big_stat"|"full_bleed"|"editorial_split"|'
-    '"minimal_over"|"framed_print"|"hero_quote"|"statement"|"carousel",\n'
+    '  "format": "brand_quote"|"bold_statement"|"big_stat"|"full_bleed"|'
+    '"editorial_split"|"minimal_over"|"framed_print"|"hero_quote"|"statement"|"carousel",\n'
     '  "quote": "<brand_quote/hero_quote line, <=12 words>",\n'
     '  "emphasis": "<1-3 KEY words from quote to highlight, verbatim>",\n'
     '  "statement": "<statement line, <=16 words>",\n'
@@ -340,7 +348,7 @@ async def direct_designed_image(
         "quote": _fb_quote,
         "emphasis": "",
         "top_text": "", "bottom_text": "",
-        "statement": _fb_quote if _fb_fmt == "statement" else "",
+        "statement": _fb_quote if _fb_fmt in ("statement", "bold_statement") else "",
         # New v2 formats: a pinned format keeps its own layout in the fallback by
         # borrowing the first line, instead of collapsing to a plain card.
         "headline": _fb_quote if _fb_fmt in ("full_bleed", "editorial_split", "minimal_over") else "",
@@ -424,7 +432,7 @@ async def direct_designed_image(
         line = spec["quote"] or fallback["quote"]
         if fmt in ("brand_quote", "hero_quote") and not spec["quote"]:
             spec["quote"] = line
-        if fmt == "statement" and not spec["statement"]:
+        if fmt in ("statement", "bold_statement") and not spec["statement"]:
             spec["statement"] = line
         if fmt in ("full_bleed", "editorial_split", "minimal_over") and not spec["headline"]:
             spec["headline"] = line

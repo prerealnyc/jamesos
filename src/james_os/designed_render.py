@@ -14,14 +14,15 @@ can be unit-tested against fixtures with no tenant, storage, or LLM.
 from __future__ import annotations
 
 from . import compositors_v2 as cv
-from .image_compose import brand_quote_card, hero_quote_card, statement_card
+from .image_compose import bold_statement_card, brand_quote_card, hero_quote_card, statement_card
 
-# Formats that need the brand's real photo. big_stat + brand_quote are text-only.
+# Formats that need the brand's real photo. big_stat + brand_quote + bold_statement
+# are text-only.
 PHOTO_FORMATS = frozenset({
     "hero_quote", "statement", "full_bleed", "editorial_split", "minimal_over", "framed_print",
 })
 ALL_FORMATS = frozenset({
-    "brand_quote", "hero_quote", "statement",
+    "brand_quote", "hero_quote", "statement", "bold_statement",
     "full_bleed", "editorial_split", "big_stat", "minimal_over", "framed_print",
 })
 
@@ -80,6 +81,11 @@ def render_designed(
     # shipped navy cards (already palette-aware via kit)
     if fmt == "brand_quote":
         return brand_quote_card(q, kit, emph), "brand_quote"
+    if fmt == "bold_statement":
+        # text-only statement poster (no photo): brand name up top, big bold
+        # statement with the emphasis phrase highlighted inline, byline at the foot.
+        return bold_statement_card(spec.get("statement") or q, kit, emph,
+                                   byline_name=str(spec.get("byline_name") or "")), "bold_statement"
     if fmt == "hero_quote":
         if hero_bytes:
             return hero_quote_card(q, hero_bytes, kit, emphasis=emph, tuning=tuning), "hero_quote"

@@ -571,7 +571,119 @@ def hero_quote_card(quote: str, hero_bytes: bytes, brand_kit: dict | None = None
     return _png(base)
 
 
+# ─────────────────────────── bold statement poster ───────────────────────────
+# A text-only "statement poster": no photo — the brand name across the top, a big
+# bold mixed-case statement with the key phrase highlighted INLINE in the brand
+# accent, and a byline at the foot. The Content-Pack poster look.
+
+
+def _emph_word_idx(words: list[str], emphasis: str) -> set[int]:
+    """Indices of the words that make up the emphasis phrase (highlighted in the
+    accent). Empty when there's no emphasis or it isn't found verbatim."""
+    eu = [_bare(w) for w in (emphasis or "").split() if w]
+    if not eu:
+        return set()
+    bare = [_bare(w) for w in words]
+    for i in range(len(words) - len(eu) + 1):
+        if bare[i:i + len(eu)] == eu:
+            return set(range(i, i + len(eu)))
+    return set()
+
+
+def _wrap_idx(draw, words: list[str], font, max_w: int) -> list[list[tuple[str, int]]]:
+    """Left-aligned word-wrap that keeps each word's ORIGINAL index, so the
+    renderer can colour individual words (inline emphasis)."""
+    space = _text_w(draw, " ", font)
+    lines: list[list[tuple[str, int]]] = []
+    cur: list[tuple[str, int]] = []
+    cur_w = 0
+    for gi, w in enumerate(words):
+        ww = _text_w(draw, w, font)
+        add = ww + (space if cur else 0)
+        if cur and cur_w + add > max_w:
+            lines.append(cur)
+            cur, cur_w = [(w, gi)], ww
+        else:
+            cur.append((w, gi))
+            cur_w += add
+    if cur:
+        lines.append(cur)
+    return lines or [[]]
+
+
+def _fit_left(draw, words: list[str], font_path: str, max_w: int, max_h: int,
+              start: int, minimum: int) -> ImageFont.FreeTypeFont:
+    """Largest font at which the left-wrapped statement fits max_w × max_h."""
+    size = start
+    while size >= minimum:
+        font = _font(font_path, size)
+        sp = _text_w(draw, " ", font)
+        lines = _wrap_idx(draw, words, font, max_w)
+        widest = max((sum(_text_w(draw, w, font) for w, _ in ln) + sp * (len(ln) - 1)
+                      for ln in lines), default=0)
+        if widest <= max_w and _line_h(draw, font, 1.14) * len(lines) <= max_h:
+            return font
+        size -= 4
+    return _font(font_path, minimum)
+
+
+def bold_statement_card(statement: str, brand_kit: dict | None = None,
+                        emphasis: str = "", byline_name: str = "") -> bytes:
+    """Text-only statement poster (no photo): a flat, near-black brand ground; the
+    brand name letter-spaced across the top; a short accent rule; a big bold,
+    mixed-case statement left-aligned with the emphasis phrase highlighted INLINE
+    in the brand accent; and a byline (optional name + website · tagline) at the
+    foot. Generates its own background from the brand palette — an unstyled brand
+    renders on James's near-black navy."""
+    bk = brand_kit or {}
+    pal = _colors(bk)
+    accent, ink, muted = pal["accent"], pal["ink"], pal["muted"]
+    ground = tuple(int(c * 0.26) for c in pal["base"])  # push the base to a flat poster black
+    base = Image.new("RGB", (W, H), ground)
+    draw = ImageDraw.Draw(base)
+    M = 96
+
+    # ── brand name across the top (letter-spaced, centered) ──
+    name = (bk.get("display_name") or "").strip().upper()
+    if name:
+        nf = _font(_ARCHIVO, 30)
+        nw = _spaced_w(draw, name, nf, 8)
+        _spaced(draw, ((W - nw) / 2, 84), name, nf, accent, 8)
+
+    # ── short accent rule ──
+    ry = 300
+    draw.rectangle((M, ry, M + 132, ry + 7), fill=accent)
+
+    # ── the statement: big, bold, left-aligned, mixed case, inline highlight ──
+    words = [w for w in (statement or "").split() if w]
+    emph = _emph_word_idx(words, emphasis)
+    zone_top, zone_bottom = ry + 62, H - 268
+    font = _fit_left(draw, words, _ARCHIVO, W - 2 * M, zone_bottom - zone_top,
+                     start=134, minimum=46)
+    space = _text_w(draw, " ", font)
+    lh = _line_h(draw, font, 1.14)
+    y = zone_top
+    for ln in _wrap_idx(draw, words, font, W - 2 * M):
+        x = M
+        for w, gi in ln:
+            draw.text((x, y), w, font=font, fill=(accent if gi in emph else ink))
+            x += _text_w(draw, w, font) + space
+        y += lh
+
+    # ── byline: optional name, then website · tagline (only what the brand supplies) ──
+    yb = H - 156
+    if byline_name.strip():
+        _spaced(draw, (M, yb), byline_name.strip().upper(), _font(_ARCHIVO, 26), accent, 6)
+        yb += 46
+    site = (bk.get("website") or "").strip()
+    tag = (bk.get("footer_tagline") or "").strip()
+    foot = "   ·   ".join([p for p in (site, tag) if p])
+    if foot:
+        draw.text((M, yb), foot, font=_font(_ARCHIVO, 22), fill=muted)
+    return _png(base)
+
+
 __all__ = [
     "quote_card", "meme_card", "statement_card",
-    "brand_quote_card", "hero_quote_card", "W", "H",
+    "brand_quote_card", "hero_quote_card", "bold_statement_card", "W", "H",
 ]
