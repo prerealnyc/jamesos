@@ -952,6 +952,29 @@ async def v1_brand_theme_apply(body: ThemeApplyBody, tenant_id: TenantDep) -> di
     return {"ok": True, "palette_set": bool(body.palette), "enabled": bool(body.enable)}
 
 
+class FormatsBody(BaseModel):
+    enabled_formats: list = Field(default_factory=list)  # designed-format names
+
+
+@router.post("/brand/formats")
+async def v1_brand_formats_set(body: FormatsBody, tenant_id: TenantDep) -> dict[str, Any]:
+    """Set the designed-image formats THIS brand may produce — the per-brand
+    template control, synced from the Brand Manager admin. The autonomous art
+    director (and any forced build) is then constrained to this set. An empty
+    list stores 'nothing'; to lift the restriction entirely, this isn't called."""
+    from . import brand_identity as bi
+    stored = await bi.set_enabled_formats(body.enabled_formats, tenant_id)
+    return {"ok": True, "enabled_formats": stored}
+
+
+@router.get("/brand/formats")
+async def v1_brand_formats_get(tenant_id: TenantDep) -> dict[str, Any]:
+    """Current allowed formats for THIS brand (null = no restriction)."""
+    from . import brand_identity as bi
+    allowed = await bi.get_enabled_formats(tenant_id)
+    return {"enabled_formats": (sorted(allowed) if allowed is not None else None)}
+
+
 @router.get("/brand/theme")
 async def v1_brand_theme_get(tenant_id: TenantDep) -> dict[str, Any]:
     """Current brand theme state — cheap read (no vision), for the panel to show

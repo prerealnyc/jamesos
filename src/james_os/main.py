@@ -1889,13 +1889,26 @@ async def _generate_designed_post_image(
         _allow_v2 = await get_design_intel_enabled(tenant_id)
     except Exception:  # noqa: BLE001
         _allow_v2 = None
+    # Per-brand template control (synced from the Brand Manager admin): the set of
+    # designed formats this brand may produce. None = no restriction (every path,
+    # autonomous or forced, then behaves exactly as before).
+    try:
+        from .brand_identity import get_enabled_formats
+        _allowed = await get_enabled_formats(tenant_id)
+    except Exception:  # noqa: BLE001
+        _allowed = None
+    # None = no restriction; an EMPTY set = the admin turned OFF every designed
+    # template for this brand → don't produce a designed image at all (the caller
+    # falls back to a plain post). Only an explicit empty set short-circuits.
+    if _allowed is not None and not _allowed:
+        return "", ""
     # Voice first: give the art director THIS brand's real cadence so the card
     # headline sounds like the brand, with the hook/CTA playbook as structure only.
     _voice, _bp = await _brand_voice_and_profile(tenant_id)
     spec = await direct_designed_image(
         draft_text or "", topic or "", avoid=avoid,
         feedback=feedback, force_format=force_format, allow_v2=_allow_v2,
-        voice=_voice, brand_profile=_bp,
+        voice=_voice, brand_profile=_bp, allowed=_allowed,
     )
     fmt = spec.get("format") or "quote"
     # A carousel is a MULTI-image post — a wholly separate render/store path.

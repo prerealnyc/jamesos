@@ -453,6 +453,43 @@ async def set_design_intel_enabled(enabled, tenant_id=None):
     return True
 
 
+async def get_enabled_formats(tenant_id=None) -> set[str] | None:
+    """The designed-image formats this brand is ALLOWED to produce, synced from
+    the Brand Manager admin's per-brand template control. Returns None when the
+    tenant has no restriction set — meaning every format is allowed (the default,
+    so a brand nobody curated behaves exactly as before). An explicit (possibly
+    empty) list becomes a set the format selector must stay within."""
+    import json as _json
+
+    from .db import acquire
+    async with acquire(tenant_id) as conn:
+        cfg = await conn.fetchval(
+            "SELECT config FROM tenants WHERE id = "
+            "current_setting('app.current_tenant', true)::uuid")
+    if isinstance(cfg, str):
+        cfg = _json.loads(cfg)
+    v = (cfg or {}).get("enabled_formats")
+    if v is None or not isinstance(v, list):
+        return None
+    return {str(x).strip().lower() for x in v}
+
+
+async def set_enabled_formats(formats, tenant_id=None):
+    """Store the allowed designed-image formats for THIS brand (tenant config).
+    Called by the Brand Manager sync when the admin saves a brand's templates."""
+    import json as _json
+
+    from .db import acquire
+    clean = [str(f).strip().lower() for f in (formats or []) if str(f).strip()]
+    async with acquire(tenant_id) as conn:
+        await conn.execute(
+            "UPDATE tenants SET config = coalesce(config, '{}'::jsonb) || $1::jsonb "
+            "WHERE id = current_setting('app.current_tenant', true)::uuid",
+            _json.dumps({"enabled_formats": clean}))
+    return clean
+
+
 __all__ = ["extract_palette", "assess_and_propose", "render_palette_card",
            "get_brand_palette", "set_brand_palette",
-           "get_design_intel_enabled", "set_design_intel_enabled"]
+           "get_design_intel_enabled", "set_design_intel_enabled",
+           "get_enabled_formats", "set_enabled_formats"]

@@ -322,10 +322,42 @@ _DESIGN_DIRECTOR_SYSTEM = (
 )
 
 
+# Format families for the per-brand allowed-set clamp. When a brand's templates
+# are restricted (synced from the Brand Manager admin) and the art director — or a
+# force_format — picks a disallowed one, we swap to an allowed format in the SAME
+# family (a text card stays a text card, a photo card a photo card, a carousel a
+# carousel) and rotate among the allowed members for variety; only a fully-disabled
+# family crosses over. `allowed=None` means no restriction (behaves as before).
+_TEXT_CARD_FMTS = frozenset({"brand_quote", "big_stat", "bold_statement"})
+_PHOTO_CARD_FMTS = frozenset({"hero_quote", "statement", "full_bleed",
+                              "editorial_split", "minimal_over", "framed_print"})
+_CAROUSEL_FMTS = frozenset({"carousel", "text_carousel"})
+_FMT_FAMILIES = (_TEXT_CARD_FMTS, _PHOTO_CARD_FMTS, _CAROUSEL_FMTS)
+
+
+def _clamp_format(fmt: str, allowed: set[str] | None) -> str:
+    """Keep fmt if the brand allows it (or has no restriction); else pick an
+    allowed replacement — same family first, rotating for variety — so a disabled
+    template is never produced. `allowed is None` = no restriction; an EMPTY set =
+    nothing allowed (the caller short-circuits image production before this — here
+    it degrades to keeping fmt since there is nothing to pick)."""
+    if allowed is None or fmt in allowed:
+        return fmt
+    import random
+    for fam in _FMT_FAMILIES:
+        if fmt in fam:
+            pool = [f for f in fam if f in allowed]
+            if pool:
+                return random.choice(pool)
+            break
+    pool = list(allowed)
+    return random.choice(pool) if pool else fmt
+
+
 async def direct_designed_image(
     draft_text: str, topic: str = "", avoid: str = "",
     feedback: str = "", force_format: str = "", allow_v2: bool | None = None,
-    voice: str = "", brand_profile: str = "",
+    voice: str = "", brand_profile: str = "", allowed: set[str] | None = None,
 ) -> dict:
     """LLM art director → {format, quote, top_text, bottom_text, bg_prompt,
     bg_kind} for the multi-format image machine. Best-effort: falls back to a
@@ -354,6 +386,8 @@ async def direct_designed_image(
     # switch is off (the switch gates AUTONOMOUS picks, not explicit builds).
     if not enabled and not force_format:
         _fb_fmt = _V2_TO_LEGACY.get(_fb_fmt, _fb_fmt)
+    # A disabled template must not slip through the no-LLM fallback either.
+    _fb_fmt = _clamp_format(_fb_fmt, allowed)
     _fb_quote = (text.split(". ")[0] if text else (topic or "")).strip()[:140]
     fallback = {
         # A pinned format has to survive the fallback too — otherwise an LLM
@@ -389,6 +423,13 @@ async def direct_designed_image(
         if brand_profile:
             vb += f"{brand_profile}\n\n"
         user_content = f"{vb}<draft>\n{text[:2000]}\n</draft>"
+        if allowed:
+            user_content += (
+                f"\n\n[ALLOWED FORMATS — choose `format` from ONLY these: "
+                f"{', '.join(sorted(allowed))}. Do not use any other format. Vary "
+                f"your choice across posts so the feed is a designed mix, not one "
+                f"card type repeated.]"
+            )
         if avoid:
             user_content += (
                 f"\n\n[Variety note: recent posts in this batch already used the "
@@ -423,6 +464,9 @@ async def direct_designed_image(
         # force_format is a user opt-in and is honored regardless.
         elif not enabled:
             fmt = _V2_TO_LEGACY.get(fmt, fmt)
+        # Per-brand template control has the FINAL say (even over force_format):
+        # a template the admin disabled is swapped for an allowed one in-family.
+        fmt = _clamp_format(fmt, allowed)
         # bg_kind: text-only cards → none; every other format places the brand's
         # REAL uploaded photo (never AI-generated).
         bg_kind = "none" if fmt in _TEXT_ONLY_FORMATS else "hero"
@@ -454,9 +498,24 @@ async def direct_designed_image(
         if fmt == "framed_print" and not spec["caption"]:
             spec["caption"] = line
         if fmt == "big_stat" and not spec["stat"]:
-            # No clear number → don't fake a stat card; render a quote card.
-            spec.update(format="brand_quote", bg_kind="none",
-                        quote=(spec["quote"] or line))
+            # No clear number → don't fake a stat card; render another text card.
+            # Re-clamp so this escape hatch can't emit a template the admin disabled
+            # (big_stat itself is excluded — it's the format we're escaping).
+            repl = _clamp_format("brand_quote", (allowed - {"big_stat"}) if allowed else allowed)
+            if allowed and repl not in allowed:
+                # nothing else is allowed → keep big_stat, use the line as its number
+                spec["stat"] = (spec["stat"] or line)[:16]
+            else:
+                _t = spec["quote"] or line
+                spec.update(format=repl, bg_kind="none" if repl in _TEXT_ONLY_FORMATS else "hero")
+                if repl in ("brand_quote", "hero_quote"):
+                    spec["quote"] = spec["quote"] or _t
+                elif repl in ("statement", "bold_statement"):
+                    spec["statement"] = spec["statement"] or _t
+                elif repl in ("full_bleed", "editorial_split", "minimal_over"):
+                    spec["headline"] = spec["headline"] or _t
+                elif repl == "framed_print":
+                    spec["caption"] = spec["caption"] or _t
         return spec
     except Exception:  # noqa: BLE001
         return fallback
