@@ -203,6 +203,10 @@ _REF_MAX_BYTES = 3 * 1024 * 1024     # 3 MB — leave headroom under the
                                      #          4 MB API limit per file
 _REF_MAX_COUNT = 3                    # 1-3 refs is the sweet spot — more
                                      # tends to confuse gpt-image-1
+# The rotation pool for DESIGNED cards / carousels (NOT the AI-ref cap). The LRU
+# picker rotates across this many of the brand's newest hero photos, so visuals
+# stop repeating the same 3 faces. Downloaded + cached once per process.
+_DESIGNED_POOL_MAX = 24
 
 # tenant → list of (filename, bytes) tuples
 _BYTES_CACHE: dict[str, list[tuple[str, bytes]]] = {}
@@ -248,14 +252,23 @@ def _shrink_image(data: bytes) -> bytes | None:
 
 async def get_hero_photo_files(
     tenant_id: UUID | None = None,
+    limit: int | None = _REF_MAX_COUNT,
 ) -> list[tuple[str, bytes]]:
-    """Up to _REF_MAX_COUNT hero photos, downloaded + resized + cached.
+    """Up to `limit` hero photos, downloaded + resized + cached.
 
     Returns [(filename, bytes), ...] suitable for OpenAI's files= kwarg
     on the images.edit endpoint. Empty list when no hero photos exist
     OR when every download / resize failed (the caller falls back to
-    the no-reference image-generate path)."""
-    key = str(tenant_id or settings.default_tenant_id)
+    the no-reference image-generate path).
+
+    `limit` defaults to _REF_MAX_COUNT=3 — the sweet spot for gpt-image-1
+    reference edits. The DESIGNED-card and carousel PICK paths pass a much
+    larger limit (see _DESIGNED_POOL_MAX) so the least-recently-used picker
+    rotates across the whole library instead of just the 3 newest photos —
+    the fix for 'the same photos repeat on every visual'. Cached per
+    (tenant, limit), so a batch pays the download once."""
+    pool = _DESIGNED_POOL_MAX if limit is None else limit
+    key = f"{tenant_id or settings.default_tenant_id}:{pool}"
     if key in _BYTES_CACHE:
         return _BYTES_CACHE[key]
 
@@ -266,7 +279,7 @@ async def get_hero_photo_files(
 
     out: list[tuple[str, bytes]] = []
     async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
-        for i, url in enumerate(ctx.photo_urls[:_REF_MAX_COUNT]):
+        for i, url in enumerate(ctx.photo_urls[:pool]):
             try:
                 from .netguard import url_is_public
                 if not await url_is_public(url, allow_http=True):

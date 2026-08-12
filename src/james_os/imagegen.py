@@ -13,6 +13,7 @@ fake image.
 """
 
 import base64
+import re
 
 from openai import AsyncOpenAI
 
@@ -565,6 +566,56 @@ _CAROUSEL_SYSTEM = (
 )
 
 
+# A carousel titled "5 Signs …" promises 5 inner slides. Nothing used to enforce
+# that — the LLM picked a slide count freely and the title's number was decorative,
+# so "5 Signs" routinely shipped 4 or 6 slides. We now (a) parse the promised count
+# and ask for exactly that, then (b) reconcile in code so the number ON the cover
+# always equals the number of inner slides rendered — the title can never lie.
+_LIST_NOUNS = (
+    r"signs?|reasons?|steps?|ways?|tips?|lessons?|myths?|facts?|things?|rules?|"
+    r"mistakes?|secrets?|questions?|stats?|truths?|principles?|habits?|traits?|"
+    r"examples?|keys?|strategies|strategy|hacks?|takeaways?|lies|benefits?"
+)
+_LIST_COUNT_RE = re.compile(rf"\b([2-9]|1[0-2])\s+(?:\w+\s+){{0,2}}(?:{_LIST_NOUNS})\b", re.I)
+
+
+def _list_count(text: str) -> int | None:
+    """The integer a listicle title promises (e.g. 5 from '5 Signs …'), or None."""
+    if not text:
+        return None
+    m = _LIST_COUNT_RE.search(text)
+    return int(m.group(1)) if m else None
+
+
+def _reconcile_cover_count(cover: dict, n: int) -> None:
+    """Force the cover's promised number to equal n (the real inner-slide count),
+    so title/count_promise and the rendered slides can never disagree. Rewrites the
+    first number token in the headline and rebuilds count_promise from n."""
+    head = str(cover.get("headline") or "")
+    promise = str(cover.get("count_promise") or "")
+    noun = ""
+    mn = re.search(r"\b\d+\s+([A-Za-z]+)", promise) or re.search(r"\b\d+\s+([A-Za-z]+)", head)
+    if mn:
+        noun = mn.group(1)
+    if re.search(r"\b\d+\b", head):
+        cover["headline"] = re.sub(r"\b\d+\b", str(n), head, count=1)
+    if promise and re.search(r"\b\d+\b", promise):
+        cover["count_promise"] = re.sub(r"\b\d+\b", str(n), promise, count=1)
+    elif noun:
+        cover["count_promise"] = f"{n} {noun}"
+
+
+def _finalize_deck(deck: dict, want: int | None) -> dict:
+    """Trim to the promised count (never pad — better fewer real slides than filler)
+    and reconcile the cover number to the actual inner-slide count."""
+    slides = deck.get("slides") or []
+    if want and len(slides) > want >= 2:
+        deck["slides"] = slides = slides[:want]
+    if deck.get("cover") and len(slides) >= 2:
+        _reconcile_cover_count(deck["cover"], len(slides))
+    return deck
+
+
 async def direct_carousel_deck(draft_text: str, topic: str = "", brand_name: str = "",
                                voice: str = "", brand_profile: str = "",
                                text_only: bool = False) -> dict:
@@ -576,10 +627,11 @@ async def direct_carousel_deck(draft_text: str, topic: str = "", brand_name: str
     "text" (pure typography on the brand ground), and no photo is assigned later —
     the typographic carousel template."""
     text = (draft_text or topic or "").strip()
+    want = _list_count(text) or _list_count(topic)  # e.g. 5 from "5 Signs …"
     _slide_kind = "text" if text_only else "photo"
     parts = [p.strip() for p in text.split(". ") if p.strip()]
     fb_slides = [{"kind": _slide_kind, "section_label": "", "headline": p[:80], "stat": ""}
-                 for p in parts[1:5]]
+                 for p in parts[1:(1 + (want or 4))]]
     fallback = {
         "arc": "listicle",
         "cover": {"headline": (parts[0][:80] if parts else (topic or "")),
@@ -591,7 +643,7 @@ async def direct_carousel_deck(draft_text: str, topic: str = "", brand_name: str
         "cta": {"action": "LEARN MORE", "ask": ""},
     }
     if not text:
-        return fallback
+        return _finalize_deck(fallback, want)
     try:
         from .llm import get_llm
         out = await get_llm().complete_json(
@@ -599,7 +651,9 @@ async def direct_carousel_deck(draft_text: str, topic: str = "", brand_name: str
             messages=[{"role": "user", "content": (
                 (f"<brand_voice>\n{voice[:1500]}\n</brand_voice>\n\n" if voice else "")
                 + (f"{brand_profile}\n\n" if brand_profile else "")
-                + f"<draft>\n{text[:2500]}\n</draft>")}],
+                + f"<draft>\n{text[:2500]}\n</draft>"
+                + (f"\n\nThe title promises {want} items — produce EXACTLY {want} inner "
+                   f"slides (one per item), no more, no fewer." if want else ""))}],
             max_tokens=800, temperature=0.6,
         )
         out = out or {}
@@ -625,10 +679,10 @@ async def direct_carousel_deck(draft_text: str, topic: str = "", brand_name: str
             if row["headline"] or row["stat"]:
                 slides.append(row)
         if len(slides) < 2:
-            return fallback
+            return _finalize_deck(fallback, want)
         cover = out.get("cover") or {}
         cta = out.get("cta") or {}
-        return {
+        return _finalize_deck({
             "arc": str(out.get("arc") or "listicle"),
             "cover": {
                 "headline": str(cover.get("headline") or "").strip() or fallback["cover"]["headline"],
@@ -644,9 +698,9 @@ async def direct_carousel_deck(draft_text: str, topic: str = "", brand_name: str
                 "action": str(cta.get("action") or "LEARN MORE").strip(),
                 "ask": str(cta.get("ask") or "").strip(),
             },
-        }
+        }, want)
     except Exception:  # noqa: BLE001
-        return fallback
+        return _finalize_deck(fallback, want)
 
 
 async def _brand_visual_directive(tenant_id) -> str:

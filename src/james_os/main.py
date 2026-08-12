@@ -1792,7 +1792,9 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
         # Assign DISTINCT photos from the brand's library to the cover + each photo
         # slide (stat slides need none) — least-recently-used, blur-gated, no repeats.
         try:
-            refs = await get_hero_photo_files(tenant_id=tenant_id)
+            # Full rotation pool (not the 3-ref AI cap) so carousel slides pull
+            # DISTINCT photos from across the library, not the same 3.
+            refs = await get_hero_photo_files(tenant_id=tenant_id, limit=None)
         except Exception:  # noqa: BLE001
             refs = []
         used: list[str] = []
@@ -1926,7 +1928,9 @@ async def _generate_designed_post_image(
     hero_key: str | None = None
     if fmt in PHOTO_FORMATS:
         try:
-            _refs = await get_hero_photo_files(tenant_id=tenant_id)
+            # Full rotation pool (not the 3-ref AI cap) so the picker rotates
+            # across the whole library — the fix for 'same photo every visual'.
+            _refs = await get_hero_photo_files(tenant_id=tenant_id, limit=None)
             # Gated pick (James's rejections): skip blurry photos, prefer the
             # least-recently-used one instead of random choice.
             from .photo_pick import pick_hero_bytes
@@ -2030,9 +2034,13 @@ async def _generate_designed_post_image(
             profile_is_logo = False
     if profile_bytes is None:
         try:
-            refs = await get_hero_photo_files(tenant_id=tenant_id)
+            # Rotate the profile mark too (LRU across the full library) instead of
+            # always stamping refs[0] — the same face on every statement card.
+            refs = await get_hero_photo_files(tenant_id=tenant_id, limit=None)
             if refs:
-                profile_bytes = refs[0][1]
+                from .photo_pick import pick_hero_bytes
+                picked = await pick_hero_bytes(refs, tenant_id)
+                profile_bytes = picked[1] if picked else refs[0][1]
         except Exception:  # noqa: BLE001
             profile_bytes = None
 
