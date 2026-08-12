@@ -167,21 +167,31 @@ _IMAGE_MIX = ["designed", "james", "designed", "designed", "james"]
 async def _make_text_post(
     idea: dict, platform: str, tenant_id: UUID | None,
     image_kind: str = "james", avoid_fmt: str = "", force_format: str = "",
+    feedback: str = "",
 ) -> dict:
     """One text+image post: on-voice draft → queue → attach an image.
 
     image_kind 'james' attaches a REAL hero photo (rotated from the library);
     'designed' runs the branded card machine and, on any failure, falls back to
     a real hero photo so a post is never left with an AI scene or imageless.
-    Returns the chosen designed format (or None) so the batch can vary them."""
+    Returns the chosen designed format (or None) so the batch can vary them.
+
+    `feedback` carries the owner's standing rejection notes (what they keep saying
+    is off-brand). It steers BOTH the text draft and the designed image away from
+    what's been rejected — so a fresh post learns from past rejects, not just a
+    same-post regeneration."""
     from .content import strip_internal_labels
+    steer = _TEXT_STEER + trend_steer(idea)
+    if feedback.strip():
+        steer += ("\n\nAVOID — the owner has rejected content for these reasons before; "
+                  "do NOT repeat them in wording, tone, claims, or style:\n" + feedback.strip()[:1200])
     draft = await generate_content(
         ContentBrief(
             platform=platform,
             format="post",
             pillar=idea.get("pillar", ""),
             topic=strip_internal_labels(idea["topic"]),
-            extra_instructions=_TEXT_STEER + trend_steer(idea),
+            extra_instructions=steer,
         ),
         tenant_id,
     )
@@ -198,7 +208,7 @@ async def _make_text_post(
                 image_url, fmt = await _generate_designed_post_image(
                     draft.action_id, idea.get("topic", ""),
                     draft.draft or idea.get("topic", ""), tenant_id, avoid=avoid_fmt,
-                    force_format=force_format,
+                    feedback=feedback, force_format=force_format,
                 )
             except Exception as _exc:  # noqa: BLE001 — designed failed → hero photo below
                 # Loudly, not silently: a swallowed failure here is exactly why a
