@@ -278,6 +278,43 @@ async def v1_house_knowledge_ingest(tenant_id: TenantDep, force: bool = False
     return await ingest_corpus(force=force)
 
 
+class MediaRehost(BaseModel):
+    url: str = Field(..., min_length=1)
+    label: str = "clip"
+
+
+@router.post("/media/rehost")
+async def v1_media_rehost(body: MediaRehost, tenant_id: TenantDep) -> dict[str, Any]:
+    """Download a third-party, time-limited media URL (e.g. an OpusClip signed mp4
+    that expires ~30 days) and re-host it to OUR durable storage for this tenant,
+    returning the permanent public URL. Lets BM2.0 stop its clip library from
+    rotting. No-op (returns the URL) when it's already on our public storage."""
+    url = (body.url or "").strip()
+    if not url.startswith("http"):
+        raise HTTPException(400, "url must be http(s)")
+    if "supabase.co/storage/v1/object/public" in url:
+        return {"url": url, "durable": True, "rehosted": False}
+    from .media import storage as media_storage
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as c:
+            r = await c.get(url, follow_redirects=True)
+            r.raise_for_status()
+            data = r.content
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"could not fetch source media ({type(exc).__name__})") from exc
+    if not data:
+        raise HTTPException(502, "source media was empty")
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in (body.label or "clip"))[:60] or "clip"
+    try:
+        durable, _ = await asyncio.to_thread(
+            media_storage().save, str(tenant_id), data, f"{safe}.mp4"
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"durable storage save failed ({type(exc).__name__})") from exc
+    return {"url": durable, "durable": True, "rehosted": True, "bytes": len(data)}
+
+
 # ─────────────────────────────────────────────── tenant provisioning ──
 
 class TenantCreate(BaseModel):
