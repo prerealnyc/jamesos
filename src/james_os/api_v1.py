@@ -1015,6 +1015,28 @@ async def v1_brand_formats_get(tenant_id: TenantDep) -> dict[str, Any]:
     return {"enabled_formats": (sorted(allowed) if allowed is not None else None)}
 
 
+class FontBody(BaseModel):
+    font: str = ""  # typography theme key (see font_themes.FONT_THEMES); '' = default
+
+
+@router.post("/brand/font")
+async def v1_brand_font_set(body: FontBody, tenant_id: TenantDep) -> dict[str, Any]:
+    """Set the typography theme THIS brand's static posts render in — synced from the
+    Brand Manager owner's font picker. '' = the default house look. Unknown keys are
+    stored as-is and safely fall back to the default at render time."""
+    from . import brand_identity as bi
+    from . import font_themes as ftm
+    stored = await bi.set_brand_font(ftm.normalize(body.font) if body.font else "", tenant_id)
+    return {"ok": True, "font": stored}
+
+
+@router.get("/brand/font")
+async def v1_brand_font_get(tenant_id: TenantDep) -> dict[str, Any]:
+    """This brand's current typography theme key ('' = default house look)."""
+    from . import brand_identity as bi
+    return {"font": await bi.get_brand_font(tenant_id)}
+
+
 @router.get("/brand/theme")
 async def v1_brand_theme_get(tenant_id: TenantDep) -> dict[str, Any]:
     """Current brand theme state — cheap read (no vision), for the panel to show

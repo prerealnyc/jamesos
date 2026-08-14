@@ -13,6 +13,8 @@ PNG bytes. Fonts are bundled OFL faces (Archivo Black, Anton) in assets/fonts.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import os
 from io import BytesIO
 
@@ -21,6 +23,49 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 _FONT_DIR = os.path.join(os.path.dirname(__file__), "assets", "fonts")
 _ARCHIVO = os.path.join(_FONT_DIR, "ArchivoBlack-Regular.ttf")
 _ANTON = os.path.join(_FONT_DIR, "Anton-Regular.ttf")
+
+# Per-brand typography themes. A theme is {"display": <ttf path>, "body": <ttf path>};
+# the brand owner picks one and it flows in here per render (set via the brand_fonts()
+# context manager at each render entry point). Every compositor funnels its face through
+# _font(), so remapping the two house faces there — Anton (the display/headline face) ->
+# theme display, Archivo Black (the body/default face) -> theme body — themes ALL static
+# formats with almost no call-site churn. No active theme (the default "Bold" house look)
+# => no remap => byte-identical to before. Resolution lives in services layer; here we
+# only swap the loaded face.
+_render_theme: "contextvars.ContextVar[dict | None]" = contextvars.ContextVar(
+    "render_theme", default=None)
+
+# Role marker for a HEADLINE face. The shipped "navy" cards render their big statement
+# in Archivo Black (not Anton), so mapping Archivo->body would wrongly push their
+# headline to the body face. Tag those headlines with _DISPLAY instead: default (no
+# theme) -> Archivo Black (current look preserved), themed -> the theme's display face.
+_DISPLAY = "@@display"
+
+
+@contextlib.contextmanager
+def brand_fonts(theme: dict | None):
+    """Scope a per-brand typography theme over a render. `theme` is
+    {"display": path, "body": path} or None (default house faces)."""
+    token = _render_theme.set(theme or None)
+    try:
+        yield
+    finally:
+        _render_theme.reset(token)
+
+
+def _remap_face(path: str) -> str:
+    """Map a house face path (or the _DISPLAY role marker) to the active brand theme's
+    display/body face. No theme => headlines stay Archivo Black (house default)."""
+    theme = _render_theme.get()
+    if path == _DISPLAY:
+        return (theme.get("display") if theme else None) or _ARCHIVO
+    if not theme:
+        return path
+    if path == _ANTON:
+        return theme.get("display") or path
+    if path == _ARCHIVO:
+        return theme.get("body") or path
+    return path
 
 W, H = 1080, 1350  # 4:5 Instagram feed
 
@@ -74,7 +119,7 @@ def _colors(brand_kit: dict | None) -> dict:
 
 
 def _font(path: str, size: int) -> ImageFont.FreeTypeFont:
-    return ImageFont.truetype(path, size)
+    return ImageFont.truetype(_remap_face(path), size)
 
 
 def _open_rgb(b: bytes) -> Image.Image:
@@ -232,7 +277,7 @@ def quote_card(bg_bytes: bytes, quote: str, handle: str = "",
     base = Image.alpha_composite(base, scrim).convert("RGB")
     draw = ImageDraw.Draw(base)
     q = (quote or "").strip().strip('"').strip("“”")
-    font, lines = _fit(draw, q, _ARCHIVO, int(W * 0.82), int(H * 0.56), start=118, minimum=46)
+    font, lines = _fit(draw, q, _DISPLAY, int(W * 0.82), int(H * 0.56), start=118, minimum=46)
     total_h = _line_h(draw, font) * len(lines)
     top = (H - total_h) / 2 - 40
     _draw_centered(draw, lines, font, W // 2, top, fill=_QUOTE_FILL,
@@ -312,7 +357,7 @@ def statement_card(bg_bytes: bytes, statement: str, handle: str = "",
     # ── Bold statement, optically centered in the zone between header & photo ──
     zone_top = header_bottom + 26
     zone_bottom = img_top - 30
-    sf, sl = _fit(draw, (statement or "").upper(), _ARCHIVO, content_w,
+    sf, sl = _fit(draw, (statement or "").upper(), _DISPLAY, content_w,
                   max(140, zone_bottom - zone_top), start=104, minimum=40)
     total_h = _line_h(draw, sf) * len(sl)
     sy = zone_top + max(0.0, (zone_bottom - zone_top - total_h) / 2.0)
@@ -442,10 +487,10 @@ def brand_quote_card(quote: str, brand_kit: dict | None = None,
     # ── stacked quote, one line in brand blue ──
     lines, emph = _lines_for(quote, emphasis, 3)
     zone_top, zone_bottom = ey + er + 70, H - 210
-    base_font, _ = _fit(draw, max(lines, key=len), _ARCHIVO,
+    base_font, _ = _fit(draw, max(lines, key=len), _DISPLAY,
                         int(W * 0.80), 220, start=150, minimum=54)
     ef_sz = min(int(base_font.size * 1.34), 200)
-    emph_font = _fit(draw, lines[emph], _ARCHIVO, int(W * 0.80), 240,
+    emph_font = _fit(draw, lines[emph], _DISPLAY, int(W * 0.80), 240,
                      start=ef_sz, minimum=base_font.size)[0]
     heights = [_line_h(draw, emph_font if i == emph else base_font, 1.12)
                for i in range(len(lines))]
@@ -532,10 +577,10 @@ def hero_quote_card(quote: str, hero_bytes: bytes, brand_kit: dict | None = None
     # ── quote: keep the semantic line split (emphasis isolated), auto-fit to
     #    the column, then HARD-GUARANTEE containment by re-wrapping if needed ──
     lines, emph = _lines_for(quote, emphasis, 3)
-    qfont, _ = _fit(draw, max(lines, key=len), _ARCHIVO, text_w, int(H * 0.44),
+    qfont, _ = _fit(draw, max(lines, key=len), _DISPLAY, text_w, int(H * 0.44),
                     start=quote_max_pt, minimum=34)
     if max((_text_w(draw, ln, qfont) for ln in lines), default=0) > text_w:
-        qfont, lines = _fit(draw, " ".join(lines), _ARCHIVO, text_w,
+        qfont, lines = _fit(draw, " ".join(lines), _DISPLAY, text_w,
                             int(H * 0.44), start=qfont.size, minimum=30)
         # re-locate the emphasis: first line containing any emphasis word
         ew = [_bare(w) for w in (emphasis or "").split() if w]
@@ -658,7 +703,7 @@ def bold_statement_card(statement: str, brand_kit: dict | None = None,
     words = [w for w in (statement or "").split() if w]
     emph = _emph_word_idx(words, emphasis)
     zone_top, zone_bottom = ry + 62, H - 268
-    font = _fit_left(draw, words, _ARCHIVO, W - 2 * M, zone_bottom - zone_top,
+    font = _fit_left(draw, words, _DISPLAY, W - 2 * M, zone_bottom - zone_top,
                      start=134, minimum=46)
     space = _text_w(draw, " ", font)
     lh = _line_h(draw, font, 1.14)

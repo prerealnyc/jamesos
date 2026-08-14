@@ -489,7 +489,39 @@ async def set_enabled_formats(formats, tenant_id=None):
     return clean
 
 
+async def get_brand_font(tenant_id=None) -> str:
+    """The typography theme key this brand's static posts render in (synced from the
+    Brand Manager owner's font picker). Empty/unset => '' meaning the default house
+    look (Anton + Archivo Black), so an un-styled brand renders exactly as before."""
+    import json as _json
+
+    from .db import acquire
+    async with acquire(tenant_id) as conn:
+        cfg = await conn.fetchval(
+            "SELECT config FROM tenants WHERE id = "
+            "current_setting('app.current_tenant', true)::uuid")
+    if isinstance(cfg, str):
+        cfg = _json.loads(cfg)
+    return str((cfg or {}).get("brand_font") or "").strip().lower()
+
+
+async def set_brand_font(font_key, tenant_id=None) -> str:
+    """Store this brand's typography theme key (tenant config). Called by the Brand
+    Manager sync when the owner picks a font."""
+    import json as _json
+
+    from .db import acquire
+    clean = str(font_key or "").strip().lower()
+    async with acquire(tenant_id) as conn:
+        await conn.execute(
+            "UPDATE tenants SET config = coalesce(config, '{}'::jsonb) || $1::jsonb "
+            "WHERE id = current_setting('app.current_tenant', true)::uuid",
+            _json.dumps({"brand_font": clean}))
+    return clean
+
+
 __all__ = ["extract_palette", "assess_and_propose", "render_palette_card",
            "get_brand_palette", "set_brand_palette",
            "get_design_intel_enabled", "set_design_intel_enabled",
-           "get_enabled_formats", "set_enabled_formats"]
+           "get_enabled_formats", "set_enabled_formats",
+           "get_brand_font", "set_brand_font"]

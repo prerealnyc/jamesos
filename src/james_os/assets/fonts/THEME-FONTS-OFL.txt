@@ -1,0 +1,8 @@
+Brand-theme fonts bundled for the per-brand typography feature.
+All SIL Open Font License 1.1 (OFL), freely redistributable:
+  Poppins        — © The Indian Type Foundry / Jonny Pinhorn
+  Oswald         — © Vernon Adams / Kalapi Gajjar / Cyreal
+  Playfair Display — © Claus Eggers Sørensen
+  Cormorant      — © Christian Thalmann / Catharsis Fonts
+  Montserrat     — © Julieta Ulanovsky (already bundled)
+Static weights sourced from the OFL distributions (Google Fonts / Fontsource).

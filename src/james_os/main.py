@@ -1777,6 +1777,14 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
     handle = (kit.get("handle") or "").strip()
     brand_name = (kit.get("display_name") or "").strip()
 
+    # Brand typography theme (owner's font pick) — scopes over the slide render below.
+    from . import image_compose as _ic
+    try:
+        from . import brand_identity as _bi2, font_themes as _ftm2
+        _cfont = _ftm2.resolve(await _bi2.get_brand_font(tenant_id))
+    except Exception:  # noqa: BLE001
+        _cfont = None
+
     _voice, _bp = await _brand_voice_and_profile(tenant_id)
     deck = await direct_carousel_deck(draft_text or "", topic or "", brand_name,
                                       voice=_voice, brand_profile=_bp, text_only=text_only)
@@ -1786,7 +1794,8 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
         # brand-palette ground, the name up top, a big statement with its key phrase
         # in the accent, huge stat slides, an N/total index. NO photos at all.
         from .carousel_text import render_text_carousel
-        slides = render_text_carousel(deck, kit, handle)
+        with _ic.brand_fonts(_cfont):
+            slides = render_text_carousel(deck, kit, handle)
         cover_key = None
     else:
         # Assign DISTINCT photos from the brand's library to the cover + each photo
@@ -1823,7 +1832,8 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
             else:
                 deck_r["slides"].append({"section_label": s.get("section_label", ""),
                                          "headline": s.get("headline", ""), "stat": s.get("stat", "")})
-        slides = render_carousel(deck_r, palette, handle)
+        with _ic.brand_fonts(_cfont):
+            slides = render_carousel(deck_r, palette, handle)
     tenant = str(tenant_id or settings.default_tenant_id)
     urls: list[str] = []
     cover_fp = ""
@@ -2053,17 +2063,26 @@ async def _generate_designed_post_image(
         _tuning = await get_render_tuning(tenant_id)
     except Exception:  # noqa: BLE001
         _tuning = {}
+    # The brand's typography theme (owner's font pick, synced from Brand Manager).
+    # Resolves to None for the default house look — best-effort, never blocks a render.
+    from . import image_compose
+    try:
+        from . import brand_identity as _bi, font_themes as _ftm
+        _font_theme = _ftm.resolve(await _bi.get_brand_font(tenant_id))
+    except Exception:  # noqa: BLE001
+        _font_theme = None
     # Backfill the quote the shipped cards rely on, then route to the right
     # compositor (shipped OR v2), threading the brand palette. render_designed
     # returns the format it ACTUALLY rendered — a photo layout with no photo
     # falls back to a text card — so the stamp below reflects reality.
     if not (spec.get("quote") or "").strip():
         spec["quote"] = ((draft_text or topic or "").split(". ")[0]).strip()
-    out, fmt = render_designed(
-        fmt, spec, kit=kit, hero_bytes=hero_bytes,
-        profile_bytes=profile_bytes, profile_is_logo=profile_is_logo,
-        handle=handle, tuning=_tuning, palette=kit.get("palette"),
-    )
+    with image_compose.brand_fonts(_font_theme):
+        out, fmt = render_designed(
+            fmt, spec, kit=kit, hero_bytes=hero_bytes,
+            profile_bytes=profile_bytes, profile_is_logo=profile_is_logo,
+            handle=handle, tuning=_tuning, palette=kit.get("palette"),
+        )
 
     tenant = str(tenant_id or settings.default_tenant_id)
     served_uri, file_path = await asyncio.to_thread(
