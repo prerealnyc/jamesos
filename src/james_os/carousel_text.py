@@ -26,13 +26,16 @@ from .image_compose import (H, W, _colors, _emph_word_idx, _fit, _fit_left,
                             _font, _line_h, _navy_bg, _png, _spaced, _spaced_w,
                             _text_w, _wrap_idx)
 
-# The locked visual system's face is Montserrat (bundled, OFL). ExtraBold carries
-# the big statements + stats, Bold the captions/website, SemiBold the small
-# letter-spaced labels (brand name, source, index, eyebrow).
+# The face is Archivo Black — the SAME house font as the bold_statement poster
+# (image_compose), so a text carousel and a poster read as one brand. Archivo Black is
+# a single heavy weight, so the hierarchy comes from SIZE + the accent colour (exactly
+# like the poster), not from separate weights: all three aliases point at it.
+# (Was Montserrat, which made carousels look like a different brand than the posters.)
 _FONT_DIR = os.path.join(os.path.dirname(__file__), "assets", "fonts")
-_MONT_XB = os.path.join(_FONT_DIR, "Montserrat-ExtraBold.ttf")
-_MONT_BD = os.path.join(_FONT_DIR, "Montserrat-Bold.ttf")
-_MONT_SB = os.path.join(_FONT_DIR, "Montserrat-SemiBold.ttf")
+_ARCHIVO = os.path.join(_FONT_DIR, "ArchivoBlack-Regular.ttf")
+_MONT_XB = _ARCHIVO  # big statements + stats
+_MONT_BD = _ARCHIVO  # captions / website
+_MONT_SB = _ARCHIVO  # small letter-spaced labels (brand name, source, index, eyebrow)
 
 M = 96  # side margin
 
