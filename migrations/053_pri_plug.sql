@@ -3,8 +3,9 @@
 -- the PRI id, carrying a content hash so an unchanged item is skipped and a
 -- changed one is re-ingested. Tenant-scoped like everything else (RLS).
 --
--- Spaceport + Turtleback are seeded as silos for Tenant Zero so pulled
--- intelligence files under the same slug the PRI plug uses (1:1 silo mapping).
+-- The target silos (e.g. spaceport / turtleback) are created on demand at pull
+-- time by pri_plug_ingest._ensure_silo — no seed here, so this migration is
+-- pure DDL and safe to run through migrate.py against any tenant.
 
 CREATE TABLE IF NOT EXISTS pri_pull_log (
   tenant_id    uuid NOT NULL REFERENCES tenants(id)
@@ -25,11 +26,12 @@ DROP POLICY IF EXISTS pri_pull_log_tenant ON pri_pull_log;
 CREATE POLICY pri_pull_log_tenant ON pri_pull_log USING
   (tenant_id = current_setting('app.current_tenant', true)::uuid);
 
--- Seed the two BM-bound silos for Tenant Zero (idempotent).
-INSERT INTO silos (tenant_id, id, name, description)
-VALUES
-  ('00000000-0000-0000-0000-000000000001', 'spaceport',  'Spaceport America',
-   'PreReal Intelligence for Spaceport, pulled via the PRI plug.'),
-  ('00000000-0000-0000-0000-000000000001', 'turtleback', 'Turtleback',
-   'PreReal Intelligence for Turtleback, pulled via the PRI plug.')
-ON CONFLICT (tenant_id, id) DO NOTHING;
+-- Grant the app's runtime role DML on the new table (Supabase uses a limited
+-- `james_app` role, not postgres). Guarded so this is a no-op on a local
+-- install where that role doesn't exist.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'james_app') THEN
+    GRANT SELECT, INSERT, UPDATE, DELETE ON pri_pull_log TO james_app;
+  END IF;
+END $$;
