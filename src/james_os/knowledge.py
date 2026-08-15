@@ -129,6 +129,8 @@ async def ingest_knowledge_document(
     auto_classify: bool = True,
     classify_ctx: dict | None = None,   # {'silos': [...], 'entities': [...]} — batch reuse
     tenant_id: UUID | None = None,
+    silo_id: str | None = None,         # pin the filing to a known silo (overrides classify)
+    sensitivity: str | None = None,     # pin the tier (overrides classify); e.g. preserve a source's
 ) -> dict:
     """One document in → one filed, searchable row out (the PreReal contract).
 
@@ -265,9 +267,9 @@ async def ingest_knowledge_document(
                 cls.date if cls else None,
                 (("Pending" if (flagged and cls.doc_type == "Other")
                   else cls.status) if cls else "Current"),
-                cls.sensitivity if cls else DEFAULT_SENSITIVITY,
+                sensitivity or (cls.sensitivity if cls else DEFAULT_SENSITIVITY),
                 entity_id,
-                cls.silo_id if cls else None,
+                silo_id or (cls.silo_id if cls else None),
             )
 
         # 5. Index: chunk + embed into the tenant's memory (events).
@@ -322,7 +324,7 @@ async def ingest_knowledge_document(
             "classified": cls is not None,
             "confidence": cls.confidence if cls else None,
             "entityId": entity_id,
-            "siloId": cls.silo_id if cls else None,
+            "siloId": silo_id or (cls.silo_id if cls else None),
             "docType": cls.doc_type if cls else None,
             "flagged": flagged,
         }

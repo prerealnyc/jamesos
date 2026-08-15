@@ -50,6 +50,16 @@ class Settings(BaseSettings):
     apify_api_key: str = ""          # Apify token — IG/TikTok/YouTube trend scraping
     youtube_api_key: str = ""        # YouTube Data API — trend discovery
 
+    # ─── PreReal Intelligence (PRI) plug ───
+    # Pulls a PRI project's synthesized intelligence (living brief + insights +
+    # tier-filtered documents) into THIS brand's memory, per silo, so press
+    # monitoring and Academy lessons can ground on it. Service-key auth; the PRI
+    # side enforces the sensitivity border (NDA never crosses). When either value
+    # is empty the plug provider falls back to a labelled stub (no network), so
+    # the pull→memory loop is provable without a key.
+    pri_plug_url: str = ""   # e.g. https://prereal-web-production-XXXX.up.railway.app
+    pri_plug_key: str = ""   # PRI PLUG_API_KEY (service key)
+
     # ─── Integration credentials (loaded, not yet all wired) ───
     # These make the keys AVAILABLE to JAMES OS. They become ACTIVE only
     # when the subsystem that uses each one is built (see /api/integrations

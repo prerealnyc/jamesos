@@ -433,6 +433,7 @@ from .templates_api import router as templates_router
 from .feedback_changes_api import router as feedback_changes_router
 from .brand_kit_api import router as brand_kit_router
 from .xpoz_api import router as xpoz_router
+from .pri_plug_api import router as pri_plug_router
 from .api_v1 import router as v1_router
 app.include_router(autopilot_bulk_router)
 app.include_router(analytics_live_router)
@@ -442,6 +443,8 @@ app.include_router(templates_router)
 app.include_router(feedback_changes_router)
 app.include_router(brand_kit_router)
 app.include_router(xpoz_router)
+# PRI plug — pull PreReal Intelligence (per silo) into this brand's memory.
+app.include_router(pri_plug_router)
 # Public /v1 service façade (API-key auth) — lets another platform drive
 # JAMES OS headlessly. See api_v1.py.
 app.include_router(v1_router)
