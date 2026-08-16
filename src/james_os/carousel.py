@@ -21,7 +21,7 @@ from PIL import Image, ImageDraw
 
 from .compositors_v2 import (_ANTON, H, W, _auto_scrim, _clip, _contrast,
                              _handle_footer, _ink_for, _pal, _region_lum, _rel_lum)
-from .image_compose import (_ARCHIVO, _cover_safe, _fit, _font, _line_h,
+from .image_compose import (_ARCHIVO, _case, _cover_safe, _fit, _font, _line_h,
                             _open_rgb, _png, _spaced, _text_w, _wrap)
 
 M = 88
@@ -57,7 +57,7 @@ def carousel_cover(photo, headline, count_promise="", kicker="", handle="",
         # still renders (great for stat/list decks) instead of failing.
         base = Image.new("RGB", (W, H), pal["bg"])
     d = ImageDraw.Draw(base)
-    hf, lines = _fit(d, headline.upper(), _ANTON, W - 2 * M, int(H * 0.34), start=126, minimum=66)
+    hf, lines = _fit(d, _case(headline, "upper"), _ANTON, W - 2 * M, int(H * 0.34), start=126, minimum=66)
     lh = _line_h(d, hf, 1.02)
     bottom = H - 172
     top = bottom - lh * len(lines)

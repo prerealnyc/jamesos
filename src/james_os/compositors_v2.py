@@ -22,7 +22,7 @@ from io import BytesIO
 
 from PIL import Image, ImageDraw
 
-from .image_compose import (_ARCHIVO, _cover_safe, _draw_centered, _fit, _font,
+from .image_compose import (_ARCHIVO, _case, _cover_safe, _draw_centered, _fit, _font,
                             _line_h, _open_rgb, _png, _spaced, _spaced_w, _text_w)
 
 _ANTON = os.path.join(os.path.dirname(__file__), "assets", "fonts", "Anton-Regular.ttf")
@@ -149,7 +149,7 @@ def full_bleed(photo: bytes, headline: str, kicker: str = "", handle: str = "",
     base = _auto_scrim(base, 0.55, pal["ink"])
     d = ImageDraw.Draw(base)
     M = 88
-    hf, lines = _fit(d, headline.upper(), _ANTON, W - 2 * M, int(H * 0.34), start=132, minimum=68)
+    hf, lines = _fit(d, _case(headline, "upper"), _ANTON, W - 2 * M, int(H * 0.34), start=132, minimum=68)
     lh = _line_h(d, hf, 1.02)
     block_h = lh * len(lines)
     bottom = H - 150
@@ -180,7 +180,7 @@ def editorial_split(photo: bytes, headline: str, kicker: str = "", handle: str =
     if kicker:
         _spaced(d, (M, y0), kicker.upper(), _font(_ARCHIVO, 28), pal["accent"], 8)
         y0 += 52
-    hf, lines = _fit(d, headline.upper(), _ANTON, W - 2 * M, H - y0 - 120, start=104, minimum=52)
+    hf, lines = _fit(d, _case(headline, "upper"), _ANTON, W - 2 * M, H - y0 - 120, start=104, minimum=52)
     lh = _line_h(d, hf, 1.03)
     for ln in lines:
         d.text((M, y0), ln, font=hf, fill=pal["ink"])
@@ -231,7 +231,7 @@ def minimal_over(photo: bytes, line: str, kicker: str = "", handle: str = "",
     d = ImageDraw.Draw(base)
     if kicker:
         _spaced_c(d, 150, kicker.upper(), _font(_ARCHIVO, 26), pal["ink"], 12)
-    lf, ll = _fit(d, line.upper(), _ANTON, int(W * 0.82), 300, start=92, minimum=56)
+    lf, ll = _fit(d, _case(line, "upper"), _ANTON, int(W * 0.82), 300, start=92, minimum=56)
     lh = _line_h(d, lf, 1.05)
     y = H - 240 - lh * len(ll)
     ink = _ink_for(_region_lum(base, (int(W * 0.09), int(y), int(W * 0.91), int(y + lh * len(ll)))), pal["ink"])
@@ -263,7 +263,7 @@ def framed_print(photo: bytes, caption: str, kicker: str = "", handle: str = "",
         y += 46
     # caption fits the zone between here and the handle footer — never overlaps
     zone = (H - 150) - y
-    cf, cl = _fit(d, caption.upper(), _ANTON, pw, max(120, zone), start=74, minimum=40)
+    cf, cl = _fit(d, _case(caption, "upper"), _ANTON, pw, max(120, zone), start=74, minimum=40)
     for ln in cl:
         d.text((M, y), ln, font=cf, fill=pal["ink"])
         y += _line_h(d, cf, 1.06)

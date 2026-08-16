@@ -1793,6 +1793,11 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
         _cfont = _ftm2.resolve(await _bi2.get_brand_font(tenant_id))
     except Exception:  # noqa: BLE001
         _cfont = None
+    try:
+        from . import brand_identity as _bi2l
+        _clook = await _bi2l.get_brand_look(tenant_id)
+    except Exception:  # noqa: BLE001
+        _clook = None
 
     _voice, _bp = await _brand_voice_and_profile(tenant_id)
     deck = await direct_carousel_deck(draft_text or "", topic or "", brand_name,
@@ -1803,7 +1808,7 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
         # brand-palette ground, the name up top, a big statement with its key phrase
         # in the accent, huge stat slides, an N/total index. NO photos at all.
         from .carousel_text import render_text_carousel
-        with _ic.brand_fonts(_cfont):
+        with _ic.brand_fonts(_cfont), _ic.brand_look(_clook):
             slides = render_text_carousel(deck, kit, handle)
         cover_key = None
     else:
@@ -1841,7 +1846,7 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
             else:
                 deck_r["slides"].append({"section_label": s.get("section_label", ""),
                                          "headline": s.get("headline", ""), "stat": s.get("stat", "")})
-        with _ic.brand_fonts(_cfont):
+        with _ic.brand_fonts(_cfont), _ic.brand_look(_clook):
             slides = render_carousel(deck_r, palette, handle)
     tenant = str(tenant_id or settings.default_tenant_id)
     urls: list[str] = []
@@ -2080,13 +2085,18 @@ async def _generate_designed_post_image(
         _font_theme = _ftm.resolve(await _bi.get_brand_font(tenant_id))
     except Exception:  # noqa: BLE001
         _font_theme = None
+    try:
+        from . import brand_identity as _bil
+        _look = await _bil.get_brand_look(tenant_id)
+    except Exception:  # noqa: BLE001
+        _look = None
     # Backfill the quote the shipped cards rely on, then route to the right
     # compositor (shipped OR v2), threading the brand palette. render_designed
     # returns the format it ACTUALLY rendered — a photo layout with no photo
     # falls back to a text card — so the stamp below reflects reality.
     if not (spec.get("quote") or "").strip():
         spec["quote"] = ((draft_text or topic or "").split(". ")[0]).strip()
-    with image_compose.brand_fonts(_font_theme):
+    with image_compose.brand_fonts(_font_theme), image_compose.brand_look(_look):
         out, fmt = render_designed(
             fmt, spec, kit=kit, hero_bytes=hero_bytes,
             profile_bytes=profile_bytes, profile_is_logo=profile_is_logo,

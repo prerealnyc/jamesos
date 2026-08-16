@@ -1037,6 +1037,29 @@ async def v1_brand_font_get(tenant_id: TenantDep) -> dict[str, Any]:
     return {"font": await bi.get_brand_font(tenant_id)}
 
 
+class LookBody(BaseModel):
+    headline_case: str = ""      # ''|upper|title|sentence ('' = each format's default)
+    logo_show: bool = True       # draw the brand logo/profile badge on posts
+    logo_position: str = "footer"  # footer|top_left|top_right|bottom_left|bottom_right
+
+
+@router.post("/brand/look")
+async def v1_brand_look_set(body: LookBody, tenant_id: TenantDep) -> dict[str, Any]:
+    """Set the brand's 'look' extras (headline case + logo visibility/position) —
+    synced from the Brand Manager owner's brand-look panel. Applied to every static
+    render; empty/defaults leave the shipped look unchanged."""
+    from . import brand_identity as bi
+    stored = await bi.set_brand_look(body.model_dump(), tenant_id)
+    return {"ok": True, "look": stored}
+
+
+@router.get("/brand/look")
+async def v1_brand_look_get(tenant_id: TenantDep) -> dict[str, Any]:
+    """This brand's current look extras ({} = house defaults)."""
+    from . import brand_identity as bi
+    return {"look": await bi.get_brand_look(tenant_id)}
+
+
 @router.get("/brand/theme")
 async def v1_brand_theme_get(tenant_id: TenantDep) -> dict[str, Any]:
     """Current brand theme state — cheap read (no vision), for the panel to show

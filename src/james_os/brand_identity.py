@@ -520,8 +520,46 @@ async def set_brand_font(font_key, tenant_id=None) -> str:
     return clean
 
 
+async def get_brand_look(tenant_id=None) -> dict:
+    """Per-brand 'look' extras the owner set (synced from Brand Manager): headline
+    CASE and the LOGO's visibility + corner. Empty dict => house defaults (posts look
+    exactly as before). Keys: headline_case (''|upper|title|sentence), logo_show (bool,
+    default True), logo_position (''|footer|top_left|top_right|bottom_left|bottom_right)."""
+    import json as _json
+
+    from .db import acquire
+    async with acquire(tenant_id) as conn:
+        cfg = await conn.fetchval(
+            "SELECT config FROM tenants WHERE id = "
+            "current_setting('app.current_tenant', true)::uuid")
+    if isinstance(cfg, str):
+        cfg = _json.loads(cfg)
+    look = (cfg or {}).get("brand_look")
+    return look if isinstance(look, dict) else {}
+
+
+async def set_brand_look(look, tenant_id=None) -> dict:
+    """Store the brand's look extras (tenant config). Coerces to the known keys."""
+    import json as _json
+
+    from .db import acquire
+    src = look if isinstance(look, dict) else {}
+    clean = {
+        "headline_case": str(src.get("headline_case") or "").strip().lower(),
+        "logo_show": bool(src.get("logo_show", True)),
+        "logo_position": str(src.get("logo_position") or "footer").strip().lower(),
+    }
+    async with acquire(tenant_id) as conn:
+        await conn.execute(
+            "UPDATE tenants SET config = coalesce(config, '{}'::jsonb) || $1::jsonb "
+            "WHERE id = current_setting('app.current_tenant', true)::uuid",
+            _json.dumps({"brand_look": clean}))
+    return clean
+
+
 __all__ = ["extract_palette", "assess_and_propose", "render_palette_card",
            "get_brand_palette", "set_brand_palette",
            "get_design_intel_enabled", "set_design_intel_enabled",
            "get_enabled_formats", "set_enabled_formats",
-           "get_brand_font", "set_brand_font"]
+           "get_brand_font", "set_brand_font",
+           "get_brand_look", "set_brand_look"]

@@ -67,6 +67,63 @@ def _remap_face(path: str) -> str:
         return theme.get("body") or path
     return path
 
+
+# Per-brand "brand look" extras the owner picks (synced from Brand Manager): headline
+# CASE, and the LOGO's visibility + corner. Threaded in per render via brand_look().
+_render_look: "contextvars.ContextVar[dict | None]" = contextvars.ContextVar(
+    "render_look", default=None)
+
+
+@contextlib.contextmanager
+def brand_look(look: dict | None):
+    """Scope per-brand look extras over a render:
+    {"headline_case": upper|title|sentence, "logo_show": bool, "logo_position": str}."""
+    token = _render_look.set(look or None)
+    try:
+        yield
+    finally:
+        _render_look.reset(token)
+
+
+def _titlecase(t: str) -> str:
+    return " ".join((w[:1].upper() + w[1:].lower()) if w else w for w in (t or "").split(" "))
+
+
+def _case(text: str, default: str = "") -> str:
+    """Apply the brand's chosen headline case. `default` is the call-site's own casing
+    when the brand hasn't picked one, so the shipped look is byte-identical unless a
+    case is set. Modes: upper | title | sentence (empty = leave text as given)."""
+    mode = (_render_look.get() or {}).get("headline_case") or default
+    t = text or ""
+    if mode == "upper":
+        return t.upper()
+    if mode == "title":
+        return _titlecase(t)
+    if mode == "sentence":
+        return (t[:1].upper() + t[1:].lower()) if t else t
+    return t
+
+
+def _logo_show() -> bool:
+    look = _render_look.get()
+    return True if look is None else bool(look.get("logo_show", True))
+
+
+def _logo_position() -> str:
+    return str((_render_look.get() or {}).get("logo_position") or "footer")
+
+
+def _paste_corner(img: Image.Image, badge: Image.Image, position: str, margin: int = 64) -> None:
+    d = badge.size[0]
+    xy = {
+        "top_left": (margin, margin),
+        "top_right": (W - d - margin, margin),
+        "bottom_left": (margin, H - d - margin),
+        "bottom_right": (W - d - margin, H - d - margin),
+    }.get(position)
+    if xy:
+        img.paste(badge, xy, badge)
+
 W, H = 1080, 1350  # 4:5 Instagram feed
 
 _QUOTE_FILL = (250, 243, 224)   # warm cream — reads as premium on a dark scene
@@ -257,10 +314,14 @@ def _brand_footer(img: Image.Image, handle: str, profile_bytes: bytes | None,
     draw = ImageDraw.Draw(img)
     cx = W // 2
     base_y = H - 150
-    if profile_bytes:
+    if profile_bytes and _logo_show():
         d = 88
         circ = _logo_badge(profile_bytes, d) if profile_is_logo else _circle(profile_bytes, d)
-        img.paste(circ, (cx - d // 2, base_y - d - 6), circ)
+        pos = _logo_position()
+        if pos in ("top_left", "top_right", "bottom_left", "bottom_right"):
+            _paste_corner(img, circ, pos)
+        else:  # footer (default) — bottom-centre above the handle
+            img.paste(circ, (cx - d // 2, base_y - d - 6), circ)
     if handle:
         h = handle if handle.startswith("@") else "@" + handle
         hf = _font(_ARCHIVO, 30)
@@ -292,10 +353,10 @@ def meme_card(bg_bytes: bytes, top_text: str, bottom_text: str, handle: str = ""
     draw = ImageDraw.Draw(canvas)
     pad = 56
 
-    tf, tl = _fit(draw, (top_text or "").upper(), _ANTON, W - 2 * pad, 280, start=96, minimum=40)
+    tf, tl = _fit(draw, _case(top_text or "", "upper"), _ANTON, W - 2 * pad, 280, start=96, minimum=40)
     ty = _draw_centered(draw, tl, tf, W // 2, 42, fill=_INK)
 
-    bf, bl = _fit(draw, (bottom_text or "").upper(), _ANTON, W - 2 * pad, 280, start=96, minimum=40)
+    bf, bl = _fit(draw, _case(bottom_text or "", "upper"), _ANTON, W - 2 * pad, 280, start=96, minimum=40)
     b_total = _line_h(draw, bf) * len(bl)
     by = H - b_total - 52
 
@@ -327,7 +388,7 @@ def statement_card(bg_bytes: bytes, statement: str, handle: str = "",
 
     # ── IG-post header: profile circle (or brand logo badge) + @handle ──
     y = M
-    if profile_bytes:
+    if profile_bytes and _logo_show():
         d = 82
         circ = _logo_badge(profile_bytes, d) if profile_is_logo else _circle(profile_bytes, d)
         canvas.paste(circ, (M, y), circ)
@@ -357,7 +418,7 @@ def statement_card(bg_bytes: bytes, statement: str, handle: str = "",
     # ── Bold statement, optically centered in the zone between header & photo ──
     zone_top = header_bottom + 26
     zone_bottom = img_top - 30
-    sf, sl = _fit(draw, (statement or "").upper(), _DISPLAY, content_w,
+    sf, sl = _fit(draw, _case(statement or "", "upper"), _DISPLAY, content_w,
                   max(140, zone_bottom - zone_top), start=104, minimum=40)
     total_h = _line_h(draw, sf) * len(sl)
     sy = zone_top + max(0.0, (zone_bottom - zone_top - total_h) / 2.0)
@@ -700,7 +761,7 @@ def bold_statement_card(statement: str, brand_kit: dict | None = None,
     draw.rectangle((M, ry, M + 132, ry + 7), fill=accent)
 
     # ── the statement: big, bold, left-aligned, mixed case, inline highlight ──
-    words = [w for w in (statement or "").split() if w]
+    words = [w for w in _case(statement or "").split() if w]
     emph = _emph_word_idx(words, emphasis)
     zone_top, zone_bottom = ry + 62, H - 268
     font = _fit_left(draw, words, _DISPLAY, W - 2 * M, zone_bottom - zone_top,
