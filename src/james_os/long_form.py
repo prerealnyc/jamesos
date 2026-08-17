@@ -195,6 +195,149 @@ async def fetch_from_drive_then_ingest(
         await _process_local_video(source_id, local_path, tenant_id)
 
 
+import re as _re
+
+# Watch, shorts, live, embed, youtu.be — the shapes a user might paste.
+_YOUTUBE_RE = _re.compile(
+    r"^(https?://)?(www\.|m\.)?(youtube\.com/(watch\?|shorts/|live/|embed/|v/)|youtu\.be/)",
+    _re.I,
+)
+
+
+def is_youtube_url(url: str) -> bool:
+    return bool(_YOUTUBE_RE.match((url or "").strip()))
+
+
+async def _apify_youtube_resolve(youtube_url: str) -> tuple[str, str, int]:
+    """Run the Apify YouTube-download actor and return
+    (download_url_with_token, title, size_bytes).
+
+    Apify's residential proxy fetches the video where a datacenter yt-dlp is
+    IP-blocked. Uses an async run + poll (not run-sync) so a long podcast download
+    isn't capped by the ~280s run-sync limit. The actor drops the mp4 into its run
+    key-value store and reports a `downloadUrl` to it; that URL needs the API token
+    appended to authorize the fetch.
+    """
+    import httpx
+
+    key = (settings.apify_api_key or "").strip()
+    if not key:
+        raise RuntimeError("Apify is not configured (APIFY_API_KEY) — can't import from YouTube")
+    actor = (settings.youtube_download_actor or "memo23~youtube-video-downloader").strip()
+    base = "https://api.apify.com/v2"
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0)) as c:
+        r = await c.post(
+            f"{base}/acts/{actor}/runs",
+            params={"token": key},
+            json={"videoUrls": [youtube_url]},
+        )
+        r.raise_for_status()
+        run = r.json().get("data") or {}
+        run_id = run.get("id")
+        if not run_id:
+            raise RuntimeError("Apify did not start a run")
+        status = str(run.get("status") or "")
+        waited = 0.0
+        deadline = 20 * 60  # a long download can take minutes; cap so we never hang
+        while status in ("", "READY", "RUNNING") and waited < deadline:
+            await asyncio.sleep(5)
+            waited += 5
+            g = await c.get(f"{base}/actor-runs/{run_id}", params={"token": key})
+            g.raise_for_status()
+            status = str((g.json().get("data") or {}).get("status") or "")
+        if status != "SUCCEEDED":
+            raise RuntimeError(f"Apify download did not complete (status: {status or 'timed out'})")
+        d = await c.get(f"{base}/actor-runs/{run_id}/dataset/items", params={"token": key})
+        d.raise_for_status()
+        items = d.json()
+    if not items:
+        raise RuntimeError("Apify returned no video for that YouTube URL")
+    it = items[0] if isinstance(items, list) else items
+    download = ""
+    for field in ("downloadUrl", "download_url", "downloadable_video_link", "mediaUrl", "videoUrl"):
+        v = it.get(field)
+        if isinstance(v, str) and v.startswith("http"):
+            download = v
+            break
+    if not download:
+        raise RuntimeError("Apify item had no downloadable video URL")
+    sep = "&" if "?" in download else "?"
+    download_auth = f"{download}{sep}token={key}"
+    title = str(it.get("title") or "").strip()
+    try:
+        size = int(it.get("fileSizeBytes") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    return download_auth, title, size
+
+
+async def fetch_from_youtube_then_ingest(
+    source_id: UUID,
+    youtube_url: str,
+    tenant_id: UUID | None = None,
+) -> None:
+    """Background worker for YouTube imports.
+
+    Resolve + download the video through Apify (residential proxy — not IP-blocked
+    like a server-side yt-dlp), stream it to /tmp, persist it to Supabase for a
+    durable re-fetch at render time (parity with uploads), then run the shared
+    audio + Whisper + LLM candidate pass. Sets status='failed' with the stage on
+    any error so the user sees where it broke.
+    """
+    from pathlib import Path as _P
+
+    from .drive import big_file_tmp_dir
+
+    async with acquire(tenant_id) as conn:
+        await _set(conn, source_id, status="downloading")
+
+    try:
+        download_url, resolved_title, size = await _apify_youtube_resolve(youtube_url)
+    except Exception as e:  # noqa: BLE001
+        return await _fail(source_id, f"YouTube fetch failed: {e}", tenant_id)
+
+    if size and size > _MAX_SOURCE_BYTES:
+        return await _fail(
+            source_id,
+            f"Video is {size / 1024**3:.1f} GB — over the "
+            f"{_MAX_SOURCE_BYTES // 1024**3} GB import limit.",
+            tenant_id,
+        )
+    if resolved_title:
+        async with acquire(tenant_id) as conn:
+            await _set(conn, source_id, title=resolved_title[:200])
+
+    with tempfile.TemporaryDirectory(dir=big_file_tmp_dir()) as td:
+        local_path = os.path.join(td, "youtube-source.mp4")
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0, connect=15.0)) as c:
+                async with c.stream("GET", download_url) as r:
+                    r.raise_for_status()
+                    with open(local_path, "wb") as fh:
+                        async for chunk in r.aiter_bytes(chunk_size=1 << 20):
+                            fh.write(chunk)
+        except Exception as e:  # noqa: BLE001
+            return await _fail(source_id, f"YouTube download failed: {e}", tenant_id)
+        if not _P(local_path).exists() or _P(local_path).stat().st_size == 0:
+            return await _fail(source_id, "YouTube returned an empty file", tenant_id)
+
+        # Persist to Supabase so a later reel-render can re-fetch the source (parity
+        # with the upload path). Best-effort: even if it fails we still process the
+        # file we already have on disk.
+        try:
+            tenant = str(tenant_id or settings.default_tenant_id)
+            served_uri, _ = await asyncio.to_thread(
+                media_storage().save_from_path, tenant, local_path, "youtube-source.mp4",
+            )
+            await set_source_url(source_id, served_uri, tenant_id)
+        except Exception:  # noqa: BLE001
+            pass
+
+        await _process_local_video(source_id, local_path, tenant_id)
+
+
 async def _process_local_video(
     source_id: UUID,
     video_path: str,

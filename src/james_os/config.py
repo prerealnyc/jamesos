@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     google_search_cx: str = ""       # Custom Search engine id (cx)
     apify_api_key: str = ""          # Apify token — IG/TikTok/YouTube trend scraping
     youtube_api_key: str = ""        # YouTube Data API — trend discovery
+    # Apify actor that downloads a single YouTube video (residential proxy, so it
+    # works where a datacenter yt-dlp is IP-blocked). Output row carries a
+    # `downloadUrl` KV-store link; append ?token= to fetch the mp4. Swappable
+    # without a code change if the actor's output shape ever moves.
+    youtube_download_actor: str = "memo23~youtube-video-downloader"
 
     # ─── PreReal Intelligence (PRI) plug ───
     # Pulls a PRI project's synthesized intelligence (living brief + insights +

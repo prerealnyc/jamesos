@@ -3093,6 +3093,34 @@ async def long_form_drive_import(
     return src
 
 
+@app.post("/long-form/youtube-import", status_code=201)
+async def long_form_youtube_import(
+    background: BackgroundTasks,
+    youtube_url: str = Form(...),
+    title: str = Form(""),
+) -> dict:
+    """Pull a long video from a YouTube URL straight into the cutter. Resolves +
+    downloads the video via Apify (residential proxy — reliable where a server-side
+    yt-dlp is IP-blocked), then the same transcribe → reel-candidate pipeline as
+    upload/Drive. Returns instantly; the download runs in the background (poll GET
+    /long-form/{id} for status)."""
+    from .long_form import (
+        create_source_placeholder, fetch_from_youtube_then_ingest, is_youtube_url,
+    )
+
+    url = (youtube_url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="youtube_url is required")
+    if not is_youtube_url(url):
+        raise HTTPException(
+            status_code=400,
+            detail="not a recognisable YouTube URL (watch, shorts, live, or youtu.be)",
+        )
+    src = await create_source_placeholder(title=(title or "YouTube import"))
+    background.add_task(fetch_from_youtube_then_ingest, UUID(src["id"]), url)
+    return src
+
+
 @app.get("/long-form/sources")
 async def long_form_list() -> dict:
     """List of long-form sources for this tenant, newest first.
