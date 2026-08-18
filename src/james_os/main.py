@@ -4228,6 +4228,45 @@ async def media_upload(
     return created
 
 
+@app.post("/media/store", status_code=201)
+async def media_store(file: UploadFile = File(...)) -> dict:
+    """Persist an uploaded file to durable storage and hand back its public URL —
+    nothing else.
+
+    Unlike /media/upload this makes NO media_assets row, runs NO perception
+    analysis, and does NOT content-dedup. It is the raw hosting seam for a caller
+    that manages the asset itself (BM2.0's "schedule your own post": the owner
+    uploads a photo/video for a post they compose by hand). The bytes land in the
+    same Supabase bucket every generated image publishes from, so the returned URL
+    is a stable, public link the social aggregator can fetch at post time. Because
+    there's no dedup, re-using the same image across posts just works."""
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty file")
+    # Cap the size so a runaway upload can't exhaust memory/storage (BM2.0 caps at
+    # 100 MB too; this is the server-side backstop).
+    _MAX_STORE_BYTES = 120 * 1024 * 1024
+    if len(data) > _MAX_STORE_BYTES:
+        raise HTTPException(status_code=413, detail="file too large (max 120 MB)")
+    # Store under the REQUESTING brand's tenant (set from X-Tenant-Id by the auth
+    # middleware) so each brand's hand-uploaded media stays in its own prefix —
+    # matching how the rest of this API scopes storage.
+    from .db import _request_tenant
+    tenant = str(_request_tenant.get() or settings.default_tenant_id)
+    # to_thread: the Supabase storage client is sync HTTP — a big upload pushed
+    # inline would freeze the server for its duration (matches /media/upload).
+    served_uri, file_path = await asyncio.to_thread(
+        media_storage().save, tenant, data, file.filename or "upload.bin"
+    )
+    return {
+        "url": served_uri,
+        "path": file_path,
+        "filename": file.filename or "",
+        "content_type": file.content_type or "",
+        "bytes": len(data),
+    }
+
+
 @app.post("/media/link", status_code=201)
 async def media_link(req: MediaLinkRequest) -> dict:
     """Add a reference by URL (YouTube/Drive/CDN link) without uploading."""
