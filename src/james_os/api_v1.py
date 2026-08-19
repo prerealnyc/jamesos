@@ -229,7 +229,8 @@ class GenerateRequest(BaseModel):
     # An explicit force is honored even when the design switch is off.
     force_format: str = ""
     # The owner's standing rejection notes — steers the draft + designed image away
-    # from what's been rejected (off-brand style/claims). Post only.
+    # from what's been rejected (off-brand style/claims). Applies to posts,
+    # reel scripts and rendered videos alike.
     feedback: str = ""
     video_template: str = ""                              # video only
     # video only: force a real avatar render even if the brand's avatar_videos
@@ -376,14 +377,15 @@ async def _run_generate(job_id: str, tenant_id: UUID, req: GenerateRequest) -> N
             cfg = await get_config(tenant_id)
             if req.render or bool(cfg.get("avatar_videos", False)):
                 made = await _make_video(
-                    idea, req.platform, tenant_id, video_template=req.video_template)
+                    idea, req.platform, tenant_id, video_template=req.video_template,
+                    feedback=req.feedback)
                 job["result"] = {
                     "kind": "video",
                     "production_id": made.get("production_id"),
                     "status": made.get("status"),
                 }
             else:
-                made = await _make_reel_script(idea, req.platform, tenant_id)
+                made = await _make_reel_script(idea, req.platform, tenant_id, feedback=req.feedback)
                 job["result"] = {
                     "kind": "reel_script",
                     "action_id": made.get("action_id"),

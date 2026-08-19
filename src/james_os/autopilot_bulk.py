@@ -164,6 +164,18 @@ async def _attach_image_to_action(
 _IMAGE_MIX = ["designed", "james", "designed", "designed", "james"]
 
 
+def _avoid_steer(feedback: str) -> str:
+    """The owner's standing rejection notes, as a steer suffix.
+
+    Was inlined in the text-post path only, so VIDEO drafts never saw it: a look
+    or phrasing the owner had rejected could come back on every reel forever."""
+    fb = (feedback or "").strip()
+    if not fb:
+        return ""
+    return ("\n\nAVOID — the owner has rejected content for these reasons before; "
+            "do NOT repeat them in wording, tone, claims, or style:\n" + fb[:1200])
+
+
 async def _make_text_post(
     idea: dict, platform: str, tenant_id: UUID | None,
     image_kind: str = "james", avoid_fmt: str = "", force_format: str = "",
@@ -181,10 +193,7 @@ async def _make_text_post(
     what's been rejected — so a fresh post learns from past rejects, not just a
     same-post regeneration."""
     from .content import strip_internal_labels
-    steer = _TEXT_STEER + trend_steer(idea)
-    if feedback.strip():
-        steer += ("\n\nAVOID — the owner has rejected content for these reasons before; "
-                  "do NOT repeat them in wording, tone, claims, or style:\n" + feedback.strip()[:1200])
+    steer = _TEXT_STEER + trend_steer(idea) + _avoid_steer(feedback)
     draft = await generate_content(
         ContentBrief(
             platform=platform,
@@ -239,7 +248,7 @@ async def _make_text_post(
 
 
 async def _make_reel_script(
-    idea: dict, platform: str, tenant_id: UUID | None
+    idea: dict, platform: str, tenant_id: UUID | None, feedback: str = ""
 ) -> dict:
     """A reel SCRIPT draft (text) — lands in the Approval Queue. HeyGen-avatar
     videos are off and autopilot can't cut the upload+B-roll+caption reel
@@ -251,7 +260,7 @@ async def _make_reel_script(
             format="reel_script",
             pillar=idea.get("pillar", ""),
             topic=idea["topic"],
-            extra_instructions=_TEXT_STEER + trend_steer(idea),
+            extra_instructions=_TEXT_STEER + trend_steer(idea) + _avoid_steer(feedback),
         ),
         tenant_id,
     )
@@ -271,7 +280,7 @@ async def _make_video(
     idea: dict, platform: str, tenant_id: UUID | None,
     template: dict | None = None, broll_engine: str = "",
     caption_style: str = "", smart_captions: bool = False,
-    video_template: str = "",
+    video_template: str = "", feedback: str = "",
 ) -> dict:
     """One video reel: write a short on-voice script, then kick a durable
     production (rendered fire-and-forget — it queues its own pending action
@@ -292,7 +301,7 @@ async def _make_video(
             format="reel_script",
             pillar=idea.get("pillar", ""),
             topic=idea["topic"],
-            extra_instructions=_VIDEO_STEER + trend_steer(idea),
+            extra_instructions=_VIDEO_STEER + trend_steer(idea) + _avoid_steer(feedback),
         ),
         tenant_id,
     )
