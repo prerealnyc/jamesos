@@ -23,7 +23,8 @@ from io import BytesIO
 from PIL import Image, ImageDraw
 
 from .image_compose import (_ARCHIVO, _case, _cover_safe, _draw_centered, _fit, _font,
-                            _line_h, _open_rgb, _png, _spaced, _spaced_w, _text_w)
+                            _line_h, _open_rgb, _png, _spaced, _spaced_fit, _spaced_w,
+                            _text_w, _wrap)
 
 _ANTON = os.path.join(os.path.dirname(__file__), "assets", "fonts", "Anton-Regular.ttf")
 W, H = 1080, 1350
@@ -100,9 +101,15 @@ def _clip(text: str, max_words: int) -> str:
     return " ".join(w[:max_words]) if len(w) > max_words else str(text)
 
 
-def _spaced_c(d: ImageDraw.ImageDraw, y: int, text: str, font, fill, tr: int):
-    """Letter-spaced text, horizontally centred on the 1080px canvas."""
-    x = (W - _spaced_w(d, text, font, tr)) // 2
+def _spaced_c(d: ImageDraw.ImageDraw, y: int, text: str, font, fill, tr: int, m: int = 88):
+    """Letter-spaced text centred on the 1080px canvas but kept INSIDE the m-px
+    side margins: tighten the tracking until the spaced run fits, then clamp the
+    start to the margin so a long kicker never slices its leading letter off the
+    frame. Byte-identical for runs that already fit."""
+    avail = W - 2 * m
+    while tr > 0 and _spaced_w(d, text, font, tr) > avail:
+        tr -= 1
+    x = max(m, (W - _spaced_w(d, text, font, tr)) // 2)
     _spaced(d, (x, y), text, font, fill, tr)
 
 
@@ -157,7 +164,7 @@ def full_bleed(photo: bytes, headline: str, kicker: str = "", handle: str = "",
     # after the adaptive scrim, confirm the ink still reads over the exact block
     ink = _ink_for(_region_lum(base, (M, top, W - M, int(bottom))), pal["ink"])
     if kicker:
-        _spaced(d, (M, top - 52), kicker.upper(), _font(_ARCHIVO, 28), pal["accent"], 8)
+        _spaced_fit(d, top - 52, kicker.upper(), _ARCHIVO, 28, pal["accent"], 8, W - 2 * M, left=M)
     y = top
     for ln in lines:
         d.text((M, y), ln, font=hf, fill=ink)
@@ -178,7 +185,7 @@ def editorial_split(photo: bytes, headline: str, kicker: str = "", handle: str =
     M = 88
     y0 = photo_h + 60
     if kicker:
-        _spaced(d, (M, y0), kicker.upper(), _font(_ARCHIVO, 28), pal["accent"], 8)
+        _spaced_fit(d, y0, kicker.upper(), _ARCHIVO, 28, pal["accent"], 8, W - 2 * M, left=M)
         y0 += 52
     hf, lines = _fit(d, _case(headline, "upper"), _ANTON, W - 2 * M, H - y0 - 120, start=104, minimum=52)
     lh = _line_h(d, hf, 1.03)
@@ -259,7 +266,7 @@ def framed_print(photo: bytes, caption: str, kicker: str = "", handle: str = "",
     base.paste(photo_im, (M, top), mask)
     y = top + ph + 44
     if kicker:
-        _spaced(d, (M, y), kicker.upper(), _font(_ARCHIVO, 26), pal["accent"], 8)
+        _spaced_fit(d, y, kicker.upper(), _ARCHIVO, 26, pal["accent"], 8, W - 2 * M, left=M)
         y += 46
     # caption fits the zone between here and the handle footer — never overlaps
     zone = (H - 150) - y
@@ -272,16 +279,10 @@ def framed_print(photo: bytes, caption: str, kicker: str = "", handle: str = "",
 
 
 def _wrap_words(d, text, font, maxw):
-    out, line = [], ""
-    for w in str(text).split():
-        t = (line + " " + w).strip()
-        if _text_w(d, t, font) > maxw and line:
-            out.append(line); line = w
-        else:
-            line = t
-    if line:
-        out.append(line)
-    return out
+    # Delegate to the shared word-wrap, which hard-breaks any single over-wide
+    # token so a line can never be laid out past the column (the old inline
+    # version kept an over-wide first word whole and let it run off the frame).
+    return _wrap(d, str(text), font, maxw)
 
 
 __all__ = ["full_bleed", "editorial_split", "big_stat", "minimal_over", "framed_print"]

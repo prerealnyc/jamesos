@@ -23,8 +23,8 @@ import os
 from PIL import ImageDraw
 
 from .image_compose import (H, W, _colors, _emph_word_idx, _fit, _fit_left,
-                            _font, _line_h, _navy_bg, _png, _spaced, _spaced_w,
-                            _text_w, _wrap_idx)
+                            _fit_one_line, _font, _line_h, _navy_bg, _png, _spaced,
+                            _spaced_fit, _spaced_w, _text_w, _wrap_idx)
 
 # The face is Archivo Black — the SAME house font as the bold_statement poster
 # (image_compose), so a text carousel and a poster read as one brand. Archivo Black is
@@ -59,14 +59,14 @@ def _auto_emphasis(headline: str) -> str:
 # ── shared frame: brand name top, N / total index, optional source ──
 def _frame(d, pal, name, index, total, source=""):
     if name:
-        nf = _font(_MONT_SB, 30)
-        nw = _spaced_w(d, name.upper(), nf, 8)
-        _spaced(d, ((W - nw) / 2, 84), name.upper(), nf, pal["accent"], 8)
+        _spaced_fit(d, 84, name.upper(), _MONT_SB, 30, pal["accent"], 8, W - 2 * M, center=W // 2)
     itxt = f"{index}  /  {total}"
     inf = _font(_MONT_SB, 25)
     d.text((W - M - _text_w(d, itxt, inf), H - 104), itxt, font=inf, fill=pal["muted"])
     if source:
-        d.text((M, H - 100), source, font=_font(_MONT_SB, 22), fill=pal["muted"])
+        # shrink a long citation to one line so it can't run off the right edge
+        srcf = _fit_one_line(d, source, _MONT_SB, W - 2 * M, start=22, floor=12)
+        d.text((M, H - 100), source, font=srcf, fill=pal["muted"])
 
 
 def _headline(d, pal, headline, emphasis, top, bottom, *, center_v):
@@ -100,7 +100,10 @@ def text_slide(pal, name, index, total, headline, emphasis="", source="") -> byt
 def stat_slide(pal, name, index, total, stat, caption, source="") -> bytes:
     base = _navy_bg((0.5, 0.40), 520, glow_color=pal["glow"], base_color=pal["base"])
     d = ImageDraw.Draw(base)
-    sf, sl = _fit(d, (stat or "").upper(), _MONT_XB, W - 2 * M, int(H * 0.32), start=360, minimum=120)
+    # the stat is one unspaceable token — fit to width on ONE line (shrink, never
+    # char-break a number) so the giant figure can never slice off either edge.
+    sf = _fit_one_line(d, (stat or "").upper(), _MONT_XB, W - 2 * M, start=360)
+    sl = [(stat or "").upper()]
     slh = _line_h(d, sf, 1.0)
     sy = int(H * 0.33) - slh * len(sl)
     for ln in sl:
@@ -133,9 +136,10 @@ def cover_slide(pal, name, index, total, headline, emphasis="", eyebrow="",
                 d.text((M, yb), ln, font=of_, fill=pal["ink"])
                 yb += _line_h(d, of_, 1.28)
         if site:
-            d.text((M, yb + 8), site, font=_font(_MONT_BD, 40), fill=pal["accent"])
+            sitef = _fit_one_line(d, site, _MONT_BD, W - 2 * M, start=40, floor=18)
+            d.text((M, yb + 8), site, font=sitef, fill=pal["accent"])
     elif eyebrow:
-        _spaced(d, (M, H - 150), eyebrow.upper(), _font(_MONT_SB, 23), pal["accent"], 5)
+        _spaced_fit(d, H - 150, eyebrow.upper(), _MONT_SB, 23, pal["accent"], 5, W - 2 * M, left=M)
     _frame(d, pal, name, index, total, "")
     return _png(base)
 

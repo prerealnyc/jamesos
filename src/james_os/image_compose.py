@@ -192,15 +192,48 @@ def _line_h(draw: ImageDraw.ImageDraw, font, spacing: float = 1.18) -> float:
     return draw.textbbox((0, 0), "Ag", font=font)[3] * spacing
 
 
+def _hard_break(draw, word: str, font, max_w: int) -> list[str]:
+    """Last-resort split of ONE over-wide, unspaceable token (a URL, a long
+    compound word, a giant number) into character chunks that each fit max_w — so
+    a single word can NEVER be drawn past the frame. Returns [word] unchanged when
+    it already fits, so ordinary copy is untouched."""
+    if max_w <= 0 or _text_w(draw, word, font) <= max_w:
+        return [word]
+    parts: list[str] = []
+    chunk = ""
+    for ch in word:
+        if chunk and _text_w(draw, chunk + ch, font) > max_w:
+            parts.append(chunk)
+            chunk = ch
+        else:
+            chunk += ch
+    if chunk:
+        parts.append(chunk)
+    return parts or [word]
+
+
 def _wrap(draw, text: str, font, max_w: int) -> list[str]:
+    """Word-wrap so EVERY returned line fits max_w. A single token wider than the
+    column is hard-broken at the character level — the containment invariant that
+    keeps a long URL/hashtag/compound word from being drawn off the frame (the old
+    `not cur` accept emitted such a token whole, which is how text left the canvas)."""
     lines: list[str] = []
     cur = ""
     for word in (text or "").split():
         trial = (cur + " " + word).strip()
-        if not cur or _text_w(draw, trial, font) <= max_w:
+        if cur and _text_w(draw, trial, font) <= max_w:
             cur = trial
-        else:
+            continue
+        # `word` starts a fresh line — flush the current one, then guarantee the
+        # word itself fits by hard-breaking it when it alone exceeds the column.
+        if cur:
             lines.append(cur)
+            cur = ""
+        if _text_w(draw, word, font) > max_w:
+            parts = _hard_break(draw, word, font, max_w)
+            lines.extend(parts[:-1])
+            cur = parts[-1]
+        else:
             cur = word
     if cur:
         lines.append(cur)
@@ -211,9 +244,12 @@ def _fit(draw, text: str, font_path: str, max_w: int, max_h: int,
          start: int, minimum: int = 30) -> tuple[ImageFont.FreeTypeFont, list[str]]:
     """Largest font size at which the wrapped text fits within max_w × max_h.
 
-    HARD GUARANTEE: even at the minimum size, the returned lines never
-    exceed max_h — overflow lines are dropped and the last kept line ends
-    on an ellipsis (human rejection: "text on image cuts off")."""
+    HARD GUARANTEE (both axes): the returned lines never exceed max_w (via
+    _wrap, which hard-breaks any single over-wide token) nor max_h (overflow
+    lines are dropped, the last kept line ends on an ellipsis). So a caller can
+    draw these lines left-aligned within the column, or centered, and text can
+    never cross the frame — the "text on image cuts off" rejection is designed
+    out, not merely made less likely."""
     size = start
     while size >= minimum:
         font = _font(font_path, size)
@@ -229,6 +265,26 @@ def _fit(draw, text: str, font_path: str, max_w: int, max_h: int,
         lines = lines[:keep]
         lines[-1] = lines[-1].rstrip(" .,;:") + "…"
     return font, lines
+
+
+def _fit_one_line(draw, text: str, font_path: str, max_w: int, start: int,
+                  floor: int = 20) -> ImageFont.FreeTypeFont:
+    """Largest font at which `text` fits max_w on ONE line. For an unspaceable
+    token — a big number / stat like "$100,000,000,000" that must never wrap,
+    char-break, or ellipsize — if it still exceeds max_w at `floor`, shrink
+    proportionally below the floor so the whole value stays on-frame at a smaller
+    size rather than being clipped."""
+    size = int(start)
+    while size > floor:
+        font = _font(font_path, size)
+        if _text_w(draw, text, font) <= max_w:
+            return font
+        size -= 4
+    font = _font(font_path, floor)
+    w = _text_w(draw, text, font)
+    if w > max_w and w > 0:
+        font = _font(font_path, max(6, int(floor * max_w / w)))
+    return font
 
 
 def _draw_centered(draw, lines, font, cx: int, top: float, fill,
@@ -457,6 +513,32 @@ def _spaced(draw, xy, text: str, font, fill, tracking: int) -> None:
         x += _text_w(draw, ch, font) + tracking
 
 
+def _spaced_fit(draw, y, text: str, font_path: str, size: int, fill, tracking: int,
+                max_w: int, *, left: float | None = None, center: float | None = None,
+                floor: int = 16):
+    """Draw letter-spaced text GUARANTEED to stay within max_w.
+
+    Letter-spaced kickers / labels / brand names were drawn at a FIXED size with
+    no width check, so a long one ran off the frame (measured with plain textbbox
+    while _spaced adds `tracking` per glyph — the drawn run is wider than anything
+    the fit ever saw). This shrinks the size, then the tracking, until the spaced
+    run fits, then anchors it inside the frame. Give `left` (x of the left edge)
+    or `center` (x to centre on). A run that already fits is untouched — same
+    pixels as before — so only over-long copy is affected."""
+    size = int(size)
+    font = _font(font_path, size)
+    while size > floor and _spaced_w(draw, text, font, tracking) > max_w:
+        size -= 2
+        font = _font(font_path, size)
+    while tracking > 0 and _spaced_w(draw, text, font, tracking) > max_w:
+        tracking -= 1
+    tracking = max(0, tracking)
+    w = _spaced_w(draw, text, font, tracking)
+    x = (center - w / 2) if center is not None else (left if left is not None else 0)
+    _spaced(draw, (max(0.0, x), y), text, font, fill, tracking)
+    return font, tracking
+
+
 def _stack_lines(text: str, n: int = 3) -> list[str]:
     """Split a short quote into up to `n` visually balanced UPPERCASE lines."""
     words = [w for w in (text or "").strip().strip('"').strip("“”").split() if w]
@@ -534,9 +616,8 @@ def brand_quote_card(quote: str, brand_kit: dict | None = None,
     #    no name yet, rather than forging one from another brand ──
     name = (bk.get("display_name") or "").strip().upper()
     if name:
-        nf = _font(_ARCHIVO, 34)
-        nw = _spaced_w(draw, name, nf, 10)
-        _spaced(draw, (cx - nw / 2, 92), name, nf, pal["accent"], 10)
+        _spaced_fit(draw, 92, name, _ARCHIVO, 34, pal["accent"], 10,
+                    int(W * 0.86), center=cx)
 
     # ── ripple emblem ──
     ey, er = 262, 60
@@ -553,6 +634,17 @@ def brand_quote_card(quote: str, brand_kit: dict | None = None,
     ef_sz = min(int(base_font.size * 1.34), 200)
     emph_font = _fit(draw, lines[emph], _DISPLAY, int(W * 0.80), 240,
                      start=ef_sz, minimum=base_font.size)[0]
+    # Containment guard: _fit picks a SIZE by re-wrapping internally, but the
+    # lines below are drawn UNWRAPPED — so a wide multi-word line could still be
+    # drawn past int(W*0.80) (and off-canvas, centered → negative x). Shrink both
+    # faces in lockstep until every ACTUAL drawn line fits, keeping emph >= base.
+    _q_max_w = int(W * 0.80)
+    def _q_overflow() -> int:
+        return max((_text_w(draw, ln, emph_font if i == emph else base_font)
+                    for i, ln in enumerate(lines)), default=0)
+    while _q_overflow() > _q_max_w and base_font.size > 24:
+        base_font = _font(_DISPLAY, base_font.size - 4)
+        emph_font = _font(_DISPLAY, max(base_font.size, emph_font.size - 4))
     heights = [_line_h(draw, emph_font if i == emph else base_font, 1.12)
                for i in range(len(lines))]
     y = zone_top + max(0.0, (zone_bottom - zone_top - sum(heights)) / 2.0)
@@ -568,9 +660,8 @@ def brand_quote_card(quote: str, brand_kit: dict | None = None,
     tag = (bk.get("footer_tagline") or "").strip()
     foot = "   ·   ".join([p for p in (site, tag) if p])
     if foot:
-        ff = _font(_ARCHIVO, 26)
-        fw = _spaced_w(draw, foot, ff, 3)
-        _spaced(draw, (cx - fw / 2, H - 118), foot, ff, pal["muted"], 3)
+        _spaced_fit(draw, H - 118, foot, _ARCHIVO, 26, pal["muted"], 3,
+                    W - 2 * 72, center=cx)
     return _png(base)
 
 
@@ -704,14 +795,19 @@ def _wrap_idx(draw, words: list[str], font, max_w: int) -> list[list[tuple[str, 
     cur: list[tuple[str, int]] = []
     cur_w = 0
     for gi, w in enumerate(words):
-        ww = _text_w(draw, w, font)
-        add = ww + (space if cur else 0)
-        if cur and cur_w + add > max_w:
-            lines.append(cur)
-            cur, cur_w = [(w, gi)], ww
-        else:
-            cur.append((w, gi))
-            cur_w += add
+        # Hard-break a single token wider than the column so no line is ever laid
+        # out past max_w; every piece keeps the word's index for emphasis colour.
+        pieces = _hard_break(draw, w, font, max_w) if _text_w(draw, w, font) > max_w else [w]
+        for pi, piece in enumerate(pieces):
+            pw = _text_w(draw, piece, font)
+            add = pw + (space if cur else 0)
+            # a broken piece after the first always begins its own full-width line
+            if cur and (pi > 0 or cur_w + add > max_w):
+                lines.append(cur)
+                cur, cur_w = [(piece, gi)], pw
+            else:
+                cur.append((piece, gi))
+                cur_w += add
     if cur:
         lines.append(cur)
     return lines or [[]]
@@ -752,9 +848,7 @@ def bold_statement_card(statement: str, brand_kit: dict | None = None,
     # ── brand name across the top (letter-spaced, centered) ──
     name = (bk.get("display_name") or "").strip().upper()
     if name:
-        nf = _font(_ARCHIVO, 30)
-        nw = _spaced_w(draw, name, nf, 8)
-        _spaced(draw, ((W - nw) / 2, 84), name, nf, accent, 8)
+        _spaced_fit(draw, 84, name, _ARCHIVO, 30, accent, 8, W - 2 * M, center=W // 2)
 
     # ── short accent rule ──
     ry = 300
@@ -779,7 +873,8 @@ def bold_statement_card(statement: str, brand_kit: dict | None = None,
     # ── byline: optional name, then website · tagline (only what the brand supplies) ──
     yb = H - 156
     if byline_name.strip():
-        _spaced(draw, (M, yb), byline_name.strip().upper(), _font(_ARCHIVO, 26), accent, 6)
+        _spaced_fit(draw, yb, byline_name.strip().upper(), _ARCHIVO, 26, accent, 6,
+                    W - 2 * M, left=M)
         yb += 46
     site = (bk.get("website") or "").strip()
     tag = (bk.get("footer_tagline") or "").strip()

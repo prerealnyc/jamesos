@@ -21,8 +21,8 @@ from PIL import Image, ImageDraw
 
 from .compositors_v2 import (_ANTON, H, W, _auto_scrim, _clip, _contrast,
                              _handle_footer, _ink_for, _pal, _region_lum, _rel_lum)
-from .image_compose import (_ARCHIVO, _case, _cover_safe, _fit, _font, _line_h,
-                            _open_rgb, _png, _spaced, _text_w, _wrap)
+from .image_compose import (_ARCHIVO, _case, _cover_safe, _fit, _fit_one_line, _font,
+                            _line_h, _open_rgb, _png, _spaced, _spaced_fit, _text_w, _wrap)
 
 M = 88
 
@@ -63,9 +63,9 @@ def carousel_cover(photo, headline, count_promise="", kicker="", handle="",
     top = bottom - lh * len(lines)
     ink = (_ink_for(_region_lum(base, (M, top, W - M, int(bottom))), pal["ink"]) if photo else pal["ink"])
     if count_promise:
-        _spaced(d, (M, top - 100), count_promise.upper(), _font(_ARCHIVO, 34), pal["accent"], 6)
+        _spaced_fit(d, top - 100, count_promise.upper(), _ARCHIVO, 34, pal["accent"], 6, W - 2 * M, left=M)
     if kicker:
-        _spaced(d, (M, top - 50), kicker.upper(), _font(_ARCHIVO, 26), ink, 8)
+        _spaced_fit(d, top - 50, kicker.upper(), _ARCHIVO, 26, ink, 8, W - 2 * M, left=M)
     y = top
     for ln in lines:
         d.text((M, y), ln, font=hf, fill=ink)
@@ -82,14 +82,17 @@ def carousel_slide(index, total, headline, section_label="", handle="",
     base = Image.new("RGB", (W, H), pal["bg"])
     d = ImageDraw.Draw(base)
     if stat:                                    # numeric variant
-        sf, sl = _fit(d, stat.upper(), _ANTON, W - 2 * M, int(H * 0.40), start=360, minimum=110)
+        # A stat is one unspaceable token — fit it to the width on ONE line
+        # (shrink, never char-break a number) so it can't run off the frame.
+        sf = _fit_one_line(d, stat.upper(), _ANTON, W - 2 * M, start=360)
+        sl = [stat.upper()]
         y = 250
         for ln in sl:
             d.text((M, y), ln, font=sf, fill=pal["accent"])
             y += _line_h(d, sf, 0.98)
         y += 22
         if section_label:
-            _spaced(d, (M, y), section_label.upper(), _font(_ARCHIVO, 26), pal["muted"], 8)
+            _spaced_fit(d, y, section_label.upper(), _ARCHIVO, 26, pal["muted"], 8, W - 2 * M, left=M)
             y += 46
         hf, hl = _fit(d, headline.upper(), _ANTON, W - 2 * M, 240, start=74, minimum=44)
         for ln in hl:
@@ -101,7 +104,7 @@ def carousel_slide(index, total, headline, section_label="", handle="",
         base.paste(_cover_safe(band, W, photo_h, centering=focus), (0, 0))
         y = photo_h + 54
         if section_label:
-            _spaced(d, (M, y), section_label.upper(), _font(_ARCHIVO, 26), pal["accent"], 8)
+            _spaced_fit(d, y, section_label.upper(), _ARCHIVO, 26, pal["accent"], 8, W - 2 * M, left=M)
             y += 48
         hf, hl = _fit(d, headline.upper(), _ANTON, W - 2 * M, H - y - 150, start=94, minimum=48)
         for ln in hl:
@@ -127,7 +130,7 @@ def carousel_text_slide(index, total, headline, section_label="", handle="",
     block_h = lh * len(hl)
     top = int((H - block_h) / 2) + 24  # centred, nudged below the index token
     if section_label:
-        _spaced(d, (M, top - 62), section_label.upper(), _font(_ARCHIVO, 28), pal["accent"], 8)
+        _spaced_fit(d, top - 62, section_label.upper(), _ARCHIVO, 28, pal["accent"], 8, W - 2 * M, left=M)
     y = top
     for ln in hl:
         d.text((M, y), ln, font=hf, fill=pal["ink"])
