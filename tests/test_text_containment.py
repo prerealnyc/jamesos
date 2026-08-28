@@ -253,7 +253,7 @@ def test_styling_override_keyword_detection():
     end = text.index("async def _run_regenerate", start)
     ns: dict = {}
     exec(compile(text[start:end], str(src), "exec"), ns)  # noqa: S102 — isolated defs
-    so, only = ns["_styling_override"], ns["_styling_only"]
+    so, wnp = ns["_styling_override"], ns["_wants_new_photo"]
 
     assert so("text needs to be white color, not black and use thicker fonts") == \
         {"image_text_color_hex": "white", "image_text_weight": 1}
@@ -263,10 +263,13 @@ def test_styling_override_keyword_detection():
     assert so("i want the text in gold") == {"image_text_color_hex": "gold"}
     assert so("use #1b4d3e for the headline") == {"image_text_color_hex": "#1b4d3e"}
     assert so("love it, ship it") == {}
-    # styling-only vs layout complaints
-    assert only("change text color to white on this image") is True
-    assert only("make it white but use a different photo") is False
-    assert only("text white and make James bigger") is False
+    # same image by default — a different photo is used ONLY when asked/complained
+    assert wnp("change text color to white on this image") is False
+    assert wnp("make text red") is False
+    assert wnp("make James bigger") is False       # layout change, not a new photo
+    assert wnp("make it white but use a different photo") is True
+    assert wnp("i hate this photo, it's blurry") is True
+    assert wnp("try another image, this one doesn't work") is True
 
 
 def test_carousel_text_smoke():

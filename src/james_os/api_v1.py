@@ -704,14 +704,29 @@ def _styling_override(feedback: str) -> dict:
     return out
 
 
-def _styling_only(feedback: str) -> bool:
-    """True when the feedback is ONLY about text styling — no complaint about the
-    photo or layout — so the redo should keep the same layout and just restyle it."""
+def _wants_new_photo(feedback: str) -> bool:
+    """True only when the owner asked for a DIFFERENT photo/image, or complained
+    about the photo's quality. Otherwise a redo keeps the SAME picture and changes
+    only what was asked — the default, so a redo is the same image restyled rather
+    than a brand-new composition."""
     f = (feedback or "").lower()
-    layout_words = ("photo", "picture", "layout", "bigger", "smaller", "hidden",
-                    "behind", " crop", "different image", "another image", "wrong image",
-                    "his face", "her face", "the person", "zoom")
-    return not any(w in f for w in layout_words)
+    # explicit "give me a different picture"
+    if any(p in f for p in (
+        "different photo", "different image", "different picture", "another photo",
+        "another image", "another picture", "new photo", "new image", "new picture",
+        "change the photo", "change the image", "change the picture",
+        "swap the photo", "swap the image", "replace the photo", "replace the image",
+        "try another", "try a different", "not this photo", "not this image",
+        "use a different photo", "use a different image", "use another photo",
+    )):
+        return True
+    # a complaint about the PHOTO itself → they want a better one
+    return any(p in f for p in (
+        "wrong photo", "wrong image", "bad photo", "bad image", "hate this photo",
+        "hate the photo", "hate this image", "don't like the photo",
+        "don't like this photo", "blurry", "out of focus", "low quality", "grainy",
+        "pixelated", "doesn't fit", "does not fit",
+    ))
 
 
 async def _run_regenerate(
@@ -770,11 +785,8 @@ async def _run_regenerate(
                 json.dumps(new_payload),
             )
 
-        # A text-styling rejection ("make it white / thicker") is APPLIED as a
-        # render knob so the redo actually restyles the image. When the feedback is
-        # styling-ONLY, keep the SAME layout (pin the rejected format) and reuse the
-        # same photo — so it recolours/re-weights the same image instead of rolling
-        # a brand-new one. Any other feedback behaves exactly as before.
+        # A text-styling rejection ("make it white / red / thicker") is APPLIED as
+        # a render knob so the redo actually restyles the image.
         overrides = _styling_override(reason)
         if overrides:
             try:
@@ -782,11 +794,26 @@ async def _run_regenerate(
                 await set_render_tuning(overrides, tenant_id)
             except Exception:  # noqa: BLE001 — a knob write must never block a redo
                 pass
-        styling_only = bool(overrides) and not force_format and _styling_only(reason)
-        eff_force = str(payload.get("image_format") or "") if styling_only else force_format
-        # Normally never serve back the rejected photo; but a styling-only redo
-        # WANTS the same photo (only the text changes), so don't exclude it.
-        eff_exclude = () if styling_only else ((prev_photo,) if prev_photo else ())
+
+        # SAME IMAGE BY DEFAULT. A redo reuses the EXACT rejected photo and keeps
+        # the layout, changing only what was asked — a colour/weight restyle, or a
+        # pinned format like "make James big". We only swap the photo (and let the
+        # art director re-compose) when the owner asked for a DIFFERENT image or
+        # complained about the photo itself.
+        prev_format = str(payload.get("image_format") or "")
+        if _wants_new_photo(reason):
+            eff_force_photo = ""
+            eff_exclude = (prev_photo,) if prev_photo else ()
+            eff_force = force_format
+        else:
+            eff_force_photo = prev_photo
+            eff_exclude = ()
+            if force_format:
+                eff_force = force_format          # explicit layout (e.g. make big)
+            elif overrides:
+                eff_force = prev_format            # a restyle → keep the exact layout
+            else:
+                eff_force = ""                     # vague feedback → art director re-lays out the SAME photo
 
         served, fmt = await _main._generate_designed_post_image(
             new_id,
@@ -796,6 +823,7 @@ async def _run_regenerate(
             feedback=reason,
             force_format=eff_force,
             exclude_photos=eff_exclude,
+            force_photo=eff_force_photo,
         )
         job["result"] = {
             "action_id": str(new_id), "regen_of": str(parent_id),

@@ -1944,6 +1944,7 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
 async def _generate_designed_post_image(
     action_id, topic: str, draft_text: str, tenant_id, avoid: str = "",
     feedback: str = "", force_format: str = "", exclude_photos: tuple[str, ...] = (),
+    force_photo: str = "",
 ) -> tuple[str, str]:
     """Art-director → text-free background (Soul James or cinematic scene) →
     Pillow-composited quote card / meme → persist + attach to the action.
@@ -1956,7 +1957,11 @@ async def _generate_designed_post_image(
     the owner's own words about what was wrong, stated to the art director as a
     correction it must satisfy; `force_format` pins the layout outright; and
     `exclude_photos` drops the hero photo they just rejected from the running,
-    so the redo cannot serve the same picture back."""
+    so the redo cannot serve the same picture back. `force_photo` is the opposite:
+    a styling-only redo (e.g. "make the text white") passes the rejected version's
+    photo key to REUSE the exact same picture, so the redo IS the same image with
+    only the requested restyle changed — not a new photo. It wins over
+    exclude_photos, and falls back to a normal pick if that photo is gone."""
     import httpx
 
     from .brand_kit import get_brand_kit
@@ -2015,8 +2020,19 @@ async def _generate_designed_post_image(
             _refs = await get_hero_photo_files(tenant_id=tenant_id, limit=None)
             # Gated pick (James's rejections): skip blurry photos, prefer the
             # least-recently-used one instead of random choice.
-            from .photo_pick import pick_hero_bytes
-            _picked = await pick_hero_bytes(_refs, tenant_id, exclude=exclude_photos)
+            from .photo_pick import photo_key, pick_hero_bytes
+            _picked = None
+            # A styling-only redo REUSES the exact rejected photo (match by its
+            # stored key — a URL name, else a content hash) so only the restyle
+            # changes. Falls through to a normal pick if that photo is gone.
+            if force_photo:
+                for _name, _b in _refs:
+                    _k = _name if _name.startswith("http") else photo_key(_b)
+                    if _k == force_photo:
+                        _picked = (_k, _b)
+                        break
+            if _picked is None:
+                _picked = await pick_hero_bytes(_refs, tenant_id, exclude=exclude_photos)
             if _picked is None and exclude_photos:
                 # The library has nothing else. Better an honest repeat than a
                 # silent one: fall back to the full set, and the layout change
