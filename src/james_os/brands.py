@@ -95,6 +95,80 @@ async def upsert_brand_profile(
     return prof or {}
 
 
+# ── the niche: confirmed by the brand, and authoritative ──────────────
+#
+# The niche decides which accounts we go and study, so a wrong one is not a
+# cosmetic error — it sends the whole competitor pipeline at the wrong
+# industry. A Turtleback Golf Course tenant researched against a typed
+# "New York commercial real estate" gets Ryan Serhant and CPEX, and every
+# stage downstream inherits that mistake.
+#
+# So the niche is not inferred at call time and never defaulted. It is
+# proposed during onboarding, CONFIRMED by the brand, and stored with the
+# timestamp of that confirmation. Consumers ask for the confirmed value and
+# are expected to refuse to run without one.
+
+async def get_niche(tenant_id: UUID | None = None) -> dict:
+    """The brand's confirmed niche.
+
+    Returns {niche, terms, confirmed, confirmed_at, proposed}. `confirmed`
+    is the only field a consumer should gate on — a proposal that nobody
+    agreed to is not a niche.
+    """
+    p = await get_brand_profile(tenant_id)
+    ident = (p or {}).get("identity") or {}
+    niche = str(ident.get("niche") or "").strip()
+    confirmed_at = ident.get("niche_confirmed_at") or ""
+    terms = [str(t).strip() for t in (ident.get("niche_terms") or []) if str(t).strip()]
+    return {
+        "niche": niche,
+        "terms": terms,
+        "confirmed": bool(niche and confirmed_at),
+        "confirmed_at": confirmed_at,
+        "proposed": str(ident.get("niche_proposed") or "").strip(),
+    }
+
+
+async def confirm_niche(
+    niche: str, terms: list[str] | None = None, tenant_id: UUID | None = None,
+) -> dict:
+    """Record the brand's own answer. This is the authoritative version —
+    an edited answer replaces the proposal wholesale rather than merging
+    with it, because the brand correcting us is the entire point."""
+    niche = (niche or "").strip()
+    if not niche:
+        raise ValueError("a niche is required")
+    from datetime import UTC, datetime
+    clean_terms = []
+    for t in (terms or []):
+        t = str(t).strip()
+        if t and t.lower() not in {x.lower() for x in clean_terms}:
+            clean_terms.append(t[:80])
+
+    p = await get_brand_profile(tenant_id)
+    ident = dict((p or {}).get("identity") or {})
+    ident["niche"] = niche[:300]
+    ident["niche_terms"] = clean_terms[:8]
+    ident["niche_confirmed_at"] = datetime.now(UTC).isoformat()
+    await upsert_brand_profile({"identity": ident}, tenant_id)
+    return await get_niche(tenant_id)
+
+
+async def set_proposed_niche(
+    proposed: str, terms: list[str] | None = None, tenant_id: UUID | None = None,
+) -> dict:
+    """Stash a research-proposed niche for the operator to accept or edit.
+    Kept separate from the confirmed value so a proposal can never be
+    mistaken for an answer the brand actually gave."""
+    p = await get_brand_profile(tenant_id)
+    ident = dict((p or {}).get("identity") or {})
+    ident["niche_proposed"] = str(proposed or "").strip()[:300]
+    if terms:
+        ident["niche_proposed_terms"] = [str(t).strip()[:80] for t in terms if str(t).strip()][:8]
+    await upsert_brand_profile({"identity": ident}, tenant_id)
+    return await get_niche(tenant_id)
+
+
 async def brand_profile_block(tenant_id: UUID | None = None) -> str:
     """Compact <brand_profile> block for system prompts. Empty string when
     no intake has been done (engines behave exactly as before)."""
@@ -103,6 +177,8 @@ async def brand_profile_block(tenant_id: UUID | None = None) -> str:
         return ""
     ident = p.get("identity") or {}
     lines = [f"kind: {p.get('kind') or 'person'}"]
+    if ident.get("niche"):
+        lines.append(f"niche: {str(ident['niche'])[:300]}")
     for key in ("name", "mission", "positioning", "audience"):
         if ident.get(key):
             lines.append(f"{key}: {str(ident[key])[:300]}")

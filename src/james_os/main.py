@@ -861,6 +861,41 @@ async def intake_research(body: dict = Body(default={})) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+@app.get("/intake/niche")
+async def intake_niche_get() -> dict[str, Any]:
+    """The brand's niche: what it confirmed, and a proposal if it hasn't.
+
+    Onboarding asks this and keeps the answer. Competitor discovery refuses
+    to run until it exists, because the niche decides which accounts get
+    studied and a wrong one misdirects every stage after it."""
+    from .brands import get_niche
+    current = await get_niche()
+    if current["confirmed"]:
+        return {**current, "proposal": None}
+    from .intake_agent import propose_niche
+    try:
+        proposal = await propose_niche()
+    except Exception as e:  # noqa: BLE001 — a failed proposal still lets the
+        # operator type their own, which is the authoritative path anyway.
+        proposal = {"niche": "", "terms": [], "error": str(e)[:200]}
+    return {**current, "proposal": proposal}
+
+
+class NicheConfirm(BaseModel):
+    niche: str
+    terms: list[str] = []
+
+
+@app.post("/intake/niche/confirm")
+async def intake_niche_confirm(req: NicheConfirm) -> dict[str, Any]:
+    """Record the brand's own answer — edited or accepted as proposed."""
+    from .brands import confirm_niche
+    try:
+        return await confirm_niche(req.niche, req.terms)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 @app.get("/intake/questions")
 async def intake_questions(status: str = "") -> dict[str, Any]:
     """The deep-interview ledger: research-answered ones first (confirm

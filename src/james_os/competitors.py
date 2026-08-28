@@ -228,7 +228,7 @@ def _why(c: dict, niche: str) -> str:
 
 
 async def discover(
-    niche: str,
+    niche: str = "",
     platforms: list[str] | None = None,
     limit: int = 12,
     min_followers: int = 1000,
@@ -243,9 +243,35 @@ async def discover(
     Re-running is safe: an existing row keeps its status (a rejected
     competitor stays rejected) and just gets fresh follower numbers.
     """
+    # THE NICHE IS THE BRAND'S ANSWER, not a guess made here.
+    #
+    # It decides which accounts we go and study, so getting it wrong sends
+    # every downstream stage — posts, media, vision, profiles — at the wrong
+    # industry. A Turtleback Golf Course tenant run against a hand-typed
+    # "New York commercial real estate" comes back with Ryan Serhant and
+    # CPEX, and nothing later in the pipeline can notice.
+    #
+    # So when no niche is passed we use the one the brand CONFIRMED during
+    # onboarding, and if there isn't one we refuse and say so. Falling back
+    # to a proposal, a brand name, or a plausible default would reintroduce
+    # exactly the failure this guard exists to prevent.
     niche = (niche or "").strip()
+    confirmed_terms: list[str] = []
     if not niche:
-        return {"error": "A niche is required.", "candidates": []}
+        from .brands import get_niche
+        n = await get_niche(tenant_id)
+        if not n["confirmed"]:
+            return {
+                "error": "This brand has not confirmed its niche yet. "
+                         "Confirm it during onboarding (Brand → niche) and "
+                         "run discovery again — competitor research is only "
+                         "as good as the niche it starts from.",
+                "needs_niche": True,
+                "proposed_niche": n.get("proposed") or "",
+                "candidates": [],
+            }
+        niche = n["niche"]
+        confirmed_terms = n["terms"]
     if not configured():
         return {"error": "No Xpoz API key configured. Add it under "
                          "Settings → API connections.", "candidates": []}
@@ -267,9 +293,15 @@ async def discover(
         async with xpoz.AsyncXpozClient(
             settings.xpoz_api_key.strip(), check_update=False, timeout=26
         ) as c:
-            results = await asyncio.gather(
-                *[_discover_platform(c, p, niche, fetch_n) for p in plats]
+            # Search the brand's confirmed terms when it gave us any:
+            # they were written to surface PEERS, which a niche sentence
+            # ("public golf course in Kohler, Wisconsin") often is not.
+            queries = confirmed_terms[:2] or [niche]
+            results_nested = await asyncio.gather(
+                *[_discover_platform(c, p, q, fetch_n)
+                  for p in plats for q in queries]
             )
+            results = list(results_nested)
     except Exception as e:  # noqa: BLE001 — connect/auth failure
         return {"error": f"{type(e).__name__}: {e}", "candidates": []}
 
@@ -280,6 +312,15 @@ async def discover(
 
     below_floor = sum(1 for c in found if c["followers"] < min_followers)
     found = [c for c in found if c["followers"] >= min_followers]
+    # Searching several terms per platform means the same account can come
+    # back more than once; without this, duplicates eat the `limit` and the
+    # candidate list shows one handle twice.
+    best: dict[tuple[str, str], dict] = {}
+    for c in found:
+        k = (c["platform"], c["handle"].lower())
+        if k not in best or c["rank_score"] > best[k]["rank_score"]:
+            best[k] = c
+    found = list(best.values())
     found.sort(key=lambda c: c["rank_score"], reverse=True)
     found = found[:limit]
     for c in found:

@@ -64,6 +64,13 @@ accurate, specific, and neutral.
 Return STRICT JSON:
 {{"kind": "person"|"asset"|"institution"|"politician",
   "identity": {{"name": str, "mission": str, "positioning": str, "audience": str}},
+  "niche": str,          // ONE line naming the market this brand competes in,
+                         // specific enough to find its rivals and no wider.
+                         // "public golf course in Kohler, Wisconsin" — NOT
+                         // "sports". "Staten Island commercial real estate
+                         // brokerage" — NOT "real estate".
+  "niche_terms": [str],  // 3-5 search phrases that would surface OTHER
+                         // accounts in that same market. No brand names.
   "goals": [str, ...], "pillars": [str, ...], "peers": [str, ...],
   "summary": str}}    // 3-5 sentence "here's what we found" for the operator
 """
@@ -136,8 +143,120 @@ async def research_brand(
             "pillars": [str(p)[:100] for p in (out.get("pillars") or [])][:8],
             "peers": [str(p)[:80] for p in (out.get("peers") or [])][:8],
         },
+        # Surfaced alongside the profile so onboarding can ask "is this your
+        # niche?" in the same breath as "is this your brand?" — it decides
+        # which accounts we go and study, so it needs the brand's own answer.
+        "niche": str(out.get("niche") or "")[:300],
+        "niche_terms": [str(t)[:80] for t in (out.get("niche_terms") or [])][:5],
         "summary": str(out.get("summary") or "")[:1200],
         "sources": sources,
+    }
+
+
+# ── the niche question, asked during onboarding ───────────────────────
+
+_NICHE_SYSTEM = """You name the market a brand competes in, so that we can go
+and find the OTHER accounts in that same market.
+
+You get whatever is known about the brand. Return the narrowest niche the
+evidence actually supports — narrow enough that the accounts it surfaces are
+genuine rivals, wide enough that there are some.
+
+"public golf course in Kohler, Wisconsin" — not "sports", not "golf".
+"Staten Island commercial real estate brokerage" — not "real estate".
+
+`terms` are 3-5 search phrases that would surface OTHER accounts in that
+market. Never a brand name — we are looking for peers, not for this brand.
+
+`confidence` is honest: below 0.5 when you are mostly guessing from a name.
+
+Return JSON: {"niche": str, "terms": [str], "reasoning": str,
+              "confidence": float}"""
+
+
+async def propose_niche(tenant_id: UUID | None = None) -> dict:
+    """Propose a niche for THIS brand, for the operator to confirm or correct.
+
+    Grounded in what we actually know, in order: the brand profile from
+    intake, then the tenant's own name and entity type, then live research.
+    A tenant called "Turtleback Golf Course" with entity_type physical_asset
+    is already enough to rule out a real-estate niche — the failure mode this
+    exists to prevent was a niche typed by hand and never checked against the
+    brand at all.
+
+    Nothing is saved as confirmed. The proposal is stashed separately so it
+    can never be mistaken for the brand's own answer.
+    """
+    from .brands import get_brand_profile, set_proposed_niche
+
+    known: list[str] = []
+    prof = await get_brand_profile(tenant_id)
+    ident = (prof or {}).get("identity") or {}
+    for key in ("name", "mission", "positioning", "audience"):
+        if ident.get(key):
+            known.append(f"{key}: {str(ident[key])[:300]}")
+    if prof and prof.get("pillars"):
+        known.append("topics: " + "; ".join(str(x)[:60] for x in prof["pillars"][:6]))
+
+    # Fall back to the tenant record — for most tenants it is all there is,
+    # since brand_profiles is empty until someone completes intake.
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            "SELECT name, config ->> 'brand_name' AS brand_name, "
+            "config ->> 'entity_type' AS entity_type FROM tenants "
+            "WHERE id = current_setting('app.current_tenant', true)::uuid")
+    brand_name = ""
+    if row:
+        brand_name = (row["brand_name"] or row["name"] or "").strip()
+        if brand_name:
+            known.append(f"brand name: {brand_name}")
+        if row["entity_type"]:
+            known.append(f"entity type: {row['entity_type']}")
+
+    if not known:
+        return {"niche": "", "terms": [], "confidence": 0.0,
+                "reasoning": "Nothing is known about this brand yet — "
+                             "complete intake or set a brand name first.",
+                "needs_confirmation": True}
+
+    # Live research when we have a name to research and a provider to do it.
+    briefing = ""
+    if brand_name:
+        try:
+            from .research import get_research_provider
+            provider = get_research_provider()
+            if provider.name != "stub":
+                res = await provider.research(
+                    subject=brand_name[:200],
+                    focus="what industry or market this organisation competes "
+                          "in, what it sells, and to whom. Facts only.")
+                briefing = (res.summary + "\n" + "\n".join(
+                    f"- {f}" for f in res.findings[:10]))[:4000]
+        except Exception:  # noqa: BLE001 — a proposal without research is fine
+            briefing = ""
+
+    body = "WHAT WE KNOW:\n" + "\n".join(known)
+    if briefing:
+        body += f"\n\nRESEARCH:\n{briefing}"
+
+    out = await get_llm().complete_json(
+        system=_NICHE_SYSTEM,
+        messages=[{"role": "user", "content": body}],
+        max_tokens=500, temperature=0.2)
+    if not isinstance(out, dict):
+        out = {}
+    niche = str(out.get("niche") or "")[:300]
+    terms = [str(t)[:80] for t in (out.get("terms") or []) if str(t).strip()][:5]
+    if niche:
+        await set_proposed_niche(niche, terms, tenant_id)
+    return {
+        "niche": niche, "terms": terms,
+        "reasoning": str(out.get("reasoning") or "")[:600],
+        "confidence": float(out.get("confidence") or 0.0),
+        "researched": bool(briefing),
+        # Always true. However good the proposal looks, it is a guess until
+        # the brand says otherwise.
+        "needs_confirmation": True,
     }
 
 
