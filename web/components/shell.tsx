@@ -31,7 +31,11 @@ const CREATE_SUBROUTES = ["/create", "/autopilot", "/design-studio", "/images", 
 // Assets = the 4 media libraries + style templates, already tab-unified.
 const ASSETS_SUBROUTES = ["/jp-clips", "/hero", "/broll", "/audio", "/style-templates"];
 // Research = listen + trends + people, tab-unified via HubTabs.
-const RESEARCH_SUBROUTES = ["/social-listening", "/market-research", "/social-companion"];
+// Every route that shows the Research sub-tab bar. A tab added to
+// RESEARCH_TABS but missing here renders nowhere: the bar itself is gated
+// on this list, so the new page is unreachable AND loses the bar on arrival.
+const RESEARCH_SUBROUTES = ["/social-listening", "/market-research",
+                            "/competitors", "/social-companion"];
 // Brand = rules + voice studio + health, tab-unified via HubTabs.
 const BRAND_SUBROUTES = ["/brand", "/voice-studio", "/jp-live"];
 
