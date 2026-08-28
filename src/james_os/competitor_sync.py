@@ -531,6 +531,106 @@ async def list_posts(
     return [_row(r) for r in rows]
 
 
+async def gallery(
+    competitor_id: str = "", replicate: str = "", media_only: bool = True,
+    sort: str = "engagement", limit: int = 60, tenant_id: UUID | None = None,
+) -> list[dict]:
+    """Everything the review screen needs for one post, in one query.
+
+    The post, our durable media copy, the competitor it belongs to, and what
+    the eyes made of it — the brand is deciding "do I want one of these", and
+    that decision is much easier with the format and the hook next to the
+    picture than with the picture alone.
+
+    `media_only` defaults to True because a card with no image is not worth
+    showing in a gallery; pass False to audit what is still missing media.
+    """
+    clauses = ["1=1"]
+    args: list = []
+    if competitor_id:
+        args.append(competitor_id)
+        clauses.append(f"p.competitor_id = ${len(args)}::uuid")
+    if replicate:
+        args.append(replicate)
+        clauses.append(f"p.replicate_status = ${len(args)}")
+    if media_only:
+        clauses.append("(p.stored_media_url <> '' OR p.thumbnail_url <> '')")
+    order = {
+        "engagement": "p.engagement_rate DESC NULLS LAST, p.likes DESC",
+        "likes": "p.likes DESC",
+        "recent": "p.posted_at DESC NULLS LAST",
+        "picked": "p.replicate_at DESC NULLS LAST",
+    }.get(sort, "p.engagement_rate DESC NULLS LAST, p.likes DESC")
+    args.append(max(1, min(limit, 200)))
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            f"""SELECT p.id, p.url, p.caption, p.media_type, p.stored_media_url,
+                       p.thumbnail_url, p.likes, p.comments, p.views,
+                       p.engagement_rate, p.posted_at, p.duration,
+                       p.replicate_status, p.replicate_note,
+                       c.handle, c.platform, c.followers,
+                       a.format, a.hook, a.hook_pattern, a.topic, a.cta,
+                       a.eye_score, a.why_it_works, a.transferable_pattern,
+                       a.classification
+                  FROM competitor_posts p
+                  JOIN competitors c ON c.id = p.competitor_id
+             LEFT JOIN competitor_post_analysis a
+                       ON a.post_id = p.id AND a.status = 'ok'
+                 WHERE {' AND '.join(clauses)}
+              ORDER BY {order} LIMIT ${len(args)}""", *args)
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = str(d["id"])
+        if d.get("posted_at") is not None:
+            d["posted_at"] = d["posted_at"].isoformat()
+        if isinstance(d.get("classification"), str):
+            d["classification"] = json.loads(d["classification"])
+        out.append(d)
+    return out
+
+
+async def set_replicate(
+    post_id: str, status: str, note: str = "", tenant_id: UUID | None = None,
+) -> dict:
+    """Record the brand's verdict on one post.
+
+    '' clears it back to untouched, which matters: a brand changing its mind
+    should leave no trace of the earlier pick.
+    """
+    status = (status or "").strip().lower()
+    if status not in ("", "saved", "skipped", "queued"):
+        raise ValueError("status must be '', 'saved', 'skipped' or 'queued'")
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            """UPDATE competitor_posts
+                  SET replicate_status = $2,
+                      replicate_note = $3,
+                      replicate_at = CASE WHEN $2 = '' THEN NULL ELSE now() END
+                WHERE id = $1::uuid
+            RETURNING id, replicate_status, replicate_note, replicate_at""",
+            post_id, status, note[:500])
+    if not row:
+        raise ValueError("post not found")
+    d = dict(row)
+    d["id"] = str(d["id"])
+    if d.get("replicate_at") is not None:
+        d["replicate_at"] = d["replicate_at"].isoformat()
+    return d
+
+
+async def replicate_counts(tenant_id: UUID | None = None) -> dict:
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            """SELECT count(*) FILTER (WHERE replicate_status = 'saved')   AS saved,
+                      count(*) FILTER (WHERE replicate_status = 'skipped') AS skipped,
+                      count(*) FILTER (WHERE replicate_status = 'queued')  AS queued,
+                      count(*) FILTER (WHERE stored_media_url <> '')       AS with_media,
+                      count(*) AS total
+                 FROM competitor_posts""")
+    return dict(row)
+
+
 async def shelf_stats(tenant_id: UUID | None = None) -> dict:
     """How much competitor material we actually hold — the honest counter
     behind 'we save everything'."""
@@ -566,5 +666,6 @@ async def run_competitor_sync(tenant_id: UUID, config: dict | None = None) -> No
 
 
 __all__ = [
+    "gallery", "set_replicate", "replicate_counts",
     "refresh_profile", "sync_competitor", "run_competitor_sync", "sync_all", "list_posts", "shelf_stats",
 ]

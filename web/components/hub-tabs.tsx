@@ -47,5 +47,6 @@ export const BRAND_TABS: HubTab[] = [
 export const RESEARCH_TABS: HubTab[] = [
   { href: "/social-listening", label: "Listen", sub: "Brand mentions across X/IG/TikTok/Reddit" },
   { href: "/market-research", label: "Trends & Research", sub: "Viral trends + topic research" },
+  { href: "/competitors", label: "Competitors", sub: "Who owns your niche — and what they post" },
   { href: "/social-companion", label: "People", sub: "Creators & competitors to watch" },
 ];

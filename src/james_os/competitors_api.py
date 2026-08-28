@@ -9,6 +9,8 @@
     GET  /competitors/sync/{job_id}       poll the sync job
     GET  /competitors/posts               the saved shelf
     GET  /competitors/shelf               how much we hold
+    GET  /competitors/gallery             posts + media + analysis, for review
+    POST /competitors/posts/replicate     the brand's verdict on one post
     GET  /competitors/top                 the highest-ranked pages in the niche
     POST /competitors/analyze             run the visual eyes  (background)
     GET  /competitors/analyze/{job_id}    poll the analysis job
@@ -300,6 +302,40 @@ async def competitors_analyses(
         competitor_id=competitor_id, limit=limit)
     stats = await competitor_vision.analysis_stats()
     return {"analyses": rows, "count": len(rows), "stats": stats}
+
+
+# ── the review gallery: what the brand sees and picks from ────────────
+
+@router.get("/competitors/gallery")
+async def competitors_gallery(
+    competitor_id: str = "", replicate: str = "", media_only: bool = True,
+    sort: str = "engagement", limit: int = Query(default=60, le=200),
+) -> dict:
+    """Competitor posts with our stored media and what the eyes made of them.
+
+    One query per screen: the brand is deciding "do I want one of these",
+    which is much easier with the format and hook beside the picture."""
+    posts = await competitor_sync.gallery(
+        competitor_id=competitor_id, replicate=replicate,
+        media_only=media_only, sort=sort, limit=limit)
+    return {"posts": posts, "count": len(posts),
+            "counts": await competitor_sync.replicate_counts()}
+
+
+class ReplicateRequest(BaseModel):
+    post_id: str
+    status: str = "saved"     # '' | saved | skipped | queued
+    note: str = ""
+
+
+@router.post("/competitors/posts/replicate")
+async def competitors_post_replicate(req: ReplicateRequest) -> dict:
+    """Save a competitor post as something to replicate — or clear it."""
+    try:
+        return await competitor_sync.set_replicate(
+            req.post_id, req.status, req.note)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
 
 
 # ── media: Apify downloads what Xpoz cannot serve ─────────────────────

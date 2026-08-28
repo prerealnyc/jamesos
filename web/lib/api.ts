@@ -979,6 +979,34 @@ export type ChangeItem = {
   pr_url?: string | null;          // PR opened by the autonomous agent
 };
 
+
+// ── Competitor intelligence ──
+export type Competitor = {
+  id: string; platform: string; handle: string; name: string;
+  followers: number; bio: string; profile_url: string; avatar_url: string;
+  status: string; rank_score: number; why: string; discovered_via: string;
+  median_engagement_rate?: number; posts_per_week?: number;
+  measured_posts?: number;
+};
+export type CompetitorPost = {
+  id: string; url: string; caption: string; media_type: string;
+  stored_media_url: string; thumbnail_url: string;
+  likes: number; comments: number; views: number; engagement_rate: number;
+  posted_at: string | null; duration: number;
+  replicate_status: string; replicate_note: string;
+  handle: string; platform: string; followers: number;
+  format: string | null; hook: string | null; hook_pattern: string | null;
+  topic: string | null; cta: string | null; eye_score: number | null;
+  why_it_works: string | null; transferable_pattern: string | null;
+  classification: Record<string, unknown> | null;
+};
+export type NicheState = {
+  niche: string; terms: string[]; confirmed: boolean; confirmed_at: string;
+  proposed: string;
+  proposal?: { niche: string; terms: string[]; reasoning?: string;
+               confidence?: number; error?: string } | null;
+};
+
 export const api = {
   health: () => jget<{ status: string }>("/health"),
   getAutopilotConfig: () => jget<AutopilotConfig>("/autopilot/config"),
@@ -1867,6 +1895,50 @@ export const api = {
       handle,
       enabled,
     }),
+  // ── Competitors ──
+  getNiche: () => jget<NicheState>("/intake/niche"),
+  confirmNiche: (niche: string, terms: string[]) =>
+    jpost<NicheState>("/intake/niche/confirm", { niche, terms }),
+  listCompetitors: (status = "") =>
+    jget<{ competitors: Competitor[]; count: number }>(
+      `/competitors/list${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+  topCompetitors: (limit = 10) =>
+    jget<{ competitors: Competitor[]; basis: string }>(
+      `/competitors/top?limit=${limit}`),
+  discoverCompetitors: (niche = "", limit = 12) =>
+    jpost<{ job_id: string; status: string }>("/competitors/discover",
+      { ...(niche ? { niche } : {}), limit }),
+  discoverJob: (id: string) =>
+    jget<Record<string, unknown>>(`/competitors/discover/${id}`),
+  setCompetitorStatus: (id: string, status: string) =>
+    jpost<Competitor>(`/competitors/${id}/status`, { status }),
+  syncCompetitors: (competitor_id = "") =>
+    jpost<{ job_id: string }>("/competitors/sync",
+      competitor_id ? { competitor_id } : {}),
+  syncJob: (id: string) => jget<Record<string, unknown>>(`/competitors/sync/${id}`),
+  fetchCompetitorMedia: (competitor_id = "") =>
+    jpost<{ job_id: string }>("/competitors/media/fetch",
+      competitor_id ? { competitor_id } : {}),
+  mediaJob: (id: string) => jget<Record<string, unknown>>(`/competitors/media/${id}`),
+  analyzeCompetitors: (competitor_id = "") =>
+    jpost<{ job_id: string }>("/competitors/analyze",
+      competitor_id ? { competitor_id } : {}),
+  analyzeJob: (id: string) => jget<Record<string, unknown>>(`/competitors/analyze/${id}`),
+  competitorGallery: (opts: { competitor_id?: string; replicate?: string;
+                              sort?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.competitor_id) q.set("competitor_id", opts.competitor_id);
+    if (opts.replicate) q.set("replicate", opts.replicate);
+    if (opts.sort) q.set("sort", opts.sort);
+    q.set("limit", String(opts.limit ?? 60));
+    return jget<{ posts: CompetitorPost[]; count: number;
+                  counts: Record<string, number> }>(
+      `/competitors/gallery?${q.toString()}`);
+  },
+  setReplicate: (post_id: string, status: string, note = "") =>
+    jpost<{ id: string; replicate_status: string }>(
+      "/competitors/posts/replicate", { post_id, status, note }),
+
   getProfile: () =>
     jget<{ name: string; email: string; brand: string }>("/api/profile"),
   setProfile: (p: { name: string; email: string; brand: string }) =>
