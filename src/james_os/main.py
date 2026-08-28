@@ -330,7 +330,7 @@ _SERVICE_ALLOWED = (
     "/higgsfield", "/templates", "/speakers", "/brand-profile", "/brand-kit",
     "/intake", "/post", "/video", "/long-form", "/autopilot", "/compositions",
     "/events", "/strategy", "/generate", "/generate-multi", "/generate-script",
-    "/images",
+    "/images", "/competitors",
 )
 
 
@@ -436,6 +436,7 @@ from .xpoz_api import router as xpoz_router
 from .pri_plug_api import router as pri_plug_router
 from .press_api import router as press_router
 from .academy_api import router as academy_router
+from .competitors_api import router as competitors_router
 from .api_v1 import router as v1_router
 app.include_router(autopilot_bulk_router)
 app.include_router(analytics_live_router)
@@ -445,6 +446,9 @@ app.include_router(templates_router)
 app.include_router(feedback_changes_router)
 app.include_router(brand_kit_router)
 app.include_router(xpoz_router)
+# Competitor intelligence — niche → competitors → their posts →
+# visual analysis → strategy. See competitors.py / competitor_sync.py.
+app.include_router(competitors_router)
 # PRI plug — pull PreReal Intelligence (per silo) into this brand's memory.
 app.include_router(pri_plug_router)
 # Press monitoring — scan mentions, file to memory, grounded digest.

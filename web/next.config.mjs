@@ -35,6 +35,9 @@ const nextConfig = {
       { source: "/autopilot", destination: `${BACKEND}/autopilot` },
       { source: "/autopilot/:path*", destination: `${BACKEND}/autopilot/:path*` },
       { source: "/trends", destination: `${BACKEND}/trends` },
+      // NOTE: no bare "/competitors" rewrite — that path is the
+      // dashboard page. Only its subpaths proxy to the backend.
+      { source: "/competitors/:path*", destination: `${BACKEND}/competitors/:path*` },
       { source: "/trends/:path*", destination: `${BACKEND}/trends/:path*` },
       { source: "/media", destination: `${BACKEND}/media` },
       { source: "/media/:path*", destination: `${BACKEND}/media/:path*` },
