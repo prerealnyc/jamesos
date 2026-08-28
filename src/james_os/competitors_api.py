@@ -13,6 +13,9 @@
     POST /competitors/analyze             run the visual eyes  (background)
     GET  /competitors/analyze/{job_id}    poll the analysis job
     GET  /competitors/analyses            what the eyes saw, per post
+    POST /competitors/profiles/build      roll posts+analyses into profiles
+    GET  /competitors/profiles            per-competitor: cadence, formats,
+                                          topics, hooks, design, strategy
     POST /competitors/{id}/status         candidate | tracked | rejected
 
 Two hard-won rules from this codebase are load-bearing here:
@@ -39,7 +42,12 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from . import competitor_sync, competitor_vision, competitors
+from . import (
+    competitor_profile,
+    competitor_sync,
+    competitor_vision,
+    competitors,
+)
 
 router = APIRouter()
 
@@ -49,6 +57,7 @@ router = APIRouter()
 _DISCOVER_JOBS: dict[str, dict] = {}
 _SYNC_JOBS: dict[str, dict] = {}
 _ANALYZE_JOBS: dict[str, dict] = {}
+_PROFILE_JOBS: dict[str, dict] = {}
 _MAX_JOBS = 30
 
 
@@ -288,6 +297,59 @@ async def competitors_analyses(
         competitor_id=competitor_id, limit=limit)
     stats = await competitor_vision.analysis_stats()
     return {"analyses": rows, "count": len(rows), "stats": stats}
+
+
+# ── profiles: the rollup ──────────────────────────────────────────────
+
+class ProfileRequest(BaseModel):
+    competitor_id: str = ""
+    synthesise: bool = True
+
+
+@router.post("/competitors/profiles/build", status_code=202)
+async def competitors_profiles_build(
+    req: ProfileRequest, background: BackgroundTasks
+) -> dict:
+    """Roll the shelf into one profile per competitor: cadence, format mix,
+    topic clusters, hook performance, posting windows, follower growth,
+    design signature, and the growth strategy those facts add up to.
+
+    Every number is computed from stored rows; only the narrative is written
+    by a model, and it is handed the numbers rather than asked for them."""
+    tid = _tenant()
+    job_id = str(uuid4())
+    _PROFILE_JOBS[job_id] = {"status": "running"}
+    _prune(_PROFILE_JOBS)
+    cid, synth = req.competitor_id.strip(), req.synthesise
+
+    async def _run() -> None:
+        try:
+            if cid:
+                res = await competitor_profile.build_profile(
+                    cid, synthesise=synth, tenant_id=tid)
+            else:
+                res = await competitor_profile.build_all_profiles(
+                    synthesise=synth, tenant_id=tid)
+            _PROFILE_JOBS[job_id] = {"status": "done", **res}
+        except Exception as e:  # noqa: BLE001
+            _PROFILE_JOBS[job_id] = {"status": "failed", "error": str(e)[:300]}
+
+    background.add_task(_run)
+    return {"job_id": job_id, "status": "running"}
+
+
+@router.get("/competitors/profiles/{job_id}")
+async def competitors_profiles_job(job_id: str) -> dict:
+    job = _PROFILE_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "profile job not found (expired or unknown)")
+    return {"job_id": job_id, **job}
+
+
+@router.get("/competitors/profiles")
+async def competitors_profiles() -> dict:
+    rows = await competitor_profile.list_profiles()
+    return {"profiles": rows, "count": len(rows)}
 
 
 # ── status (declared last: /{competitor_id} would swallow the routes above) ──
