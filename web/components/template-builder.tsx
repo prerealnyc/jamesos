@@ -89,6 +89,10 @@ export function TemplateBuilder({
   // A split layout IMPLIES its renderer — the backend enforces it, so reflect
   // that here rather than letting the author pick a mode that will be ignored.
   const layoutSetsMode = spec.layout.startsWith("split_");
+  // Cards are placed from the transcript, so they only mean anything in a mode
+  // where somebody is speaking on camera.
+  const effectiveMode = layoutSetsMode ? spec.layout : (spec.production_mode || "");
+  const cardsPossible = caps.cards_supported_in.includes(effectiveMode);
   const beatsMatter = useMemo(
     () => caps.beats_drive_render_in.includes(spec.production_mode || ""),
     [caps.beats_drive_render_in, spec.production_mode],
@@ -310,6 +314,67 @@ export function TemplateBuilder({
           onChange={(e) => set("hook", e.target.value)}
           placeholder="e.g. Lead with the claim, not the greeting — the first line is the whole hook."
         />
+      </div>
+
+      {/* ── designed cards ── */}
+      <div className="rounded-md border border-border bg-secondary/30 px-3 py-3">
+        <label className="flex items-center gap-2 text-[13px] font-semibold">
+          <input
+            type="checkbox"
+            checked={!!spec.cards?.enabled}
+            disabled={!cardsPossible}
+            onChange={(e) =>
+              set("cards", { enabled: e.target.checked, styles: spec.cards?.styles || [] })
+            }
+          />
+          Cut away to designed cards
+        </label>
+        <p className="text-[11px] text-muted-foreground mt-1">
+          {cardsPossible ? (
+            <>
+              The reel is transcribed, and the moments worth a graphic — a
+              number, a named thing, a hard claim — become full-frame cards that
+              animate in. Each card shows the speaker&apos;s <b>own words</b>,
+              never invented copy.
+            </>
+          ) : (
+            <>
+              Cards are placed from what is spoken, so they need a mode with
+              somebody on camera — not available in{" "}
+              <b>{effectiveMode || "this mode"}</b>.
+            </>
+          )}
+        </p>
+        {cardsPossible && spec.cards?.enabled && (
+          <div className="mt-2">
+            <Label>Card styles to allow (none ticked = all)</Label>
+            <div className="flex flex-wrap gap-2 mt-1">
+              {caps.card_styles.map((st) => {
+                const on = (spec.cards?.styles || []).includes(st);
+                return (
+                  <button
+                    key={st}
+                    onClick={() =>
+                      set("cards", {
+                        enabled: true,
+                        styles: on
+                          ? (spec.cards?.styles || []).filter((x) => x !== st)
+                          : [...(spec.cards?.styles || []), st],
+                      })
+                    }
+                    className={`text-[11px] rounded px-2 py-1 border ${
+                      on
+                        ? "border-primary/50 bg-primary/10 text-primary"
+                        : "border-border bg-background text-muted-foreground"
+                    }`}
+                  >
+                    {st}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── beats ── */}

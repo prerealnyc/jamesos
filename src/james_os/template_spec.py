@@ -80,8 +80,10 @@ ENERGIES: list[str] = ["high", "medium", "low"]
 
 # Cards are placed from the transcript, so they only mean anything where
 # somebody is speaking on camera.
-_CARD_MODES = {"engaging_avatar", "avatar_only", "long_form_reel",
-               "avatar_story_mix", "split_horizontal", "split_vertical"}
+# Only the modes whose renderer actually DRAWS cards. The split compositions
+# have no card layer yet, so offering them here would let a template promise
+# something the render silently drops.
+_CARD_MODES = {"engaging_avatar", "long_form_reel"}
 
 # `_clamp_structure` floors/ceils an authored beat to this range at render
 # time; enforce it up front so the builder can't save a beat the renderer

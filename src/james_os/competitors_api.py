@@ -511,6 +511,15 @@ async def competitors_gap() -> dict:
     by a model, and it is handed those figures. Returns
     `insufficient_evidence` rather than a confident answer when either side
     is too thin to support one."""
+    stored = await competitor_gap.latest_gap()
+    if stored:
+        return stored
+    return await competitor_gap.content_gap()
+
+
+@router.post("/competitors/gap/recompute")
+async def competitors_gap_recompute() -> dict:
+    """Measure the gap again now, and keep the result."""
     return await competitor_gap.content_gap()
 
 

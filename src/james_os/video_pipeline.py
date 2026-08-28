@@ -613,6 +613,47 @@ async def render_one_scene(
     return await _render_scene_inplace(s, aspect, james_uris, [])
 
 
+async def _cards_and_bed(row, assets, pid, tenant_id):
+    """The production's designed cards + its pinned music bed, both read off
+    the style template.
+
+    Cards stay OFF unless the template turns them on, so every production that
+    predates this renders exactly as it did. Both are ADDITIVE: a director
+    outage or a missing track costs the cards or the pinned bed, never the
+    render — the reel falls back to plain captions and the mood-picked track.
+    """
+    card_els: list[dict] = []
+    pinned_track = ""
+    try:
+        tpl_id = row["template_id"]
+    except (KeyError, TypeError):
+        tpl_id = None
+    if not tpl_id:
+        return card_els, pinned_track
+    try:
+        from .template_apply import map_template_to_render
+        from .templates import get_template
+        tpl = await get_template(tpl_id, tenant_id)
+        m = map_template_to_render((tpl or {}).get("template") or {})
+        if m.get("music_track_id"):
+            from .audio_library import resolve_music_url_by_id
+            pinned_track = await resolve_music_url_by_id(m["music_track_id"])
+        if (m.get("cards") or {}).get("enabled"):
+            from .brand_kit import get_brand_kit
+            from .reel_cards import cards_to_elements
+            from .reel_director import plan_cards, words_from_captions
+            cards = await plan_cards(
+                words_from_captions(assets.captions),
+                duration=assets.audio_duration,
+                styles=(m["cards"].get("styles") or None),
+            )
+            card_els = cards_to_elements(cards, await get_brand_kit())
+            print(f"[cards] production {pid}: {len(cards)} card(s) placed")
+    except Exception as e:  # noqa: BLE001 — additive, never fatal
+        print(f"[cards] production {pid}: skipped ({type(e).__name__}: {e})")
+    return card_els, pinned_track
+
+
 async def _run_avatar_only(row, tenant_id: UUID | None) -> None:
     """Avatar-only mode: one HeyGen render of the full script — same voice
     end-to-end, no per-scene assembly, no Creatomate. Lands in queue."""
@@ -1067,6 +1108,12 @@ async def _run_engaging_avatar(
             pid, f"assembly provider does not support {composition} mode",
             tenant_id,
         )
+    _cards, _bed = await _cards_and_bed(row, assets, pid, tenant_id)
+    _extra = {}
+    if render_method == "render_engaging_avatar":
+        # Only the full-frame builder draws cards today; the split compositions
+        # have no card layer yet, so don't pretend otherwise.
+        _extra["card_elements"] = _cards
     res = await getattr(asm, render_method)(
         avatar_video_url=assets.avatar_video_url,
         audio_duration=assets.audio_duration,
@@ -1075,6 +1122,8 @@ async def _run_engaging_avatar(
         aspect=row["aspect"],
         music_mood=(row["music_mood"] or "calm"),
         caption_style=cstyle,
+        music_track_url=_bed,
+        **_extra,
     )
     if res.status == "processing":
         for _ in range(_MAX_POLLS):
@@ -1417,39 +1466,7 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
     _hook_src = " ".join((c.get("text") or "") for c in (assets.captions or [])).strip()
     short_hook = await gen_video_hook(_hook_src or meta.get("hook_quote", ""), tenant_id)
 
-    # ── designed cutaway cards + a pinned music bed ──
-    # Both come from the production's style template. Cards stay OFF unless the
-    # template turns them on, so every existing production renders exactly as
-    # it did before this path existed. A director outage costs the cards, never
-    # the render — the reel falls back to plain captions.
-    card_els: list[dict] = []
-    pinned_track = ""
-    try:
-        _tpl_id = row["template_id"]
-    except (KeyError, TypeError):
-        _tpl_id = None
-    if _tpl_id:
-        try:
-            from .template_apply import map_template_to_render
-            from .templates import get_template
-            _tpl = await get_template(_tpl_id, tenant_id)
-            _m = map_template_to_render((_tpl or {}).get("template") or {})
-            if _m.get("music_track_id"):
-                from .audio_library import resolve_music_url_by_id
-                pinned_track = await resolve_music_url_by_id(_m["music_track_id"])
-            if (_m.get("cards") or {}).get("enabled"):
-                from .brand_kit import get_brand_kit
-                from .reel_cards import cards_to_elements
-                from .reel_director import plan_cards, words_from_captions
-                _words = words_from_captions(assets.captions)
-                _cards = await plan_cards(
-                    _words, duration=assets.audio_duration,
-                    styles=(_m["cards"].get("styles") or None),
-                )
-                card_els = cards_to_elements(_cards, await get_brand_kit())
-                print(f"[cards] production {pid}: {len(_cards)} card(s) placed")
-        except Exception as e:  # noqa: BLE001 — cards are additive, never fatal
-            print(f"[cards] production {pid}: skipped ({type(e).__name__}: {e})")
+    card_els, pinned_track = await _cards_and_bed(row, assets, pid, tenant_id)
 
     asm = get_assembly_provider()
     if not hasattr(asm, "render_engaging_avatar"):

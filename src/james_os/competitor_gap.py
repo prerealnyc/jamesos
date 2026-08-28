@@ -221,12 +221,62 @@ async def content_gap(tenant_id: UUID | None = None) -> dict:
                 read = {"summary": "", "gaps": [],
                         "not_enough_evidence": [f"synthesis failed: {type(e).__name__}"]}
 
-    return {"facts": facts, "read": read, "insufficient_evidence": thin}
+    result = {"facts": facts, "read": read, "insufficient_evidence": thin}
+
+    # Keep it. Recomputing on every read cost an LLM pass and, worse, made the
+    # gap unanswerable over time — you could not see whether a gap you acted on
+    # had closed. Append-only, so the series records how the brand's shape
+    # changed against its peers.
+    async with acquire(tenant_id) as conn:
+        await conn.execute(
+            """INSERT INTO competitor_gaps (
+                   facts, read, insufficient, peer_posts_analysed,
+                   our_posts_90d, gap_count)
+               VALUES ($1::jsonb, $2::jsonb, $3::jsonb, $4, $5, $6)""",
+            json.dumps(facts, default=str), json.dumps(read, default=str),
+            json.dumps(thin), theirs["posts_analysed"], ours["posts_90d"],
+            len(facts["measured_format_shortfall"]))
+    return result
 
 
-async def gap_block(tenant_id: UUID | None = None) -> str:
-    """Compact <content_gap> text for the strategiser's prompt."""
-    g = await content_gap(tenant_id)
+async def latest_gap(tenant_id: UUID | None = None) -> dict | None:
+    """The most recent stored gap — a cheap read, no model involved."""
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM competitor_gaps ORDER BY computed_at DESC LIMIT 1")
+    if not row:
+        return None
+    d = dict(row)
+    for k in ("id", "tenant_id"):
+        d[k] = str(d[k])
+    d["computed_at"] = d["computed_at"].isoformat()
+    for k in ("facts", "read", "insufficient"):
+        if isinstance(d.get(k), str):
+            d[k] = json.loads(d[k])
+    # Same shape as content_gap() so callers do not branch on where it came from.
+    d["insufficient_evidence"] = d.pop("insufficient")
+    return d
+
+
+async def gap_block(tenant_id: UUID | None = None, max_age_hours: int = 168) -> str:
+    """Compact <content_gap> text for the strategiser's prompt.
+
+    Prefers the stored gap: composing a plan should not trigger a fresh LLM
+    pass over the whole shelf, and a gap measured this week is the right input
+    for this week's plan. Recomputes only when there is nothing stored or the
+    stored one has gone stale.
+    """
+    from datetime import UTC, datetime, timedelta
+    g = await latest_gap(tenant_id)
+    if g:
+        try:
+            age = datetime.now(UTC) - datetime.fromisoformat(g["computed_at"])
+            if age > timedelta(hours=max_age_hours):
+                g = None
+        except (ValueError, TypeError):
+            g = None
+    if not g:
+        g = await content_gap(tenant_id)
     if g["insufficient_evidence"]:
         return ("(not enough evidence for a content gap: "
                 + "; ".join(g["insufficient_evidence"]) + ")")
@@ -243,4 +293,5 @@ async def gap_block(tenant_id: UUID | None = None) -> str:
     return "\n".join(lines) or "(no material gap measured)"
 
 
-__all__ = ["peer_content_profile", "own_content_profile", "content_gap", "gap_block"]
+__all__ = ["peer_content_profile", "own_content_profile", "content_gap",
+           "latest_gap", "gap_block"]
