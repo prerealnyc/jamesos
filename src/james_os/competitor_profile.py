@@ -44,6 +44,8 @@ and how it connects with the people it is talking to.
 Hard rules:
   * Every number you state must be one you were GIVEN. Never compute,
     estimate, round differently, or invent a figure.
+  * Any key ending in `_pct` is ALREADY a percentage. Write it with a %
+    sign and do not rescale it.
   * Cite the fact behind each claim in `evidence` as a short string, e.g.
     "reels are 62% of output and carry a 2.1% median rate vs 0.4% for photos".
   * Where the data does not support a conclusion, say so plainly. "Not
@@ -66,6 +68,27 @@ def _rate_stats(rates: list[float]) -> dict:
     return {"n": len(clean),
             "median": round(float(statistics.median(clean)), 6),
             "mean": round(float(sum(clean) / len(clean)), 6)}
+
+
+
+def _as_percentages(obj):
+    """Rewrite every engagement-rate field as a percentage, with the unit in
+    the key name. Stored data stays fractional (correct for arithmetic); only
+    the model's view is converted, because a bare 0.0104 in a prompt comes
+    back out as "0.0104%" or "1.04" depending on the model's mood."""
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if isinstance(v, (int, float)) and k in (
+                    "engagement_rate", "median_engagement_rate",
+                    "avg_engagement_rate", "median", "mean"):
+                out[f"{k}_pct"] = round(float(v) * 100, 3)
+            else:
+                out[k] = _as_percentages(v)
+        return out
+    if isinstance(obj, list):
+        return [_as_percentages(x) for x in obj]
+    return obj
 
 
 async def _load(competitor_id: str, tenant_id: UUID | None) -> tuple[dict, list[dict]]:
@@ -152,7 +175,11 @@ def _grouped(posts: list[dict], key: str, cap: int = 12) -> list[dict]:
     """Group by an analysis field and report share + engagement per group."""
     groups: dict[str, list[dict]] = defaultdict(list)
     for p in posts:
-        v = (p.get(key) or "").strip().lower()
+        # Normalise before grouping: the classifier returns both
+        # "photo with overlay" and "photo_with_overlay" for the same thing,
+        # and ungrouped they split one format into two smaller ones.
+        v = (p.get(key) or "").strip().lower().replace("_", " ")
+        v = " ".join(v.split())
         if v and v not in ("none", "n/a"):
             groups[v].append(p)
     total = sum(len(v) for v in groups.values())
@@ -244,7 +271,8 @@ async def build_profile(
                 out = await llm.complete_json(
                     system=_SYNTH_SYSTEM,
                     messages=[{"role": "user",
-                               "content": json.dumps(facts, default=str)[:14000]}],
+                               "content": json.dumps(_as_percentages(facts),
+                                                     default=str)[:14000]}],
                     max_tokens=1200, temperature=0.1)
                 strategy = str(out.get("strategy") or "")[:4000]
                 evidence = [str(e)[:300] for e in (out.get("evidence") or [])][:12]

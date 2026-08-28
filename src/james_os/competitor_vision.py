@@ -117,7 +117,10 @@ async def _image_ref(post: dict) -> tuple[str, object | None, str]:
             return "", None, "image over size cap"
         return "bytes", data, ""
 
-    # No durable copy — fall back to the source, which may well be dead.
+    # No durable copy — fall back to the source. Often dead: Instagram signs
+    # its CDN URLs to the requesting session and answers 403 to anyone else,
+    # browser headers or not.
+    last_err = ""
     for key in ("media_url", "thumbnail_url"):
         url = (post.get(key) or "").strip()
         if not url.startswith("http"):
@@ -126,15 +129,24 @@ async def _image_ref(post: dict) -> tuple[str, object | None, str]:
         if not await url_is_public(url, allow_http=True):
             continue
         import httpx
+
+        from .competitor_sync import _FETCH_HEADERS
         try:
-            async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
+            async with httpx.AsyncClient(timeout=60, follow_redirects=True,
+                                         headers=_FETCH_HEADERS) as c:
                 r = await c.get(url)
-                r.raise_for_status()
-                if len(r.content) <= _MAX_IMAGE_BYTES and r.content:
-                    return "bytes", r.content, ""
-        except Exception:  # noqa: BLE001 — try the next candidate
+            if r.status_code >= 400:
+                # Report the real reason. Calling a 403 an expiry sends
+                # anyone debugging this after the wrong problem.
+                last_err = f"HTTP {r.status_code} on {key}"
+                continue
+            if r.content and len(r.content) <= _MAX_IMAGE_BYTES:
+                return "bytes", r.content, ""
+            last_err = f"empty or oversized {key}"
+        except Exception as e:  # noqa: BLE001 — try the next candidate
+            last_err = f"{type(e).__name__} on {key}"
             continue
-    return "", None, "no reachable image (source URL likely expired)"
+    return "", None, last_err or "no reachable image"
 
 
 async def _video_file(post: dict) -> tuple[str | None, str | None, str]:
@@ -201,7 +213,15 @@ async def analyze_post(
     """
     media_type = (post.get("media_type") or "").lower()
     is_video = media_type == "video"
-    kind = "video" if is_video else "image"
+    # A text post (an X post with no attachment) has nothing for a vision
+    # model to look at. Routing it at the image grader produced four
+    # "source URL likely expired" failures for @tradedny that were never
+    # about an expired URL — there was no image in the first place. It still
+    # gets the text read, which is the whole of what it has to give.
+    has_media = bool((post.get("stored_media_url") or post.get("media_url")
+                      or post.get("thumbnail_url") or "").strip())
+    is_text = media_type in ("text", "") or not has_media
+    kind = "video" if is_video else ("text" if is_text else "image")
 
     status, error = "ok", ""
     eye_score = None
@@ -212,10 +232,33 @@ async def analyze_post(
     rubric_version = model = ""
     transcript = ""
 
-    if with_vision and is_video:
+    if is_text:
+        status, error = "skipped", "text post — nothing to look at"
+    elif with_vision and is_video:
         path, tmpdir, err = await _video_file(post)
         if not path:
-            status, error = "failed", err
+            # Fall back to the cover frame. It cannot tell us pacing or the
+            # spoken hook, but the design read is still real — and for
+            # accounts whose video files we can never fetch it is the
+            # difference between some signal and none.
+            ref_kind, value, cover_err = await _image_ref(post)
+            if ref_kind:
+                from .design_eye import RUBRIC_VERSION, inspect_image
+                res = await inspect_image(value)
+                rubric_version = res.get("rubric_version") or RUBRIC_VERSION
+                if res.get("status") == "ok":
+                    axes = res.get("axes") or {}
+                    eye_score = res.get("eye_score")
+                    design_dna = res.get("design_dna") or {}
+                    why_it_works = res.get("why_it_works") or ""
+                    transferable = res.get("transferable_pattern") or ""
+                    model = "design_eye/gpt-4o (cover frame only)"
+                    error = f"video unavailable ({err}) — graded the cover frame"
+                else:
+                    status = res.get("status") or "failed"
+                    error = f"{err}; cover also failed: {res.get('error') or ''}"[:200]
+            else:
+                status, error = "failed", f"{err}; cover: {cover_err}"
         else:
             try:
                 from .perception import analyze_file
@@ -253,7 +296,7 @@ async def analyze_post(
                 status = res.get("status") or "failed"
                 error = str(res.get("error") or "")[:200]
 
-    if not with_vision:
+    if not with_vision and not is_text:
         status = "skipped"
 
     # Hand the vision result to the text pass so `format` names the real
@@ -316,11 +359,14 @@ async def analyze_competitor(
             f"""SELECT p.* FROM competitor_posts p
                   LEFT JOIN competitor_post_analysis a ON a.post_id = p.id
                  WHERE p.competitor_id = $1::uuid {where_new}
-              ORDER BY p.engagement_rate DESC NULLS LAST, p.likes DESC
+              ORDER BY (p.stored_media_url <> '') DESC,
+                       p.engagement_rate DESC NULLS LAST, p.likes DESC
                  LIMIT $2""",
             competitor_id, max(1, post_cap) * 3)
         posts = [dict(r) for r in rows]
 
+    # Text posts cost only the cheap read, so they never consume the video
+    # budget and never compete with stills for the vision spend.
     picked, videos = [], 0
     for p in posts:
         if len(picked) >= post_cap:
@@ -337,11 +383,12 @@ async def analyze_competitor(
         results.append(await analyze_post(p, tenant_id=tenant_id))
 
     ok = sum(1 for r in results if r["status"] == "ok")
+    skipped = sum(1 for r in results if r["status"] == "skipped")
     return {
         "competitor_id": competitor_id,
-        "analyzed": len(results), "ok": ok,
+        "analyzed": len(results), "ok": ok, "skipped": skipped,
         "failed": [{"post": str(r["post_id"]), "reason": r["error"]}
-                   for r in results if r["status"] != "ok"][:10],
+                   for r in results if r["status"] not in ("ok", "skipped")][:10],
         "candidates_available": len(posts),
     }
 
@@ -373,6 +420,7 @@ async def analyze_all(
     return {
         "analyzed": sum(r.get("analyzed", 0) for r in results),
         "ok": sum(r.get("ok", 0) for r in results),
+        "skipped": sum(r.get("skipped", 0) for r in results),
         "results": results,
     }
 

@@ -67,6 +67,15 @@ _POST_URL = {
 _MAX_VIDEO_BYTES = 80 * 1024 * 1024
 _MAX_IMAGE_BYTES = 12 * 1024 * 1024
 _FETCH_TIMEOUT = httpx.Timeout(90.0, connect=10.0)
+# Instagram's CDN 403s a bare HTTP client. Without these headers only about
+# half of the media downloads succeeded, and a post whose media we failed to
+# save can never be analysed later — its source URL expires within hours.
+_FETCH_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/124.0 Safari/537.36"),
+    "Accept": "image/avif,image/webp,image/apng,video/*,*/*;q=0.8",
+}
 
 
 def _first_url(v: Any) -> str:
@@ -212,7 +221,8 @@ async def _store_media(url: str, tenant: str, kind: str, label: str) -> tuple[st
         return "", "no media url"
     cap = _MAX_VIDEO_BYTES if kind == "video" else _MAX_IMAGE_BYTES
     try:
-        async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT) as c:
+        async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT,
+                                     headers=_FETCH_HEADERS) as c:
             r = await c.get(url, follow_redirects=True)
             r.raise_for_status()
             data = r.content
