@@ -198,6 +198,54 @@ async def snapshot_peers(tenant_id: UUID | None = None, cap: int = 5) -> int:
 
 
 async def _latest_peer_block(tenant_id: UUID | None) -> str:
+    """What the peer group actually does — the standing reference for the brand.
+
+    Prefers competitor_profiles: those are rolled up from real posts we hold
+    and analysed, so cadence, format mix, hook performance and engagement are
+    MEASURED. peer_snapshots is a web-research summary that has never read one
+    of their posts, and it stays only as the fallback for a brand whose
+    competitor shelf is not built yet.
+    """
+    async with acquire(tenant_id) as conn:
+        profiles = await conn.fetch(
+            """SELECT c.handle, c.platform, c.followers,
+                      c.median_engagement_rate, pr.cadence_per_week,
+                      pr.posts_analyzed, pr.format_mix, pr.hook_patterns,
+                      pr.topic_clusters, pr.growth_strategy
+                 FROM competitor_profiles pr
+                 JOIN competitors c ON c.id = pr.competitor_id
+                WHERE c.status = 'tracked'
+             ORDER BY c.rank_score DESC NULLS LAST LIMIT 8""")
+
+    if profiles:
+        parts = []
+        for r in profiles:
+            fm = r["format_mix"]
+            if isinstance(fm, str):
+                fm = json.loads(fm or "{}")
+            hp = r["hook_patterns"]
+            if isinstance(hp, str):
+                hp = json.loads(hp or "[]")
+            fmt = ", ".join(
+                f"{f['value']} {round(f['share'] * 100)}%"
+                for f in (fm.get("format") or [])[:4]) or "—"
+            hooks = ", ".join(
+                f"{h['value']} ({round(h['median_engagement_rate'] * 100, 2)}%)"
+                for h in (hp or [])[:3]) or "—"
+            parts.append(
+                f"### @{r['handle']} [{r['platform']}] "
+                f"{int(r['followers'] or 0):,} followers "
+                f"— MEASURED from {r['posts_analyzed']} analysed posts\n"
+                f"- median engagement: "
+                f"{round((r['median_engagement_rate'] or 0) * 100, 2)}%\n"
+                f"- posts/week: {r['cadence_per_week']}\n"
+                f"- formats: {fmt}\n"
+                f"- hooks (median engagement): {hooks}\n"
+                + (f"- strategy: {str(r['growth_strategy'])[:500]}\n"
+                   if r["growth_strategy"] else ""))
+        return "\n".join(parts)
+
+    # No shelf yet — fall back to the research summaries.
     async with acquire(tenant_id) as conn:
         rows = await conn.fetch(
             """SELECT DISTINCT ON (peer) peer, stats, captured_at
@@ -207,7 +255,8 @@ async def _latest_peer_block(tenant_id: UUID | None) -> str:
         st = r["stats"]
         if isinstance(st, str):
             st = json.loads(st)
-        parts.append(f"### {r['peer']}\n{st.get('summary', '')[:800]}")
+        parts.append(f"### {r['peer']} (web research, not measured)\n"
+                     f"{st.get('summary', '')[:800]}")
     return "\n\n".join(parts)
 
 

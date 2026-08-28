@@ -181,7 +181,17 @@ def map_template_to_render(template: dict) -> dict:
             "burned captions and B-roll cutaways without a separate logo layer"
         )
 
+    # Cards + a pinned track ride through to the pipeline. Cards stay off
+    # unless the template says otherwise, so every existing template renders
+    # exactly as it did before.
+    _cards = template.get("cards") or {}
+    _music = (template.get("audio") or {}).get("music") or {}
     return {
+        "cards": {
+            "enabled": bool(_cards.get("enabled")),
+            "styles": [str(x).strip().lower() for x in (_cards.get("styles") or [])],
+        },
+        "music_track_id": str(_music.get("track_id") or "").strip(),
         "mode": mode,
         "caption_style": caption_style,
         "music_mood": music_mood,

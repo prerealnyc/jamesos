@@ -443,6 +443,8 @@ app.include_router(analytics_live_router)
 app.include_router(research_roster_router)
 app.include_router(voice_ingest_router)
 app.include_router(templates_router)
+from .reel_api import router as reel_router  # noqa: E402
+app.include_router(reel_router)
 app.include_router(feedback_changes_router)
 app.include_router(brand_kit_router)
 app.include_router(xpoz_router)

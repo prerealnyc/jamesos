@@ -71,9 +71,31 @@ async def resolve_music_url(mood: str) -> str:
     return await _pick("music", m) or _settings_music_url(m)
 
 
+async def resolve_music_url_by_id(media_id: str) -> str:
+    """The URL of ONE specific library track — how a template pins its bed.
+
+    `resolve_music_url(mood)` picks at random among everything tagged with a
+    mood, which is right for variety and wrong for "this template always uses
+    this track". Returns '' when the id is unknown, so the caller falls back to
+    the mood pick rather than rendering silent."""
+    mid = (media_id or "").strip()
+    if not mid:
+        return ""
+    try:
+        async with acquire() as conn:
+            uri = await conn.fetchval(
+                "SELECT uri FROM media_assets WHERE id = $1::uuid AND role = 'music'",
+                mid,
+            )
+    except Exception:  # noqa: BLE001 — never break a render over a lookup
+        return ""
+    return uri if (uri or "").startswith("http") else ""
+
+
 async def resolve_sfx_url(kind: str = "whoosh") -> str:
     """Library SFX of `kind`, or '' (callers skip the SFX layer on '')."""
     return await _pick("sfx", (kind or "whoosh").strip().lower())
 
 
-__all__ = ["MUSIC_MOODS", "SFX_KINDS", "resolve_music_url", "resolve_sfx_url"]
+__all__ = ["MUSIC_MOODS", "SFX_KINDS", "resolve_music_url",
+           "resolve_music_url_by_id", "resolve_sfx_url"]

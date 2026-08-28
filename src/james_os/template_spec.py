@@ -28,6 +28,7 @@ Two rules govern the design:
 """
 
 from .caption_styles import CAPTION_PRESETS, list_presets
+from .reel_cards import CARD_STYLES
 from .compositions import SUPPORTED_LAYOUTS
 from .template_apply import _ALLOWED_MODES, _LOGO_POS, _MUSIC_MOODS
 
@@ -77,6 +78,11 @@ FORMAT_TYPES: list[str] = [
 BEAT_ROLES: list[str] = ["talking_head", "b_roll", "text_card", "demo", "overlay"]
 ENERGIES: list[str] = ["high", "medium", "low"]
 
+# Cards are placed from the transcript, so they only mean anything where
+# somebody is speaking on camera.
+_CARD_MODES = {"engaging_avatar", "avatar_only", "long_form_reel",
+               "avatar_story_mix", "split_horizontal", "split_vertical"}
+
 # `_clamp_structure` floors/ceils an authored beat to this range at render
 # time; enforce it up front so the builder can't save a beat the renderer
 # would silently rewrite.
@@ -115,6 +121,11 @@ def capabilities() -> dict:
         # Said plainly because it decides whether authoring beats is worth the
         # author's time: only 'mixed' turns beats into actual scenes.
         "beats_drive_render_in": ["mixed"],
+        # Designed cutaway cards, placed automatically from what is spoken
+        # (reel_director). Available on the talking-head modes, where there is
+        # speech to read; a montage has nothing to place cards against.
+        "card_styles": list(CARD_STYLES),
+        "cards_supported_in": sorted(_CARD_MODES),
     }
 
 
@@ -217,6 +228,23 @@ def validate_spec(spec: dict) -> list[str]:
     energy = _clean_str(spec.get("energy"), 20).lower()
     if energy and energy not in ENERGIES:
         errors.append(f"energy {energy!r} isn't one of: {', '.join(ENERGIES)}")
+
+    cards = spec.get("cards")
+    if cards is not None:
+        if not isinstance(cards, dict):
+            errors.append("cards must be an object")
+        else:
+            for st in cards.get("styles") or []:
+                if str(st).strip().lower() not in CARD_STYLES:
+                    errors.append(
+                        f"card style {st!r} isn't one of: {', '.join(CARD_STYLES)}")
+            if cards.get("enabled"):
+                # Layout drives the mode, so resolve it the same way build_template does.
+                eff = _LAYOUT_MODE.get(layout) or mode or "engaging_avatar"
+                if eff not in _CARD_MODES:
+                    errors.append(
+                        f"cards need somebody speaking on camera — they aren't "
+                        f"placed in {eff!r} mode")
 
     return errors
 
@@ -360,11 +388,26 @@ def build_template(spec: dict) -> dict:
             # template writes the real preset key straight into it.
             "preset_guess": caption or "none",
         },
+        # Designed cutaway cards, placed from the transcript at render time.
+        # Gated on the mode: cards are pinned to spoken words, so a template
+        # with no speaker can't carry them however it was authored.
+        "cards": {
+            "enabled": bool((spec.get("cards") or {}).get("enabled")) and mode in _CARD_MODES,
+            "styles": [
+                str(x).strip().lower()
+                for x in ((spec.get("cards") or {}).get("styles") or [])
+                if str(x).strip().lower() in CARD_STYLES
+            ] or list(CARD_STYLES),
+        },
         "audio": {
             "music": {
                 "present": bool(music),
                 "type": music or "none",
                 "mood": _clean_str(spec.get("music_notes"), 200),
+                # A specific track from the brand's Audio Library. Without it
+                # the render picks any track tagged with the mood, which is
+                # why "use THIS bed every time" needed a field of its own.
+                "track_id": _clean_str(spec.get("music_track_id"), 64),
             },
             "voiceover": True,
             "sfx": "none",
@@ -436,6 +479,15 @@ def template_to_spec(template: dict) -> dict:
         "caption_preset": preset,
         "music": mtype,
         "music_notes": _clean_str(music.get("mood"), 200),
+        "music_track_id": _clean_str(music.get("track_id"), 64),
+        "cards": {
+            "enabled": bool((template.get("cards") or {}).get("enabled")),
+            "styles": [
+                str(x).strip().lower()
+                for x in ((template.get("cards") or {}).get("styles") or [])
+                if str(x).strip().lower() in CARD_STYLES
+            ],
+        },
         "logo": {
             "present": bool(logo.get("present")),
             "position": _clean_str(logo.get("position"), 40).lower(),

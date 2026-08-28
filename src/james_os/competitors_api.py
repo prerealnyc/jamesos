@@ -16,6 +16,8 @@
     GET  /competitors/analyze/{job_id}    poll the analysis job
     GET  /competitors/analyses            what the eyes saw, per post
     GET  /competitors/gap                 what they post that we don't
+    GET  /competitors/status              where the shelf stands (from DATA)
+    POST /competitors/refresh             the whole chain, one job
     POST /competitors/media/fetch         Apify → download + store the files
     POST /competitors/profiles/build      roll posts+analyses into profiles
     GET  /competitors/profiles            per-competitor: cadence, formats,
@@ -65,6 +67,7 @@ _SYNC_JOBS: dict[str, dict] = {}
 _ANALYZE_JOBS: dict[str, dict] = {}
 _PROFILE_JOBS: dict[str, dict] = {}
 _MEDIA_JOBS: dict[str, dict] = {}
+_REFRESH_JOBS: dict[str, dict] = {}
 _MAX_JOBS = 30
 
 
@@ -389,6 +392,56 @@ async def competitors_media_job(job_id: str) -> dict:
     job = _MEDIA_JOBS.get(job_id)
     if not job:
         raise HTTPException(404, "media job not found (expired or unknown)")
+    return {"job_id": job_id, **job}
+
+
+@router.get("/competitors/status")
+async def competitors_status() -> dict:
+    """Where the shelf stands, read from the data rather than from a job.
+
+    In-memory job state dies with the process and is invisible to a second
+    worker; these counts survive both, so a UI can always say what is done
+    and what is left even if it missed the job entirely."""
+    return await competitor_sync.studio_status()
+
+
+@router.post("/competitors/refresh", status_code=202)
+async def competitors_refresh(background: BackgroundTasks, limit: int = 30) -> dict:
+    """Pull → download → analyse → profile, in one job. Poll
+    GET /competitors/status for progress; it reads the database, so it stays
+    correct across restarts and workers."""
+    tid = _tenant()
+    job_id = str(uuid4())
+    _REFRESH_JOBS[job_id] = {"status": "running", "stage": "starting"}
+    _prune(_REFRESH_JOBS)
+    lim = max(1, min(limit, 60))
+
+    def _progress(p: dict) -> None:
+        job = _REFRESH_JOBS.get(job_id)
+        if job is not None:
+            job.update(p)
+
+    async def _run() -> None:
+        try:
+            res = await competitor_sync.full_refresh(
+                tenant_id=tid, limit=lim, progress=_progress)
+            _REFRESH_JOBS[job_id] = {"status": "done", **res}
+        except Exception as e:  # noqa: BLE001
+            _REFRESH_JOBS[job_id] = {"status": "failed", "error": str(e)[:300]}
+
+    background.add_task(_run)
+    return {"job_id": job_id, "status": "running"}
+
+
+@router.get("/competitors/refresh/{job_id}")
+async def competitors_refresh_job(job_id: str) -> dict:
+    job = _REFRESH_JOBS.get(job_id)
+    if not job:
+        # Not an error: the job may have finished on another worker or before a
+        # restart. The DATA is the answer, so hand back the status instead.
+        return {"job_id": job_id, "status": "unknown",
+                "note": "job state not held here — read /competitors/status",
+                **(await competitor_sync.studio_status())}
     return {"job_id": job_id, **job}
 
 

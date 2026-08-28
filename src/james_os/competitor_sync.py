@@ -662,6 +662,117 @@ async def replicate_counts(tenant_id: UUID | None = None) -> dict:
     return dict(row)
 
 
+async def studio_status(tenant_id: UUID | None = None) -> dict:
+    """Where the shelf actually stands, read from the DATA.
+
+    The background jobs keep their state in an in-memory dict, which is fine
+    for "did my click land" and useless for anything else: it dies with the
+    process, a second worker has never heard of the job, and a poll that
+    outlives the request loses the thread entirely. A ten-minute analysis
+    polled for six minutes looked like a failure while it was quietly
+    succeeding.
+
+    The database always knows. This is the number the UI should trust.
+    """
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            """SELECT
+                 (SELECT count(*) FROM competitors
+                   WHERE status = 'tracked')                        AS competitors,
+                 (SELECT count(*) FROM competitor_posts)            AS posts,
+                 (SELECT count(*) FROM competitor_posts
+                   WHERE stored_media_url <> '')                    AS with_media,
+                 (SELECT count(*) FROM competitor_post_analysis a
+                    JOIN competitor_posts p ON p.id = a.post_id)     AS analysed,
+                 (SELECT count(*) FROM competitor_post_analysis a
+                    JOIN competitor_posts p ON p.id = a.post_id
+                   WHERE a.status = 'ok')                           AS analysed_ok,
+                 (SELECT count(*) FROM competitor_posts
+                   WHERE replicate_status IN ('saved','template','idea')) AS picked,
+                 (SELECT max(last_synced_at) FROM competitor_posts) AS last_sync,
+                 (SELECT max(a.analyzed_at) FROM competitor_post_analysis a
+                    JOIN competitor_posts p ON p.id = a.post_id)     AS last_analysis
+            """)
+    d = dict(row)
+    for k in ("last_sync", "last_analysis"):
+        if d.get(k) is not None:
+            d[k] = d[k].isoformat()
+    # What is left to do, so the UI can say "12 still to analyse" rather than
+    # spinning with no idea whether anything is happening.
+    d["media_pending"] = max(0, d["posts"] - d["with_media"])
+    d["analysis_pending"] = max(0, d["with_media"] - d["analysed"])
+    return d
+
+
+async def full_refresh(
+    tenant_id: UUID | None = None, limit: int = 30, progress=None,
+) -> dict:
+    """The whole chain, in the only order that works.
+
+        pull posts → download the files → look at them → roll up profiles
+
+    Each stage depends on the one before: you cannot analyse a post whose
+    media never downloaded, and you cannot profile a competitor whose posts
+    were never pulled. Splitting these into four buttons made that ordering
+    the operator's problem and left the last two mostly unclicked — which is
+    why a shelf could sit there with media and no analysis.
+
+    `progress` is called between stages so a watcher can say WHICH stage is
+    running rather than spinning. Every stage is best-effort: one failing
+    (a capped provider, a dead actor) must not cost the stages that already
+    succeeded, so each is caught and reported rather than raised.
+    """
+    from . import competitor_media, competitor_profile, competitor_vision
+
+    def _say(stage: str, n: int) -> None:
+        if progress:
+            progress({"stage": stage, "step": n, "steps": 4})
+
+    out: dict = {"stages": {}}
+
+    _say("pulling their posts", 1)
+    try:
+        r = await sync_all(limit=limit, days=365, video_cap=10,
+                           concurrency=2, tenant_id=tenant_id)
+        out["stages"]["sync"] = {"posts": r.get("posts_stored", 0),
+                                 "media": r.get("media_stored", 0)}
+    except Exception as e:  # noqa: BLE001
+        out["stages"]["sync"] = {"error": str(e)[:200]}
+
+    _say("downloading the media", 2)
+    try:
+        r = await competitor_media.fetch_all_missing_media(
+            limit=max(limit, 30), tenant_id=tenant_id)
+        out["stages"]["media"] = {"stored": r.get("stored", 0)}
+    except Exception as e:  # noqa: BLE001
+        out["stages"]["media"] = {"error": str(e)[:200]}
+
+    _say("looking at what they post", 3)
+    try:
+        r = await competitor_vision.analyze_all(
+            post_cap=14, video_cap=5, tenant_id=tenant_id)
+        out["stages"]["vision"] = {"analysed": r.get("analyzed", 0),
+                                   "ok": r.get("ok", 0)}
+    except Exception as e:  # noqa: BLE001
+        out["stages"]["vision"] = {"error": str(e)[:200]}
+
+    _say("writing up what they do", 4)
+    try:
+        r = await competitor_profile.build_all_profiles(tenant_id=tenant_id)
+        out["stages"]["profiles"] = {"built": r.get("built", 0)}
+    except Exception as e:  # noqa: BLE001
+        out["stages"]["profiles"] = {"error": str(e)[:200]}
+
+    out["status"] = await studio_status(tenant_id)
+    return out
+
+
+async def run_competitor_refresh(tenant_id: UUID, config: dict | None = None) -> None:
+    """Scheduler entry point for the whole chain. Tenant-bound and explicit."""
+    cfg = config or {}
+    await full_refresh(tenant_id=tenant_id, limit=int(cfg.get("limit") or 30))
+
+
 async def shelf_stats(tenant_id: UUID | None = None) -> dict:
     """How much competitor material we actually hold — the honest counter
     behind 'we save everything'."""

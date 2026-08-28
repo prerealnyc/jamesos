@@ -1417,6 +1417,40 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
     _hook_src = " ".join((c.get("text") or "") for c in (assets.captions or [])).strip()
     short_hook = await gen_video_hook(_hook_src or meta.get("hook_quote", ""), tenant_id)
 
+    # ── designed cutaway cards + a pinned music bed ──
+    # Both come from the production's style template. Cards stay OFF unless the
+    # template turns them on, so every existing production renders exactly as
+    # it did before this path existed. A director outage costs the cards, never
+    # the render — the reel falls back to plain captions.
+    card_els: list[dict] = []
+    pinned_track = ""
+    try:
+        _tpl_id = row["template_id"]
+    except (KeyError, TypeError):
+        _tpl_id = None
+    if _tpl_id:
+        try:
+            from .template_apply import map_template_to_render
+            from .templates import get_template
+            _tpl = await get_template(_tpl_id, tenant_id)
+            _m = map_template_to_render((_tpl or {}).get("template") or {})
+            if _m.get("music_track_id"):
+                from .audio_library import resolve_music_url_by_id
+                pinned_track = await resolve_music_url_by_id(_m["music_track_id"])
+            if (_m.get("cards") or {}).get("enabled"):
+                from .brand_kit import get_brand_kit
+                from .reel_cards import cards_to_elements
+                from .reel_director import plan_cards, words_from_captions
+                _words = words_from_captions(assets.captions)
+                _cards = await plan_cards(
+                    _words, duration=assets.audio_duration,
+                    styles=(_m["cards"].get("styles") or None),
+                )
+                card_els = cards_to_elements(_cards, await get_brand_kit())
+                print(f"[cards] production {pid}: {len(_cards)} card(s) placed")
+        except Exception as e:  # noqa: BLE001 — cards are additive, never fatal
+            print(f"[cards] production {pid}: skipped ({type(e).__name__}: {e})")
+
     asm = get_assembly_provider()
     if not hasattr(asm, "render_engaging_avatar"):
         return await _fail(
@@ -1424,6 +1458,8 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
             tenant_id,
         )
     res = await asm.render_engaging_avatar(
+        card_elements=card_els,
+        music_track_url=pinned_track,
         avatar_video_url=assets.avatar_video_url,
         audio_duration=assets.audio_duration,
         inserts=inserts_to_dict(assets.inserts),

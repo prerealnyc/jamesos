@@ -755,6 +755,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         source_overflow_pct: float | None = None,  # media width as % of frame
         speaker_keyframes: list[dict] | None = None,  # x keyframes: follow the speaker
         speaker_tags: list[dict] | None = None,        # lower-third name-tag overlays
+        card_elements: list[dict] | None = None,       # designed cutaway cards (reel_cards)
     ) -> dict:
         """engaging_avatar layout. The avatar video carries its own
         audio across the whole timeline; B-roll images overlay on top
@@ -772,6 +773,14 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         w, h = _dims(aspect)
         elements: list[dict] = []
         total = max(audio_duration, inserts[-1]["end"] if inserts else 0.0)
+
+        # Designed cards are full-bleed cutaways carrying their OWN copy, so the
+        # normal caption flashes must not keep running underneath them — two
+        # sets of words on one frame is the bug this prevents.
+        if card_elements:
+            from .reel_cards import suppress_captions_in_windows, windows_from_elements
+            captions = suppress_captions_in_windows(
+                captions, windows_from_elements(card_elements))
 
         # track 1 — the speaker video carries its own audio. Framing, best → worst:
         #   1. speaker_keyframes → PAN the crop to follow whoever is speaking
@@ -916,6 +925,9 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             elements.extend(speaker_tags)
 
         elements += _polish_elements(brand, total, sfx_hit_url, sfx_riser_url)
+        # Cards last: their tracks (12-15) are the top of the z-order.
+        if card_elements:
+            elements.extend(card_elements)
         return {"output_format": "mp4", "width": w, "height": h, "elements": elements}
 
     def build_split_horizontal_source(
@@ -1090,6 +1102,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
 
     async def render_split_horizontal(
         self, *,
+        music_track_url: str = "",   # pinned track; "" = pick by mood from the library
         avatar_video_url: str,
         audio_duration: float,
         inserts: list[dict], captions: list[dict],
@@ -1106,7 +1119,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             inserts=inserts, captions=captions,
             aspect=aspect, music_mood=music_mood,
             caption_style=caption_style,
-            music_track_url=await resolve_music_url(music_mood),
+            music_track_url=music_track_url or await resolve_music_url(music_mood),
             sfx_url=await resolve_sfx_url("whoosh"),
             brand=await get_brand_kit(),
             sfx_hit_url=await resolve_sfx_url("hit"),
@@ -1271,6 +1284,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
 
     async def render_split_vertical(
         self, *,
+        music_track_url: str = "",   # pinned track; "" = pick by mood from the library
         avatar_video_url: str,
         audio_duration: float,
         inserts: list[dict], captions: list[dict],
@@ -1287,7 +1301,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             inserts=inserts, captions=captions,
             aspect=aspect, music_mood=music_mood,
             caption_style=caption_style,
-            music_track_url=await resolve_music_url(music_mood),
+            music_track_url=music_track_url or await resolve_music_url(music_mood),
             sfx_url=await resolve_sfx_url("whoosh"),
             brand=await get_brand_kit(),
             sfx_hit_url=await resolve_sfx_url("hit"),
@@ -1316,6 +1330,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
 
     async def render_engaging_avatar(
         self, *,
+        music_track_url: str = "",   # pinned track; "" = pick by mood from the library
         avatar_video_url: str,
         audio_duration: float,
         inserts: list[dict], captions: list[dict],
@@ -1326,6 +1341,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         source_overflow_pct: float | None = None,
         speaker_keyframes: list[dict] | None = None,
         speaker_tags: list[dict] | None = None,
+        card_elements: list[dict] | None = None,
     ) -> RenderResult:
         """Submit an engaging_avatar render. Same poll contract."""
         if not (avatar_video_url or "").startswith("http"):
@@ -1341,7 +1357,8 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             source_overflow_pct=source_overflow_pct,
             speaker_keyframes=speaker_keyframes,
             speaker_tags=speaker_tags,
-            music_track_url=await resolve_music_url(music_mood),
+            card_elements=card_elements,
+            music_track_url=music_track_url or await resolve_music_url(music_mood),
             sfx_url=await resolve_sfx_url("whoosh"),
             brand=await get_brand_kit(),
             sfx_hit_url=await resolve_sfx_url("hit"),
@@ -1370,6 +1387,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
 
     async def render_avatar_story_mix(
         self, *,
+        music_track_url: str = "",   # pinned track; "" = pick by mood from the library
         audio_url: str, audio_duration: float,
         beats: list[dict], captions: list[dict],
         aspect: str, music_mood: str = "none",
@@ -1389,7 +1407,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             beats=beats, captions=captions,
             aspect=aspect, music_mood=music_mood,
             caption_style=caption_style,
-            music_track_url=await resolve_music_url(music_mood),
+            music_track_url=music_track_url or await resolve_music_url(music_mood),
             sfx_url=await resolve_sfx_url("whoosh"),
             brand=await get_brand_kit(),
             sfx_hit_url=await resolve_sfx_url("hit"),
@@ -1418,6 +1436,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
 
     async def render_story(
         self, *,
+        music_track_url: str = "",   # pinned track; "" = pick by mood from the library
         audio_url: str, audio_duration: float,
         beats: list[dict], captions: list[dict],
         aspect: str, music_mood: str = "none",
@@ -1433,7 +1452,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             beats=beats, captions=captions,
             aspect=aspect, music_mood=music_mood,
             caption_style=caption_style,
-            music_track_url=await resolve_music_url(music_mood),
+            music_track_url=music_track_url or await resolve_music_url(music_mood),
             sfx_url=await resolve_sfx_url("whoosh"),
             brand=await get_brand_kit(),
             sfx_hit_url=await resolve_sfx_url("hit"),

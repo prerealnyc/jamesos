@@ -395,7 +395,7 @@ async def analyze_competitor(
 
 async def analyze_all(
     post_cap: int = _DEFAULT_POST_CAP, video_cap: int = _DEFAULT_VIDEO_CAP,
-    tenant_id: UUID | None = None,
+    tenant_id: UUID | None = None, progress=None,
 ) -> dict:
     """Run the eyes across every tracked competitor.
 
@@ -410,6 +410,9 @@ async def analyze_all(
                 "note": "No tracked competitors yet."}
     results = []
     for c in tracked:
+        if progress is not None:
+            progress({"stage": f"analysing @{c['handle']}",
+                      "done": len(results), "total": len(tracked)})
         try:
             results.append({**await analyze_competitor(
                 c["id"], post_cap=post_cap, video_cap=video_cap,

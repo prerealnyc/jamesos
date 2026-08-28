@@ -38,6 +38,16 @@ dev = [
   "ruff>=0.7",
   "httpx>=0.27",
 ]
+# Music-bed extraction (audio_separate.py). Demucs pulls in PyTorch, which is a
+# very large install for a feature most renders never touch — so it stays
+# OPTIONAL and every call site checks `audio_separate.available()` first. The
+# app boots and every other feature works without it.
+#   pip install -e '.[separate]'
+separate = [
+  "demucs>=4.0",
+  "torch>=2.1",
+  "torchaudio>=2.1",
+]
 
 [build-system]
 requires = ["hatchling"]

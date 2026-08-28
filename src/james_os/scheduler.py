@@ -29,7 +29,7 @@ async def _registry() -> dict:
     from .brand_research import run_daily_brand_research
     from .competitor_media import run_competitor_media
     from .competitor_profile import run_competitor_profiles
-    from .competitor_sync import run_competitor_sync
+    from .competitor_sync import run_competitor_refresh, run_competitor_sync
     from .competitor_vision import run_competitor_vision
     from .intake_agent import run_brand_interview
     from .strategy import (
@@ -44,6 +44,7 @@ async def _registry() -> dict:
         "peer_snapshot": run_peer_snapshot,
         "weekly_prescription": run_weekly_prescription,
         "competitor_sync": run_competitor_sync,
+        "competitor_refresh": run_competitor_refresh,
         "competitor_vision": run_competitor_vision,
         "competitor_profiles": run_competitor_profiles,
         "competitor_media": run_competitor_media,
