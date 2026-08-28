@@ -662,26 +662,42 @@ class RegenerateBody(BaseModel):
     force_format: str = ""
 
 
+# Colours a "make the text <colour>" instruction can request. White/black lead so
+# "make it white, not black" resolves to white. The render engine resolves each to
+# a readable tone (image_compose._NAMED_INK); an unknown one falls back to auto.
+_COLOR_WORDS = ("white", "black", "red", "crimson", "maroon", "orange", "amber",
+                "gold", "yellow", "green", "emerald", "teal", "blue", "navy", "sky",
+                "purple", "violet", "pink", "grey", "gray", "silver", "brown",
+                "cream", "charcoal")
+
+
 def _styling_override(feedback: str) -> dict:
-    """A rejection about on-image TEXT STYLE (colour / weight) → the render knobs
-    that fix it, so the redo can APPLY it instead of only logging it. Empty when
-    the feedback isn't a text-styling complaint."""
+    """A rejection about on-image TEXT STYLE (colour / weight) → the render tuning
+    that fixes it, so the redo APPLIES it (ANY colour, or a #hex) instead of only
+    logging it. Empty when the feedback isn't a text-styling complaint."""
+    import re
+
     f = (feedback or "").lower()
     out: dict = {}
-    # "white" present (and not negated) means they want white — this covers the
-    # real phrasings "white color", "to white", "be white". "black" is a positive
-    # want ONLY when they didn't ask for white and aren't REJECTING black
-    # ("not black", "black ... does not work"), which is the common "make it white,
-    # not black" case.
-    wants_white = "white" in f and "not white" not in f and "no white" not in f
-    black_rejected = any(p in f for p in (
-        "not black", "no black", "black color of text does not", "black does not",
-        "black doesn't", "black text does not", "black is not", "black not read"))
-    wants_black = ("black" in f) and not wants_white and not black_rejected
-    if wants_white:
-        out["image_text_color"] = 1
-    elif wants_black:
-        out["image_text_color"] = 2
+    color = None
+    m = re.search(r"#([0-9a-f]{6}|[0-9a-f]{3})\b", f)
+    if m:
+        color = "#" + m.group(1)
+    else:
+        # First colour word that ISN'T negated — "not black" / "no black" REJECTS
+        # black, it doesn't request it (the common "make it white, not black").
+        for w in _COLOR_WORDS:
+            idx = f.find(w)
+            while idx != -1:
+                pre = f[max(0, idx - 6):idx]
+                if "not " not in pre and "no " not in pre and "n't " not in pre:
+                    color = w
+                    break
+                idx = f.find(w, idx + 1)
+            if color:
+                break
+    if color:
+        out["image_text_color_hex"] = color
     if any(w in f for w in ("thicker", "bolder", "heavier", "thick font", "thicker font",
                             "bold font", "bolder font", "heavier font", "make it bold")):
         out["image_text_weight"] = 1

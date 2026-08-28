@@ -103,16 +103,49 @@ def text_style(color: str = "", bold: bool = False):
         _render_text_style.reset(token)
 
 
+# Named colours a "make the text <colour>" instruction can ask for, plus the
+# white/light + black/dark aliases. Slightly-off-pure, readable tones — the
+# guideline "safe space" for on-image text: an unknown/garbled colour falls back
+# to auto so a bad instruction never yields an unreadable result.
+_NAMED_INK = {
+    "white": (245, 246, 250), "light": (245, 246, 250), "cream": (245, 242, 232),
+    "black": (14, 16, 22), "dark": (14, 16, 22), "charcoal": (34, 38, 46),
+    "red": (200, 44, 44), "crimson": (176, 32, 46), "maroon": (120, 30, 34),
+    "orange": (222, 110, 38), "amber": (216, 150, 40), "gold": (200, 164, 92),
+    "yellow": (222, 196, 60),
+    "green": (46, 140, 74), "emerald": (28, 150, 96), "teal": (30, 150, 150),
+    "blue": (46, 108, 214), "navy": (28, 46, 92), "sky": (70, 150, 240),
+    "purple": (130, 80, 200), "violet": (130, 80, 200), "pink": (226, 96, 150),
+    "grey": (150, 154, 162), "gray": (150, 154, 162), "silver": (188, 192, 198),
+    "brown": (120, 84, 60),
+}
+
+
+def _resolve_color(s: str | None) -> tuple | None:
+    """A requested text colour → RGB, or None for auto. Accepts a named colour, a
+    #hex (3 or 6 digit), or the white/black aliases; anything unknown returns None
+    so the auto-contrast picker decides (never an unreadable colour)."""
+    if not s:
+        return None
+    s = str(s).strip().lower()
+    if s in _NAMED_INK:
+        return _NAMED_INK[s]
+    if s.startswith("#"):
+        h = s[1:]
+        if len(h) == 3:
+            h = "".join(ch * 2 for ch in h)
+        if len(h) == 6:
+            try:
+                return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+            except ValueError:
+                return None
+    return None
+
+
 def _forced_ink() -> tuple | None:
     """The forced on-image text colour as RGB, or None when the auto-contrast
-    picker should decide. Near-white / near-black rather than pure, so it never
-    clips on a scrim."""
-    c = _render_text_style.get().get("color")
-    if c == "light":
-        return (245, 246, 250)
-    if c == "dark":
-        return (14, 16, 22)
-    return None
+    picker should decide."""
+    return _resolve_color(_render_text_style.get().get("color"))
 
 
 def _text_bold() -> bool:

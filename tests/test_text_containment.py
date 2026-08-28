@@ -167,6 +167,21 @@ def test_forced_ink_light_and_dark():
     assert _forced_ink() is None  # context restored
 
 
+def test_resolve_arbitrary_colours():
+    from james_os.image_compose import _resolve_color, _forced_ink, text_style
+
+    assert _resolve_color("white") == (245, 246, 250)
+    assert _resolve_color("red") is not None and _resolve_color("red") != (245, 246, 250)
+    assert _resolve_color("#1b4d3e") == (0x1b, 0x4d, 0x3e)
+    assert _resolve_color("#abc") == (0xaa, 0xbb, 0xcc)
+    assert _resolve_color("not-a-colour") is None  # unknown → auto (safe)
+    assert _resolve_color("") is None
+    with text_style("red"):
+        assert _forced_ink() == _resolve_color("red")
+    with text_style("#1b4d3e"):
+        assert _forced_ink() == (0x1b, 0x4d, 0x3e)
+
+
 def test_pal_honors_forced_colour():
     from james_os.compositors_v2 import _pal
     from james_os.image_compose import text_style
@@ -193,7 +208,8 @@ def test_ink_for_forced_never_flips():
 
 
 @pytest.mark.parametrize("fmt", ["statement", "full_bleed", "brand_quote"])
-@pytest.mark.parametrize("style", [("light", True), ("dark", False)])
+@pytest.mark.parametrize("style", [("light", True), ("dark", False),
+                                   ("red", False), ("#1b4d3e", True)])
 def test_render_forced_style_smoke(fmt, style):
     from james_os.designed_render import render_designed
     from james_os.image_compose import text_style
@@ -231,17 +247,21 @@ def test_styling_override_keyword_detection():
 
     src = Path(__file__).resolve().parents[1] / "src" / "james_os" / "api_v1.py"
     text = src.read_text()
+    # Grab the pure block (constant + both helpers) from the constant up to the
+    # next real coroutine, so _styling_override's _COLOR_WORDS reference resolves.
+    start = text.index("_COLOR_WORDS = (")
+    end = text.index("async def _run_regenerate", start)
     ns: dict = {}
-    for fn in ("_styling_override", "_styling_only"):
-        start = text.index(f"def {fn}(")
-        end = text.index("\n\n\n", start)
-        exec(compile(text[start:end], str(src), "exec"), ns)  # noqa: S102 — isolated fn defs
+    exec(compile(text[start:end], str(src), "exec"), ns)  # noqa: S102 — isolated defs
     so, only = ns["_styling_override"], ns["_styling_only"]
 
     assert so("text needs to be white color, not black and use thicker fonts") == \
-        {"image_text_color": 1, "image_text_weight": 1}
-    assert so("change text color to white on this image") == {"image_text_color": 1}
-    assert so("make the text black") == {"image_text_color": 2}
+        {"image_text_color_hex": "white", "image_text_weight": 1}
+    assert so("change text color to white on this image") == {"image_text_color_hex": "white"}
+    assert so("make the text black") == {"image_text_color_hex": "black"}
+    assert so("make text red") == {"image_text_color_hex": "red"}
+    assert so("i want the text in gold") == {"image_text_color_hex": "gold"}
+    assert so("use #1b4d3e for the headline") == {"image_text_color_hex": "#1b4d3e"}
     assert so("love it, ship it") == {}
     # styling-only vs layout complaints
     assert only("change text color to white on this image") is True

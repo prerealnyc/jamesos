@@ -1815,8 +1815,9 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
             return int(round(float(_ctun.get(key, 0) or 0)))
         except (TypeError, ValueError):
             return 0
+    _chex = str(_ctun.get("image_text_color_hex") or "").strip()
     _ctc = _cknob("image_text_color")
-    _ctext_color = "light" if _ctc == 1 else "dark" if _ctc == 2 else ""
+    _ctext_color = _chex or ("white" if _ctc == 1 else "black" if _ctc == 2 else "")
     _ctext_bold = _cknob("image_text_weight") >= 1
 
     _voice, _bp = await _brand_voice_and_profile(tenant_id)
@@ -2125,8 +2126,10 @@ async def _generate_designed_post_image(
             return int(round(float(_tuning.get(key, 0) or 0)))
         except (TypeError, ValueError):
             return 0
+    # A free-form colour ("red", "#1b4d3e") wins over the numeric white/black enum.
+    _hexcol = str(_tuning.get("image_text_color_hex") or "").strip()
     _tc = _knob_int("image_text_color")
-    _text_color = "light" if _tc == 1 else "dark" if _tc == 2 else ""
+    _text_color = _hexcol or ("white" if _tc == 1 else "black" if _tc == 2 else "")
     _text_bold = _knob_int("image_text_weight") >= 1
     with image_compose.brand_fonts(_font_theme), image_compose.brand_look(_look), \
             image_compose.text_style(_text_color, _text_bold):

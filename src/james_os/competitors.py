@@ -524,6 +524,16 @@ async def import_watchlist(tenant_id: UUID | None = None) -> dict:
             "competitors": stored}
 
 
+async def get_competitor(
+    competitor_id: str, tenant_id: UUID | None = None
+) -> dict | None:
+    """One competitor by id, or None. RLS scopes it to the tenant."""
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM competitors WHERE id = $1::uuid", competitor_id)
+    return _row(row) if row else None
+
+
 # ── ranking from MEASURED posts ───────────────────────────────────────
 
 async def recompute_ranks(tenant_id: UUID | None = None) -> list[dict]:
@@ -861,6 +871,6 @@ __all__ = [
     "PLATFORMS", "PLATFORM_LABEL", "STATUSES", "configured", "discover",
     "upsert_many", "list_competitors", "set_status", "add_competitor",
     "screen_candidates", "verify_handles",
-    "recompute_ranks", "top_competitors",
+    "recompute_ranks", "top_competitors", "get_competitor",
     "import_watchlist",
 ]

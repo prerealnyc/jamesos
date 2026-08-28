@@ -13,6 +13,7 @@
     POST /competitors/analyze             run the visual eyes  (background)
     GET  /competitors/analyze/{job_id}    poll the analysis job
     GET  /competitors/analyses            what the eyes saw, per post
+    POST /competitors/media/fetch         Apify → download + store the files
     POST /competitors/profiles/build      roll posts+analyses into profiles
     GET  /competitors/profiles            per-competitor: cadence, formats,
                                           topics, hooks, design, strategy
@@ -43,6 +44,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from . import (
+    competitor_media,
     competitor_profile,
     competitor_sync,
     competitor_vision,
@@ -58,6 +60,7 @@ _DISCOVER_JOBS: dict[str, dict] = {}
 _SYNC_JOBS: dict[str, dict] = {}
 _ANALYZE_JOBS: dict[str, dict] = {}
 _PROFILE_JOBS: dict[str, dict] = {}
+_MEDIA_JOBS: dict[str, dict] = {}
 _MAX_JOBS = 30
 
 
@@ -297,6 +300,58 @@ async def competitors_analyses(
         competitor_id=competitor_id, limit=limit)
     stats = await competitor_vision.analysis_stats()
     return {"analyses": rows, "count": len(rows), "stats": stats}
+
+
+# ── media: Apify downloads what Xpoz cannot serve ─────────────────────
+
+class MediaFetchRequest(BaseModel):
+    competitor_id: str = ""
+    limit: int = 30
+
+
+@router.post("/competitors/media/fetch", status_code=202)
+async def competitors_media_fetch(
+    req: MediaFetchRequest, background: BackgroundTasks
+) -> dict:
+    """Download the actual image and video files through Apify and store them
+    ourselves.
+
+    Xpoz's media URLs are signed to its own session and 403 within hours;
+    Apify re-scrapes fresh, public ones. Background because a profile scrape
+    is ~35s and this runs one per competitor."""
+    tid = _tenant()
+    job_id = str(uuid4())
+    _MEDIA_JOBS[job_id] = {"status": "running"}
+    _prune(_MEDIA_JOBS)
+    cid, lim = req.competitor_id.strip(), max(1, min(req.limit, 60))
+
+    async def _run() -> None:
+        try:
+            if cid:
+                comp = await competitors.get_competitor(cid, tenant_id=tid)
+                if not comp:
+                    _MEDIA_JOBS[job_id] = {"status": "failed",
+                                           "error": "competitor not found"}
+                    return
+                res = await competitor_media.fetch_media_for_competitor(
+                    comp, limit=lim, tenant_id=tid)
+            else:
+                res = await competitor_media.fetch_all_missing_media(
+                    limit=lim, tenant_id=tid)
+            _MEDIA_JOBS[job_id] = {"status": "done", **res}
+        except Exception as e:  # noqa: BLE001
+            _MEDIA_JOBS[job_id] = {"status": "failed", "error": str(e)[:300]}
+
+    background.add_task(_run)
+    return {"job_id": job_id, "status": "running"}
+
+
+@router.get("/competitors/media/{job_id}")
+async def competitors_media_job(job_id: str) -> dict:
+    job = _MEDIA_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "media job not found (expired or unknown)")
+    return {"job_id": job_id, **job}
 
 
 # ── profiles: the rollup ──────────────────────────────────────────────

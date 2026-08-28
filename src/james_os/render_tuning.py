@@ -98,7 +98,15 @@ KNOBS: dict[str, dict] = {
 
 # Defaults match the existing code literals, so an empty slot = exactly today's
 # behavior. Derived from KNOBS so the two can never disagree.
-DEFAULT_RENDER_TUNING = {k: v["default"] for k, v in KNOBS.items()}
+#
+# image_text_color_hex is NOT a numeric knob: it holds a free-form text COLOUR
+# (a named colour like "red" or a #hex) so "make the text <any colour>" can be
+# applied, not just white/black. Stored as a plain string; when set it wins over
+# the numeric image_text_color enum. Unknown values resolve to auto downstream.
+DEFAULT_RENDER_TUNING = {
+    **{k: v["default"] for k, v in KNOBS.items()},
+    "image_text_color_hex": "",
+}
 
 
 async def get_render_tuning(tenant_id: UUID | None = None) -> dict:
@@ -134,7 +142,13 @@ def _clamp(updates: dict) -> dict:
 
 
 async def set_render_tuning(updates: dict, tenant_id: UUID | None = None) -> dict:
-    merged = {**(await get_render_tuning(tenant_id)), **_clamp(updates)}
+    clamped = _clamp(updates)
+    # The text COLOUR is a free-form string (named colour / #hex), not a numeric
+    # knob — carry it through separately, trimmed and length-capped. An unknown
+    # value is harmless: it resolves to auto at render time.
+    if "image_text_color_hex" in updates:
+        clamped["image_text_color_hex"] = str(updates["image_text_color_hex"] or "").strip().lower()[:16]
+    merged = {**(await get_render_tuning(tenant_id)), **clamped}
     # keep min <= max
     if merged["broll_insert_min_dur"] > merged["broll_insert_max_dur"]:
         merged["broll_insert_min_dur"] = merged["broll_insert_max_dur"]
