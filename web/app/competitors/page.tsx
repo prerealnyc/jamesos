@@ -385,23 +385,44 @@ export default function CompetitorsPage() {
           <div className="grid gap-4 mt-5 sm:grid-cols-2 lg:grid-cols-3">
             {posts.map((p) => {
               const saved = p.replicate_status === "saved";
-              const src = p.thumbnail_url || p.stored_media_url;
               const isVideo = p.media_type === "video";
+              // PREFER OUR OWN COPY. thumbnail_url is usually still the
+              // Instagram CDN link that came with the post — 67 of 96 here —
+              // and browsers send a Referer that Instagram blocks for
+              // hotlinking, so those cards render nothing even though the same
+              // URL fetches fine from the server. Our stored copy is permanent
+              // and same-origin-safe; the source is a last resort.
+              const ours = (u?: string) => !!u && u.includes("/storage/v1/object/");
+              const durableThumb = ours(p.thumbnail_url) ? p.thumbnail_url : "";
+              const durableMedia = ours(p.stored_media_url) ? p.stored_media_url : "";
+              const poster = durableThumb || (durableMedia && !isVideo ? durableMedia : "");
+              const src = poster || p.thumbnail_url || p.stored_media_url;
+              const showVideo = isVideo && durableMedia && !durableThumb;
               return (
                 <div key={p.id}
                   className={`border rounded-lg overflow-hidden flex flex-col ${
                     saved ? "border-primary ring-1 ring-primary/40" : "border-border"
                   }`}>
                   <div className="relative bg-secondary aspect-[4/5] overflow-hidden">
-                    {src ? (
-                      isVideo && p.stored_media_url && !p.thumbnail_url ? (
-                        <video src={p.stored_media_url} muted playsInline
-                          className="w-full h-full object-cover" />
-                      ) : (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={src} alt="" loading="lazy"
-                          className="w-full h-full object-cover" />
-                      )
+                    {showVideo ? (
+                      <video src={durableMedia} muted playsInline preload="metadata"
+                        className="w-full h-full object-cover" />
+                    ) : src ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={src} alt="" loading="lazy"
+                        // Instagram refuses hotlinked requests that carry a
+                        // Referer. Costs nothing on our own storage.
+                        referrerPolicy="no-referrer"
+                        onError={(e) => {
+                          // A dead source URL falls back to whatever durable
+                          // copy we hold rather than leaving a broken box.
+                          const img = e.currentTarget;
+                          const alt = durableMedia && img.src !== durableMedia
+                            ? durableMedia : "";
+                          if (alt && !isVideo) { img.src = alt; return; }
+                          img.style.display = "none";
+                        }}
+                        className="w-full h-full object-cover" />
                     ) : (
                       <div className="w-full h-full grid place-items-center text-[11px] text-muted-foreground">
                         no media

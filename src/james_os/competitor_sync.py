@@ -542,8 +542,9 @@ async def gallery(
     that decision is much easier with the format and the hook next to the
     picture than with the picture alone.
 
-    `media_only` defaults to True because a card with no image is not worth
-    showing in a gallery; pass False to audit what is still missing media.
+    `media_only` defaults to True and means we hold a DURABLE copy — not
+    merely that the post arrived with a (long-dead) source thumbnail. Pass
+    False to audit what is still missing media.
     """
     clauses = ["1=1"]
     args: list = []
@@ -554,7 +555,12 @@ async def gallery(
         args.append(replicate)
         clauses.append(f"p.replicate_status = ${len(args)}")
     if media_only:
-        clauses.append("(p.stored_media_url <> '' OR p.thumbnail_url <> '')")
+        # "Has media" means WE HOLD A COPY. thumbnail_url is usually still the
+        # Instagram CDN link the post arrived with, and browsers send a Referer
+        # that Instagram refuses for hotlinking — so counting it here filled the
+        # gallery with cards that could never render. A post is worth showing
+        # when we can actually show it.
+        clauses.append("p.stored_media_url <> ''")
     order = {
         "engagement": "p.engagement_rate DESC NULLS LAST, p.likes DESC",
         "likes": "p.likes DESC",
