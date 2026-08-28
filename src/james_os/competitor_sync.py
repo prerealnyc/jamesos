@@ -472,10 +472,20 @@ async def sync_all(
         else:
             clean.append({"handle": c.get("handle"), "platform": c.get("platform"),
                           "fetched": 0, "stored": 0, "error": str(r)[:200]})
+    # Now that real posts are on the shelf, re-rank everyone on measured
+    # numbers instead of provisional discovery signals.
+    from .competitors import recompute_ranks
+    try:
+        ranked = await recompute_ranks(tenant_id=tenant_id)
+    except Exception as e:  # noqa: BLE001 — a ranking failure must not lose a sync
+        ranked = []
+        print(f"[competitor_sync] rank recompute failed: {e}")
+
     return {
         "synced": sum(1 for r in clean if not r.get("error")),
         "posts_stored": sum(r.get("stored", 0) for r in clean),
         "media_stored": sum(r.get("media_stored", 0) for r in clean),
+        "ranked": [r for r in ranked if r.get("measured_posts")],
         "results": clean,
     }
 

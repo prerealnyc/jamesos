@@ -9,6 +9,10 @@
     GET  /competitors/sync/{job_id}       poll the sync job
     GET  /competitors/posts               the saved shelf
     GET  /competitors/shelf               how much we hold
+    GET  /competitors/top                 the highest-ranked pages in the niche
+    POST /competitors/analyze             run the visual eyes  (background)
+    GET  /competitors/analyze/{job_id}    poll the analysis job
+    GET  /competitors/analyses            what the eyes saw, per post
     POST /competitors/{id}/status         candidate | tracked | rejected
 
 Two hard-won rules from this codebase are load-bearing here:
@@ -35,7 +39,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from . import competitor_sync, competitors
+from . import competitor_sync, competitor_vision, competitors
 
 router = APIRouter()
 
@@ -44,6 +48,7 @@ router = APIRouter()
 # entries so a running job can never be evicted out from under its own task.
 _DISCOVER_JOBS: dict[str, dict] = {}
 _SYNC_JOBS: dict[str, dict] = {}
+_ANALYZE_JOBS: dict[str, dict] = {}
 _MAX_JOBS = 30
 
 
@@ -203,6 +208,86 @@ async def competitors_posts(
 @router.get("/competitors/shelf")
 async def competitors_shelf() -> dict:
     return await competitor_sync.shelf_stats()
+
+
+# ── ranking ───────────────────────────────────────────────────────────
+
+@router.get("/competitors/top")
+async def competitors_top(
+    limit: int = Query(default=10, le=100), measured_only: bool = True,
+) -> dict:
+    """The highest-ranked pages for the niche, scored on measured posts:
+    median engagement rate x log10(followers). Median so one viral post
+    cannot define an account; log10 so reach counts without simply
+    re-sorting the list by audience size."""
+    rows = await competitors.top_competitors(
+        limit=limit, measured_only=measured_only)
+    return {"competitors": rows, "count": len(rows),
+            "basis": "median engagement rate x log10(followers)"}
+
+
+@router.post("/competitors/rerank")
+async def competitors_rerank() -> dict:
+    """Re-rank from the posts on the shelf. Runs automatically after every
+    sync; exposed for when posts arrive by another route."""
+    ranked = await competitors.recompute_ranks()
+    return {"ranked": ranked, "count": len(ranked)}
+
+
+# ── the visual eyes ───────────────────────────────────────────────────
+
+class AnalyzeRequest(BaseModel):
+    competitor_id: str = ""
+    post_cap: int = 8
+    video_cap: int = 3
+
+
+@router.post("/competitors/analyze", status_code=202)
+async def competitors_analyze(
+    req: AnalyzeRequest, background: BackgroundTasks
+) -> dict:
+    """Look at what they post: stills through the design eye, reels through
+    perception, every post through a text read. Background — a vision pass
+    over ten competitors is minutes, not seconds."""
+    tid = _tenant()
+    job_id = str(uuid4())
+    _ANALYZE_JOBS[job_id] = {"status": "running"}
+    _prune(_ANALYZE_JOBS)
+    cid = req.competitor_id.strip()
+    pc, vc = max(1, min(req.post_cap, 40)), max(0, min(req.video_cap, 20))
+
+    async def _run() -> None:
+        try:
+            if cid:
+                res = await competitor_vision.analyze_competitor(
+                    cid, post_cap=pc, video_cap=vc, tenant_id=tid)
+            else:
+                res = await competitor_vision.analyze_all(
+                    post_cap=pc, video_cap=vc, tenant_id=tid)
+            _ANALYZE_JOBS[job_id] = {"status": "done", **res}
+        except Exception as e:  # noqa: BLE001
+            _ANALYZE_JOBS[job_id] = {"status": "failed", "error": str(e)[:300]}
+
+    background.add_task(_run)
+    return {"job_id": job_id, "status": "running"}
+
+
+@router.get("/competitors/analyze/{job_id}")
+async def competitors_analyze_get(job_id: str) -> dict:
+    job = _ANALYZE_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "analysis job not found (expired or unknown)")
+    return {"job_id": job_id, **job}
+
+
+@router.get("/competitors/analyses")
+async def competitors_analyses(
+    competitor_id: str = "", limit: int = Query(default=60, le=200),
+) -> dict:
+    rows = await competitor_vision.list_analyses(
+        competitor_id=competitor_id, limit=limit)
+    stats = await competitor_vision.analysis_stats()
+    return {"analyses": rows, "count": len(rows), "stats": stats}
 
 
 # ── status (declared last: /{competitor_id} would swallow the routes above) ──

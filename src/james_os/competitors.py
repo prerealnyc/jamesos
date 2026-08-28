@@ -524,6 +524,114 @@ async def import_watchlist(tenant_id: UUID | None = None) -> dict:
             "competitors": stored}
 
 
+# ── ranking from MEASURED posts ───────────────────────────────────────
+
+async def recompute_ranks(tenant_id: UUID | None = None) -> list[dict]:
+    """Re-rank every competitor from the posts we actually hold.
+
+    Discovery-time rank is provisional: keyword candidates carry Xpoz's
+    niche-engagement sums, and research-named candidates carry nothing at all
+    (score 0), so the two are not on the same scale and the best candidates
+    can sort last. Once posts are synced, everyone is measurable the same way.
+
+        rank_score = median engagement rate × log10(followers) × 1000
+
+    MEDIAN, not mean. @tristatecommercial has one post at 1355% (45k likes on
+    3.4k followers) sitting among posts at 0.7% — a mean would let a single
+    viral hit define the account. The median says what a typical post does.
+
+    log10(followers) balances the two things you asked to rank on: reach and
+    engagement. A flat multiply by followers would just re-sort by audience
+    size (the mistake the first ranking made); ignoring followers entirely
+    would put a 200-follower account with three engaged friends on top.
+    Diminishing returns is the honest middle — 10× the audience is worth
+    real weight, but not 10× the weight.
+
+    Competitors with no synced posts keep their provisional score and are
+    marked measured_posts=0 so the UI can say so rather than implying a
+    measurement that never happened.
+    """
+    import math
+    import statistics
+
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            """SELECT c.id, c.handle, c.platform, c.followers,
+                      count(p.id)                       AS n,
+                      array_remove(array_agg(p.engagement_rate), NULL) AS rates,
+                      min(p.posted_at)                  AS first_post,
+                      max(p.posted_at)                  AS last_post
+                 FROM competitors c
+            LEFT JOIN competitor_posts p ON p.competitor_id = c.id
+                WHERE c.status <> 'rejected'
+             GROUP BY c.id, c.handle, c.platform, c.followers""")
+
+        out: list[dict] = []
+        for r in rows:
+            rates = [x for x in (r["rates"] or []) if x and x > 0]
+            n = len(rates)
+            if n == 0:
+                await conn.execute(
+                    "UPDATE competitors SET measured_posts = 0, ranked_at = now() "
+                    "WHERE id = $1", r["id"])
+                out.append({"handle": r["handle"], "platform": r["platform"],
+                            "followers": r["followers"], "measured_posts": 0,
+                            "rank_score": None})
+                continue
+
+            median = float(statistics.median(rates))
+            mean = float(sum(rates) / n)
+            followers = max(int(r["followers"] or 0), 10)
+            score = round(median * math.log10(followers) * 1000, 3)
+
+            # Posting cadence, when the window is long enough to mean anything.
+            per_week = 0.0
+            if r["first_post"] and r["last_post"]:
+                days = (r["last_post"] - r["first_post"]).days
+                if days >= 7:
+                    per_week = round(n / (days / 7.0), 2)
+
+            await conn.execute(
+                """UPDATE competitors SET
+                     rank_score             = $2,
+                     median_engagement_rate = $3,
+                     avg_engagement_rate    = $4,
+                     posts_per_week         = $5,
+                     measured_posts         = $6,
+                     ranked_at              = now()
+                   WHERE id = $1""",
+                r["id"], score, median, mean, per_week, n)
+            out.append({
+                "handle": r["handle"], "platform": r["platform"],
+                "followers": int(r["followers"] or 0), "measured_posts": n,
+                "median_engagement_rate": median, "avg_engagement_rate": mean,
+                "posts_per_week": per_week, "rank_score": score,
+            })
+
+    out.sort(key=lambda c: (c["rank_score"] is not None, c["rank_score"] or 0),
+             reverse=True)
+    return out
+
+
+async def top_competitors(
+    limit: int = 10, measured_only: bool = True, tenant_id: UUID | None = None
+) -> list[dict]:
+    """The highest-ranked pages in the niche — the shortlist worth studying.
+
+    `measured_only` keeps out competitors we have not synced yet, whose score
+    is provisional; turn it off to see the full field.
+    """
+    where = "WHERE status <> 'rejected'"
+    if measured_only:
+        where += " AND measured_posts > 0"
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            f"SELECT * FROM competitors {where} "
+            "ORDER BY rank_score DESC, followers DESC LIMIT $1",
+            max(1, min(limit, 100)))
+    return [_row(r) for r in rows]
+
+
 # ── second discovery path: research the niche, then VERIFY the handles ─
 
 # get_user exposes no relevance fields — those only exist on the keyword
@@ -753,5 +861,6 @@ __all__ = [
     "PLATFORMS", "PLATFORM_LABEL", "STATUSES", "configured", "discover",
     "upsert_many", "list_competitors", "set_status", "add_competitor",
     "screen_candidates", "verify_handles",
+    "recompute_ranks", "top_competitors",
     "import_watchlist",
 ]
