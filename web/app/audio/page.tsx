@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, mediaUrl, type MediaAsset } from "@/lib/api";
 import { Button, Card, CardTitle, Spinner, PageHeader, Badge } from "@/components/ui";
 import { MediaTabs } from "@/components/media-tabs";
+import { MusicExtractor } from "@/components/music-extractor";
 
 const MOODS = ["upbeat", "calm", "dramatic", "tension"] as const;
 const KINDS = ["whoosh", "hit", "riser", "pop"] as const;
@@ -99,6 +100,8 @@ export default function AudioLibraryPage() {
           ))}
         </div>
       </Card>
+
+      <MusicExtractor onExtracted={load} />
 
       {err && <div className="text-sm text-destructive">{err}</div>}
       {loading ? (

@@ -76,10 +76,16 @@ async def upsert_brand_profile(
             tid = await conn.fetchval(
                 "SELECT current_setting('app.current_tenant', true)::uuid")
             # The brand manager starts working the moment it knows who the
-            # brand is: daily research, the continuous deep interview, and
-            # the strategy loop (playbooks weekly, peers weekly, a fresh
-            # Prescription every Monday-ish).
-            for kind, cadence in (("daily_brand_research", 24),
+            # brand is: the competitor shelf, daily research, the continuous
+            # deep interview, and the strategy loop (playbooks weekly, peers
+            # weekly, a fresh Prescription every Monday-ish).
+            # competitor_refresh is FIRST and runs daily at first: finishing
+            # onboarding should leave the brand looking at real posts from its
+            # competitors, not an empty shelf it has to go and fill by hand.
+            # The weekly prescription reads that shelf, so it has to exist
+            # before the first plan is composed.
+            for kind, cadence in (("competitor_refresh", 24),
+                                  ("daily_brand_research", 24),
                                   ("brand_interview", 12),
                                   ("playbook_refresh", 168),
                                   ("peer_snapshot", 168),

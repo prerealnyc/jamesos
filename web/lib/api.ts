@@ -659,6 +659,38 @@ export type TemplateBuilderSpec = {
   replication_recipe?: string[];
   color_palette?: string;
   vibe?: string;
+  // A specific Audio Library track, so a template always uses THIS bed
+  // instead of any track tagged with its mood.
+  music_track_id?: string;
+  // Designed cutaway cards, placed from the transcript at render time.
+  cards?: { enabled: boolean; styles?: string[] };
+};
+
+// ── reel editing: music extraction + the card plan ──
+export type MusicCapability = {
+  available: boolean; reason: string; max_seconds: number;
+};
+
+export type MusicExtractJob = {
+  job_id: string;
+  status: "running" | "succeeded" | "failed";
+  error?: string;
+  asset?: MediaAsset;
+  meta?: { model: string; source_seconds: number; bytes: number };
+};
+
+export type PlannedCard = {
+  style: string; start: number; end: number; seconds: number; lines: string[];
+};
+
+export type CardPlanJob = {
+  job_id: string;
+  status: "running" | "succeeded" | "failed";
+  error?: string;
+  transcript?: string;
+  duration?: number;
+  words?: number;
+  cards?: PlannedCard[];
 };
 
 export type TemplateCapabilities = {
@@ -673,6 +705,8 @@ export type TemplateCapabilities = {
   energies: string[];
   limits: { beat_min_seconds: number; beat_max_seconds: number; max_beats: number };
   beats_drive_render_in: string[];
+  card_styles: string[];
+  cards_supported_in: string[];
   can_curate_platform: boolean;
 };
 
@@ -1757,6 +1791,36 @@ export const api = {
   // Promote one of this brand's templates into the house library (curator only).
   publishTemplate: (id: string, name = "") =>
     jpost<StyleTemplate>(`/templates/${id}/publish`, { name }),
+  // ── reel editing ──
+  // Can this deployment separate audio at all? (Demucs is an optional dep.)
+  musicCapability: () => jget<MusicCapability>("/video/music/capability"),
+  // Pull the instrumental bed out of a clip and save it to the Audio Library.
+  async extractMusic(body: { file?: File; media_id?: string; mood?: string; title?: string }) {
+    const fd = new FormData();
+    if (body.file) fd.append("file", body.file);
+    if (body.media_id) fd.append("media_id", body.media_id);
+    fd.append("mood", body.mood || "");
+    fd.append("title", body.title || "");
+    const r = await fetch(u("/video/music/extract"), {
+      method: "POST", body: fd, credentials: "include",
+    });
+    return _safeJsonOrThrow<{ job_id: string; status: string; note?: string }>(r);
+  },
+  getMusicExtract: (jobId: string) =>
+    jget<MusicExtractJob>(`/video/music/extract/${jobId}`),
+  // What cards the director WOULD place on a clip — no render.
+  planCards: (body: { media_id: string; styles?: string[]; brand_note?: string }) =>
+    jpost<{ job_id: string; status: string }>("/video/cards/plan", body),
+  async planCardsUpload(file: File, brandNote = "") {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("brand_note", brandNote);
+    const r = await fetch(u("/video/cards/plan-upload"), {
+      method: "POST", body: fd, credentials: "include",
+    });
+    return _safeJsonOrThrow<{ job_id: string; status: string }>(r);
+  },
+  getCardPlan: (jobId: string) => jget<CardPlanJob>(`/video/cards/plan/${jobId}`),
   // Seed the house library with the starter reel formats (curator only).
   seedHouseTemplates: (dryRun = false) =>
     jpost<{

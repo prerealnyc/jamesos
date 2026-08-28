@@ -18,6 +18,8 @@
     GET  /competitors/gap                 what they post that we don't
     GET  /competitors/status              where the shelf stands (from DATA)
     POST /competitors/refresh             the whole chain, one job
+    GET  /competitors/picks               what the brand picked
+    POST /competitors/first-posts         picks → drafts in the queue
     POST /competitors/media/fetch         Apify → download + store the files
     POST /competitors/profiles/build      roll posts+analyses into profiles
     GET  /competitors/profiles            per-competitor: cadence, formats,
@@ -50,6 +52,7 @@ from pydantic import BaseModel, Field
 
 from . import (
     competitor_gap,
+    competitor_kickoff,
     competitor_media,
     competitor_profile,
     competitor_sync,
@@ -68,6 +71,7 @@ _ANALYZE_JOBS: dict[str, dict] = {}
 _PROFILE_JOBS: dict[str, dict] = {}
 _MEDIA_JOBS: dict[str, dict] = {}
 _REFRESH_JOBS: dict[str, dict] = {}
+_FIRST_JOBS: dict[str, dict] = {}
 _MAX_JOBS = 30
 
 
@@ -442,6 +446,58 @@ async def competitors_refresh_job(job_id: str) -> dict:
         return {"job_id": job_id, "status": "unknown",
                 "note": "job state not held here — read /competitors/status",
                 **(await competitor_sync.studio_status())}
+    return {"job_id": job_id, **job}
+
+
+@router.get("/competitors/picks")
+async def competitors_picks(limit: int = 20, include_queued: bool = False) -> dict:
+    """What the brand picked, best first."""
+    return {"picks": await competitor_kickoff.picked_posts(
+        limit=limit, include_queued=include_queued)}
+
+
+class FirstPostsRequest(BaseModel):
+    n: int = 5
+    platform: str = "instagram"
+
+
+@router.post("/competitors/first-posts", status_code=202)
+async def competitors_first_posts(
+    req: FirstPostsRequest, background: BackgroundTasks
+) -> dict:
+    """Turn the brand's picks into drafts in the approval queue.
+
+    Replicate / Templatize / Idea steer the writer differently — the piece,
+    the structure, or just the concept. Nothing is copied and every draft
+    passes the same voice-QA gate as any other."""
+    tid = _tenant()
+    job_id = str(uuid4())
+    _FIRST_JOBS[job_id] = {"status": "running"}
+    _prune(_FIRST_JOBS)
+    n, plat = max(1, min(req.n, 15)), req.platform
+
+    def _progress(p: dict) -> None:
+        job = _FIRST_JOBS.get(job_id)
+        if job is not None:
+            job.update(p)
+
+    async def _run() -> None:
+        try:
+            res = await competitor_kickoff.generate_first_posts(
+                n=n, platform=plat, tenant_id=tid, progress=_progress)
+            _FIRST_JOBS[job_id] = {"status": "done", **res}
+        except Exception as e:  # noqa: BLE001
+            _FIRST_JOBS[job_id] = {"status": "failed", "error": str(e)[:300]}
+
+    background.add_task(_run)
+    return {"job_id": job_id, "status": "running"}
+
+
+@router.get("/competitors/first-posts/{job_id}")
+async def competitors_first_posts_job(job_id: str) -> dict:
+    job = _FIRST_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "job not found (expired or unknown)")
     return {"job_id": job_id, **job}
 
 

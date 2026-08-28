@@ -162,6 +162,21 @@ _SYSTEM = (
     "shows the speaker's own words, so choose the span, not the wording."
 )
 
+# Handed to the model alongside the phrases. Without these it keeps proposing
+# spans that are structurally unkeepable — inside the opening hook, or under the
+# minimum on-screen duration — and burns its picks on cards that get filtered
+# out downstream, which is how a 40s reel ended up with one card instead of four.
+def _constraints(duration: float) -> str:
+    return (
+        f"HARD CONSTRAINTS (a span breaking these is wasted):\n"
+        f"  * the reel is {duration:.0f}s long\n"
+        f"  * nothing before {LEAD_IN_S:.0f}s — the opening hook stays on the speaker\n"
+        f"  * a span must run at least {MIN_CARD_S:.1f}s (extend it to a longer "
+        f"phrase rather than picking a very short one)\n"
+        f"  * leave at least {MIN_GAP_S:.1f}s of speaker between one span's end "
+        f"and the next one's start\n"
+    )
+
 
 async def _ask_model(phrases: list[dict], target: int, brand_note: str) -> list[dict]:
     from .llm import get_llm
@@ -170,9 +185,11 @@ async def _ask_model(phrases: list[dict], target: int, brand_note: str) -> list[
         f'{p["index"]}. [{p["start"]:.1f}-{p["end"]:.1f}s] {p["text"]}'
         for p in phrases
     )
+    duration = float(phrases[-1]["end"]) if phrases else 0.0
     body = (
         (f"BRAND CONTEXT: {brand_note}\n\n" if brand_note else "")
-        + f"Pick AT MOST {target} moments.\n\nPHRASES:\n{listing}"
+        + _constraints(duration)
+        + f"\nPick AT MOST {target} moments.\n\nPHRASES:\n{listing}"
     )
     try:
         out = await get_llm().complete_json(
@@ -203,22 +220,38 @@ def enforce_pacing(cards: list[Card], duration: float) -> list[Card]:
     """Apply the pacing rules to whatever the model proposed: clamp durations,
     drop anything in the opening hook, enforce the gap between cards, and cap
     the count. Pure and deterministic, so it's testable on its own."""
-    kept: list[Card] = []
+    # Pass 1 — clamp to the reel and drop what can never be shown.
+    eligible: list[Card] = []
     for c in sorted(cards, key=lambda x: x.start):
         if c.start < LEAD_IN_S:
             continue                                  # never cut away in the hook
         if duration and c.end > duration:
             c.end = round(duration, 3)
-        if c.duration < MIN_CARD_S:
-            continue
         if c.duration > MAX_CARD_S:
             c.end = round(c.start + MAX_CARD_S, 3)
-        if kept and c.start - kept[-1].end < MIN_GAP_S:
-            continue                                  # the speaker must come back
-        kept.append(c)
+        if c.duration < MIN_CARD_S:
+            continue                                  # too short to build in
+        eligible.append(c)
+
+    # Pass 2 — when two cards sit closer than the minimum gap, keep the STRONGER
+    # one. Selecting in time order instead means an early throwaway can block a
+    # much better card 1.2s later, which is exactly how the best moment in a
+    # test reel ("Pricing strategy / marketing") got dropped.
+    def strength(c: Card) -> tuple:
+        # Longer reads as more substantial; the word count breaks ties toward
+        # a card with something to say.
+        return (round(min(c.duration, MAX_CARD_S), 2),
+                len(" ".join(c.lines).split()), -c.start)
+
+    kept: list[Card] = []
+    for c in sorted(eligible, key=strength, reverse=True):
         if len(kept) >= MAX_CARDS:
             break
-    return kept
+        if any(c.start - k.end < MIN_GAP_S and k.start - c.end < MIN_GAP_S
+               for k in kept):
+            continue                                  # the speaker must come back
+        kept.append(c)
+    return sorted(kept, key=lambda x: x.start)
 
 
 async def plan_cards(
@@ -257,6 +290,20 @@ async def plan_cards(
         style = str(p.get("style") or "").strip().lower()
         if style not in allowed:
             style = "quote"                            # a real style, never a broken one
+
+        # REPAIR, don't discard: a span the model picked too short to show gets
+        # EXTENDED onto the following phrase(s) rather than thrown away. The
+        # model reliably picks good moments and unreliably respects a duration
+        # floor, so recovering the moment beats losing it — and extending along
+        # the transcript keeps the copy verbatim and contiguous.
+        while (last < last_index
+               and _span_text(phrases, first, last)[2]
+               - _span_text(phrases, first, last)[1] < MIN_CARD_S
+               and (last + 1) not in used):
+            nxt = _span_text(phrases, first, last + 1)
+            if nxt[2] - nxt[1] > MAX_CARD_S:
+                break                                  # would overshoot the cap
+            last += 1
 
         # GROUNDING: copy and timing come from the transcript, not the model.
         text, start, end = _span_text(phrases, first, last)
