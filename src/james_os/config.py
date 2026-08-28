@@ -107,6 +107,14 @@ class Settings(BaseSettings):
     # which maps its logged-in users to their client's tenant. Unset = disabled.
     service_api_platform_key: str = ""
 
+    # ─── House style-template library ───
+    # Style templates are tenant-scoped, but the HOUSE library (scope='platform',
+    # owned by the platform tenant added in migration 057) is readable by every
+    # brand so a brand-new signup has renderable reel formats on day one.
+    # Curating it — publishing, editing, retiring a house template — is allowed
+    # only from this tenant. Unset = default_tenant_id, the operator's own.
+    platform_curator_tenant_id: UUID | None = None
+
     # ─── Video generation ───
     # Generative clips (Runway Gen-3/4). Provider-abstracted with a stub
     # so the durable job pipeline (submit → poll → land in approval queue)

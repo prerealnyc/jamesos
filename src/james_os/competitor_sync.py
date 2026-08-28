@@ -561,6 +561,10 @@ async def gallery(
         # gallery with cards that could never render. A post is worth showing
         # when we can actually show it.
         clauses.append("p.stored_media_url <> ''")
+    if not replicate:
+        # 'skipped' means the brand said this does not belong. Keep showing it
+        # and the rejection accomplishes nothing; they re-read it every visit.
+        clauses.append("p.replicate_status <> 'skipped'")
     order = {
         "engagement": "p.engagement_rate DESC NULLS LAST, p.likes DESC",
         "likes": "p.likes DESC",
@@ -596,17 +600,36 @@ async def gallery(
     return out
 
 
+# The brand's verdicts. Free text in the column (no CHECK), so this tuple is
+# the only gate — keep it as the single source of truth.
+_REPLICATE_STATUSES = ("", "saved", "template", "idea", "skipped", "queued")
+
+
 async def set_replicate(
     post_id: str, status: str, note: str = "", tenant_id: UUID | None = None,
 ) -> dict:
     """Record the brand's verdict on one post.
 
+    The verdicts are deliberately distinct, because they route differently:
+
+      saved     replicate this piece — make our version of it
+      template  the STRUCTURE is worth reusing, not this one post; it becomes
+                a reusable format rather than a one-off
+      idea      not the execution, the concept — goes to the strategiser as a
+                thing to create, and the post it came from is the reference
+                (the link back IS this row: the verdict lives on the post)
+      skipped   does not belong in our set — hidden from the shelf so the
+                brand stops re-reading a post it already rejected
+      queued    a draft has been generated from it
+
     '' clears it back to untouched, which matters: a brand changing its mind
     should leave no trace of the earlier pick.
     """
     status = (status or "").strip().lower()
-    if status not in ("", "saved", "skipped", "queued"):
-        raise ValueError("status must be '', 'saved', 'skipped' or 'queued'")
+    if status not in _REPLICATE_STATUSES:
+        raise ValueError(
+            "status must be one of: '' (clear), "
+            + ", ".join(repr(x) for x in sorted(_REPLICATE_STATUSES) if x))
     async with acquire(tenant_id) as conn:
         row = await conn.fetchrow(
             """UPDATE competitor_posts
@@ -628,9 +651,11 @@ async def set_replicate(
 async def replicate_counts(tenant_id: UUID | None = None) -> dict:
     async with acquire(tenant_id) as conn:
         row = await conn.fetchrow(
-            """SELECT count(*) FILTER (WHERE replicate_status = 'saved')   AS saved,
-                      count(*) FILTER (WHERE replicate_status = 'skipped') AS skipped,
-                      count(*) FILTER (WHERE replicate_status = 'queued')  AS queued,
+            """SELECT count(*) FILTER (WHERE replicate_status = 'saved')    AS saved,
+                      count(*) FILTER (WHERE replicate_status = 'template') AS template,
+                      count(*) FILTER (WHERE replicate_status = 'idea')     AS idea,
+                      count(*) FILTER (WHERE replicate_status = 'skipped')  AS skipped,
+                      count(*) FILTER (WHERE replicate_status = 'queued')   AS queued,
                       count(*) FILTER (WHERE stored_media_url <> '')       AS with_media,
                       count(*) AS total
                  FROM competitor_posts""")

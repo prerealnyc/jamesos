@@ -8,10 +8,13 @@ import {
   type MediaAsset,
   type Production,
   type StyleTemplate,
+  type TemplateBuilderSpec,
+  type TemplateCapabilities,
   type TemplateSegment,
 } from "@/lib/api";
 import { PageHeader, Card, Button, Badge, Spinner } from "@/components/ui";
 import { MediaTabs } from "@/components/media-tabs";
+import { TemplateBuilder } from "@/components/template-builder";
 
 export default function StyleTemplatesPage() {
   const [templates, setTemplates] = useState<StyleTemplate[]>([]);
@@ -21,17 +24,29 @@ export default function StyleTemplatesPage() {
   >([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [caps, setCaps] = useState<TemplateCapabilities | null>(null);
+  const [canCurate, setCanCurate] = useState(false);
+  // The builder doubles as the create AND edit door.
+  const [builder, setBuilder] = useState<
+    | { mode: "create" }
+    | { mode: "edit"; id: string; spec: TemplateBuilderSpec; scope: "brand" | "platform" }
+    | null
+  >(null);
+  const [seeding, setSeeding] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [t, m, c] = await Promise.all([
+      const [t, m, c, cap] = await Promise.all([
         api.listTemplates(),
         api.listMedia("style_reference"),
         api.listCompositions(),
+        api.templateCapabilities(),
       ]);
       setTemplates(t.templates);
       setRefs(m.media);
       setComps(c.compositions);
+      setCaps(cap);
+      setCanCurate(cap.can_curate_platform);
       setErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "load failed");
@@ -75,11 +90,43 @@ export default function StyleTemplatesPage() {
     return () => clearInterval(id);
   }, [anyPending, load]);
 
+  // The house library ships with the product; a brand's own templates are the
+  // ones it built or forked. They're shown apart because the actions differ.
+  const house = useMemo(() => templates.filter((t) => t.scope === "platform"), [templates]);
+  const mine = useMemo(() => templates.filter((t) => t.scope !== "platform"), [templates]);
+
+  async function seedHouse() {
+    setSeeding(true);
+    try {
+      const r = await api.seedHouseTemplates();
+      if (r.errors.length) setErr(r.errors.join("; "));
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "seeding failed");
+    } finally {
+      setSeeding(false);
+    }
+  }
+
+  function openEditor(t: StyleTemplate) {
+    api
+      .getTemplateSpec(t.id)
+      .then((r) =>
+        setBuilder({
+          mode: "edit",
+          id: t.id,
+          spec: r.spec,
+          scope: r.scope === "platform" ? "platform" : "brand",
+        }),
+      )
+      .catch((e) => setErr(e instanceof Error ? e.message : "could not open the template"));
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Style Templates"
-        sub="Reference videos, reverse-engineered into reusable production templates — your library of trending video styles. Upload a video under Media Library → Style references and the Design Inspector watches the whole clip, then names and stores the style here."
+        sub="Reusable reel formats. Build one by hand, or upload a reference video under Media Library → Style references and let the Design Inspector reverse-engineer it. Every brand also inherits the shared house formats, ready to replicate on day one."
       />
       <MediaTabs />
 
@@ -147,24 +194,105 @@ export default function StyleTemplatesPage() {
         <>
           <UninspectedSection items={uninspected} onChange={load} />
 
-          {templates.length === 0 ? (
-            <p className="text-[13px] text-muted-foreground">
-              No style templates yet. Upload a reference video in the{" "}
-              <b>Media Library → Style references</b> tab — it&apos;s inspected
-              automatically and the extracted style appears here.
-            </p>
-          ) : (
-            <div className="flex flex-col gap-4">
-              {templates.map((t) => (
+          {/* ── build / seed ── */}
+          {caps && (
+            <Card>
+              {builder ? (
+                <>
+                  <div className="text-[15px] font-semibold mb-1">
+                    {builder.mode === "edit" ? "Edit template" : "Build a template"}
+                  </div>
+                  <p className="text-[12px] text-muted-foreground mb-3">
+                    Every option here is one the renderer can actually produce, and the
+                    preview below shows exactly what it will do before you save.
+                  </p>
+                  <TemplateBuilder
+                    caps={caps}
+                    initial={builder.mode === "edit" ? builder.spec : undefined}
+                    templateId={builder.mode === "edit" ? builder.id : undefined}
+                    initialScope={builder.mode === "edit" ? builder.scope : undefined}
+                    onSaved={() => {
+                      setBuilder(null);
+                      load();
+                    }}
+                    onCancel={() => setBuilder(null)}
+                  />
+                </>
+              ) : (
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[15px] font-semibold">Build a reel template</div>
+                    <p className="text-[12px] text-muted-foreground mt-0.5">
+                      State the format — layout, captions, music, beats — and save it as a
+                      reusable style. No reference video needed.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {canCurate && house.length === 0 && (
+                      <Button variant="secondary" onClick={seedHouse} disabled={seeding}>
+                        {seeding ? (
+                          <span className="flex items-center gap-2"><Spinner /> seeding…</span>
+                        ) : (
+                          "Seed the starter formats"
+                        )}
+                      </Button>
+                    )}
+                    <Button onClick={() => setBuilder({ mode: "create" })}>
+                      ＋ Build a template
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </Card>
+          )}
+
+          {/* ── the house library ── */}
+          {house.length > 0 && (
+            <div className="flex flex-col gap-3">
+              <div>
+                <div className="text-[15px] font-semibold">House formats</div>
+                <p className="text-[12px] text-muted-foreground">
+                  Shared with every brand. Replicate one as-is — the render fills in this
+                  brand&apos;s own voice, hero and logo — or take a copy to change it.
+                </p>
+              </div>
+              {house.map((t) => (
                 <TemplateCard
                   key={t.id}
                   t={t}
                   ref_={t.reference_media_id ? refById.get(t.reference_media_id) : undefined}
+                  canCurate={canCurate}
+                  onEdit={openEditor}
                   onChange={load}
                 />
               ))}
             </div>
           )}
+
+          {/* ── this brand's own ── */}
+          <div className="flex flex-col gap-3">
+            {house.length > 0 && mine.length > 0 && (
+              <div className="text-[15px] font-semibold">This brand&apos;s templates</div>
+            )}
+            {mine.length === 0 ? (
+              <p className="text-[13px] text-muted-foreground">
+                {house.length > 0
+                  ? "This brand hasn't built a template of its own yet — replicate a house format above, or build one."
+                  : "No style templates yet. Build one above, or upload a reference video in the Media Library → Style references tab and it's inspected automatically."}
+              </p>
+            ) : (
+              mine.map((t) => (
+                <TemplateCard
+                  key={t.id}
+                  t={t}
+                  ref_={t.reference_media_id ? refById.get(t.reference_media_id) : undefined}
+                  canCurate={canCurate}
+                  onEdit={openEditor}
+                  onChange={load}
+                />
+              ))
+            )}
+          </div>
         </>
       )}
     </div>
@@ -237,14 +365,23 @@ const STATUS_TONE: Record<string, "ok" | "primary" | "destructive" | "muted"> = 
 function TemplateCard({
   t,
   ref_,
+  canCurate = false,
+  onEdit,
   onChange,
 }: {
   t: StyleTemplate;
   ref_?: MediaAsset;
+  canCurate?: boolean;
+  onEdit?: (t: StyleTemplate) => void;
   onChange: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [rep, setRep] = useState(false);
+  const [busy, setBusy] = useState("");
+  // A house template belongs to the shared library: this brand can replicate it
+  // and copy it, but only the curator can change it.
+  const isHouse = t.scope === "platform";
+  const canEdit = !isHouse || canCurate;
   const tpl = t.template || {};
   const caps = tpl.captions || {};
   const logo = tpl.logo || {};
@@ -258,9 +395,34 @@ function TemplateCard({
     onChange();
   }
   async function del() {
-    if (!confirm(`Delete the “${t.name}” template? The reference video stays.`)) return;
+    const what = isHouse
+      ? `Retire the “${t.name}” house format? Brands that already copied it keep their copies.`
+      : `Delete the “${t.name}” template? The reference video stays.`;
+    if (!confirm(what)) return;
     await api.deleteTemplate(t.id);
     onChange();
+  }
+  // Take a house format and make it this brand's own, so it can be changed
+  // without touching the shared original.
+  async function fork() {
+    setBusy("fork");
+    try {
+      await api.forkTemplate(t.id);
+      onChange();
+    } finally {
+      setBusy("");
+    }
+  }
+  // Promote this brand's template into the house library for every brand.
+  async function publish() {
+    if (!confirm(`Publish “${t.name}” to the house library? Every brand will see it.`)) return;
+    setBusy("publish");
+    try {
+      await api.publishTemplate(t.id);
+      onChange();
+    } finally {
+      setBusy("");
+    }
   }
 
   return (
@@ -276,7 +438,11 @@ function TemplateCard({
             />
           ) : (
             <span className="text-[11px] text-muted-foreground px-3 text-center">
-              reference video removed
+              {t.origin === "authored"
+                ? "built by hand — no reference video"
+                : t.origin === "forked"
+                  ? "copied from another template"
+                  : "reference video removed"}
             </span>
           )}
         </div>
@@ -285,21 +451,54 @@ function TemplateCard({
         <div className="flex-1 min-w-0 p-4 flex flex-col gap-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="text-[15px] font-semibold truncate">{t.name}</h3>
                 <Badge tone={STATUS_TONE[t.status] || "muted"}>{t.status}</Badge>
+                {isHouse && <Badge tone="accent">house</Badge>}
+                {t.origin === "authored" && <Badge tone="muted">built by hand</Badge>}
+                {t.origin === "forked" && <Badge tone="muted">copy</Badge>}
               </div>
               {t.summary && (
                 <p className="text-[13px] text-muted-foreground mt-1">{t.summary}</p>
               )}
             </div>
             <div className="flex items-center gap-3 text-[11px] shrink-0">
-              <button onClick={rename} className="text-muted-foreground hover:text-foreground">
-                rename
-              </button>
-              <button onClick={del} className="text-muted-foreground hover:text-destructive">
-                delete
-              </button>
+              {isHouse && (
+                <button
+                  onClick={fork}
+                  disabled={!!busy}
+                  className="text-primary hover:underline disabled:opacity-50"
+                >
+                  {busy === "fork" ? "copying…" : "use in this brand"}
+                </button>
+              )}
+              {!isHouse && canCurate && (
+                <button
+                  onClick={publish}
+                  disabled={!!busy}
+                  className="text-muted-foreground hover:text-foreground disabled:opacity-50"
+                >
+                  {busy === "publish" ? "publishing…" : "publish to house"}
+                </button>
+              )}
+              {canEdit && onEdit && (
+                <button
+                  onClick={() => onEdit(t)}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  edit
+                </button>
+              )}
+              {canEdit && (
+                <>
+                  <button onClick={rename} className="text-muted-foreground hover:text-foreground">
+                    rename
+                  </button>
+                  <button onClick={del} className="text-muted-foreground hover:text-destructive">
+                    {isHouse ? "retire" : "delete"}
+                  </button>
+                </>
+              )}
             </div>
           </div>
 

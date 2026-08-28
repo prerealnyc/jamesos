@@ -15,6 +15,7 @@
     POST /competitors/analyze             run the visual eyes  (background)
     GET  /competitors/analyze/{job_id}    poll the analysis job
     GET  /competitors/analyses            what the eyes saw, per post
+    GET  /competitors/gap                 what they post that we don't
     POST /competitors/media/fetch         Apify → download + store the files
     POST /competitors/profiles/build      roll posts+analyses into profiles
     GET  /competitors/profiles            per-competitor: cadence, formats,
@@ -46,6 +47,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from . import (
+    competitor_gap,
     competitor_media,
     competitor_profile,
     competitor_sync,
@@ -388,6 +390,19 @@ async def competitors_media_job(job_id: str) -> dict:
     if not job:
         raise HTTPException(404, "media job not found (expired or unknown)")
     return {"job_id": job_id, **job}
+
+
+# ── the gap: theirs vs ours ───────────────────────────────────────────
+
+@router.get("/competitors/gap")
+async def competitors_gap() -> dict:
+    """What the peer group posts, what we have, and what we are missing.
+
+    Every figure is computed from stored rows; only the narrative is written
+    by a model, and it is handed those figures. Returns
+    `insufficient_evidence` rather than a confident answer when either side
+    is too thin to support one."""
+    return await competitor_gap.content_gap()
 
 
 # ── profiles: the rollup ──────────────────────────────────────────────

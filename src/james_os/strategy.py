@@ -46,14 +46,18 @@ PRESCRIPTION for the brand in <brand_profile> — the plan a $200k/yr human
 brand manager would put on the table Monday morning.
 
 You are given: per-platform algorithm playbooks, peer benchmarks (what
-accounts at the target tier actually do), and the brand's recent output
+accounts at the target tier actually do), a measured CONTENT GAP (what the
+peer group posts that this brand does not), and the brand's recent output
 inventory. Compose:
 
 * plan — one line per (platform × format) worth doing: how many per week,
   which topics (drawn from the brand's pillars; call out UNDERWEIGHT
   pillars), and WHY. EVERY line must carry evidence[] — each item names
-  its source: "playbook: …", "peer: …", "inventory: …", or "canon: …". If you
-  cannot ground a line, do not write it.
+  its source: "playbook: …", "peer: …", "gap: …", "inventory: …", or
+  "canon: …". If you cannot ground a line, do not write it.
+  Where <content_gap> names something the peer group does well and this brand
+  does not do at all, that is the highest-value line on the page — say so, and
+  say what has to be shot or made before it can happen.
 * growth_actions — 2-5 moves beyond posting (next-tier podcast/guest
   targets, collab, promote a proven performer, platform to add), each with
   why + evidence.
@@ -241,6 +245,14 @@ async def compose_prescription(tenant_id: UUID | None = None) -> dict:
         for p in playbooks) or "(no playbooks yet — ground in peers/inventory)"
     peers_block = await _latest_peer_block(tenant_id) or "(no peer snapshots yet)"
     inventory = await _inventory_block(tenant_id)
+    # What the peer group posts that we do not — measured from real competitor
+    # posts we hold and analysed, against our own output. Best-effort and
+    # additive: a brand with no competitor shelf yet gets the plan it got before.
+    try:
+        from .competitor_gap import gap_block
+        gap = await gap_block(tenant_id)
+    except Exception:  # noqa: BLE001
+        gap = ""
     # Shared marketing canon (growth laws, content mix, benchmarks, platform
     # specs) retrieved for this brand's niche — the strategist may cite it as
     # "canon: …". Additive and best-effort.
@@ -261,6 +273,7 @@ async def compose_prescription(tenant_id: UUID | None = None) -> dict:
         messages=[{"role": "user", "content":
                    f"{block}\n\n{canon_part}<playbooks>\n{pb_block}\n</playbooks>\n\n"
                    f"<peer_benchmarks>\n{peers_block}\n</peer_benchmarks>\n\n"
+                   f"<content_gap>\n{gap or '(not computed)'}\n</content_gap>\n\n"
                    f"<recent_output>\n{inventory}\n</recent_output>"}],
         max_tokens=2200, temperature=0.4,
     )

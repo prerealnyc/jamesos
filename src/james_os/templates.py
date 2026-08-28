@@ -34,6 +34,9 @@ def _row(r) -> dict:
     d["id"] = str(d["id"])
     if d.get("reference_media_id") is not None:
         d["reference_media_id"] = str(d["reference_media_id"])
+    if d.get("source_template_id") is not None:
+        d["source_template_id"] = str(d["source_template_id"])
+    # scope/origin ride along as plain columns; tenant_id never leaves the API.
     d.pop("tenant_id", None)
     if isinstance(d.get("template"), str):
         d["template"] = json.loads(d["template"])
@@ -43,11 +46,20 @@ def _row(r) -> dict:
     return d
 
 
-async def list_templates(tenant_id: UUID | None = None) -> list[dict]:
+async def list_templates(
+    tenant_id: UUID | None = None, scope: str = ""
+) -> list[dict]:
+    """The readable library: this brand's own templates PLUS the house library
+    (migration 057's read policy returns both). `scope` narrows it to one side —
+    'brand' for only this brand's, 'platform' for only the house set."""
+    sql = "SELECT * FROM style_templates"
+    args: list = []
+    if scope in ("brand", "platform"):
+        args.append(scope)
+        sql += " WHERE scope = $1"
+    sql += " ORDER BY trending_score DESC, created_at DESC"
     async with acquire(tenant_id) as conn:
-        rows = await conn.fetch(
-            "SELECT * FROM style_templates ORDER BY trending_score DESC, created_at DESC"
-        )
+        rows = await conn.fetch(sql, *args)
     return [_row(r) for r in rows]
 
 
@@ -309,10 +321,215 @@ async def build_template_from_media(
     return {"status": "done", "template": row, "similar_to": similar or None}
 
 
+# ── the house library ────────────────────────────────────────────────
+# House (platform-scope) templates are owned by the platform tenant from
+# migration 057. Every brand READS them — that is how a brand-new signup has
+# renderable reel formats before it has uploaded a single reference video —
+# and no brand can WRITE them: the RLS write policy is strictly tenant-scoped,
+# so curating the house library means connecting AS the platform tenant, which
+# only the curator tenant is allowed to ask for.
+
+PLATFORM_TENANT_ID = UUID("00000000-0000-0000-0000-0000000000f0")
+
+
+def curator_tenant_id() -> UUID:
+    """The one tenant allowed to curate the house library."""
+    return settings.platform_curator_tenant_id or settings.default_tenant_id
+
+
+def can_curate_platform(tenant_id: UUID | None) -> bool:
+    """Is this tenant the house-library curator? The gate for publishing,
+    editing and retiring house templates."""
+    return UUID(str(tenant_id or settings.default_tenant_id)) == curator_tenant_id()
+
+
+def _duration_of(template: dict) -> int:
+    """Seconds a template's authored beats add up to (0 when it has none —
+    the avatar modes drive their own length from the script)."""
+    total = 0.0
+    for seg in (template or {}).get("segments") or []:
+        if not isinstance(seg, dict):
+            continue
+        try:
+            total += float(seg.get("end") or 0) - float(seg.get("start") or 0)
+        except (TypeError, ValueError):
+            continue
+    return int(round(max(0.0, total)))
+
+
+async def _insert_template(
+    *,
+    write_tenant: UUID | None,
+    scope: str,
+    origin: str,
+    template: dict,
+    tags: list[str] | None = None,
+    trending_score: float = 0.0,
+    source_template_id: UUID | None = None,
+) -> dict:
+    """Insert a template that did NOT come from a reference video. Deliberately
+    leaves reference_media_id NULL: style_templates_ref_uniq is a GLOBAL unique
+    index, so a copy that carried its source's reference id would collide across
+    tenants. Lineage is recorded in source_template_id instead.
+
+    tenant_id is left to the column DEFAULT (current_setting('app.current_tenant'))
+    so the row can only ever be stamped with the tenant we actually connected
+    as — the write policy and the scope/tenant CHECK both bind it."""
+    name = (template.get("style_name") or "Untitled style").strip()[:120]
+    async with acquire(write_tenant) as conn:
+        r = await conn.fetchrow(
+            """
+            INSERT INTO style_templates
+              (name, slug, summary, format_type, production_mode, duration,
+               template, transcript, status, tags, trending_score,
+               scope, origin, source_template_id)
+            VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,'','ready',$8::text[],$9,$10,$11,$12)
+            RETURNING *
+            """,
+            name, _slugify(name), str(template.get("summary", ""))[:500],
+            str(template.get("format_type", "")),
+            str(template.get("production_mode", "")),
+            _duration_of(template), json.dumps(template),
+            list(tags or []), float(trending_score),
+            scope, origin, source_template_id,
+        )
+    return _row(r)
+
+
+async def create_template(
+    spec: dict,
+    *,
+    tenant_id: UUID | None = None,
+    scope: str = "brand",
+    tags: list[str] | None = None,
+    trending_score: float = 0.0,
+) -> dict:
+    """Hand-authored template → a stored, replicable library entry. Raises
+    ValueError (listing every problem) when the spec isn't renderable."""
+    from .template_spec import build_template
+
+    if scope not in ("brand", "platform"):
+        raise ValueError("scope must be 'brand' or 'platform'")
+    template = build_template(spec)          # validates; raises on a bad spec
+    write_tenant = PLATFORM_TENANT_ID if scope == "platform" else tenant_id
+    row = await _insert_template(
+        write_tenant=write_tenant, scope=scope, origin="authored",
+        template=template, tags=tags, trending_score=trending_score,
+    )
+    similar = await _mark_similar(row, template, write_tenant)
+    if similar:
+        row["tags"] = [t for t in (row.get("tags") or [])
+                       if not str(t).startswith("similar to:")] + [f"similar to: {similar}"]
+    return row
+
+
+async def update_template_spec(
+    template_id: UUID,
+    spec: dict,
+    *,
+    tenant_id: UUID | None = None,
+    as_platform: bool = False,
+) -> dict | None:
+    """Rewrite a template from an edited builder spec, in place. `as_platform`
+    curates a house template (the caller must have checked can_curate_platform);
+    otherwise RLS confines the write to the caller's own brand, and a house row
+    simply matches nothing → None."""
+    from .template_spec import build_template
+
+    template = build_template(spec)          # validates; raises on a bad spec
+    name = (template.get("style_name") or "Untitled style").strip()[:120]
+    write_tenant = PLATFORM_TENANT_ID if as_platform else tenant_id
+    async with acquire(write_tenant) as conn:
+        r = await conn.fetchrow(
+            """
+            UPDATE style_templates SET
+              name = $2, slug = $3, summary = $4, format_type = $5,
+              production_mode = $6, duration = $7, template = $8::jsonb,
+              status = 'ready', updated_at = now()
+            WHERE id = $1 RETURNING *
+            """,
+            template_id, name, _slugify(name),
+            str(template.get("summary", ""))[:500],
+            str(template.get("format_type", "")),
+            str(template.get("production_mode", "")),
+            _duration_of(template), json.dumps(template),
+        )
+    return _row(r) if r else None
+
+
+async def fork_template(
+    template_id: UUID, *, tenant_id: UUID | None = None, name: str = ""
+) -> dict | None:
+    """Copy a readable template into the caller's OWN brand — the "use this
+    house format, then make it mine" move. The copy is independent: editing it
+    never touches the house original, and the house original updating never
+    silently changes a brand's copy. Returns None if the id isn't readable."""
+    src = await get_template(template_id, tenant_id)
+    if src is None:
+        return None
+    template = dict(src.get("template") or {})
+    if name.strip():
+        template["style_name"] = name.strip()[:120]
+    elif src.get("scope") == "platform":
+        # Distinguish the copy from the house original in a shared list.
+        template["style_name"] = f"{template.get('style_name') or src.get('name') or 'Style'} (mine)"[:120]
+    return await _insert_template(
+        write_tenant=tenant_id, scope="brand", origin="forked",
+        template=template, tags=list(src.get("tags") or []),
+        trending_score=float(src.get("trending_score") or 0),
+        source_template_id=UUID(str(src["id"])),
+    )
+
+
+async def publish_to_platform(
+    template_id: UUID, *, tenant_id: UUID | None = None, name: str = ""
+) -> dict | None:
+    """Promote one of this brand's templates into the house library, where every
+    brand can replicate it. A COPY is published, not a move: the brand keeps its
+    own template, and later edits to it don't mutate the published house entry.
+
+    The caller must have checked can_curate_platform() — this writes as the
+    platform tenant, which is the whole privilege."""
+    src = await get_template(template_id, tenant_id)
+    if src is None:
+        return None
+    if src.get("scope") == "platform":
+        raise ValueError("that template is already in the house library")
+    template = dict(src.get("template") or {})
+    if name.strip():
+        template["style_name"] = name.strip()[:120]
+    return await _insert_template(
+        write_tenant=PLATFORM_TENANT_ID, scope="platform", origin="forked",
+        template=template, tags=list(src.get("tags") or []),
+        trending_score=float(src.get("trending_score") or 0),
+        source_template_id=UUID(str(src["id"])),
+    )
+
+
+async def delete_platform_template(template_id: UUID) -> bool:
+    """Retire a house template. Brands that already forked it keep their copies —
+    source_template_id is ON DELETE SET NULL, so a fork outlives its origin."""
+    async with acquire(PLATFORM_TENANT_ID) as conn:
+        r = await conn.fetchrow(
+            "DELETE FROM style_templates WHERE id = $1 AND scope = 'platform' "
+            "RETURNING id",
+            template_id,
+        )
+    return r is not None
+
+
 __all__ = [
     "list_templates",
     "get_template",
     "rename_template",
     "delete_template",
     "build_template_from_media",
+    "create_template",
+    "update_template_spec",
+    "fork_template",
+    "publish_to_platform",
+    "delete_platform_template",
+    "can_curate_platform",
+    "curator_tenant_id",
+    "PLATFORM_TENANT_ID",
 ]

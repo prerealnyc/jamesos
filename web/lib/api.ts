@@ -619,6 +619,72 @@ export type StyleTemplate = {
   trending_score: number;
   created_at: string;
   updated_at: string;
+  // Provenance (migration 057). scope='platform' = a HOUSE template shared with
+  // every brand — readable here, editable only by the curator.
+  scope?: "brand" | "platform";
+  origin?: "inspector" | "authored" | "forked";
+  source_template_id?: string | null;
+};
+
+// ── the template builder ────────────────────────────────────────────
+// A hand-authored reel format. The backend validates this against what the
+// renderer can actually produce and turns it into the same template JSON the
+// Design Inspector emits, so an authored template replicates like any other.
+export type TemplateBeat = {
+  role: "talking_head" | "b_roll" | "text_card" | "demo" | "overlay" | string;
+  seconds: number;
+  visual?: string;
+  on_screen_text?: string;
+  transition_out?: string;
+};
+
+export type TemplateBuilderSpec = {
+  name: string;
+  summary?: string;
+  layout: string;
+  layout_description?: string;
+  production_mode?: string;
+  aspect?: string;
+  format_type?: string;
+  caption_preset?: string;
+  music?: string;
+  music_notes?: string;
+  logo?: { present: boolean; position?: string };
+  hook?: string;
+  energy?: string;
+  avg_cut_seconds?: number;
+  pacing_notes?: string;
+  beats?: TemplateBeat[];
+  distinctive_features?: string[];
+  replication_recipe?: string[];
+  color_palette?: string;
+  vibe?: string;
+};
+
+export type TemplateCapabilities = {
+  layouts: { value: string; label: string }[];
+  modes: { value: string; label: string }[];
+  aspects: string[];
+  caption_presets: { value: string; label: string; description: string }[];
+  music_moods: { value: string; label: string }[];
+  logo_positions: string[];
+  format_types: string[];
+  beat_roles: string[];
+  energies: string[];
+  limits: { beat_min_seconds: number; beat_max_seconds: number; max_beats: number };
+  beats_drive_render_in: string[];
+  can_curate_platform: boolean;
+};
+
+export type TemplatePreview = {
+  valid: boolean;
+  errors: string[];
+  applied?: {
+    mode: string; caption_style: string; music_mood: string;
+    aspect: string; logo: string; scenes: number;
+  };
+  approximations?: string[];
+  beats_drive_render?: boolean;
 };
 
 export type Scene = {
@@ -1661,7 +1727,42 @@ export const api = {
   // ── Style Templates: the "library of trending video styles" ─────
   // Style references are inspected automatically on upload; these let
   // the library list them, (re-)inspect on demand, rename, and remove.
-  listTemplates: () => jget<{ templates: StyleTemplate[] }>("/templates"),
+  // Returns this brand's own templates AND the shared house library; pass
+  // scope to narrow to one side.
+  listTemplates: (scope = "") =>
+    jget<{ templates: StyleTemplate[]; can_curate_platform: boolean }>(
+      `/templates${scope ? `?scope=${scope}` : ""}`,
+    ),
+  // ── builder ──
+  templateCapabilities: () => jget<TemplateCapabilities>("/templates/capabilities"),
+  // What a spec WILL render as, before saving anything.
+  previewTemplateSpec: (spec: TemplateBuilderSpec) =>
+    jpost<TemplatePreview>("/templates/preview", { spec }),
+  createTemplate: (body: {
+    spec: TemplateBuilderSpec; scope?: "brand" | "platform";
+    tags?: string[]; trending_score?: number;
+  }) => jpost<StyleTemplate>("/templates", body),
+  // A stored template as builder fields — including one reverse-engineered
+  // from a reference reel, so it can be adjusted instead of only replicated.
+  getTemplateSpec: (id: string) =>
+    jget<{
+      id: string; scope: string; origin: string; editable: boolean;
+      spec: TemplateBuilderSpec;
+    }>(`/templates/${id}/spec`),
+  putTemplateSpec: (id: string, spec: TemplateBuilderSpec) =>
+    jput<StyleTemplate>(`/templates/${id}/spec`, { spec }),
+  // Copy a template (typically a house one) into this brand to make it mine.
+  forkTemplate: (id: string, name = "") =>
+    jpost<StyleTemplate>(`/templates/${id}/fork`, { name }),
+  // Promote one of this brand's templates into the house library (curator only).
+  publishTemplate: (id: string, name = "") =>
+    jpost<StyleTemplate>(`/templates/${id}/publish`, { name }),
+  // Seed the house library with the starter reel formats (curator only).
+  seedHouseTemplates: (dryRun = false) =>
+    jpost<{
+      created: string[]; skipped: string[]; errors: string[];
+      total: number; dry_run: boolean;
+    }>(`/templates/house/seed${dryRun ? "?dry_run=true" : ""}`, {}),
   // Render-composition build queue — which reference layouts we can render
   // today (live) vs are queued to build (e.g. split-screen).
   listCompositions: () =>

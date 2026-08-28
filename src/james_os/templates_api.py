@@ -31,9 +31,13 @@ def _tenant():
 
 
 @router.get("/templates")
-async def templates_list() -> dict:
-    """The style library — newest / highest-ranked first."""
-    return {"templates": await T.list_templates(_tenant())}
+async def templates_list(scope: str = "") -> dict:
+    """The style library — newest / highest-ranked first. Returns this brand's
+    own templates AND the house library; `scope=brand|platform` narrows it."""
+    return {
+        "templates": await T.list_templates(_tenant(), scope=scope),
+        "can_curate_platform": T.can_curate_platform(_tenant()),
+    }
 
 
 @router.get("/compositions")
@@ -121,6 +125,163 @@ async def higgsfield_train_soul(req: TrainSoulRequest) -> dict:
     return {"ok": True, "reference_id": res["reference_id"], "status": res.get("status"),
             "trained_on": res.get("trained_on"),
             "note": "Soul training started (~3–5 min). Refresh Soul IDs above, then click 'Use for James'."}
+
+
+# ── the builder ──────────────────────────────────────────────────────
+# NOTE ordering: every STATIC /templates/* path below must stay declared BEFORE
+# /templates/{template_id}. That route parses its segment as a UUID, so a later
+# "capabilities" would be matched by it and rejected as a 422 rather than
+# falling through to the real handler.
+
+@router.get("/templates/capabilities")
+async def template_capabilities() -> dict:
+    """The builder's whole vocabulary — layouts, modes, caption presets, music
+    beds, limits — derived from what the render engine can actually produce, so
+    the form can never offer something unrenderable. Includes whether THIS
+    tenant may curate the house library."""
+    from . import template_spec
+
+    caps = template_spec.capabilities()
+    caps["can_curate_platform"] = T.can_curate_platform(_tenant())
+    return caps
+
+
+class SpecRequest(BaseModel):
+    spec: dict
+
+
+@router.post("/templates/preview")
+async def template_preview(req: SpecRequest) -> dict:
+    """What this spec WILL render as — mode, caption preset, music bed, aspect,
+    scene count, and every approximation — computed before anything is saved.
+    Returns the validation errors instead when the spec isn't renderable."""
+    from . import template_spec
+
+    errors = template_spec.validate_spec(req.spec or {})
+    if errors:
+        return {"valid": False, "errors": errors}
+    return {"valid": True, "errors": [], **template_spec.preview_render(req.spec or {})}
+
+
+@router.post("/templates/house/seed", status_code=201)
+async def template_house_seed(dry_run: bool = False) -> dict:
+    """Seed the house library with the starter reel formats. Idempotent — adds
+    only what's missing, never overwrites a curated house template. Declared
+    above /templates/{template_id}/spec on purpose: both are two-segment paths,
+    and "house" is not a UUID."""
+    from .starter_templates import seed_house_library
+
+    if not T.can_curate_platform(_tenant()):
+        raise HTTPException(
+            status_code=403,
+            detail="only the house-library curator can seed the house library",
+        )
+    return await seed_house_library(dry_run=dry_run)
+
+
+class CreateTemplateRequest(BaseModel):
+    spec: dict
+    scope: str = "brand"      # 'brand' = mine | 'platform' = the house library
+    tags: list[str] = []
+    trending_score: float = 0
+
+
+@router.post("/templates", status_code=201)
+async def template_create(req: CreateTemplateRequest) -> dict:
+    """Hand-author a reel template — no reference video required. This is the
+    insert path the library never had: state the format and save it."""
+    tenant = _tenant()
+    scope = (req.scope or "brand").strip().lower()
+    if scope not in ("brand", "platform"):
+        raise HTTPException(status_code=400, detail="scope must be 'brand' or 'platform'")
+    if scope == "platform" and not T.can_curate_platform(tenant):
+        raise HTTPException(
+            status_code=403,
+            detail="only the house-library curator can publish a platform template",
+        )
+    try:
+        return await T.create_template(
+            req.spec or {}, tenant_id=tenant, scope=scope,
+            tags=req.tags, trending_score=req.trending_score,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.get("/templates/{template_id}/spec")
+async def template_spec_get(template_id: UUID) -> dict:
+    """A stored template as BUILDER FIELDS — including one the Design Inspector
+    reverse-engineered from a reference reel. This is what lets an inspected
+    style be opened, adjusted and saved instead of staying a locked artifact."""
+    from . import template_spec as TS
+
+    row = await T.get_template(template_id, _tenant())
+    if row is None:
+        raise HTTPException(status_code=404, detail="template not found")
+    return {
+        "id": row["id"],
+        "scope": row.get("scope", "brand"),
+        "origin": row.get("origin", "inspector"),
+        "editable": row.get("scope") != "platform" or T.can_curate_platform(_tenant()),
+        "spec": TS.template_to_spec(row.get("template") or {}),
+    }
+
+
+@router.put("/templates/{template_id}/spec")
+async def template_spec_put(template_id: UUID, req: SpecRequest) -> dict:
+    """Save an edited spec over an existing template."""
+    tenant = _tenant()
+    row = await T.get_template(template_id, tenant)
+    if row is None:
+        raise HTTPException(status_code=404, detail="template not found")
+    as_platform = row.get("scope") == "platform"
+    if as_platform and not T.can_curate_platform(tenant):
+        raise HTTPException(
+            status_code=403,
+            detail="this is a house template — fork it to make your own editable copy",
+        )
+    try:
+        updated = await T.update_template_spec(
+            template_id, req.spec or {}, tenant_id=tenant, as_platform=as_platform
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if updated is None:
+        raise HTTPException(status_code=404, detail="template not found")
+    return updated
+
+
+class ForkRequest(BaseModel):
+    name: str = ""
+
+
+@router.post("/templates/{template_id}/fork", status_code=201)
+async def template_fork(template_id: UUID, req: ForkRequest) -> dict:
+    """Copy a template — typically a house one — into THIS brand, so it can be
+    renamed and tweaked without touching the original."""
+    row = await T.fork_template(template_id, tenant_id=_tenant(), name=req.name)
+    if row is None:
+        raise HTTPException(status_code=404, detail="template not found")
+    return row
+
+
+@router.post("/templates/{template_id}/publish", status_code=201)
+async def template_publish(template_id: UUID, req: ForkRequest) -> dict:
+    """Promote one of this brand's templates into the house library, where every
+    brand — including brands that don't exist yet — can replicate it."""
+    tenant = _tenant()
+    if not T.can_curate_platform(tenant):
+        raise HTTPException(
+            status_code=403,
+            detail="only the house-library curator can publish to the house library",
+        )
+    try:
+        row = await T.publish_to_platform(template_id, tenant_id=tenant, name=req.name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if row is None:
+        raise HTTPException(status_code=404, detail="template not found")
+    return row
 
 
 @router.get("/templates/{template_id}")
@@ -337,7 +498,23 @@ async def template_update(template_id: UUID, req: TemplateUpdate) -> dict:
 
 @router.delete("/templates/{template_id}")
 async def template_delete(template_id: UUID) -> dict:
-    ok = await T.delete_template(template_id, _tenant())
+    """Delete a template. A house template is RLS-invisible to a brand's write
+    path, so retiring one is routed through the curator gate — otherwise this
+    would 404 on a template the user can plainly see."""
+    tenant = _tenant()
+    row = await T.get_template(template_id, tenant)
+    if row is None:
+        raise HTTPException(status_code=404, detail="template not found")
+    if row.get("scope") == "platform":
+        if not T.can_curate_platform(tenant):
+            raise HTTPException(
+                status_code=403,
+                detail="this is a house template — it belongs to the shared library, "
+                       "not to this brand",
+            )
+        ok = await T.delete_platform_template(template_id)
+    else:
+        ok = await T.delete_template(template_id, tenant)
     if not ok:
         raise HTTPException(status_code=404, detail="template not found")
     return {"deleted": True}
