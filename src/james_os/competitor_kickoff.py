@@ -32,6 +32,32 @@ from .models import ContentBrief
 
 # One brief per verdict. Kept as prose rather than a template string because
 # the difference between them is the instruction, not the formatting.
+# What the competitor's layout maps to in OUR image machine. The `template`
+# verdict means "reuse the structure", so the structure has to actually carry
+# over — otherwise templatizing and replicating produce the same picture.
+# Keys are what design_eye reports in design_dna.layout_family, plus the
+# classifier's coarser `format` as a fallback.
+_LAYOUT_TO_FORMAT = {
+    "full_bleed_photo": "full_bleed",
+    "photo_with_overlay": "minimal_over",
+    "photo with overlay": "minimal_over",
+    "split_panel": "editorial_split",
+    "photo_beside_text": "editorial_split",
+    "photo beside text": "editorial_split",
+    "framed_photo": "framed_print",
+    "text_only": "brand_quote",
+    "typographic": "bold_statement",
+    "quote_card": "brand_quote",
+}
+# Formats that need the brand's own photography. A brand that has none must
+# never be handed one of these: the render comes back blank and the post looks
+# broken, which is worse than a clean typographic card.
+_NEEDS_PHOTO = frozenset({
+    "hero_quote", "statement", "full_bleed", "editorial_split",
+    "minimal_over", "framed_print",
+})
+_TEXT_ONLY = ("brand_quote", "bold_statement", "big_stat")
+
 _STEER = {
     "saved": (
         "Model this on a post that is genuinely working for a competitor in "
@@ -87,7 +113,7 @@ async def picked_posts(
                       p.replicate_status, p.replicate_note,
                       c.handle, c.platform,
                       a.format, a.hook, a.hook_pattern, a.topic,
-                      a.why_it_works, a.classification
+                      a.why_it_works, a.classification, a.design_dna
                  FROM competitor_posts p
                  JOIN competitors c ON c.id = p.competitor_id
             LEFT JOIN competitor_post_analysis a ON a.post_id = p.id
@@ -98,10 +124,52 @@ async def picked_posts(
     for r in rows:
         d = dict(r)
         d["id"] = str(d["id"])
-        if isinstance(d.get("classification"), str):
-            d["classification"] = json.loads(d["classification"])
+        for k in ("classification", "design_dna"):
+            if isinstance(d.get(k), str):
+                d[k] = json.loads(d[k])
         out.append(d)
     return out
+
+
+def _format_for(post: dict, has_photos: bool) -> str:
+    """Which image layout this pick should produce.
+
+    A `template` pick is the strongest signal we have — the brand explicitly
+    said "reuse this structure" — so its competitor layout is honoured where we
+    can map it. An `idea` pick is the opposite: the concept is the seed and the
+    execution is ours, so the art director picks freely (empty string).
+
+    Whatever is chosen, a photo layout is only allowed when the brand actually
+    has photos to put in it.
+    """
+    verdict = post.get("replicate_status") or "saved"
+    if verdict == "idea":
+        return ""                       # let the art director decide
+    dna = post.get("design_dna") or {}
+    key = str(dna.get("layout_family") or post.get("format") or "").strip().lower()
+    fmt = _LAYOUT_TO_FORMAT.get(key, "")
+    if not fmt:
+        return ""
+    if fmt in _NEEDS_PHOTO and not has_photos:
+        # Keep the spirit of the layout without the photography it assumes:
+        # a text-forward card rather than an empty frame.
+        return "bold_statement" if "overlay" in key or "full" in key else "brand_quote"
+    return fmt
+
+
+async def _has_hero_photos(tenant_id: UUID | None) -> bool:
+    """Does this brand have its own photography to design with?
+
+    Most brands arrive at onboarding without any, and the designed-image path
+    silently produces nothing when a photo layout finds an empty library — so
+    this is checked BEFORE a format is chosen, not discovered during the render.
+    """
+    try:
+        from .hero_context import get_hero_photo_files
+        refs = await get_hero_photo_files(tenant_id=tenant_id, limit=1)
+        return bool(refs)
+    except Exception:  # noqa: BLE001 — assume none; text-only always renders
+        return False
 
 
 async def generate_first_posts(
@@ -122,7 +190,9 @@ async def generate_first_posts(
                 "note": "Nothing picked yet — choose posts to Replicate, "
                         "Templatize or save as Ideas first."}
 
+    has_photos = await _has_hero_photos(tenant_id)
     drafts, failed = [], []
+    last_format = ""
     for i, p in enumerate(picks):
         verdict = p.get("replicate_status") or "saved"
         if progress:
@@ -143,6 +213,30 @@ async def generate_first_posts(
         except Exception as e:  # noqa: BLE001 — one bad draft ≠ the batch
             failed.append({"post_id": p["id"], "error": str(e)[:160]})
             continue
+        # ---- the image ----
+        # A caption with no picture is not a post. The layout comes from what
+        # the brand picked; the background is generated, so this works for a
+        # brand that arrived with no photography of its own.
+        action_id = getattr(draft, "action_id", None)
+        image_url, image_format = "", ""
+        if action_id:
+            try:
+                from .main import _generate_designed_post_image
+                image_url, image_format = await _generate_designed_post_image(
+                    action_id,
+                    (p.get("topic") or "").strip(),
+                    getattr(draft, "draft", "") or "",
+                    tenant_id,
+                    # Vary the card type across a batch so five posts do not
+                    # all arrive as the same layout.
+                    avoid=last_format,
+                    force_format=_format_for(p, has_photos),
+                )
+                last_format = image_format or last_format
+            except Exception as e:  # noqa: BLE001 — the copy still stands
+                failed.append({"post_id": p["id"],
+                               "error": f"image: {type(e).__name__}: {e}"[:160]})
+
         # Mark it drafted so a second run does not redo the same pick.
         async with acquire(tenant_id) as conn:
             await conn.execute(
@@ -157,6 +251,8 @@ async def generate_first_posts(
             "voice_score": getattr(draft, "voice_score", None),
             "status": getattr(draft, "status", ""),
             "action_id": str(getattr(draft, "action_id", "") or ""),
+            "image_url": image_url,
+            "image_format": image_format,
         })
 
     return {"generated": len(drafts), "drafts": drafts, "failed": failed,

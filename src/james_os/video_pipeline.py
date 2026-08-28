@@ -613,6 +613,43 @@ async def render_one_scene(
     return await _render_scene_inplace(s, aspect, james_uris, [])
 
 
+async def _placement_assets(tenant_id):
+    """What the placer has to work with: the brand's B-roll and its hero photos.
+
+    A media asset's `notes` (falling back to its title) is what the matcher reads
+    — that's where the vision pass writes what an asset SHOWS. An asset with
+    neither is returned anyway and simply never matches, which is the honest
+    outcome: a filename carries no meaning to match on.
+    """
+    from .media import list_media
+    from .reel_placer import Asset
+
+    def _mk(rows, default_kind):
+        out = []
+        for r in rows or []:
+            uri = (r.get("uri") or "").strip()
+            if not uri.startswith("http"):
+                continue
+            mime = (r.get("mime") or "").lower()
+            out.append(Asset(
+                id=str(r.get("id") or ""),
+                url=uri,
+                kind="image" if mime.startswith("image/") else default_kind,
+                description=(r.get("notes") or r.get("title") or "").strip(),
+                tags=[t for t in (r.get("tags") or []) if not str(t).startswith("sha256:")],
+                seconds=float(r.get("duration") or 0) or 0.0,
+            ))
+        return out
+
+    try:
+        broll = _mk(await list_media("broll", tenant_id), "video")
+        heroes = _mk(await list_media("hero_photo", tenant_id), "image")
+    except Exception as e:  # noqa: BLE001 — no assets is a valid state, not a failure
+        print(f"[cards] asset load skipped ({type(e).__name__}: {e})")
+        return [], []
+    return broll, heroes
+
+
 async def _cards_and_bed(row, assets, pid, tenant_id):
     """The production's designed cards + its pinned music bed, both read off
     the style template.
@@ -640,15 +677,25 @@ async def _cards_and_bed(row, assets, pid, tenant_id):
             pinned_track = await resolve_music_url_by_id(m["music_track_id"])
         if (m.get("cards") or {}).get("enabled"):
             from .brand_kit import get_brand_kit
-            from .reel_cards import cards_to_elements
             from .reel_director import plan_cards, words_from_captions
+            from .reel_placer import coverage, plan_placements, placements_to_elements
+
             cards = await plan_cards(
                 words_from_captions(assets.captions),
                 duration=assets.audio_duration,
                 styles=(m["cards"].get("styles") or None),
             )
-            card_els = cards_to_elements(cards, await get_brand_kit())
-            print(f"[cards] production {pid}: {len(cards)} card(s) placed")
+            # The cascade: the user's own B-roll where it fits, a hero photo for
+            # a card that wants a face, else the speaker's own words. Nothing is
+            # generated to fill a hole — a moment with no honest filling stays
+            # on the speaker.
+            user_assets, heroes = await _placement_assets(tenant_id)
+            placements = await plan_placements(
+                cards, assets=user_assets, hero_photos=heroes)
+            card_els = placements_to_elements(placements, await get_brand_kit())
+            cov = coverage(placements, assets.audio_duration, user_assets)
+            print(f"[cards] production {pid}: {cov['placements']} placement(s), "
+                  f"{cov['cutaway_pct']}% cutaway, sources={cov['by_source']}")
     except Exception as e:  # noqa: BLE001 — additive, never fatal
         print(f"[cards] production {pid}: skipped ({type(e).__name__}: {e})")
     return card_els, pinned_track

@@ -4201,6 +4201,13 @@ async def _run_media_analysis(media_id: UUID) -> dict | None:
             media_id, tenant_id=tenant,
             file_path=asset["file_path"], uri=asset.get("uri", ""),
         )
+    # B-roll and hero assets get a description of WHAT THEY SHOW, written at
+    # upload time. The reel placer matches a spoken moment against that text, so
+    # an asset without one can never be cut in — describing on arrival is what
+    # keeps the library matchable without anyone remembering to run a batch.
+    if asset.get("role") in ("broll", "hero_photo", "hero_video"):
+        from .reel_vision import describe_media_asset
+        await describe_media_asset(media_id, tenant)
     # Perception path (other roles). Resolve to a local file first — Supabase-
     # backed uploads aren't on local disk, so we download before ffmpeg.
     import shutil as _shutil

@@ -166,6 +166,71 @@ async def music_extract_status(job_id: str) -> dict:
     return {"job_id": job_id, **job}
 
 
+# ── describing assets so they can be matched ─────────────────────────
+
+_DESCRIBE_JOBS: dict[str, dict] = {}
+
+
+async def _run_describe_job(job: dict, *, tenant, role: str, limit: int) -> None:
+    from .db import set_request_tenant
+    from .reel_vision import describe_pending
+    try:
+        set_request_tenant(str(tenant))
+        job.update(status="succeeded", **await describe_pending(role, tenant, limit))
+    except Exception as e:  # noqa: BLE001
+        job.update(status="failed", error=f"{type(e).__name__}: {e}")
+
+
+class DescribeRequest(BaseModel):
+    role: str = ""          # '' = every role the placer draws from
+    limit: int = 25
+
+
+@router.post("/video/assets/describe", status_code=202)
+async def assets_describe(req: DescribeRequest, background: BackgroundTasks) -> dict:
+    """Write down what each undescribed B-roll / hero asset SHOWS.
+
+    Nothing else makes the placer's first rung fire: assets arrive with an empty
+    `notes` field, and that field is what the matcher reads. One vision call per
+    asset, so it's a background job with a reported cap."""
+    tenant = _tenant()                       # captured BEFORE add_task
+    job_id, job = _new_job(_DESCRIBE_JOBS, kind="describe")
+    background.add_task(_run_describe_job, job, tenant=tenant,
+                        role=(req.role or "").strip(), limit=max(1, min(req.limit, 200)))
+    return {"job_id": job_id, "status": "running"}
+
+
+@router.get("/video/assets/describe/{job_id}")
+async def assets_describe_status(job_id: str) -> dict:
+    job = _DESCRIBE_JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return {"job_id": job_id, **job}
+
+
+@router.get("/video/assets/coverage")
+async def assets_coverage() -> dict:
+    """How much of the library is actually matchable. An undescribed asset is
+    invisible to the placer, so this is the number that predicts whether a reel
+    will use the user's own footage or fall back to words."""
+    from .media import list_media
+    from .reel_vision import DESCRIBABLE_ROLES
+
+    tenant = _tenant()
+    out: dict[str, dict] = {}
+    for role in DESCRIBABLE_ROLES:
+        try:
+            rows = await list_media(role, tenant)
+        except Exception:  # noqa: BLE001
+            continue
+        described = sum(1 for a in rows if (a.get("notes") or "").strip())
+        out[role] = {"total": len(rows), "described": described,
+                     "undescribed": len(rows) - described}
+    return {"roles": out,
+            "matchable": sum(v["described"] for v in out.values()),
+            "undescribed": sum(v["undescribed"] for v in out.values())}
+
+
 # ── the card plan ────────────────────────────────────────────────────
 
 async def _run_card_job(job: dict, src: Path, tmpdir, *, tenant,
@@ -173,19 +238,32 @@ async def _run_card_job(job: dict, src: Path, tmpdir, *, tenant,
     from .db import set_request_tenant
     try:
         set_request_tenant(str(tenant))
-        from .reel_director import plan_cards, plan_summary
+        from .reel_director import plan_cards
+        from .reel_placer import coverage, plan_placements, plan_summary
         from .transcription import transcribe_words
 
         data = src.read_bytes()
         tr = await transcribe_words(src.name, data)
         cards = await plan_cards(
             tr.words, duration=tr.duration, brand_note=brand_note, styles=styles)
+
+        # Run the full cascade, not just the moments — the review screen has to
+        # show what will ACTUALLY fill each moment (the user's own clip, a hero
+        # photo, or their words), because that's the part a human wants to
+        # correct before spending a render.
+        from .video_pipeline import _placement_assets
+        user_assets, heroes = await _placement_assets(tenant)
+        placements = await plan_placements(
+            cards, assets=user_assets, hero_photos=heroes)
+
         job.update(
             status="succeeded",
             transcript=tr.text,
             duration=round(tr.duration, 2),
             words=len(tr.words),
-            cards=plan_summary(cards),
+            cards=plan_summary(placements),
+            coverage=coverage(placements, tr.duration, user_assets),
+            assets_available={"broll": len(user_assets), "hero_photos": len(heroes)},
         )
     except Exception as e:  # noqa: BLE001
         job.update(status="failed", error=f"{type(e).__name__}: {e}")
