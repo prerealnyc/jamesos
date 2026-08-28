@@ -85,6 +85,50 @@ def brand_look(look: dict | None):
         _render_look.reset(token)
 
 
+# On-image TEXT styling forced by the render knobs (image_text_color /
+# image_text_weight), scoped over a single render like the look/fonts above.
+# color: "" (auto) | "light" (force white) | "dark" (force black); bold: thicker.
+# This is how a "make the text white / thicker" rejection is APPLIED instead of
+# only logged — every text path reads it, so the fix needs no per-compositor code.
+_render_text_style: "contextvars.ContextVar[dict]" = contextvars.ContextVar(
+    "render_text_style", default={})
+
+
+@contextlib.contextmanager
+def text_style(color: str = "", bold: bool = False):
+    token = _render_text_style.set({"color": color or "", "bold": bool(bold)})
+    try:
+        yield
+    finally:
+        _render_text_style.reset(token)
+
+
+def _forced_ink() -> tuple | None:
+    """The forced on-image text colour as RGB, or None when the auto-contrast
+    picker should decide. Near-white / near-black rather than pure, so it never
+    clips on a scrim."""
+    c = _render_text_style.get().get("color")
+    if c == "light":
+        return (245, 246, 250)
+    if c == "dark":
+        return (14, 16, 22)
+    return None
+
+
+def _text_bold() -> bool:
+    return bool(_render_text_style.get().get("bold"))
+
+
+def _text(draw, xy, s, font, fill, **kw) -> None:
+    """draw.text, but thickened when the bold text-style is active — a same-colour
+    stroke around each glyph, so ANY face reads heavier without needing a bold
+    font file. A no-op (plain draw.text) when bold is off, so output is unchanged."""
+    if _text_bold() and "stroke_width" not in kw:
+        sw = max(1, int(getattr(font, "size", 40) / 26))
+        kw = {**kw, "stroke_width": sw, "stroke_fill": fill}
+    draw.text(xy, s, font=font, fill=fill, **kw)
+
+
 def _titlecase(t: str) -> str:
     return " ".join((w[:1].upper() + w[1:].lower()) if w else w for w in (t or "").split(" "))
 
@@ -163,7 +207,7 @@ def _colors(brand_kit: dict | None) -> dict:
         c = {"bg": roles.get("background"), "ink": roles.get("ink"),
              "accent": roles.get("accent"), "glow": roles.get("surface")}
     accent = _hex(c.get("accent"), _BRAND_BLUE)
-    return {
+    pal = {
         "base": _hex(c.get("bg"), _NAVY_BASE),
         "glow": _hex(c.get("glow"), _NAVY_GLOW),
         "accent": accent,
@@ -173,6 +217,13 @@ def _colors(brand_kit: dict | None) -> dict:
         "ink": _hex(c.get("ink"), _BRAND_WHITE),
         "muted": _hex(c.get("muted"), _BRAND_MUTED),
     }
+    # A forced text colour (from the render knob) overrides the body ink — the
+    # accent line stays branded, so "make the text white" whitens the body while
+    # the emphasis phrase keeps its colour.
+    forced = _forced_ink()
+    if forced is not None:
+        pal["ink"] = forced
+    return pal
 
 
 def _font(path: str, size: int) -> ImageFont.FreeTypeFont:
@@ -297,7 +348,7 @@ def _draw_centered(draw, lines, font, cx: int, top: float, fill,
             draw.text((x, y), ln, font=font, fill=fill,
                       stroke_width=stroke_w, stroke_fill=stroke_fill)
         else:
-            draw.text((x, y), ln, font=font, fill=fill)
+            _text(draw, (x, y), ln, font, fill)  # bold-aware when the weight knob is on
         y += lh
     return y
 
@@ -651,7 +702,7 @@ def brand_quote_card(quote: str, brand_kit: dict | None = None,
     for i, ln in enumerate(lines):
         f = emph_font if i == emph else base_font
         fill = pal["accent"] if i == emph else pal["ink"]
-        draw.text((cx - _text_w(draw, ln, f) / 2, y), ln, font=f, fill=fill)
+        _text(draw, (cx - _text_w(draw, ln, f) / 2, y), ln, f, fill)
         y += heights[i]
 
     # ── footer: website · tagline — only what the brand actually supplies;

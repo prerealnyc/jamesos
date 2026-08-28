@@ -31,6 +31,24 @@ KNOBS: dict[str, dict] = {
         "default": 2.0, "min": 1.0, "max": 4.0, "unit": "seconds",
         "help": "B-roll insert MAX on-screen seconds.",
     },
+    # ── image: on-image TEXT styling (applies to EVERY layout) ──
+    # These are the knobs that answer "the text should be white / is unreadable
+    # black" and "the font is too thin" — a styling correction the interpreter can
+    # now APPLY instead of only logging. Default 0 = the shipped auto behaviour.
+    "image_text_color": {
+        "default": 0, "min": 0, "max": 2, "unit": "0=auto 1=white 2=black",
+        "help": ("ON-IMAGE TEXT COLOUR (every layout). 0 = auto (pick for contrast). "
+                 "1 = force WHITE / light text. 2 = force BLACK / dark text. Use 1 when "
+                 "the owner says the text should be white, or that black/dark text is "
+                 "unreadable on the photo; use 2 when they want it black/dark. The scrim "
+                 "adapts, so forced white stays readable."),
+    },
+    "image_text_weight": {
+        "default": 0, "min": 0, "max": 1, "unit": "0=normal 1=bolder",
+        "help": ("ON-IMAGE TEXT WEIGHT (every layout). 0 = normal. 1 = BOLDER / thicker "
+                 "strokes. Use 1 when the owner says the font is too thin and wants "
+                 "thicker, bolder or heavier text."),
+    },
     # ── image: the designed post card (hero_quote layout) ──
     # Defaults are the literals these replaced in image_compose.hero_quote_card,
     # so an empty slot renders exactly as before.

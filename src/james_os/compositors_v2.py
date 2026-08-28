@@ -23,8 +23,8 @@ from io import BytesIO
 from PIL import Image, ImageDraw
 
 from .image_compose import (_ARCHIVO, _case, _cover_safe, _draw_centered, _fit, _font,
-                            _line_h, _open_rgb, _png, _spaced, _spaced_fit, _spaced_w,
-                            _text_w, _wrap)
+                            _forced_ink, _line_h, _open_rgb, _png, _spaced, _spaced_fit,
+                            _spaced_w, _text, _text_w, _wrap)
 
 _ANTON = os.path.join(os.path.dirname(__file__), "assets", "fonts", "Anton-Regular.ttf")
 W, H = 1080, 1350
@@ -57,6 +57,13 @@ def _pal(p: dict | None) -> dict:
             p.setdefault(k, roles.get(role))
     bg = _rgb(p.get("bg"), (10, 14, 23))
     ink = _rgb(p.get("ink"), (255, 255, 255))
+    # A forced text colour (render knob) overrides the ink BEFORE the scrim and
+    # derived tones are computed off it — so _auto_scrim darkens the band for the
+    # forced colour and the text stays readable (e.g. forced white gets a dark
+    # scrim under it instead of white-on-bright).
+    forced = _forced_ink()
+    if forced is not None:
+        ink = forced
     accent = _rgb(p.get("accent"), (255, 106, 44))
     surface = _rgb(p.get("surface"), _mix(bg, ink, 0.10))
     muted = _rgb(p.get("muted"), _mix(ink, bg, 0.42))
@@ -88,6 +95,12 @@ def _contrast(a: tuple, b: tuple) -> float:
 def _ink_for(ground_lum: float, ink: tuple) -> tuple:
     """Keep the brand ink if it reads on the (post-scrim) ground; else flip to a
     legible extreme. Guarantees text is never lost on a bright photo region."""
+    # A forced text colour (render knob) wins outright — the owner asked for this
+    # exact colour, and the paired scrim (built off the same forced ink) keeps it
+    # readable, so it must NOT be auto-flipped back on a bright region.
+    forced = _forced_ink()
+    if forced is not None:
+        return forced
     g = (int(ground_lum * 255),) * 3
     if _contrast(ink, g) >= 3.0:
         return ink
@@ -167,7 +180,7 @@ def full_bleed(photo: bytes, headline: str, kicker: str = "", handle: str = "",
         _spaced_fit(d, top - 52, kicker.upper(), _ARCHIVO, 28, pal["accent"], 8, W - 2 * M, left=M)
     y = top
     for ln in lines:
-        d.text((M, y), ln, font=hf, fill=ink)
+        _text(d, (M, y), ln, hf, ink)
         y += lh
     _handle_footer(d, handle, pal, H - 92, M)
     return _png(base)
@@ -190,7 +203,7 @@ def editorial_split(photo: bytes, headline: str, kicker: str = "", handle: str =
     hf, lines = _fit(d, _case(headline, "upper"), _ANTON, W - 2 * M, H - y0 - 120, start=104, minimum=52)
     lh = _line_h(d, hf, 1.03)
     for ln in lines:
-        d.text((M, y0), ln, font=hf, fill=pal["ink"])
+        _text(d, (M, y0), ln, hf, pal["ink"])
         y0 += lh
     _handle_footer(d, handle, pal, H - 92, M)
     return _png(base)

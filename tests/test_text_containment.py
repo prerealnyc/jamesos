@@ -154,6 +154,101 @@ def test_carousel_smoke():
         3, 7, WIDE_HEADLINE, section_label=LONG_KICKER, palette=pal, photo=_photo()))
 
 
+# ----------------------------------------------------------------- text style
+
+def test_forced_ink_light_and_dark():
+    from james_os.image_compose import _forced_ink, text_style
+
+    assert _forced_ink() is None  # auto by default
+    with text_style("light"):
+        assert _forced_ink() == (245, 246, 250)
+    with text_style("dark"):
+        assert _forced_ink() == (14, 16, 22)
+    assert _forced_ink() is None  # context restored
+
+
+def test_pal_honors_forced_colour():
+    from james_os.compositors_v2 import _pal
+    from james_os.image_compose import text_style
+
+    role_pal = {"palette": [{"role": "background", "hex": "#0B1B2B"},
+                            {"role": "ink", "hex": "#111111"},
+                            {"role": "accent", "hex": "#2E86DE"}]}
+    with text_style("light"):
+        assert _pal(role_pal)["ink"] == (245, 246, 250)  # forced white, not the #111 ink
+    with text_style("dark"):
+        assert _pal(role_pal)["ink"] == (14, 16, 22)
+
+
+def test_ink_for_forced_never_flips():
+    from james_os.compositors_v2 import _ink_for
+    from james_os.image_compose import text_style
+
+    bright_ground, dark_ink = 0.95, (10, 10, 10)
+    # Without a force, dark ink on a bright ground is KEPT (contrast is high).
+    assert _ink_for(bright_ground, dark_ink) == dark_ink
+    # Forced white must win even though auto-contrast would keep the dark ink.
+    with text_style("light"):
+        assert _ink_for(bright_ground, dark_ink) == (245, 246, 250)
+
+
+@pytest.mark.parametrize("fmt", ["statement", "full_bleed", "brand_quote"])
+@pytest.mark.parametrize("style", [("light", True), ("dark", False)])
+def test_render_forced_style_smoke(fmt, style):
+    from james_os.designed_render import render_designed
+    from james_os.image_compose import text_style
+
+    color, bold = style
+    spec = {"quote": WIDE_HEADLINE, "headline": WIDE_HEADLINE, "statement": WIDE_HEADLINE,
+            "emphasis": "MORE"}
+    with text_style(color, bold):
+        png, _used = render_designed(fmt, spec, kit={"display_name": LONG_NAME},
+                                     hero_bytes=_photo(), handle="h")
+    assert _is_png(png)
+
+
+def test_carousel_honours_forced_colour():
+    # Carousel slides render through _pal/_ink_for, so a forced colour applies to
+    # the whole deck — smoke-render cover + stat + photo slides under text_style.
+    from james_os import carousel
+    from james_os.image_compose import text_style
+
+    pal = {"palette": [{"role": "background", "hex": "#0B1B2B"},
+                       {"role": "ink", "hex": "#111111"}, {"role": "accent", "hex": "#2E86DE"}]}
+    with text_style("light", True):
+        assert _is_png(carousel.carousel_cover(_photo(), WIDE_HEADLINE,
+                                               count_promise=LONG_KICKER, palette=pal, total=7))
+        assert _is_png(carousel.carousel_slide(2, 7, WIDE_HEADLINE,
+                                               section_label=LONG_KICKER, palette=pal, stat=BIG_STAT))
+        assert _is_png(carousel.carousel_slide(3, 7, WIDE_HEADLINE,
+                                               section_label=LONG_KICKER, palette=pal, photo=_photo()))
+
+
+def test_styling_override_keyword_detection():
+    # Pure keyword logic — no DB. Import the functions directly.
+    import importlib.util
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "src" / "james_os" / "api_v1.py"
+    text = src.read_text()
+    ns: dict = {}
+    for fn in ("_styling_override", "_styling_only"):
+        start = text.index(f"def {fn}(")
+        end = text.index("\n\n\n", start)
+        exec(compile(text[start:end], str(src), "exec"), ns)  # noqa: S102 — isolated fn defs
+    so, only = ns["_styling_override"], ns["_styling_only"]
+
+    assert so("text needs to be white color, not black and use thicker fonts") == \
+        {"image_text_color": 1, "image_text_weight": 1}
+    assert so("change text color to white on this image") == {"image_text_color": 1}
+    assert so("make the text black") == {"image_text_color": 2}
+    assert so("love it, ship it") == {}
+    # styling-only vs layout complaints
+    assert only("change text color to white on this image") is True
+    assert only("make it white but use a different photo") is False
+    assert only("text white and make James bigger") is False
+
+
 def test_carousel_text_smoke():
     from james_os import carousel_text
     from james_os.image_compose import _colors

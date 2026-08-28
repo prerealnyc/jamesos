@@ -662,6 +662,42 @@ class RegenerateBody(BaseModel):
     force_format: str = ""
 
 
+def _styling_override(feedback: str) -> dict:
+    """A rejection about on-image TEXT STYLE (colour / weight) → the render knobs
+    that fix it, so the redo can APPLY it instead of only logging it. Empty when
+    the feedback isn't a text-styling complaint."""
+    f = (feedback or "").lower()
+    out: dict = {}
+    # "white" present (and not negated) means they want white — this covers the
+    # real phrasings "white color", "to white", "be white". "black" is a positive
+    # want ONLY when they didn't ask for white and aren't REJECTING black
+    # ("not black", "black ... does not work"), which is the common "make it white,
+    # not black" case.
+    wants_white = "white" in f and "not white" not in f and "no white" not in f
+    black_rejected = any(p in f for p in (
+        "not black", "no black", "black color of text does not", "black does not",
+        "black doesn't", "black text does not", "black is not", "black not read"))
+    wants_black = ("black" in f) and not wants_white and not black_rejected
+    if wants_white:
+        out["image_text_color"] = 1
+    elif wants_black:
+        out["image_text_color"] = 2
+    if any(w in f for w in ("thicker", "bolder", "heavier", "thick font", "thicker font",
+                            "bold font", "bolder font", "heavier font", "make it bold")):
+        out["image_text_weight"] = 1
+    return out
+
+
+def _styling_only(feedback: str) -> bool:
+    """True when the feedback is ONLY about text styling — no complaint about the
+    photo or layout — so the redo should keep the same layout and just restyle it."""
+    f = (feedback or "").lower()
+    layout_words = ("photo", "picture", "layout", "bigger", "smaller", "hidden",
+                    "behind", " crop", "different image", "another image", "wrong image",
+                    "his face", "her face", "the person", "zoom")
+    return not any(w in f for w in layout_words)
+
+
 async def _run_regenerate(
     job_id: str, tenant_id: UUID, parent_id: UUID, feedback: str, force_format: str,
 ) -> None:
@@ -718,15 +754,32 @@ async def _run_regenerate(
                 json.dumps(new_payload),
             )
 
+        # A text-styling rejection ("make it white / thicker") is APPLIED as a
+        # render knob so the redo actually restyles the image. When the feedback is
+        # styling-ONLY, keep the SAME layout (pin the rejected format) and reuse the
+        # same photo — so it recolours/re-weights the same image instead of rolling
+        # a brand-new one. Any other feedback behaves exactly as before.
+        overrides = _styling_override(reason)
+        if overrides:
+            try:
+                from .render_tuning import set_render_tuning
+                await set_render_tuning(overrides, tenant_id)
+            except Exception:  # noqa: BLE001 — a knob write must never block a redo
+                pass
+        styling_only = bool(overrides) and not force_format and _styling_only(reason)
+        eff_force = str(payload.get("image_format") or "") if styling_only else force_format
+        # Normally never serve back the rejected photo; but a styling-only redo
+        # WANTS the same photo (only the text changes), so don't exclude it.
+        eff_exclude = () if styling_only else ((prev_photo,) if prev_photo else ())
+
         served, fmt = await _main._generate_designed_post_image(
             new_id,
             str(payload.get("topic") or ""),
             str(payload.get("content") or payload.get("caption") or ""),
             tenant_id,
             feedback=reason,
-            force_format=force_format,
-            # Never serve back the photo they just turned down.
-            exclude_photos=(prev_photo,) if prev_photo else (),
+            force_format=eff_force,
+            exclude_photos=eff_exclude,
         )
         job["result"] = {
             "action_id": str(new_id), "regen_of": str(parent_id),

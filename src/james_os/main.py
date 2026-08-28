@@ -1798,6 +1798,22 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
         _clook = await _bi2l.get_brand_look(tenant_id)
     except Exception:  # noqa: BLE001
         _clook = None
+    # On-image text styling knobs (make-it-white / thicker) — same as single
+    # posts, applied across every slide of the deck.
+    try:
+        from .render_tuning import get_render_tuning
+        _ctun = await get_render_tuning(tenant_id)
+    except Exception:  # noqa: BLE001
+        _ctun = {}
+
+    def _cknob(key: str) -> int:
+        try:
+            return int(round(float(_ctun.get(key, 0) or 0)))
+        except (TypeError, ValueError):
+            return 0
+    _ctc = _cknob("image_text_color")
+    _ctext_color = "light" if _ctc == 1 else "dark" if _ctc == 2 else ""
+    _ctext_bold = _cknob("image_text_weight") >= 1
 
     _voice, _bp = await _brand_voice_and_profile(tenant_id)
     deck = await direct_carousel_deck(draft_text or "", topic or "", brand_name,
@@ -1808,7 +1824,8 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
         # brand-palette ground, the name up top, a big statement with its key phrase
         # in the accent, huge stat slides, an N/total index. NO photos at all.
         from .carousel_text import render_text_carousel
-        with _ic.brand_fonts(_cfont), _ic.brand_look(_clook):
+        with _ic.brand_fonts(_cfont), _ic.brand_look(_clook), \
+                _ic.text_style(_ctext_color, _ctext_bold):
             slides = render_text_carousel(deck, kit, handle)
         cover_key = None
     else:
@@ -1846,7 +1863,8 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
             else:
                 deck_r["slides"].append({"section_label": s.get("section_label", ""),
                                          "headline": s.get("headline", ""), "stat": s.get("stat", "")})
-        with _ic.brand_fonts(_cfont), _ic.brand_look(_clook):
+        with _ic.brand_fonts(_cfont), _ic.brand_look(_clook), \
+                _ic.text_style(_ctext_color, _ctext_bold):
             slides = render_carousel(deck_r, palette, handle)
     tenant = str(tenant_id or settings.default_tenant_id)
     urls: list[str] = []
@@ -2096,7 +2114,18 @@ async def _generate_designed_post_image(
     # falls back to a text card — so the stamp below reflects reality.
     if not (spec.get("quote") or "").strip():
         spec["quote"] = ((draft_text or topic or "").split(". ")[0]).strip()
-    with image_compose.brand_fonts(_font_theme), image_compose.brand_look(_look):
+    # On-image text styling from the render knobs — "make the text white / thicker"
+    # is applied here on the NEXT render (no deploy), across every layout.
+    def _knob_int(key: str) -> int:
+        try:
+            return int(round(float(_tuning.get(key, 0) or 0)))
+        except (TypeError, ValueError):
+            return 0
+    _tc = _knob_int("image_text_color")
+    _text_color = "light" if _tc == 1 else "dark" if _tc == 2 else ""
+    _text_bold = _knob_int("image_text_weight") >= 1
+    with image_compose.brand_fonts(_font_theme), image_compose.brand_look(_look), \
+            image_compose.text_style(_text_color, _text_bold):
         out, fmt = render_designed(
             fmt, spec, kit=kit, hero_bytes=hero_bytes,
             profile_bytes=profile_bytes, profile_is_logo=profile_is_logo,
