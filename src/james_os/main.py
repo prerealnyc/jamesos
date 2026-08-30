@@ -451,6 +451,10 @@ app.include_router(xpoz_router)
 # Competitor intelligence — niche → competitors → their posts →
 # visual analysis → strategy. See competitors.py / competitor_sync.py.
 app.include_router(competitors_router)
+# Starter samples — classify the brand's own photos and turn the best ones into
+# EXAMPLE posts to react to (no template picking). See hero_templatize.py.
+from .starter_samples_api import router as starter_samples_router  # noqa: E402
+app.include_router(starter_samples_router)
 # PRI plug — pull PreReal Intelligence (per silo) into this brand's memory.
 app.include_router(pri_plug_router)
 # Press monitoring — scan mentions, file to memory, grounded digest.
