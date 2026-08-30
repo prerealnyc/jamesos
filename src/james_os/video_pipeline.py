@@ -166,6 +166,7 @@ async def start_production(
     video_engine: str = "",
     broll_pacing: str = "",
     broll_style: str = "",
+    options: dict | None = None,     # per-production overrides (migration 058)
     tenant_id: UUID | None = None,
 ) -> dict:
     """Create a production.
@@ -227,9 +228,10 @@ async def start_production(
                   caption_style, image_style,
                   music_mood, logo_position, structure, template_id, video_engine,
                   broll_pacing,
-                  avatar_provider, broll_provider, assembly_provider, broll_style)
+                  avatar_provider, broll_provider, assembly_provider, broll_style,
+                  options)
                VALUES ('queued',$1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,
-                       $14,$15,$16,$17,$18) RETURNING *""",
+                       $14,$15,$16,$17,$18,$19::jsonb) RETURNING *""",
             title, platform, aspect, script, json.dumps(scenes or []), mode,
             caption_style or "", image_style or "",
             music_mood or "", logo_position or "", json.dumps(structure or []), template_id,
@@ -237,6 +239,7 @@ async def start_production(
             broll_pacing or "",
             get_avatar_provider().name, settings.video_provider,
             get_assembly_provider().name, broll_style or "",
+            json.dumps(options or {}),
         )
     return _row(row)
 
@@ -661,18 +664,36 @@ async def _cards_and_bed(row, assets, pid, tenant_id):
     """
     card_els: list[dict] = []
     pinned_track = ""
+
+    # Per-production options (migration 058) win over the template, so the
+    # one-click front door can turn cards on for a single reel without needing
+    # a saved template first.
+    opts = {}
+    try:
+        raw = row["options"]
+        opts = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except (KeyError, TypeError, ValueError):
+        opts = {}
+
     try:
         tpl_id = row["template_id"]
     except (KeyError, TypeError):
         tpl_id = None
-    if not tpl_id:
+    if not tpl_id and not opts:
         return card_els, pinned_track
     try:
-        from .template_apply import map_template_to_render
-        from .templates import get_template
-        tpl = await get_template(tpl_id, tenant_id)
-        m = map_template_to_render((tpl or {}).get("template") or {})
-        if m.get("music_track_id"):
+        m = {"cards": {"enabled": False, "styles": []}, "music_track_id": ""}
+        if tpl_id:
+            from .template_apply import map_template_to_render
+            from .templates import get_template
+            tpl = await get_template(tpl_id, tenant_id)
+            m = map_template_to_render((tpl or {}).get("template") or {})
+        if "cards" in opts:
+            m["cards"] = {"enabled": bool(opts.get("cards")),
+                          "styles": list(opts.get("card_styles") or [])}
+        if opts.get("music_track_url"):
+            pinned_track = str(opts["music_track_url"])
+        elif m.get("music_track_id"):
             from .audio_library import resolve_music_url_by_id
             pinned_track = await resolve_music_url_by_id(m["music_track_id"])
         if (m.get("cards") or {}).get("enabled"):

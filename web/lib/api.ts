@@ -666,6 +666,22 @@ export type TemplateBuilderSpec = {
   cards?: { enabled: boolean; styles?: string[] };
 };
 
+// ── the front door: one upload → one reel ──
+export type ReelJob = {
+  job_id: string;
+  status: "running" | "succeeded" | "failed";
+  error?: string;
+  stage?: string;
+  source_id?: string;
+  production_id?: string;
+  final_url?: string;
+  broll?: { uploaded: number; described: number };
+  progress: {
+    stage: string; label: string; pct: number;
+    stage_index?: number; total_stages?: number;
+  };
+};
+
 // ── reel editing: music extraction + the card plan ──
 export type MusicCapability = {
   available: boolean; reason: string; max_seconds: number;
@@ -1791,6 +1807,28 @@ export const api = {
   // Promote one of this brand's templates into the house library (curator only).
   publishTemplate: (id: string, name = "") =>
     jpost<StyleTemplate>(`/templates/${id}/publish`, { name }),
+  // ── the front door ──
+  // Upload a talking head (+ optional B-roll) and get a reel. One call; poll
+  // getReelJob for a single bar across store → transcribe → describe → render.
+  async makeReel(body: {
+    file: File; broll?: File[]; title?: string; platform?: string;
+    aspect?: string; captionStyle?: string; musicMood?: string; cards?: boolean;
+  }) {
+    const fd = new FormData();
+    fd.append("file", body.file);
+    for (const b of body.broll || []) fd.append("broll", b);
+    fd.append("title", body.title || "");
+    fd.append("platform", body.platform || "instagram");
+    fd.append("aspect", body.aspect || "9:16");
+    fd.append("caption_style", body.captionStyle || "");
+    fd.append("music_mood", body.musicMood || "calm");
+    fd.append("cards", String(body.cards ?? true));
+    const r = await fetch(u("/video/reel"), {
+      method: "POST", body: fd, credentials: "include",
+    });
+    return _safeJsonOrThrow<ReelJob & { broll_received: number }>(r);
+  },
+  getReelJob: (jobId: string) => jget<ReelJob>(`/video/reel/${jobId}`),
   // ── reel editing ──
   // Can this deployment separate audio at all? (Demucs is an optional dep.)
   musicCapability: () => jget<MusicCapability>("/video/music/capability"),

@@ -20,6 +20,7 @@
     POST /competitors/refresh             the whole chain, one job
     GET  /competitors/picks               what the brand picked
     POST /competitors/first-posts         picks → drafts in the queue
+    POST /competitors/templatize          templatized reels → your template library
     POST /competitors/media/fetch         Apify → download + store the files
     POST /competitors/profiles/build      roll posts+analyses into profiles
     GET  /competitors/profiles            per-competitor: cadence, formats,
@@ -56,6 +57,7 @@ from . import (
     competitor_media,
     competitor_profile,
     competitor_sync,
+    competitor_template,
     competitor_vision,
     competitors,
 )
@@ -499,6 +501,24 @@ async def competitors_first_posts_job(job_id: str) -> dict:
     if not job:
         raise HTTPException(404, "job not found (expired or unknown)")
     return {"job_id": job_id, **job}
+
+
+class TemplatizeRequest(BaseModel):
+    post_id: str = ""
+    limit: int = 10
+
+
+@router.post("/competitors/templatize")
+async def competitors_templatize(req: TemplatizeRequest) -> dict:
+    """A templatized competitor reel becomes a renderable template you own.
+
+    Mints a style_templates row from the read perception already produced, in
+    the render engine's own closed vocabulary — so it works immediately with
+    the template library, /templates/{id}/replicate and the autopilot's
+    template picker, with no translation layer."""
+    if req.post_id.strip():
+        return await competitor_template.templatize_post(req.post_id.strip())
+    return await competitor_template.templatize_all_picked(limit=req.limit)
 
 
 # ── the gap: theirs vs ours ───────────────────────────────────────────

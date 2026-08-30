@@ -50,6 +50,7 @@ const NAV: Group[] = [
   {
     title: "Create",
     items: [
+      { href: "/make-reel", label: "Make a reel", sub: "Upload a talking head → a finished reel", icon: "clips", live: true },
       { href: "/create", label: "Create", sub: "Posts, videos, images & batches — one place", icon: "design", live: true, match: CREATE_SUBROUTES },
       { href: "/content-library", label: "Content Library", sub: "Footage → clippable reels, auto-clipped to the queue", icon: "clips", live: true },
     ],

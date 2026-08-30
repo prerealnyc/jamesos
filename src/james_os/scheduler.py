@@ -31,6 +31,7 @@ async def _registry() -> dict:
     from .competitor_media import run_competitor_media
     from .competitor_profile import run_competitor_profiles
     from .competitor_sync import run_competitor_refresh, run_competitor_sync
+    from .competitor_template import run_templatize
     from .competitor_vision import run_competitor_vision
     from .intake_agent import run_brand_interview
     from .strategy import (
@@ -47,6 +48,7 @@ async def _registry() -> dict:
         "competitor_sync": run_competitor_sync,
         "competitor_refresh": run_competitor_refresh,
         "competitor_first_posts": run_first_posts,
+        "competitor_templatize": run_templatize,
         "competitor_vision": run_competitor_vision,
         "competitor_profiles": run_competitor_profiles,
         "competitor_media": run_competitor_media,
