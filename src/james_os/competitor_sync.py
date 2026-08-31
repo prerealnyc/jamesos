@@ -582,6 +582,12 @@ async def gallery(
                        p.thumbnail_url, p.likes, p.comments, p.views,
                        p.engagement_rate, p.posted_at, p.duration,
                        p.replicate_status, p.replicate_note,
+                       -- competitor_id is what the gallery GROUPS BY. Omitting
+                       -- it did not error anywhere: the field simply arrived
+                       -- undefined, every post fell into one bucket, and the
+                       -- shelf rendered as a single account's header with
+                       -- everybody's posts under it.
+                       p.competitor_id,
                        c.handle, c.platform, c.followers,
                        a.format, a.hook, a.hook_pattern, a.topic, a.cta,
                        a.eye_score, a.why_it_works, a.transferable_pattern,
@@ -596,6 +602,8 @@ async def gallery(
     for r in rows:
         d = dict(r)
         d["id"] = str(d["id"])
+        if d.get("competitor_id") is not None:
+            d["competitor_id"] = str(d["competitor_id"])
         if d.get("posted_at") is not None:
             d["posted_at"] = d["posted_at"].isoformat()
         if isinstance(d.get("classification"), str):
