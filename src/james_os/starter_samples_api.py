@@ -123,6 +123,33 @@ async def samples_generate_job(job_id: str, tenant: TenantDep) -> dict:
     return {"job_id": job_id, **(_SAMPLE_JOBS.get(job_id) or {"status": "unknown"})}
 
 
+@router.post("/v1/samples/clone", status_code=202)
+async def samples_clone(
+    req: SamplesRequest, background: BackgroundTasks, tenant: TenantDep
+) -> dict:
+    """Clone the top competitor templates into OUR versions — extract each
+    design → fill the brand's copy into its slots → render on a brand photo (or
+    an AI placeholder if the brand has none). Drops pending samples in the queue,
+    listed alongside the photo samples by /v1/samples."""
+    from . import template_clone
+
+    n = max(1, min(req.n, 10))
+    job_id = str(uuid4())
+    _SAMPLE_JOBS[job_id] = {"status": "running"}
+    _prune(_SAMPLE_JOBS)
+
+    async def _run() -> None:
+        _bind_tenant(tenant)
+        try:
+            res = await template_clone.generate_template_samples(tenant, n=n, grade=req.grade)
+            _SAMPLE_JOBS[job_id] = {"status": "done", **res}
+        except Exception as e:  # noqa: BLE001
+            _SAMPLE_JOBS[job_id] = {"status": "failed", "error": str(e)[:300]}
+
+    background.add_task(_run)
+    return {"job_id": job_id, "status": "running"}
+
+
 @router.get("/v1/samples")
 async def samples_list(tenant: TenantDep, limit: int = 20) -> dict:
     """The example posts we've built, best first (DB-backed, survives restarts)."""
