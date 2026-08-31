@@ -328,11 +328,30 @@ async def generate_samples(tenant_id, *, n: int = 6, grade: bool = True) -> dict
     from .models import ContentBrief
     from .content import generate_content, strip_internal_labels
     from .autopilot import generate_ideas
+    from .brand_identity import get_enabled_formats
     from .main import _generate_designed_post_image
     from . import design_eye
 
     await classify_brand_photos(tenant_id)
-    photos = await templatizable_photos(tenant_id, limit=n)
+    # Only build in layouts the brand actually ALLOWS. Otherwise the renderer
+    # silently clamps a disabled photo format down to a text card (_clamp_format),
+    # and the "example on your photo" arrives with no photo. allowed is None = no
+    # restriction (every photo format is fair game — the default for a new brand).
+    try:
+        allowed = await get_enabled_formats(tenant_id)
+    except Exception:  # noqa: BLE001
+        allowed = None
+    allowed_photo = {f for f in PHOTO_FORMATS if allowed is None or f in allowed}
+    if not allowed_photo:
+        return {"samples": [], "count": 0,
+                "note": "Your enabled templates are text-only right now — turn on a "
+                        "photo layout (e.g. minimal_over) to see examples on your photos."}
+
+    # Pull extra candidates so we can skip any whose fitting layouts are all
+    # disabled for this brand and still land n examples.
+    pool = await templatizable_photos(tenant_id, limit=max(n * 3, n))
+    photos = [p for p in pool
+              if any(f in allowed_photo for f in (p.get("best_formats") or []))][:n]
     if not photos:
         return {"samples": [], "count": 0,
                 "note": "No templatizable photos yet — add a few clean, uncluttered "
@@ -346,9 +365,11 @@ async def generate_samples(tenant_id, *, n: int = 6, grade: bool = True) -> dict
     last_fmt = ""
     for i, photo in enumerate(photos):
         idea = ideas[i % len(ideas)]
-        # Vary the layout across the set: prefer a fitting format we didn't just
-        # use, so six examples don't all arrive as the same card.
-        fits = photo.get("best_formats") or ["minimal_over"]
+        # Vary the layout across the set, but only among layouts BOTH this photo
+        # fits AND the brand allows.
+        fits = [f for f in (photo.get("best_formats") or []) if f in allowed_photo]
+        if not fits:
+            continue
         fmt = next((f for f in fits if f != last_fmt), fits[0])
         topic = strip_internal_labels(idea.get("topic", "")) or "a moment that captures the brand"
         try:
@@ -364,11 +385,19 @@ async def generate_samples(tenant_id, *, n: int = 6, grade: bool = True) -> dict
             failed += 1
             continue
 
+        draft_text = getattr(draft, "draft", "") or topic
         image_url, image_format = "", ""
         try:
             image_url, image_format = await _generate_designed_post_image(
-                draft.action_id, topic, (getattr(draft, "draft", "") or topic),
-                tenant_id, force_format=fmt, force_photo=photo["url"] or "")
+                draft.action_id, topic, draft_text, tenant_id,
+                force_format=fmt, force_photo=photo["url"] or "")
+            # The whole point is a post ON a photo. If the exact classified photo
+            # wasn't in the render pool (the hero picker filters ~a third for
+            # sharpness), a photo format downgrades to a text card — retry letting
+            # the picker choose ANY sharp pool photo, so the example keeps an image.
+            if image_url and image_format not in PHOTO_FORMATS:
+                image_url, image_format = await _generate_designed_post_image(
+                    draft.action_id, topic, draft_text, tenant_id, force_format=fmt)
             last_fmt = image_format or last_fmt
         except Exception:  # noqa: BLE001 — copy still stands; just no image
             image_url, image_format = "", ""

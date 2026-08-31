@@ -36,6 +36,16 @@ def _tenant() -> UUID | None:
         return None
 
 
+def _bind_tenant(tid: UUID | None) -> None:
+    """A background task runs in a fresh context where the request's tenant
+    contextvar is gone — so any internal DB call that doesn't take an explicit
+    tenant would fall back to settings.default_tenant_id (the legacy tenant) and
+    write under the WRONG brand. Re-bind the captured tenant on the task's own
+    context so the whole job stays tenant-correct."""
+    from .db import set_request_tenant
+    set_request_tenant(tid)
+
+
 def _prune(store: dict[str, dict], keep: int = 40) -> None:
     if len(store) <= keep:
         return
@@ -59,6 +69,7 @@ async def photos_classify(req: ClassifyRequest, background: BackgroundTasks) -> 
     _prune(_CLASSIFY_JOBS)
 
     async def _run() -> None:
+        _bind_tenant(tid)
         try:
             res = await hero_templatize.classify_brand_photos(tid, force=req.force)
             _CLASSIFY_JOBS[job_id] = {"status": "done", **res}
@@ -98,6 +109,7 @@ async def samples_generate(req: SamplesRequest, background: BackgroundTasks) -> 
     _prune(_SAMPLE_JOBS)
 
     async def _run() -> None:
+        _bind_tenant(tid)
         try:
             res = await hero_templatize.generate_samples(tid, n=n, grade=req.grade)
             _SAMPLE_JOBS[job_id] = {"status": "done", **res}
