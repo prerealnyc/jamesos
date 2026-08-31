@@ -171,18 +171,20 @@ def _decorations(base: Image.Image, spec: dict, content: dict) -> None:
     draw = ImageDraw.Draw(base, "RGBA")
     elements = spec.get("elements") or []
     for d in spec.get("decorations") or []:
-        x, y, w, h = _px(d["box"])
+        box = d["box"]
+        x, y, w, h = _px(box)
         col = _rgb(d.get("color"), _rgb((spec.get("palette") or {}).get("accent"), (201, 162, 75)))
         typ = d.get("type")
+        # A filled shape big enough to be a button/banner needs a label — a
+        # pill/badge always, and a "bar" only when it's thick (a thin bar is a
+        # divider and stands on its own). Without a label it's an empty blob.
+        needs_label = typ in ("pill", "badge") or (typ == "bar" and box.get("h", 0) > 0.02)
+        if needs_label and not _has_text_over(box, content, elements):
+            continue
         if typ == "bar":
             draw.rectangle([x, y, x + w, y + h], fill=col)
         elif typ in ("pill", "badge"):
-            # Only draw a pill/badge if a text label actually lands on it —
-            # otherwise it's an empty coloured blob.
-            if not _has_text_over(d["box"], content, elements):
-                continue
-            r = h // 2
-            draw.rounded_rectangle([x, y, x + w, y + h], radius=r, fill=col)
+            draw.rounded_rectangle([x, y, x + w, y + h], radius=h // 2, fill=col)
         elif typ == "frame":
             draw.rectangle([x, y, x + w, y + h], outline=col, width=max(3, h // 40 or 3))
         elif typ == "scrim":

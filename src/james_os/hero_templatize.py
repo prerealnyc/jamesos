@@ -438,7 +438,10 @@ async def list_samples(tenant_id, *, limit: int = 20) -> list[dict]:
                       payload->>'image_url' AS image_url,
                       payload->>'image_format' AS format,
                       payload->>'sample_score' AS score,
-                      payload->>'sample_from_photo' AS from_photo, created_at
+                      payload->>'sample_from_photo' AS from_photo,
+                      payload->>'sample_from' AS "from",
+                      payload->>'used_placeholder_photo' AS used_placeholder,
+                      created_at
                  FROM actions
                 WHERE action_type='content' AND status='pending'
                   AND payload->>'sample' = 'true'
@@ -449,6 +452,7 @@ async def list_samples(tenant_id, *, limit: int = 20) -> list[dict]:
         d = dict(r)
         d["id"] = str(d["id"])
         d["score"] = float(d["score"]) if d.get("score") not in (None, "", "None") else None
+        d["used_placeholder"] = str(d.get("used_placeholder")).lower() == "true"
         d["created_at"] = d["created_at"].isoformat()
         out.append(d)
     return out
