@@ -75,11 +75,15 @@ _SYSTEM = (
     f"  decorations: a list, each {{type: one of {list(_DECOR_TYPES)}, box: "
     "{x,y,w,h}, color: #hex}} — a colour bar, a pill/tag behind a kicker, a badge "
     "corner, a photo frame border, or a scrim panel. Omit if none.\n"
+    "  logo_box: {x,y,w,h} where a small brand LOGO / wordmark / emblem sits "
+    "(usually a corner or centered at top), so we can drop THIS brand's logo in "
+    "the same spot — else null. Do NOT also list the logo as a text element.\n"
     "  design_notes: one line on what makes this layout work.\n\n"
     "Return STRICT JSON: {\"kind\": \"photo_forward\"|\"graphic_card\", "
     "\"background\": {...}, \"palette\": {...}, \"elements\": [...], "
-    "\"decorations\": [...], \"design_notes\": str}. If the image is unreadable, "
-    "say so in design_notes and return kind 'photo_forward' with empty elements."
+    "\"decorations\": [...], \"logo_box\": {...}|null, \"design_notes\": str}. If "
+    "the image is unreadable, say so in design_notes and return kind "
+    "'photo_forward' with empty elements."
 )
 
 
@@ -156,6 +160,7 @@ def _sanitize(out: dict) -> dict:
         "palette": palette,
         "elements": elements,
         "decorations": decorations,
+        "logo_box": _norm_box(out.get("logo_box")),
         "design_notes": str(out.get("design_notes") or "").strip(),
     }
 

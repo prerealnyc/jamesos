@@ -72,6 +72,19 @@ async def _fill_copy(spec: dict, tenant_id, ref: dict) -> dict:
     return {r: str((out or {}).get(r, "")).strip() for r in roles if str((out or {}).get(r, "")).strip()}
 
 
+async def _brand_logo(tenant_id) -> bytes | None:
+    """The brand's uploaded logo bytes (first brand_logo asset), for the design's
+    logo slot. Best-effort — None just means no logo is dropped in."""
+    try:
+        from .media import list_media
+        rows = await list_media(role="brand_logo", tenant_id=tenant_id)
+        if not rows:
+            return None
+        return await _fetch_bytes(rows[0].get("uri") or "")
+    except Exception:  # noqa: BLE001
+        return None
+
+
 async def _hero_or_placeholder(tenant_id, topic: str) -> tuple[bytes | None, bool]:
     """The brand's own photo if it has one (sharpness-gated pick), else an AI
     placeholder scene from the topic. Returns (bytes, was_generated)."""
@@ -108,7 +121,8 @@ async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None) 
     generated = False
     if hero_bytes is None:
         hero_bytes, generated = await _hero_or_placeholder(tenant_id, topic)
-    png, kind = render_spec(spec, content, hero_bytes=hero_bytes)
+    logo = await _brand_logo(tenant_id) if spec.get("logo_box") else None
+    png, kind = render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo)
     return {"png": png, "kind": kind, "content": content, "topic": topic,
             "generated_hero": generated, "from": post.get("handle") or ""}
 

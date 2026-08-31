@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import io
 
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 from .image_compose import W, H, _font, _wrap, _ANTON, _ARCHIVO, _remap_face
 
@@ -51,6 +51,59 @@ def _load(b: bytes | None) -> Image.Image | None:
         return Image.open(io.BytesIO(b)).convert("RGB")
     except Exception:  # noqa: BLE001
         return None
+
+
+def _load_rgba(b: bytes | None) -> Image.Image | None:
+    if not b:
+        return None
+    try:
+        return Image.open(io.BytesIO(b)).convert("RGBA")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _lum(rgb) -> float:
+    return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+
+
+def _region_lum(base: Image.Image, x: int, y: int, w: int, h: int) -> float:
+    """Mean brightness (0-255) of the background under a text block, so we can
+    tell whether the text colour will actually read there."""
+    x0, y0 = max(0, int(x)), max(0, int(y))
+    x1, y1 = min(W, int(x + w)), min(H, int(y + h))
+    if x1 <= x0 or y1 <= y0:
+        return 128.0
+    px = list(base.crop((x0, y0, x1, y1)).convert("L").getdata())
+    return sum(px) / len(px) if px else 128.0
+
+
+def _plate(base: Image.Image, box_px: tuple[int, int, int, int], rgb: tuple, alpha: float) -> None:
+    """A soft, feathered rounded plate behind text — just enough to guarantee
+    legibility over a busy or same-tone photo, without hiding the image."""
+    x, y, w, h = box_px
+    pad = int(h * 0.18) + 14
+    ov = Image.new("RGBA", (base.width, base.height), (0, 0, 0, 0))
+    ImageDraw.Draw(ov).rounded_rectangle(
+        [x - pad, y - pad, x + w + pad, y + h + pad],
+        radius=int(h * 0.3) + 12, fill=(rgb[0], rgb[1], rgb[2], int(255 * alpha)))
+    ov = ov.filter(ImageFilter.GaussianBlur(18))
+    base.paste(Image.alpha_composite(base.convert("RGBA"), ov).convert("RGB"), (0, 0))
+
+
+def _place_logo(base: Image.Image, box_px: tuple[int, int, int, int], logo_bytes: bytes | None) -> None:
+    """Drop the brand's own logo into the slot the design reserves for one,
+    contain-fit (aspect preserved) and centered in the box."""
+    logo = _load_rgba(logo_bytes)
+    if logo is None:
+        return
+    x, y, w, h = box_px
+    lw, lh = logo.size
+    if lw <= 0 or lh <= 0:
+        return
+    scale = min(w / lw, h / lh)
+    nw, nh = max(1, int(lw * scale)), max(1, int(lh * scale))
+    logo = logo.resize((nw, nh), Image.Resampling.LANCZOS)
+    base.paste(logo, (x + (w - nw) // 2, y + (h - nh) // 2), logo)
 
 
 def _background(spec: dict, hero: Image.Image | None) -> Image.Image:
@@ -153,7 +206,7 @@ def _fit_block(draw, text: str, face_path: str, box_w: int, box_h: int, start_px
     return _font(face_path, _MIN_PX), [text], int(_MIN_PX * 1.12)
 
 
-def _draw_element(base: Image.Image, el: dict, text: str, ink_default) -> None:
+def _draw_element(base: Image.Image, el: dict, text: str, ink_default, over_photo: bool) -> None:
     if not (text or "").strip():
         return
     draw = ImageDraw.Draw(base)
@@ -165,35 +218,61 @@ def _draw_element(base: Image.Image, el: dict, text: str, ink_default) -> None:
     font, lines, line_h = _fit_block(draw, text, face, bw, bh, start)
     col = _rgb(el.get("color"), ink_default)
     align = el.get("align", "left")
-    cy = y + max(0, (bh - line_h * len(lines)) // 2)  # vertically center within the box
-    for ln in lines:
-        tw = draw.textlength(ln, font=font)
+    widths = [draw.textlength(ln, font=font) for ln in lines]
+    maxw = max(widths) if widths else bw
+    block_h = line_h * len(lines)
+    cy0 = y + max(0, (bh - block_h) // 2)  # vertically center within the box
+    if align == "center":
+        blk_x = x + (bw - maxw) / 2
+    elif align == "right":
+        blk_x = x + bw - maxw
+    else:
+        blk_x = x
+
+    text_lum = _lum(col)
+    # Contrast guard: over a photo, if the text tone is too close to what's behind
+    # it (light text on bright sky, dark text on shadow), lay a soft plate so it
+    # always reads — only when actually needed, so the photo stays visible.
+    if over_photo:
+        bg_lum = _region_lum(base, blk_x, cy0, maxw, block_h)
+        if abs(text_lum - bg_lum) < 95:
+            plate_rgb = (0, 0, 0) if text_lum > 128 else (255, 255, 255)
+            _plate(base, (int(blk_x), int(cy0), int(maxw), int(block_h)), plate_rgb, 0.42)
+
+    # A crisp contrasting outline keeps every letter legible on any background.
+    stroke_col = (0, 0, 0) if text_lum > 128 else (255, 255, 255)
+    stroke_w = max(1, font.size // 34)
+    cy = cy0
+    for i, ln in enumerate(lines):
         if align == "center":
-            tx = x + (bw - tw) / 2
+            tx = x + (bw - widths[i]) / 2
         elif align == "right":
-            tx = x + bw - tw
+            tx = x + bw - widths[i]
         else:
             tx = x
-        # a soft shadow keeps light text legible over a busy photo
-        draw.text((tx + 2, cy + 2), ln, font=font, fill=(0, 0, 0, 160))
-        draw.text((tx, cy), ln, font=font, fill=col)
+        draw.text((tx, cy), ln, font=font, fill=col, stroke_width=stroke_w, stroke_fill=stroke_col)
         cy += line_h
 
 
-def render_spec(spec: dict, content: dict, *, hero_bytes: bytes | None = None) -> tuple[bytes, str]:
-    """Rebuild `spec` with the brand's `content` (role → text) and photo.
+def render_spec(spec: dict, content: dict, *, hero_bytes: bytes | None = None,
+                logo_bytes: bytes | None = None) -> tuple[bytes, str]:
+    """Rebuild `spec` with the brand's `content` (role → text), photo and logo.
 
     Returns (png_bytes, kind). A photo treatment with no photo falls back to the
     solid palette background, so it never hard-fails."""
     hero = _load(hero_bytes)
     base = _background(spec, hero)
+    over_photo = hero is not None
     # Scrim only matters over a photo.
-    if hero is not None:
+    if over_photo:
         _scrim(base, (spec.get("background") or {}).get("scrim") or "none")
     _decorations(base, spec, content)
     ink_default = _rgb((spec.get("palette") or {}).get("ink"), (255, 255, 255))
     for el in spec.get("elements") or []:
-        _draw_element(base, el, str(content.get(el["role"], "")), ink_default)
+        _draw_element(base, el, str(content.get(el["role"], "")), ink_default, over_photo)
+    # The brand's own logo in the slot the design reserved for one.
+    if logo_bytes and spec.get("logo_box"):
+        _place_logo(base, _px(spec["logo_box"]), logo_bytes)
     out = io.BytesIO()
     base.save(out, format="PNG")
     return out.getvalue(), spec.get("kind", "graphic_card")
