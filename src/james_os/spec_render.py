@@ -167,6 +167,39 @@ def _has_text_over(box: dict, content: dict, elements: list) -> bool:
     return False
 
 
+def _fit_buttons(spec: dict, content: dict) -> None:
+    """Snap a pill/badge's label ONTO the pill. The extractor emits the button
+    shape and its text as separate items, sometimes offset — so a CTA renders as
+    a floating label above an empty coloured blob. For each pill/badge, find the
+    nearest short content-bearing label (cta/kicker/stat) and move it onto the
+    pill box (centered, contrasting colour). A pill with no pairable label is then
+    left with no text over it and gets suppressed downstream. Mutates the spec in
+    place — fine, it's a per-render copy from the pipeline."""
+    elements = spec.get("elements") or []
+    for d in spec.get("decorations") or []:
+        if d.get("type") not in ("pill", "badge"):
+            continue
+        pb = d.get("box") or {}
+        pcx, pcy = pb.get("x", 0) + pb.get("w", 0) / 2, pb.get("y", 0) + pb.get("h", 0) / 2
+        best, best_d = None, 0.20
+        for e in elements:
+            if e.get("role") not in ("cta", "kicker", "stat"):
+                continue
+            if not str(content.get(e.get("role"), "")).strip():
+                continue
+            eb = e.get("box") or {}
+            dist = abs(eb.get("x", 0) + eb.get("w", 0) / 2 - pcx) + abs(eb.get("y", 0) + eb.get("h", 0) / 2 - pcy)
+            if dist < best_d:
+                best, best_d = e, dist
+        if best is not None:
+            best["box"] = dict(pb)
+            best["align"] = "center"
+            # Contrast the label against the pill colour, not the photo behind it.
+            pill_lum = _lum(_rgb(d.get("color"), (201, 162, 75)))
+            best["color"] = "#ffffff" if pill_lum < 140 else "#111318"
+            best["_on_pill"] = True  # so the contrast plate doesn't fire for it
+
+
 def _decorations(base: Image.Image, spec: dict, content: dict) -> None:
     draw = ImageDraw.Draw(base, "RGBA")
     elements = spec.get("elements") or []
@@ -234,8 +267,9 @@ def _draw_element(base: Image.Image, el: dict, text: str, ink_default, over_phot
     text_lum = _lum(col)
     # Contrast guard: over a photo, if the text tone is too close to what's behind
     # it (light text on bright sky, dark text on shadow), lay a soft plate so it
-    # always reads — only when actually needed, so the photo stays visible.
-    if over_photo:
+    # always reads — only when actually needed, so the photo stays visible. Skip
+    # a label sitting ON a pill: it already has a solid, contrasting background.
+    if over_photo and not el.get("_on_pill"):
         bg_lum = _region_lum(base, blk_x, cy0, maxw, block_h)
         if abs(text_lum - bg_lum) < 95:
             plate_rgb = (0, 0, 0) if text_lum > 128 else (255, 255, 255)
@@ -265,6 +299,8 @@ def render_spec(spec: dict, content: dict, *, hero_bytes: bytes | None = None,
     hero = _load(hero_bytes)
     base = _background(spec, hero)
     over_photo = hero is not None
+    # Unify buttons (label onto pill) before anything is drawn.
+    _fit_buttons(spec, content)
     # Scrim only matters over a photo.
     if over_photo:
         _scrim(base, (spec.get("background") or {}).get("scrim") or "none")
