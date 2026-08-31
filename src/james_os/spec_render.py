@@ -99,8 +99,24 @@ def _scrim(base: Image.Image, where: str) -> None:
     base.paste(Image.new("RGB", (W, H), (0, 0, 0)), (0, 0), mask.resize((W, H)))
 
 
-def _decorations(base: Image.Image, spec: dict) -> None:
+def _has_text_over(box: dict, content: dict, elements: list) -> bool:
+    """Does a NON-EMPTY text element sit over this box? A pill/badge with no copy
+    on it is just an empty blob — the extractor emits the shape and the text as
+    separate items, so we only draw the shape when its label actually landed."""
+    cx, cy = box["x"] + box["w"] / 2, box["y"] + box["h"] / 2
+    for e in elements or []:
+        if not str(content.get(e.get("role"), "")).strip():
+            continue
+        b = e.get("box") or {}
+        if b.get("x", 0) - 0.02 <= cx <= b.get("x", 0) + b.get("w", 0) + 0.02 and \
+           b.get("y", 0) - 0.04 <= cy <= b.get("y", 0) + b.get("h", 0) + 0.04:
+            return True
+    return False
+
+
+def _decorations(base: Image.Image, spec: dict, content: dict) -> None:
     draw = ImageDraw.Draw(base, "RGBA")
+    elements = spec.get("elements") or []
     for d in spec.get("decorations") or []:
         x, y, w, h = _px(d["box"])
         col = _rgb(d.get("color"), _rgb((spec.get("palette") or {}).get("accent"), (201, 162, 75)))
@@ -108,6 +124,10 @@ def _decorations(base: Image.Image, spec: dict) -> None:
         if typ == "bar":
             draw.rectangle([x, y, x + w, y + h], fill=col)
         elif typ in ("pill", "badge"):
+            # Only draw a pill/badge if a text label actually lands on it —
+            # otherwise it's an empty coloured blob.
+            if not _has_text_over(d["box"], content, elements):
+                continue
             r = h // 2
             draw.rounded_rectangle([x, y, x + w, y + h], radius=r, fill=col)
         elif typ == "frame":
@@ -170,7 +190,7 @@ def render_spec(spec: dict, content: dict, *, hero_bytes: bytes | None = None) -
     # Scrim only matters over a photo.
     if hero is not None:
         _scrim(base, (spec.get("background") or {}).get("scrim") or "none")
-    _decorations(base, spec)
+    _decorations(base, spec, content)
     ink_default = _rgb((spec.get("palette") or {}).get("ink"), (255, 255, 255))
     for el in spec.get("elements") or []:
         _draw_element(base, el, str(content.get(el["role"], "")), ink_default)
