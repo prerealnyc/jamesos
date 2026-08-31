@@ -523,7 +523,9 @@ async def list_posts(
         "likes": "likes DESC",
         "recent": "posted_at DESC NULLS LAST",
     }.get(sort, "engagement_rate DESC NULLS LAST, likes DESC")
-    args.append(max(1, min(limit, 200)))
+    # Must match the route cap; a lower clamp here would silently return
+    # 200 of the 240 asked for, which reads as "some posts vanished".
+    args.append(max(1, min(limit, 500)))
     async with acquire(tenant_id) as conn:
         rows = await conn.fetch(
             f"SELECT * FROM competitor_posts {where} "
@@ -571,7 +573,9 @@ async def gallery(
         "recent": "p.posted_at DESC NULLS LAST",
         "picked": "p.replicate_at DESC NULLS LAST",
     }.get(sort, "p.engagement_rate DESC NULLS LAST, p.likes DESC")
-    args.append(max(1, min(limit, 200)))
+    # Must match the route cap; a lower clamp here would silently return
+    # 200 of the 240 asked for, which reads as "some posts vanished".
+    args.append(max(1, min(limit, 500)))
     async with acquire(tenant_id) as conn:
         rows = await conn.fetch(
             f"""SELECT p.id, p.url, p.caption, p.media_type, p.stored_media_url,

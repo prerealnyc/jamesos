@@ -222,7 +222,10 @@ async def competitors_sync_get(job_id: str) -> dict:
 @router.get("/competitors/posts")
 async def competitors_posts(
     competitor_id: str = "", platform: str = "", media_type: str = "",
-    sort: str = "engagement", limit: int = Query(default=60, le=200),
+    # 500, not 200: the roster asks for every post across every tracked
+    # competitor in one read (240 for seven of them) and a lower cap turned
+    # that into a 422 the UI showed as a raw validation blob.
+    sort: str = "engagement", limit: int = Query(default=60, le=500),
 ) -> dict:
     rows = await competitor_sync.list_posts(
         competitor_id=competitor_id, platform=platform,
@@ -320,7 +323,10 @@ async def competitors_analyses(
 @router.get("/competitors/gallery")
 async def competitors_gallery(
     competitor_id: str = "", replicate: str = "", media_only: bool = True,
-    sort: str = "engagement", limit: int = Query(default=60, le=200),
+    # 500, not 200: the roster asks for every post across every tracked
+    # competitor in one read (240 for seven of them) and a lower cap turned
+    # that into a 422 the UI showed as a raw validation blob.
+    sort: str = "engagement", limit: int = Query(default=60, le=500),
 ) -> dict:
     """Competitor posts with our stored media and what the eyes made of them.
 
