@@ -315,7 +315,7 @@ async def _tag_sample(action_id: str, tenant_id, extra: dict) -> None:
             action_id, json.dumps(extra))
 
 
-async def generate_samples(tenant_id, *, n: int = 6, grade: bool = True) -> dict:
+async def generate_samples(tenant_id, *, n: int = 6, grade: bool = True, progress=None) -> dict:
     """Build example posts from the brand's best templatizable photos — one per
     photo, each in a layout that photo actually fits — then grade the rendered
     result so the caller can surface only the strong ones.
@@ -324,7 +324,7 @@ async def generate_samples(tenant_id, *, n: int = 6, grade: bool = True) -> dict
     auto-match, render on the EXACT photo, and self-grade with the same design eye
     that judged the photo. Samples are real pending content actions (tagged
     payload.sample=true) so they render in the queue and can be approved; the
-    gallery just shows them best first."""
+    gallery just shows them best first. `progress(dict)` reports {done,total,stage}."""
     from .models import ContentBrief
     from .content import generate_content, strip_internal_labels
     from .autopilot import generate_ideas
@@ -332,6 +332,14 @@ async def generate_samples(tenant_id, *, n: int = 6, grade: bool = True) -> dict
     from .main import _generate_designed_post_image
     from . import design_eye
 
+    def _emit(**p):
+        if progress:
+            try:
+                progress(p)
+            except Exception:  # noqa: BLE001
+                pass
+
+    _emit(done=0, total=n, stage="Looking at your photos…")
     await classify_brand_photos(tenant_id)
     # Only build in layouts the brand actually ALLOWS. Otherwise the renderer
     # silently clamps a disabled photo format down to a text card (_clamp_format),
@@ -361,6 +369,8 @@ async def generate_samples(tenant_id, *, n: int = 6, grade: bool = True) -> dict
     if not ideas:
         return {"samples": [], "count": 0, "note": "Could not draft example topics."}
 
+    total = len(photos)
+    _emit(done=0, total=total, stage=f"Building your first {total} posts…")
     samples, failed = [], 0
     last_fmt = ""
     for i, photo in enumerate(photos):
@@ -423,6 +433,7 @@ async def generate_samples(tenant_id, *, n: int = 6, grade: bool = True) -> dict
             "score": score, "from_photo": photo.get("media_id"),
             "topic": topic, "caption": (getattr(draft, "draft", "") or "")[:300],
         })
+        _emit(done=len(samples), total=total, stage=f"Built {len(samples)} of {total}…")
 
     # Strong first — a null score (ungraded) sorts below any real score.
     samples.sort(key=lambda s: (s["score"] is not None, s["score"] or 0), reverse=True)

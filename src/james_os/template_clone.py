@@ -200,14 +200,26 @@ async def _top_posts(tenant_id, limit: int, *, templates_only: bool = False) -> 
     return [_row_out(r) for r in rows]
 
 
-async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True) -> dict:
+async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True,
+                                    progress=None) -> dict:
     """Clone the top competitor templates into our versions, store each as a
-    pending sample (shared with the samples gallery), best first."""
+    pending sample (shared with the samples gallery), best first.
+
+    `progress(dict)` is called as it goes ({done,total,stage}) so the UI can show
+    a real bar instead of an endless spinner."""
     from .models import ContentBrief
     from .content import generate_content
     from .media import storage as media_storage
     from . import design_eye
 
+    def _emit(**p):
+        if progress:
+            try:
+                progress(p)
+            except Exception:  # noqa: BLE001 — progress is advisory
+                pass
+
+    _emit(done=0, total=n, stage="Studying the templates winning in your niche…")
     # Prefer DESIGNED templates (the reusable layouts). Only if there aren't
     # enough do we top up with top regular posts, so we always produce output.
     posts = await _top_posts(tenant_id, n * 2, templates_only=True)
@@ -219,6 +231,8 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
                 "note": "No competitor posts to learn from yet — confirm a few "
                         "competitors and let their posts sync, then we'll show our "
                         "versions of what's working in your niche."}
+    total = min(len(posts), n)
+    _emit(done=0, total=total, stage=f"Building your first {total} posts…")
 
     samples, failed, made = [], 0, 0
     for post in posts:
@@ -268,6 +282,8 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
                     "used_placeholder_photo": cloned["generated_hero"],
                 }))
         made += 1
+        _emit(done=made, total=total, stage=f"Built {made} of {total} — "
+              f"in the style of @{cloned['from'] or 'your niche'}")
         samples.append({
             "action_id": str(action_id), "image_url": url, "format": "cloned",
             "score": score, "from": cloned["from"], "topic": cloned["topic"],

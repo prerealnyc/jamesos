@@ -106,10 +106,15 @@ async def samples_generate(
     _SAMPLE_JOBS[job_id] = {"status": "running"}
     _prune(_SAMPLE_JOBS)
 
+    def _prog(p: dict) -> None:
+        job = _SAMPLE_JOBS.get(job_id)
+        if job is not None and job.get("status") == "running":
+            job.update(p)
+
     async def _run() -> None:
         _bind_tenant(tenant)
         try:
-            res = await hero_templatize.generate_samples(tenant, n=n, grade=req.grade)
+            res = await hero_templatize.generate_samples(tenant, n=n, grade=req.grade, progress=_prog)
             _SAMPLE_JOBS[job_id] = {"status": "done", **res}
         except Exception as e:  # noqa: BLE001
             _SAMPLE_JOBS[job_id] = {"status": "failed", "error": str(e)[:300]}
@@ -138,10 +143,16 @@ async def samples_clone(
     _SAMPLE_JOBS[job_id] = {"status": "running"}
     _prune(_SAMPLE_JOBS)
 
+    def _prog(p: dict) -> None:
+        job = _SAMPLE_JOBS.get(job_id)
+        if job is not None and job.get("status") == "running":
+            job.update(p)
+
     async def _run() -> None:
         _bind_tenant(tenant)
         try:
-            res = await template_clone.generate_template_samples(tenant, n=n, grade=req.grade)
+            res = await template_clone.generate_template_samples(
+                tenant, n=n, grade=req.grade, progress=_prog)
             _SAMPLE_JOBS[job_id] = {"status": "done", **res}
         except Exception as e:  # noqa: BLE001
             _SAMPLE_JOBS[job_id] = {"status": "failed", "error": str(e)[:300]}
