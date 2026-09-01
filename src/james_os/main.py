@@ -1912,6 +1912,33 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
         with _ic.brand_fonts(_cfont), _ic.brand_look(_clook), \
                 _ic.text_style(_ctext_color, _ctext_bold):
             slides = render_carousel(deck_r, palette, handle)
+
+    # ── DESIGN QA GATE (carousel) ───────────────────────────────────────
+    # Check the cover + a couple of inner slides for execution flaws before we
+    # save anything. A broken carousel is held back (return "" → the caller
+    # degrades to a clean single post) rather than shipped. Fail-OPEN if the
+    # reviewer is down. Retrying a whole deck is deferred; the gate just prevents
+    # a flawed carousel from reaching the owner.
+    if settings.design_qa_enabled and slides:
+        try:
+            from . import render_reviewer
+            for _sl in [slides[0], *slides[1:3]]:
+                _r = await render_reviewer.review_post(_sl, mime="image/png")
+                if _r.get("status") == "ok" and not _r.get("passed"):
+                    try:
+                        async with acquire(tenant_id) as conn:
+                            await conn.execute(
+                                "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1",
+                                action_id, json.dumps({
+                                    "design_qa_failed": True,
+                                    "design_qa_flaws": _r.get("critical_flaws") or [],
+                                    "design_qa_issues": _r.get("issues") or []}))
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return "", ""
+        except Exception:  # noqa: BLE001 — QA must never break generation
+            pass
+
     tenant = str(tenant_id or settings.default_tenant_id)
     urls: list[str] = []
     cover_fp = ""
@@ -1950,7 +1977,7 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
 async def _generate_designed_post_image(
     action_id, topic: str, draft_text: str, tenant_id, avoid: str = "",
     feedback: str = "", force_format: str = "", exclude_photos: tuple[str, ...] = (),
-    force_photo: str = "",
+    force_photo: str = "", _qa_attempt: int = 0,
 ) -> tuple[str, str]:
     """Art-director → text-free background (Soul James or cinematic scene) →
     Pillow-composited quote card / meme → persist + attach to the action.
@@ -2195,6 +2222,51 @@ async def _generate_designed_post_image(
             profile_bytes=profile_bytes, profile_is_logo=profile_is_logo,
             handle=handle, tuning=_tuning, palette=kit.get("palette"),
         )
+
+    # ── DESIGN QA GATE ──────────────────────────────────────────────────
+    # A pro-designer reviewer checks the rendered bytes for execution flaws
+    # (clipped/overlapping/illegible text, empty shapes, text over a face, broken
+    # logo) BEFORE we save or attach anything. On a fail we retry a DIFFERENT
+    # layout, feeding the critique back to the art director; if it still won't
+    # pass we hold it back (return "" — the same contract callers already handle,
+    # degrading to a plain photo or an imageless held post) rather than ship a
+    # mistake. Fail-OPEN if the reviewer itself is unavailable. Video/reels never
+    # reach this function, so they are unaffected.
+    if settings.design_qa_enabled and out:
+        try:
+            from . import render_reviewer
+            _rev = await render_reviewer.review_post(out, mime="image/png")
+        except Exception:  # noqa: BLE001 — QA must never break generation
+            _rev = {"status": "failed"}
+        if _rev.get("status") == "ok" and not _rev.get("passed"):
+            _issues = "; ".join(_rev.get("issues") or [])[:400]
+            if _qa_attempt < int(settings.design_qa_max_retries or 0):
+                # Retry: avoid the layout that failed, hand the art director the
+                # critique, and drop this photo (unless a specific photo was
+                # pinned for a restyle). force_format is cleared so a cleaner
+                # layout can be chosen.
+                _next_exclude = exclude_photos if force_photo else tuple(
+                    set(exclude_photos) | ({hero_key} if hero_key else set()))
+                return await _generate_designed_post_image(
+                    action_id, topic, draft_text, tenant_id,
+                    avoid=(f"{avoid} {fmt}").strip(),
+                    feedback=(f"{feedback}; {_issues}").strip("; "),
+                    force_format="", exclude_photos=_next_exclude,
+                    force_photo=force_photo, _qa_attempt=_qa_attempt + 1,
+                )
+            # Exhausted retries — never ship the flaw. Record why, hold it back.
+            try:
+                async with acquire(tenant_id) as conn:
+                    await conn.execute(
+                        "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1",
+                        action_id, json.dumps({
+                            "design_qa_failed": True,
+                            "design_qa_flaws": _rev.get("critical_flaws") or [],
+                            "design_qa_issues": _rev.get("issues") or [],
+                        }))
+            except Exception:  # noqa: BLE001
+                pass
+            return "", ""
 
     tenant = str(tenant_id or settings.default_tenant_id)
     served_uri, file_path = await asyncio.to_thread(

@@ -149,6 +149,12 @@ class Settings(BaseSettings):
     heygen_voice_id: str = ""         # HeyGen voice id (required to speak text)
     image_model: str = "gpt-image-1"  # OpenAI image model for B-roll seed stills
     ocr_model: str = "gpt-4o-mini"    # vision model for document-image OCR
+    # Design QA gate: a pro-designer reviewer checks every rendered image/carousel
+    # for execution flaws (clipped/illegible text, empty shapes, bad logo) BEFORE
+    # it ships; a fail retries a different layout, then holds it back. Images only
+    # (reels/video are unaffected). Turn OFF to skip the extra vision call/retries.
+    design_qa_enabled: bool = True
+    design_qa_max_retries: int = 2    # extra render attempts on a QA fail
     # Auto-trim trailing silence on every avatar/broll clip and snap the
     # scene's duration to the trimmed length. Eliminates dead air between
     # scenes in Creatomate's stitched output. Disable for raw clips.
