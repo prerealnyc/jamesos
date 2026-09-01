@@ -59,6 +59,9 @@ packages = ["src/james_os"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+  "nodb: pure-logic test — skips the Postgres fixture so it runs anywhere",
+]
 
 [tool.ruff]
 line-length = 100

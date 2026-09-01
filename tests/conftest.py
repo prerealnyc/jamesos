@@ -49,7 +49,14 @@ if "supabase.co" in settings.database_url or "pooler.supabase.com" in settings.d
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def fresh_pool():
+async def fresh_pool(request):
+    # Pure-logic tests (string rules, scoring, parsing) need no database, and
+    # making them stand up a Postgres pool means they cannot run at all on a
+    # machine without one — the rules end up untested exactly where they are
+    # cheapest to test. `@pytest.mark.nodb` opts a module out.
+    if request.node.get_closest_marker("nodb"):
+        yield
+        return
     # Reset the global so each test starts with its own pool bound to
     # this test's event loop. Avoids the classic asyncpg + session-scope
     # "Future attached to a different loop" error.

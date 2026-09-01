@@ -716,6 +716,86 @@ def _styling_override(feedback: str) -> dict:
     return out
 
 
+# Layout families that carry no photograph (designed_render.PHOTO_FORMATS is the
+# complement). Kept here as names rather than imported so this stays a pure
+# string decision — "there is no image on it" cannot be answered by one of these.
+_TEXT_ONLY_FORMATS = ("brand_quote", "bold_statement", "big_stat")
+
+# One original plus two rebuilds. Rejecting now rebuilds on its own (BM2.0 fires
+# this endpoint from its reject route), so an uncapped chain is a spend loop with
+# no human in it: reject -> render -> reject -> render, forever, at real cost per
+# image. Past the cap the rejection still records and still teaches; only the
+# automatic rebuild stops, because at that point the brief is what needs to
+# change and that is the owner's call.
+MAX_REGEN_VERSION = 3
+
+# The owner asking for the layout to be LEFT ALONE. This is the strongest signal
+# a redo can receive and it used to be the weakest: none of these matched any
+# rule, so "keep rest template same" fell into the vague bucket — the one branch
+# that hands the art director a blank slate and lets it choose a different
+# template entirely. The instruction produced the exact opposite of itself.
+_KEEP_LAYOUT = (
+    "keep the template", "keep template", "same template", "template same",
+    "keep the layout", "keep layout", "same layout", "layout same",
+    "keep the design", "keep design", "same design", "design same",
+    "keep the style", "same style", "style same",
+    "keep the rest", "keep rest", "keep everything else", "keep the format",
+    "same format", "format same", "keep it the same", "keep the same",
+)
+# The owner asking for a DIFFERENT look. Only these earn a fresh composition.
+_CHANGE_LAYOUT = (
+    "different layout", "different template", "different design", "different format",
+    "change the layout", "change the template", "change the design", "change the format",
+    "new layout", "new template", "new design", "another layout", "another template",
+    "design not good", "design is not good", "bad design", "design is bad",
+    "hate the design", "hate this design", "looks bad", "doesn't look good",
+    "does not look good", "ugly", "boring", "redesign", "re-design",
+)
+# "There is no picture on this" — a complaint that the post is text-only. It can
+# only be answered by a layout that HAS a photo slot, which is why it steers the
+# format as well as the photo.
+_WANTS_PHOTO_PRESENT = (
+    "no image on it", "no photo on it", "no picture on it", "no image", "no photo",
+    "no picture", "without an image", "without a photo", "missing image",
+    "missing photo", "add an image", "add a photo", "add a picture",
+    "needs an image", "needs a photo", "put an image", "put a photo",
+    "where is the image", "where is the photo",
+)
+# The owner asking for the SAME picture back.
+_KEEP_PHOTO = (
+    "same image", "same photo", "same picture", "image same", "photo same",
+    "picture same", "keep the image", "keep the photo", "keep the picture",
+    "keep image", "keep photo",
+)
+
+
+def _layout_intent(feedback: str) -> str:
+    """'new' | 'same' | '' — what the owner asked for the LAYOUT.
+
+    A redo is a FIX, not a replacement: unless they said the look itself is
+    wrong, the template that was on screen is the one they were correcting. An
+    explicit complaint wins over an explicit keep, because "keep the rest the
+    same, but the design is bad" is still asking for a different design."""
+    f = (feedback or "").lower()
+    if any(p in f for p in _CHANGE_LAYOUT):
+        return "new"
+    if any(p in f for p in _KEEP_LAYOUT):
+        return "same"
+    return ""
+
+
+def _wants_photo_present(feedback: str) -> bool:
+    """Did they say the post has no picture on it?"""
+    f = (feedback or "").lower()
+    return any(p in f for p in _WANTS_PHOTO_PRESENT)
+
+
+def _keeps_photo(feedback: str) -> bool:
+    """Did they explicitly ask for the SAME picture back?"""
+    f = (feedback or "").lower()
+    return any(p in f for p in _KEEP_PHOTO)
+
+
 def _wants_new_photo(feedback: str) -> bool:
     """True only when the owner asked for a DIFFERENT photo/image, or complained
     about the photo's quality. Otherwise a redo keeps the SAME picture and changes
@@ -777,6 +857,11 @@ async def _run_regenerate(
         reason = (feedback or "").strip() or (parent["rejection_reason_code"] or "").strip()
         prev_photo = str(payload.get("hero_photo_key") or "")
         version = int(str(payload.get("version") or "1") if str(payload.get("version") or "1").isdigit() else 1)
+        if version >= MAX_REGEN_VERSION:
+            raise ValueError(
+                f"this post has already been rebuilt {MAX_REGEN_VERSION - 1} times — "
+                "change the brief or edit it by hand rather than asking for another pass"
+            )
 
         # The new row carries the SAME copy and points back at what it replaces.
         new_payload = {
@@ -807,31 +892,51 @@ async def _run_regenerate(
             except Exception:  # noqa: BLE001 — a knob write must never block a redo
                 pass
 
-        # SAME IMAGE BY DEFAULT. A redo reuses the EXACT rejected photo and keeps
-        # the layout, changing only what was asked — a colour/weight restyle, or a
-        # pinned format like "make James big". We only swap the photo (and let the
-        # art director re-compose) when the owner asked for a DIFFERENT image or
-        # complained about the photo itself.
+        # A REDO IS A FIX, NOT A REPLACEMENT. Whatever was on screen is what the
+        # owner was correcting, so the photo AND the layout are kept unless they
+        # asked otherwise. The old rule kept the photo but handed the layout back
+        # to the art director whenever the feedback matched no keyword — which is
+        # most real feedback — and the art director then reached for the house
+        # style. "keep rest template same and image same" produced a different
+        # template with the photo dropped: the instruction inverted.
         prev_format = str(payload.get("image_format") or "")
-        if _wants_new_photo(reason):
+        layout = _layout_intent(reason)
+        want_photo = _wants_photo_present(reason)
+        new_photo = _wants_new_photo(reason) or (want_photo and not _keeps_photo(reason))
+
+        if new_photo:
             eff_force_photo = ""
             eff_exclude = (prev_photo,) if prev_photo else ()
-            eff_force = force_format
         else:
             eff_force_photo = prev_photo
             eff_exclude = ()
-            if force_format:
-                eff_force = force_format          # explicit layout (e.g. make big)
-            elif overrides:
-                eff_force = prev_format            # a restyle → keep the exact layout
-            else:
-                eff_force = ""                     # vague feedback → art director re-lays out the SAME photo
+
+        eff_avoid = ""
+        if force_format:
+            eff_force = force_format               # explicit layout (e.g. "make James big")
+        elif layout == "new":
+            # They said the look itself is wrong — compose afresh, and do not hand
+            # back the very template they just turned down.
+            eff_force = ""
+            eff_avoid = prev_format
+        else:
+            # 'same' and unspecified both keep it. Unspecified is the common case
+            # and keeping is the safe reading: they were fixing this piece.
+            eff_force = prev_format
+
+        if want_photo:
+            # "there is no image on it" cannot be answered by a text-only card, so
+            # steer off that whole family however the layout was decided above.
+            if eff_force in _TEXT_ONLY_FORMATS:
+                eff_force = ""
+            eff_avoid = " ".join(x for x in (eff_avoid, *_TEXT_ONLY_FORMATS) if x).strip()
 
         served, fmt = await _main._generate_designed_post_image(
             new_id,
             str(payload.get("topic") or ""),
             str(payload.get("content") or payload.get("caption") or ""),
             tenant_id,
+            avoid=eff_avoid,
             feedback=reason,
             force_format=eff_force,
             exclude_photos=eff_exclude,
@@ -860,6 +965,23 @@ async def v1_post_regenerate(
     Returns a job_id immediately; poll /v1/jobs/{id}. The result is a NEW
     pending post whose payload names the original in regen_of, so it appears
     under it in /v1/queue/rejected instead of as an unrelated card."""
+    # Refuse a runaway chain here as well as in the job, so a caller that fires
+    # this automatically (BM2.0's reject route does) gets a straight answer it
+    # can show the owner instead of a job that fails a second later.
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            "SELECT payload->>'version' AS version FROM actions "
+            "WHERE id=$1 AND action_type='content'", action_id)
+    if row is None:
+        raise HTTPException(404, "post not found")
+    _v = str(row["version"] or "1")
+    if (int(_v) if _v.isdigit() else 1) >= MAX_REGEN_VERSION:
+        return {
+            "job_id": "",
+            "status": "refused",
+            "error": f"already rebuilt {MAX_REGEN_VERSION - 1} times — "
+                     "change the brief or edit it by hand",
+        }
     job = {
         "id": str(uuid.uuid4()), "type": "regenerate", "tenant_id": str(tenant_id),
         "status": "queued", "result": None, "error": None,
