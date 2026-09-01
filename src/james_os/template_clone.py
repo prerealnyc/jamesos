@@ -127,31 +127,77 @@ async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None) 
             "generated_hero": generated, "from": post.get("handle") or ""}
 
 
-async def _top_posts(tenant_id, limit: int) -> list[dict]:
-    """Top competitor STILLS to clone — best engagement first, design-analysed
-    where available. Videos are excluded (a still template needs a still)."""
+# What separates a DESIGNED TEMPLATE (a milestone card, listing card, quote
+# poster, announcement — a reusable layout) from a REGULAR post (just a photo).
+# Derived from the competitor vision analysis we already store — no new calls.
+_TEMPLATE_COND = (
+    "((a.design_dna->>'layout_family') IN "
+    "('text_card','split_panel','data_viz','carousel_cover','photo_beside_text') "
+    "OR (a.design_dna->>'text_density') IN ('moderate','heavy') "
+    "OR a.format ~* '(listing|quote|stat|announce|before|milestone|tip|list|poster|infographic)')"
+)
+
+
+def _row_out(r) -> dict:
+    d = dict(r)
+    d["id"] = str(d["id"])
+    if isinstance(d.get("design_dna"), str):
+        try:
+            d["design_dna"] = json.loads(d["design_dna"])
+        except (ValueError, TypeError):
+            d["design_dna"] = {}
+    return d
+
+
+async def separate_posts(tenant_id, *, limit: int = 40) -> dict:
+    """Split the scraped competitor STILLS into designed TEMPLATES vs REGULAR
+    posts (photos), using the analysis we already hold. Returns counts + the top
+    templates, so the UI can show 'we found N templates worth rebuilding'."""
     async with acquire(tenant_id) as conn:
         rows = await conn.fetch(
-            """SELECT p.id, p.stored_media_url, p.caption, p.media_type, c.handle,
-                      a.format, a.topic, a.transferable_pattern, a.design_dna,
-                      a.eye_score, p.engagement_rate
-                 FROM competitor_posts p
-                 JOIN competitors c ON c.id = p.competitor_id
-            LEFT JOIN competitor_post_analysis a ON a.post_id = p.id
-                WHERE p.stored_media_url <> '' AND p.media_type IN ('image', 'carousel')
-             ORDER BY coalesce(a.eye_score, 0) * 0.5 + p.engagement_rate DESC NULLS LAST
-                LIMIT $1""", max(1, min(limit, 24)))
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["id"] = str(d["id"])
-        if isinstance(d.get("design_dna"), str):
-            try:
-                d["design_dna"] = json.loads(d["design_dna"])
-            except (ValueError, TypeError):
-                d["design_dna"] = {}
-        out.append(d)
-    return out
+            f"""SELECT p.id, p.stored_media_url, c.handle, a.format, a.eye_score,
+                       p.engagement_rate, a.status AS a_status,
+                       ({_TEMPLATE_COND}) AS is_template
+                  FROM competitor_posts p
+                  JOIN competitors c ON c.id = p.competitor_id
+             LEFT JOIN competitor_post_analysis a ON a.post_id = p.id
+                 WHERE p.stored_media_url <> '' AND p.media_type IN ('image', 'carousel')
+              ORDER BY coalesce(a.eye_score, 0) * 0.5 + p.engagement_rate DESC NULLS LAST
+                 LIMIT 200""")
+    analysed = [r for r in rows if r["a_status"] == "ok"]
+    templates = [r for r in analysed if r["is_template"]]
+    regular = [r for r in analysed if not r["is_template"]]
+    return {
+        "template_count": len(templates),
+        "regular_count": len(regular),
+        "unanalysed": len(rows) - len(analysed),
+        "templates": [{
+            "id": str(r["id"]), "url": r["stored_media_url"], "from": r["handle"],
+            "format": r["format"], "eye_score": r["eye_score"],
+        } for r in templates[:limit]],
+    }
+
+
+async def _top_posts(tenant_id, limit: int, *, templates_only: bool = False) -> list[dict]:
+    """Top competitor STILLS to clone — best engagement first, design-analysed
+    where available. Videos are excluded (a still template needs a still). With
+    templates_only, only DESIGNED templates (not plain photos) are returned."""
+    where = "p.stored_media_url <> '' AND p.media_type IN ('image', 'carousel')"
+    if templates_only:
+        where += f" AND a.status = 'ok' AND {_TEMPLATE_COND}"
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            f"""SELECT p.id, p.stored_media_url, p.caption, p.media_type, c.handle,
+                       a.format, a.topic, a.transferable_pattern, a.design_dna,
+                       a.eye_score, p.engagement_rate,
+                       ({_TEMPLATE_COND}) AS is_template
+                  FROM competitor_posts p
+                  JOIN competitors c ON c.id = p.competitor_id
+             LEFT JOIN competitor_post_analysis a ON a.post_id = p.id
+                 WHERE {where}
+              ORDER BY coalesce(a.eye_score, 0) * 0.5 + p.engagement_rate DESC NULLS LAST
+                 LIMIT $1""", max(1, min(limit, 24)))
+    return [_row_out(r) for r in rows]
 
 
 async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True) -> dict:
@@ -162,7 +208,12 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
     from .media import storage as media_storage
     from . import design_eye
 
-    posts = await _top_posts(tenant_id, n * 2)
+    # Prefer DESIGNED templates (the reusable layouts). Only if there aren't
+    # enough do we top up with top regular posts, so we always produce output.
+    posts = await _top_posts(tenant_id, n * 2, templates_only=True)
+    if len(posts) < n:
+        seen = {p["id"] for p in posts}
+        posts += [p for p in await _top_posts(tenant_id, n * 2) if p["id"] not in seen]
     if not posts:
         return {"samples": [], "count": 0,
                 "note": "No competitor posts to learn from yet — confirm a few "
@@ -228,4 +279,4 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
     return {"samples": samples, "count": len(samples), "failed": failed}
 
 
-__all__ = ["clone_post", "generate_template_samples"]
+__all__ = ["clone_post", "generate_template_samples", "separate_posts"]

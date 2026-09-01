@@ -156,4 +156,13 @@ async def samples_list(tenant: TenantDep, limit: int = 20) -> dict:
     return {"samples": await hero_templatize.list_samples(tenant, limit=limit)}
 
 
+@router.get("/v1/competitors/templates")
+async def competitor_templates(tenant: TenantDep, limit: int = 40) -> dict:
+    """Split the scraped competitor stills into DESIGNED TEMPLATES (reusable
+    layouts worth rebuilding) vs REGULAR posts (plain photos) — counts + the top
+    templates. Derived from the analysis we already hold; no new vision calls."""
+    from . import template_clone
+    return await template_clone.separate_posts(tenant, limit=limit)
+
+
 __all__ = ["router"]

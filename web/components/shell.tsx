@@ -27,7 +27,8 @@ const VIDEO_SUBROUTES = [
   "/heygen-video", "/story-video", "/pipeline", "/editor",
 ];
 // One "Create" hub over every maker (batch, post, video, image).
-const CREATE_SUBROUTES = ["/create", "/autopilot", "/design-studio", "/images", ...VIDEO_SUBROUTES];
+const CREATE_SUBROUTES = ["/create", "/autopilot", "/design-studio", "/images",
+                          "/make-reel", ...VIDEO_SUBROUTES];
 // Assets = the 4 media libraries + style templates, already tab-unified.
 const ASSETS_SUBROUTES = ["/jp-clips", "/hero", "/broll", "/audio", "/style-templates"];
 // Research = listen + trends + people, tab-unified via HubTabs.
@@ -50,7 +51,6 @@ const NAV: Group[] = [
   {
     title: "Create",
     items: [
-      { href: "/make-reel", label: "Make a reel", sub: "Upload a talking head → a finished reel", icon: "clips", live: true },
       { href: "/create", label: "Create", sub: "Posts, videos, images & batches — one place", icon: "design", live: true, match: CREATE_SUBROUTES },
       { href: "/content-library", label: "Content Library", sub: "Footage → clippable reels, auto-clipped to the queue", icon: "clips", live: true },
     ],

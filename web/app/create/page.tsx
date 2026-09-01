@@ -49,11 +49,19 @@ const OPTIONS: Option[] = [
 
 const TEMPLATES: Option[] = [
   {
-    href: "/long-form",
+    href: "/make-reel",
     title: "Template 1 — Your clip, full-frame",
-    oneLiner: "Upload a clip · B-roll on top · magenta-on-black",
-    detail: "Upload your own 1-minute talking-head clip; we cut it, layer cinematic B-roll over it, and burn magenta-on-black captions. Real you, full-frame 9:16.",
+    oneLiner: "Upload a clip → a finished reel, one step",
+    detail: "Upload your own talking-head clip and get the whole thing back as a reel: captions burned in, a music bed, and designed cutaway cards placed from what you actually said. Drop in B-roll and it gets cut in where it genuinely fits what you're saying. Full-frame 9:16.",
     icon: "pipeline",
+    tag: "New",
+  },
+  {
+    href: "/long-form",
+    title: "A long recording → pick the best cuts",
+    oneLiner: "Podcast or interview · we find 3-5 standalone reels",
+    detail: "For a LONG recording rather than a short clip: we transcribe it, an LLM finds the 30-45s stretches that stand alone, and you choose which ones to render. Use Template 1 above when the whole clip is already the reel.",
+    icon: "clips",
   },
   {
     href: "/engaging-video?t=split",
