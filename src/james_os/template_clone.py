@@ -200,6 +200,25 @@ async def _top_posts(tenant_id, limit: int, *, templates_only: bool = False) -> 
     return [_row_out(r) for r in rows]
 
 
+async def _exemplars(tenant_id, k: int = 2) -> list[bytes]:
+    """The best real templates in this niche (highest design-eye score), as bytes,
+    to hand the QA reviewer as the quality bar to judge against."""
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            f"""SELECT p.stored_media_url
+                  FROM competitor_posts p
+                  JOIN competitor_post_analysis a ON a.post_id = p.id
+                 WHERE p.stored_media_url <> '' AND a.status = 'ok' AND {_TEMPLATE_COND}
+              ORDER BY a.eye_score DESC NULLS LAST
+                 LIMIT $1""", max(1, min(k, 3)))
+    out = []
+    for r in rows:
+        b = await _fetch_bytes(r["stored_media_url"])
+        if b:
+            out.append(b)
+    return out
+
+
 async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True,
                                     progress=None) -> dict:
     """Clone the top competitor templates into our versions, store each as a
@@ -210,7 +229,7 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
     from .models import ContentBrief
     from .content import generate_content
     from .media import storage as media_storage
-    from . import design_eye
+    from . import render_reviewer
 
     def _emit(**p):
         if progress:
@@ -220,29 +239,44 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
                 pass
 
     _emit(done=0, total=n, stage="Studying the templates winning in your niche…")
-    # Prefer DESIGNED templates (the reusable layouts). Only if there aren't
-    # enough do we top up with top regular posts, so we always produce output.
-    posts = await _top_posts(tenant_id, n * 2, templates_only=True)
-    if len(posts) < n:
-        seen = {p["id"] for p in posts}
-        posts += [p for p in await _top_posts(tenant_id, n * 2) if p["id"] not in seen]
+    # Prefer DESIGNED templates (the reusable layouts). Pull a generous candidate
+    # pool because the QA reviewer will reject some — we keep going until n PASS.
+    posts = await _top_posts(tenant_id, 24, templates_only=True)
+    seen = {p["id"] for p in posts}
+    posts += [p for p in await _top_posts(tenant_id, 24) if p["id"] not in seen]
     if not posts:
         return {"samples": [], "count": 0,
                 "note": "No competitor posts to learn from yet — confirm a few "
                         "competitors and let their posts sync, then we'll show our "
                         "versions of what's working in your niche."}
-    total = min(len(posts), n)
-    _emit(done=0, total=total, stage=f"Building your first {total} posts…")
+    # The quality bar: the best real templates in this niche, handed to the
+    # reviewer as reference so it judges against what actually ships here.
+    exemplars = await _exemplars(tenant_id)
+    _emit(done=0, total=n, stage=f"Building your first {n} posts…")
 
-    samples, failed, made = [], 0, 0
+    samples, failed, rejected, reviewed = [], 0, 0, 0
     for post in posts:
-        if made >= n:
+        if len(samples) >= n:
             break
         cloned = await clone_post(post, tenant_id)
         if not cloned or not cloned.get("png"):
             failed += 1
             continue
-        # A caption to go with the image (voice-QA'd), and the action to hang it on.
+
+        # PRO-DESIGNER QA GATE — review the rendered post BEFORE it becomes an
+        # action, so a broken layout (clipped text, empty pill, bad logo) never
+        # reaches the user. Fail-OPEN if the reviewer itself is unavailable.
+        rev = await render_reviewer.review_post(cloned["png"], exemplars=exemplars)
+        if rev.get("status") == "ok":
+            reviewed += 1
+            if not rev.get("passed"):
+                rejected += 1
+                logger.info("QA rejected a clone from @%s: flaws=%s issues=%s",
+                            cloned.get("from"), rev.get("critical_flaws"), rev.get("issues"))
+                continue  # not shown, no action created
+        polish = rev.get("polish_score")
+
+        # Passed (or reviewer offline) → caption + action + store.
         try:
             draft = await generate_content(
                 ContentBrief(platform="instagram", format="post",
@@ -263,36 +297,33 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
             failed += 1
             continue
 
-        score = None
-        if grade:
-            try:
-                g = await design_eye.inspect_image(cloned["png"], mime="image/png")
-                if g.get("status") == "ok":
-                    score = g.get("eye_score")
-            except Exception:  # noqa: BLE001
-                score = None
-
         async with acquire(tenant_id) as conn:
             await conn.execute(
                 "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1::uuid",
                 action_id, json.dumps({
                     "image_url": url, "media_url": url, "has_image": True,
-                    "image_format": "cloned", "sample": "true", "sample_score": score,
+                    "image_format": "cloned", "sample": "true", "sample_score": polish,
                     "sample_from": cloned["from"], "cloned_from_competitor": True,
                     "used_placeholder_photo": cloned["generated_hero"],
+                    "review_passed": bool(rev.get("passed")),
                 }))
-        made += 1
-        _emit(done=made, total=total, stage=f"Built {made} of {total} — "
+        made = len(samples) + 1
+        _emit(done=made, total=n, stage=f"Built {made} of {n} — "
               f"in the style of @{cloned['from'] or 'your niche'}")
         samples.append({
             "action_id": str(action_id), "image_url": url, "format": "cloned",
-            "score": score, "from": cloned["from"], "topic": cloned["topic"],
+            "score": polish, "from": cloned["from"], "topic": cloned["topic"],
             "caption": (getattr(draft, "draft", "") or "")[:300],
             "used_placeholder": cloned["generated_hero"],
         })
 
     samples.sort(key=lambda s: (s["score"] is not None, s["score"] or 0), reverse=True)
-    return {"samples": samples, "count": len(samples), "failed": failed}
+    note = ""
+    if not samples and rejected:
+        note = ("We built several but none cleared our design review yet — try again, "
+                "or add a few clean brand photos to build on.")
+    return {"samples": samples, "count": len(samples),
+            "failed": failed, "reviewed": reviewed, "rejected": rejected, "note": note}
 
 
 __all__ = ["clone_post", "generate_template_samples", "separate_posts"]
