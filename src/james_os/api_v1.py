@@ -538,7 +538,15 @@ async def v1_queue(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
             "SELECT id, status, payload->>'platform' AS platform, "
             "payload->>'format' AS format, payload->>'caption' AS caption, "
             "payload->>'image_url' AS image_url, payload->'media_urls' AS media_urls, "
-            "payload->>'image_format' AS image_format, created_at FROM actions "
+            "payload->>'image_format' AS image_format, "
+            # A regenerated post already records the original it replaces (see
+            # the regenerate endpoint), but the queue never returned it — so a
+            # redo arrived in the approval board looking like an unrelated new
+            # draft, and the owner had no way to tell which card was the answer
+            # to the feedback they had just given.
+            "payload->>'regen_of' AS regen_of, payload->>'version' AS version, "
+            "payload->>'regen_feedback' AS regen_feedback, "
+            "created_at FROM actions "
             "WHERE action_type='content' AND status='pending' "
             "ORDER BY created_at DESC LIMIT $1", lim)
         # Only SUCCEEDED renders are approvable; queued/rendering/failed are not.
@@ -563,6 +571,10 @@ async def v1_queue(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
             "format": r["format"], "caption": r["caption"], "image_url": r["image_url"],
             "media_urls": _arr(r["media_urls"]) or None,
             "image_format": r["image_format"],
+            # Present only on a redo: which post it replaces, which version it is,
+            # and the feedback it was rebuilt from.
+            "regen_of": r["regen_of"], "version": r["version"],
+            "regen_feedback": r["regen_feedback"],
             "created_at": r["created_at"].isoformat(),
         } for r in posts],
         "videos": [{
