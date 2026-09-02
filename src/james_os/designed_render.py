@@ -85,7 +85,8 @@ def render_designed(
         # text-only statement poster (no photo): brand name up top, big bold
         # statement with the emphasis phrase highlighted inline, byline at the foot.
         return bold_statement_card(spec.get("statement") or q, kit, emph,
-                                   byline_name=str(spec.get("byline_name") or "")), "bold_statement"
+                                   byline_name=str(spec.get("byline_name") or ""),
+                                   handle=handle), "bold_statement"
     if fmt == "hero_quote":
         if hero_bytes:
             return hero_quote_card(q, hero_bytes, kit, emphasis=emph, tuning=tuning), "hero_quote"

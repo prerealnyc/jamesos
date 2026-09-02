@@ -769,6 +769,21 @@ _KEEP_PHOTO = (
 )
 
 
+# The layout names imagegen._FORMAT_MAP can actually resolve. Anything else in
+# payload["image_format"] — "cloned" above all — is a record of HOW an image was
+# made, not a layout the renderer can be asked for.
+_PINNABLE_FORMATS = frozenset({
+    "brand_quote", "hero_quote", "statement", "bold_statement", "full_bleed",
+    "editorial_split", "big_stat", "minimal_over", "framed_print",
+    "carousel", "text_carousel",
+})
+
+
+def _is_pinnable_format(fmt: str) -> bool:
+    """Can this value be handed to the renderer as force_format and honoured?"""
+    return (fmt or "").strip().lower() in _PINNABLE_FORMATS
+
+
 def _layout_intent(feedback: str) -> str:
     """'new' | 'same' | '' — what the owner asked for the LAYOUT.
 
@@ -922,7 +937,16 @@ async def _run_regenerate(
         else:
             # 'same' and unspecified both keep it. Unspecified is the common case
             # and keeping is the safe reading: they were fixing this piece.
-            eff_force = prev_format
+            #
+            # But only a REAL layout name can be pinned. image_format also holds
+            # "cloned" (template_clone.py writes it for a cloned competitor
+            # design), which _FORMAT_MAP has no key for: imagegen resolves the pin
+            # with .get(name, model_pick), so an unknown name silently becomes the
+            # art director's free choice — and, being truthy, it consumes the
+            # branch that downgrades v2 layouts for a brand with design intel
+            # switched off. Pinning a name we cannot honour is worse than not
+            # pinning: it disables a guard and delivers nothing.
+            eff_force = prev_format if _is_pinnable_format(prev_format) else ""
 
         if want_photo:
             # "there is no image on it" cannot be answered by a text-only card, so

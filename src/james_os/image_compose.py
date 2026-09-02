@@ -738,11 +738,15 @@ def brand_quote_card(quote: str, brand_kit: dict | None = None,
         _text(draw, (cx - _text_w(draw, ln, f) / 2, y), ln, f, fill)
         y += heights[i]
 
-    # ── footer: website · tagline — only what the brand actually supplies;
-    #    no hardcoded fallback, so a brand without a site/tagline shows neither ──
+    # ── footer: handle · website · tagline — only what the brand actually
+    #    supplies; no hardcoded fallback, so a brand without any of them shows
+    #    none. The handle was reaching every photo layout and being dropped on
+    #    the two text-only cards, which is why "put my @ on it" appeared to be
+    #    ignored on exactly the formats the house style reaches for. ──
+    at = (bk.get("handle") or "").strip()
     site = (bk.get("website") or "").strip()
     tag = (bk.get("footer_tagline") or "").strip()
-    foot = "   ·   ".join([p for p in (site, tag) if p])
+    foot = "   ·   ".join([p for p in (at, site, tag) if p])
     if foot:
         _spaced_fit(draw, H - 118, foot, _ARCHIVO, 26, pal["muted"], 3,
                     W - 2 * 72, center=cx)
@@ -914,7 +918,8 @@ def _fit_left(draw, words: list[str], font_path: str, max_w: int, max_h: int,
 
 
 def bold_statement_card(statement: str, brand_kit: dict | None = None,
-                        emphasis: str = "", byline_name: str = "") -> bytes:
+                        emphasis: str = "", byline_name: str = "",
+                        handle: str = "") -> bytes:
     """Text-only statement poster (no photo): a flat, near-black brand ground; the
     brand name letter-spaced across the top; a short accent rule; a big bold,
     mixed-case statement left-aligned with the emphasis phrase highlighted INLINE
@@ -962,7 +967,12 @@ def bold_statement_card(statement: str, brand_kit: dict | None = None,
         yb += 46
     site = (bk.get("website") or "").strip()
     tag = (bk.get("footer_tagline") or "").strip()
-    foot = "   ·   ".join([p for p in (site, tag) if p])
+    # The brand's handle belongs in the footer rail here as it already does on
+    # every photo layout. render_designed has always HAD it and dropped it on
+    # this branch, so a brand whose kit carries "@name" got it on six formats and
+    # silently not on this one — and this one is the house default.
+    at = (handle or bk.get("handle") or "").strip()
+    foot = "   ·   ".join([p for p in (at, site, tag) if p])
     if foot:
         draw.text((M, yb), foot, font=_font(_ARCHIVO, 22), fill=muted)
     return _png(base)

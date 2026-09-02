@@ -63,3 +63,31 @@ def test_the_rebuild_chain_is_capped():
     """Rejecting rebuilds automatically now, so an uncapped chain is a spend loop
     with no human in it."""
     assert MAX_REGEN_VERSION == 3
+
+
+def test_only_a_real_layout_name_can_be_pinned():
+    """payload["image_format"] also records HOW an image was made, not just which
+    layout: template_clone writes "cloned". _FORMAT_MAP has no key for it, so
+    imagegen resolves the pin to the model's own pick — and, being truthy, it
+    consumes the branch that gates v2 layouts behind the design switch. Pinning a
+    name that cannot be honoured disables a guard and delivers nothing."""
+    from james_os.api_v1 import _is_pinnable_format
+
+    assert _is_pinnable_format("bold_statement") is True
+    assert _is_pinnable_format("brand_quote") is True
+    assert _is_pinnable_format("BOLD_STATEMENT") is True     # case is not the point
+    assert _is_pinnable_format("cloned") is False            # the one that bit
+    assert _is_pinnable_format("") is False
+    assert _is_pinnable_format(None) is False
+
+
+def test_the_text_only_cards_carry_the_brand_handle():
+    """The handle reached every photo layout and was dropped on the two text-only
+    cards — one of which is the house default — so a brand whose kit carries
+    "@name" saw it on six formats and silently not on the seventh."""
+    import inspect
+
+    from james_os.image_compose import bold_statement_card, brand_quote_card
+
+    assert "handle" in inspect.signature(bold_statement_card).parameters
+    assert "handle" in inspect.getsource(brand_quote_card)
