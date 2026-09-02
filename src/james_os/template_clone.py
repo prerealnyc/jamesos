@@ -104,6 +104,89 @@ async def _hero_or_placeholder(tenant_id, topic: str) -> tuple[bytes | None, boo
     return png, True
 
 
+async def rebuild_cloned(payload: dict, feedback: str, tenant_id) -> tuple[bytes, str] | None:
+    """Render a cloned post AGAIN in its own design, with the owner's change.
+
+    A cloned post is not one of the nine designed layouts — it is a competitor's
+    template read by vision and re-filled in our voice. So the ordinary redo path
+    could never preserve it: image_format is the literal string "cloned", which
+    the renderer has no layout for, and every rebuild silently became the house
+    poster instead. That is what made "keep the template the same" impossible for
+    exactly the posts the owner most wanted kept.
+
+    Posts cloned from now on carry their spec. Older ones carry nothing, so the
+    template is recovered by reading it back off OUR OWN rendered card — the same
+    vision pass that produced it in the first place, pointed at the image we
+    still have. Returns (png, kind) or None when the design cannot be recovered,
+    which the caller must report rather than quietly substituting another look."""
+    from .design_cloner import extract_template_spec
+
+    spec = payload.get("clone_spec") or {}
+    if not isinstance(spec, dict) or spec.get("status") != "ok":
+        # Recovery for everything cloned before the spec was persisted: re-read
+        # the template off the card we rendered. Our own image is a faithful
+        # instance of the design, so this returns the same structure.
+        src = str(payload.get("image_url") or payload.get("clone_source_url") or "")
+        img = await _fetch_bytes(src)
+        if not img:
+            return None
+        spec = await extract_template_spec(img)
+        if spec.get("status") != "ok":
+            return None
+
+    roles = [e["role"] for e in (spec.get("elements") or [])]
+    content = {k: v for k, v in (payload.get("clone_content") or {}).items() if k in roles}
+    if not content:
+        # No stored copy either — write it fresh for this design, from the post's
+        # own words rather than the competitor's.
+        content = await _fill_copy(spec, tenant_id, {"topic": payload.get("topic") or ""})
+    if feedback.strip() and content:
+        content = await _edit_clone_copy(content, feedback, tenant_id)
+
+    hero_bytes, _generated = await _hero_or_placeholder(
+        tenant_id, str(payload.get("topic") or ""))
+    logo = await _brand_logo(tenant_id) if spec.get("logo_box") else None
+    return render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo)
+
+
+async def _edit_clone_copy(content: dict, feedback: str, tenant_id) -> dict:
+    """Apply the owner's change to a cloned card's copy — and nothing else.
+
+    Same contract as imagegen.edit_designed_spec: every role comes back, one
+    changes. Degrades to the input, because returning the card unchanged is a
+    better answer to a failed edit than returning a different card."""
+    from .llm import get_llm
+
+    system = (
+        "You are editing the on-image copy of ONE finished card, not writing a "
+        "new one. You get the exact text roles that are on it and the owner's "
+        "words about what they want changed.\n\n"
+        "Apply THAT change and nothing else. Every role you were given comes "
+        "back. A role the owner did not mention comes back BYTE-IDENTICAL — do "
+        "not reword, tighten or improve it. If the request is about something "
+        "text cannot fix (spacing, colour, position, a logo or handle), change "
+        "nothing and return the roles exactly as given.\n\n"
+        "Return STRICT JSON with exactly the keys you were given."
+    )
+    try:
+        out = await get_llm().complete_json(
+            system=system,
+            messages=[{"role": "user", "content":
+                       "THE CARD AS IT IS:\n" + json.dumps(content, indent=2)
+                       + "\n\nWHAT THE OWNER WANTS CHANGED:\n" + feedback.strip()[:400]}],
+            max_tokens=400, temperature=0.0)
+    except Exception:  # noqa: BLE001
+        return dict(content)
+    if not isinstance(out, dict):
+        return dict(content)
+    edited = dict(content)
+    for k in content:
+        v = out.get(k)
+        if isinstance(v, str) and v.strip():
+            edited[k] = v.strip()
+    return edited
+
+
 async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None) -> dict | None:
     """Turn ONE competitor post into our version. Returns {png, kind, content,
     topic, generated_hero, from} or None if it can't be cloned."""
@@ -124,7 +207,13 @@ async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None) 
     logo = await _brand_logo(tenant_id) if spec.get("logo_box") else None
     png, kind = render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo)
     return {"png": png, "kind": kind, "content": content, "topic": topic,
-            "generated_hero": generated, "from": post.get("handle") or ""}
+            "generated_hero": generated, "from": post.get("handle") or "",
+            # The template itself, and where it came from. Without these a cloned
+            # post could never be rebuilt in its own design: the spec was a live
+            # vision read that was thrown away, and the source post id was never
+            # written down, so a redo had nothing to go back to and silently
+            # produced an unrelated layout instead.
+            "spec": spec, "source_url": post.get("stored_media_url") or ""}
 
 
 # What separates a DESIGNED TEMPLATE (a milestone card, listing card, quote
@@ -304,6 +393,10 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
                     "image_url": url, "media_url": url, "has_image": True,
                     "image_format": "cloned", "sample": "true", "sample_score": polish,
                     "sample_from": cloned["from"], "cloned_from_competitor": True,
+                    # Everything a rebuild needs to render THIS design again.
+                    "clone_spec": cloned.get("spec") or {},
+                    "clone_content": cloned.get("content") or {},
+                    "clone_source_url": cloned.get("source_url") or "",
                     "used_placeholder_photo": cloned["generated_hero"],
                     "review_passed": bool(rev.get("passed")),
                 }))

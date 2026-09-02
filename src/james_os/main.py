@@ -1977,7 +1977,7 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
 async def _generate_designed_post_image(
     action_id, topic: str, draft_text: str, tenant_id, avoid: str = "",
     feedback: str = "", force_format: str = "", exclude_photos: tuple[str, ...] = (),
-    force_photo: str = "", _qa_attempt: int = 0,
+    force_photo: str = "", base_spec: dict | None = None, _qa_attempt: int = 0,
 ) -> tuple[str, str]:
     """Art-director → text-free background (Soul James or cinematic scene) →
     Pillow-composited quote card / meme → persist + attach to the action.
@@ -2026,12 +2026,20 @@ async def _generate_designed_post_image(
         return "", ""
     # Voice first: give the art director THIS brand's real cadence so the card
     # headline sounds like the brand, with the hook/CTA playbook as structure only.
-    _voice, _bp = await _brand_voice_and_profile(tenant_id)
-    spec = await direct_designed_image(
-        draft_text or "", topic or "", avoid=avoid,
-        feedback=feedback, force_format=force_format, allow_v2=_allow_v2,
-        voice=_voice, brand_profile=_bp, allowed=_allowed,
-    )
+    if base_spec:
+        # EDIT the card that exists rather than authoring a new one. Without this
+        # a redo re-ran the art director at temperature 0.7, so "keep everything
+        # the same, just change X" came back with every line of on-image copy
+        # rewritten — same layout, same photo, and still not the owner's card.
+        from .imagegen import edit_designed_spec
+        spec = await edit_designed_spec(base_spec, feedback)
+    else:
+        _voice, _bp = await _brand_voice_and_profile(tenant_id)
+        spec = await direct_designed_image(
+            draft_text or "", topic or "", avoid=avoid,
+            feedback=feedback, force_format=force_format, allow_v2=_allow_v2,
+            voice=_voice, brand_profile=_bp, allowed=_allowed,
+        )
     fmt = spec.get("format") or "quote"
     # A carousel is a MULTI-image post — a wholly separate render/store path.
     # text_carousel is the photoless (typographic) variant of the same path.
@@ -2252,7 +2260,11 @@ async def _generate_designed_post_image(
                     avoid=(f"{avoid} {fmt}").strip(),
                     feedback=(f"{feedback}; {_issues}").strip("; "),
                     force_format="", exclude_photos=_next_exclude,
-                    force_photo=force_photo, _qa_attempt=_qa_attempt + 1,
+                    force_photo=force_photo,
+                    # A QA retry deliberately drops the base spec: the design QA
+                    # said this composition is broken, so re-composing is the
+                    # point. Editing the broken spec again would return it.
+                    base_spec=None, _qa_attempt=_qa_attempt + 1,
                 )
             # Exhausted retries — never ship the flaw. Record why, hold it back.
             try:
@@ -2294,6 +2306,10 @@ async def _generate_designed_post_image(
                 # rejection could set a knob that layout never reads, and the
                 # owner would be told it was fixed while nothing changed.
                 "image_format": fmt,
+                # The spec that produced this card, kept so a later redo can EDIT
+                # it — change the one thing asked and leave every other line
+                # byte-identical — instead of composing a new card from scratch.
+                "image_spec": spec,
                 # Reuse memory: which hero photo this post consumed, so the
                 # picker can rotate away from it on the next posts.
                 **({"hero_photo_key": hero_key} if hero_key else {}),

@@ -13,6 +13,7 @@ fake image.
 """
 
 import base64
+import json as _json
 import re
 
 from openai import AsyncOpenAI
@@ -353,6 +354,78 @@ def _clamp_format(fmt: str, allowed: set[str] | None) -> str:
             break
     pool = list(allowed)
     return random.choice(pool) if pool else fmt
+
+
+# The keys a designed spec carries. An edit returns the SAME shape — the editor
+# is not allowed to invent a key or drop one, because the renderer reads exactly
+# these and a missing one renders blank.
+_SPEC_KEYS = (
+    "format", "quote", "emphasis", "top_text", "bottom_text", "statement",
+    "headline", "kicker", "stat", "stat_label", "stat_sub", "caption",
+    "bg_prompt", "bg_kind",
+)
+
+_EDIT_SYSTEM = (
+    "You are editing ONE finished social card, not designing a new one.\n\n"
+    "You are given the exact spec that produced the card the owner is looking at, "
+    "and the owner's words about what they want changed. Apply THAT change and "
+    "nothing else.\n\n"
+    "RULES — these are the whole job:\n"
+    "- Return every key you were given, with the same meaning.\n"
+    "- A key the owner did not mention comes back BYTE-IDENTICAL. Do not reword "
+    "it, tighten it, fix its punctuation, or improve it. Unchanged means unchanged.\n"
+    "- Never change 'format'. The layout is fixed.\n"
+    "- If the request is about something a spec cannot express (spacing, colour, "
+    "position, adding a logo or handle), change NOTHING and return the spec as "
+    "given. Returning it unchanged is the correct answer — someone else applies "
+    "those.\n"
+    "- Keep the brand's voice and any real numbers exactly as they are.\n\n"
+    "Return STRICT JSON with exactly the keys you were given."
+)
+
+
+async def edit_designed_spec(base_spec: dict, feedback: str) -> dict:
+    """Re-issue a card's spec with ONE change applied — the owner's change.
+
+    Every redo used to re-run the art director from scratch at temperature 0.7,
+    so "keep everything the same, just change X" came back with every line of
+    on-image copy rewritten. The owner could keep the layout and the photo and
+    still not recognise the card. This is the missing path: the spec that made
+    the card, plus their words, minus a fresh act of authorship.
+
+    Degrades to the input on any failure — an editor that cannot run must return
+    the card unchanged rather than hand the job back to a fresh composition,
+    which is the outcome this exists to prevent."""
+    base = {k: base_spec.get(k, "") for k in _SPEC_KEYS if k in base_spec}
+    words = (feedback or "").strip()
+    if not base or not words:
+        return dict(base_spec)
+    from .llm import get_llm
+
+    try:
+        out = await get_llm().complete_json(
+            system=_EDIT_SYSTEM,
+            messages=[{"role": "user", "content":
+                       "THE CARD AS IT IS:\n" + _json.dumps(base, indent=2)
+                       + "\n\nWHAT THE OWNER WANTS CHANGED:\n" + words[:400]}],
+            max_tokens=700,
+            # Deterministic: an edit is not a creative act, and temperature is
+            # exactly what rewrote the untouched lines last time.
+            temperature=0.0,
+        )
+    except Exception:  # noqa: BLE001
+        return dict(base_spec)
+    if not isinstance(out, dict) or not out:
+        return dict(base_spec)
+    # Merge onto the original: a key the editor omitted keeps its old value, and
+    # a key it invented is dropped. The format is never editable.
+    edited = dict(base_spec)
+    for k in _SPEC_KEYS:
+        v = out.get(k)
+        if k != "format" and isinstance(v, str) and v.strip():
+            edited[k] = v.strip()
+    edited["format"] = base_spec.get("format") or edited.get("format")
+    return edited
 
 
 async def direct_designed_image(

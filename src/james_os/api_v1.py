@@ -836,6 +836,42 @@ def _wants_new_photo(feedback: str) -> bool:
     ))
 
 
+async def _rebuild_cloned_action(
+    new_id, payload: dict, feedback: str, tenant_id,
+) -> tuple[str, str]:
+    """Re-render a cloned post in ITS OWN design and attach it to the new row.
+
+    Returns ("", "") when the design cannot be recovered — the caller's contract
+    for "no image", which the board already reports honestly. Substituting a
+    different layout here is exactly the behaviour this replaces."""
+    import asyncio as _asyncio
+
+    from . import template_clone
+    from .media import storage as media_storage
+
+    out = await template_clone.rebuild_cloned(payload, feedback, tenant_id)
+    if not out:
+        _log.warning("could not recover the cloned design for %s", new_id)
+        return "", ""
+    png, kind = out
+    served, _fp = await _asyncio.to_thread(
+        media_storage().save, str(tenant_id or settings.default_tenant_id),
+        png, "template-clone.png")
+    async with acquire(tenant_id) as conn:
+        await conn.execute(
+            "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1::uuid",
+            new_id, json.dumps({
+                "image_url": served, "media_url": served, "has_image": True,
+                "image_format": "cloned", "cloned_from_competitor": True,
+                # Carry the recovered template forward so the NEXT rebuild does
+                # not have to read it back off an image again.
+                "clone_spec": payload.get("clone_spec") or {},
+                "clone_content": payload.get("clone_content") or {},
+                "clone_source_url": payload.get("clone_source_url") or "",
+            }))
+    return served, kind or "cloned"
+
+
 async def _run_regenerate(
     job_id: str, tenant_id: UUID, parent_id: UUID, feedback: str, force_format: str,
 ) -> None:
@@ -955,17 +991,36 @@ async def _run_regenerate(
                 eff_force = ""
             eff_avoid = " ".join(x for x in (eff_avoid, *_TEXT_ONLY_FORMATS) if x).strip()
 
-        served, fmt = await _main._generate_designed_post_image(
-            new_id,
-            str(payload.get("topic") or ""),
-            str(payload.get("content") or payload.get("caption") or ""),
-            tenant_id,
-            avoid=eff_avoid,
-            feedback=reason,
-            force_format=eff_force,
-            exclude_photos=eff_exclude,
-            force_photo=eff_force_photo,
-        )
+        # A CLONED post is a competitor's template read by vision, not one of the
+        # nine designed layouts — so the designed-image path cannot preserve it
+        # and never could. Rebuild it in its own design instead.
+        if payload.get("cloned_from_competitor") or prev_format == "cloned":
+            served, fmt = await _rebuild_cloned_action(
+                new_id, payload, reason, tenant_id)
+        else:
+            # KEEP THE CARD, CHANGE THE ONE THING. When the layout is being kept
+            # and we still hold the spec that produced it, edit that spec rather
+            # than re-running the art director — otherwise every untouched line of
+            # on-image copy is rewritten and the owner does not recognise their
+            # own card. A layout the owner asked to REPLACE gets a fresh
+            # composition, which is what they asked for.
+            base = payload.get("image_spec")
+            keep_the_card = (
+                layout != "new" and not want_photo and not force_format
+                and isinstance(base, dict) and base.get("format")
+            )
+            served, fmt = await _main._generate_designed_post_image(
+                new_id,
+                str(payload.get("topic") or ""),
+                str(payload.get("content") or payload.get("caption") or ""),
+                tenant_id,
+                avoid=eff_avoid,
+                feedback=reason,
+                force_format=eff_force,
+                exclude_photos=eff_exclude,
+                force_photo=eff_force_photo,
+                base_spec=base if keep_the_card else None,
+            )
         job["result"] = {
             "action_id": str(new_id), "regen_of": str(parent_id),
             "version": version + 1, "image_url": served, "image_format": fmt,
