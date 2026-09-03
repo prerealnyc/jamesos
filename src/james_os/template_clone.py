@@ -85,9 +85,13 @@ async def _brand_logo(tenant_id) -> bytes | None:
         return None
 
 
-async def _hero_or_placeholder(tenant_id, topic: str) -> tuple[bytes | None, bool]:
+async def _hero_or_placeholder(tenant_id, topic: str) -> tuple[bytes | None, bool, str]:
     """The brand's own photo if it has one (sharpness-gated pick), else an AI
-    placeholder scene from the topic. Returns (bytes, was_generated)."""
+    placeholder scene from the topic.
+
+    Returns (bytes, was_generated, hero_photo_key). The KEY is what lets a later
+    rebuild reuse this exact photo instead of rotating to another one — "keep the
+    image" is unanswerable without it."""
     from .hero_context import get_hero_photo_files
     from .photo_pick import pick_hero_bytes
 
@@ -95,13 +99,13 @@ async def _hero_or_placeholder(tenant_id, topic: str) -> tuple[bytes | None, boo
     if refs:
         picked = await pick_hero_bytes(refs, tenant_id)
         if picked:
-            return picked[1], False
+            return picked[1], False, picked[0]
     # No usable photo — fabricate a clean scene so the template still shows.
     from .imagegen import generate_post_image
     png, _meta, _err = await generate_post_image(
         topic=(topic or "the brand") + " — cinematic editorial photograph, no text, no words, no logos",
         platform="instagram", aspect="4:5", style="cinematic_real", tenant_id=tenant_id)
-    return png, True
+    return png, True, ""
 
 
 async def rebuild_cloned(payload: dict, feedback: str, tenant_id) -> tuple[bytes, str] | None:
@@ -137,16 +141,78 @@ async def rebuild_cloned(payload: dict, feedback: str, tenant_id) -> tuple[bytes
     roles = [e["role"] for e in (spec.get("elements") or [])]
     content = {k: v for k, v in (payload.get("clone_content") or {}).items() if k in roles}
     if not content:
-        # No stored copy either — write it fresh for this design, from the post's
-        # own words rather than the competitor's.
+        # READ OUR OWN CARD BACK rather than writing new copy. The template read
+        # above recovers structure only — by design, so cloning never lifts a
+        # competitor's words — and filling the roles fresh is what rewrote every
+        # line of a card the owner had asked to leave alone.
+        from .design_cloner import read_card_copy
+        img_bytes = await _fetch_bytes(str(payload.get("image_url") or ""))
+        if img_bytes:
+            content = await read_card_copy(img_bytes, roles)
+    if not content:
+        # Nothing recoverable — write it fresh, from the post's own words.
         content = await _fill_copy(spec, tenant_id, {"topic": payload.get("topic") or ""})
     if feedback.strip() and content:
         content = await _edit_clone_copy(content, feedback, tenant_id)
+        content = await _apply_handle_request(content, feedback, roles, tenant_id)
 
-    hero_bytes, _generated = await _hero_or_placeholder(
-        tenant_id, str(payload.get("topic") or ""))
+    # KEEP THE PHOTO. The picker rotates for variety, which is right when making
+    # something new and wrong when rebuilding something that exists: "keep the
+    # image" came back with a different one. Reuse the exact photo when the card
+    # recorded which one it used.
+    hero_bytes = await _hero_by_key(tenant_id, str(payload.get("hero_photo_key") or ""))
+    if hero_bytes is None:
+        hero_bytes, _generated, _key = await _hero_or_placeholder(
+            tenant_id, str(payload.get("topic") or ""))
     logo = await _brand_logo(tenant_id) if spec.get("logo_box") else None
     return render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo)
+
+
+async def _hero_by_key(tenant_id, key: str) -> bytes | None:
+    """The exact hero photo a card used, by the key it recorded. None when the
+    card never recorded one (everything cloned before this was stored) or the
+    photo has since left the library — the caller then picks, and says so."""
+    if not key:
+        return None
+    try:
+        from .hero_context import get_hero_photo_files
+        for name, data in await get_hero_photo_files(tenant_id=tenant_id, limit=None):
+            if name == key:
+                return data
+    except Exception:  # noqa: BLE001 — a lookup failure is "not found"
+        logging.getLogger(__name__).warning("hero lookup failed for %r", key[:80])
+    return None
+
+
+# "put my @ on it" — the one request that is not a copy edit at all: the handle
+# is a brand fact, not something a model should be asked to invent. A cloned
+# template has a byline role for exactly this.
+_HANDLE_ASKS = ("@", "handle", "username", "user name", "my name in the image")
+
+
+async def _apply_handle_request(content: dict, feedback: str, roles: list, tenant_id) -> dict:
+    """Put the brand's own handle in the byline when the owner asks for it.
+
+    The nine designed layouts draw the handle from the brand kit automatically.
+    A cloned template renders through a different machine that has no handle
+    concept at all, so the same request quietly did nothing here."""
+    f = (feedback or "").lower()
+    if not any(p in f for p in _HANDLE_ASKS) or "byline" not in roles:
+        return content
+    try:
+        from .brand_kit import get_brand_kit
+        handle = (( await get_brand_kit(tenant_id)).get("handle") or "").strip()
+    except Exception:  # noqa: BLE001
+        return content
+    if not handle:
+        return content
+    out = dict(content)
+    existing = (out.get("byline") or "").strip()
+    # Append rather than replace: a byline that already names the brand should
+    # keep doing so, with the handle added to it.
+    out["byline"] = existing if handle.lower() in existing.lower() else (
+        f"{existing}  ·  {handle}" if existing else handle)
+    return out
 
 
 async def _edit_clone_copy(content: dict, feedback: str, tenant_id) -> dict:
@@ -202,12 +268,14 @@ async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None) 
     topic = (content.get("headline") or content.get("stat") or post.get("topic") or "").strip() \
         or "a moment that captures the brand"
     generated = False
+    hero_key = ""
     if hero_bytes is None:
-        hero_bytes, generated = await _hero_or_placeholder(tenant_id, topic)
+        hero_bytes, generated, hero_key = await _hero_or_placeholder(tenant_id, topic)
     logo = await _brand_logo(tenant_id) if spec.get("logo_box") else None
     png, kind = render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo)
     return {"png": png, "kind": kind, "content": content, "topic": topic,
             "generated_hero": generated, "from": post.get("handle") or "",
+            "hero_photo_key": hero_key,
             # The template itself, and where it came from. Without these a cloned
             # post could never be rebuilt in its own design: the spec was a live
             # vision read that was thrown away, and the source post id was never
@@ -397,6 +465,8 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
                     "clone_spec": cloned.get("spec") or {},
                     "clone_content": cloned.get("content") or {},
                     "clone_source_url": cloned.get("source_url") or "",
+                    **({"hero_photo_key": cloned["hero_photo_key"]}
+                       if cloned.get("hero_photo_key") else {}),
                     "used_placeholder_photo": cloned["generated_hero"],
                     "review_passed": bool(rev.get("passed")),
                 }))

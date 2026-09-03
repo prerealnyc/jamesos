@@ -165,6 +165,61 @@ def _sanitize(out: dict) -> dict:
     }
 
 
+_COPY_SYSTEM = (
+    "You are reading OUR OWN finished social card to recover the words that are "
+    "printed on it, so they can be re-rendered unchanged.\n\n"
+    "Return STRICT JSON mapping each role you are given to the text that appears "
+    "in that position on the card, transcribed EXACTLY — same words, same case, "
+    "same punctuation. Do not improve, shorten, or re-title anything.\n"
+    "Omit a role you cannot see text for. Ignore the logo, the website, and any "
+    "handle in the footer rail."
+)
+
+
+async def read_card_copy(image: bytes | str, roles: list[str], *,
+                         mime: str = "image/png") -> dict:
+    """Transcribe the copy off a card WE rendered, role by role.
+
+    extract_template_spec deliberately reads only STRUCTURE — it exists to learn
+    a competitor's layout without lifting their words. That is right for a clone
+    and wrong for a rebuild: recovering our own card's template but not its text
+    means a redo re-writes every line, which is what "keep everything the same"
+    was asking us not to do. Reading our own card back has no such constraint.
+
+    Returns {role: text}; empty on any failure, which the caller treats as "no
+    copy recovered" rather than as empty copy."""
+    client = _client()
+    if client is None or not roles:
+        return {}
+    if isinstance(image, bytes):
+        url = f"data:{mime};base64," + base64.b64encode(image).decode()
+    else:
+        url = str(image)
+    try:
+        res = await client.chat.completions.create(
+            model=_MODEL,
+            messages=[
+                {"role": "system", "content": _COPY_SYSTEM},
+                {"role": "user", "content": [
+                    {"type": "text",
+                     "text": "Transcribe the text for these roles: " + ", ".join(roles)},
+                    {"type": "image_url", "image_url": {"url": url}},
+                ]},
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=600,
+            temperature=0.0,
+        )
+        out = json.loads(res.choices[0].message.content or "{}")
+    except Exception:  # noqa: BLE001 — a failed read is "nothing recovered"
+        logger.warning("could not read the card copy back", exc_info=True)
+        return {}
+    if not isinstance(out, dict):
+        return {}
+    return {r: str(out[r]).strip() for r in roles
+            if isinstance(out.get(r), str) and str(out[r]).strip()}
+
+
 async def extract_template_spec(image: bytes | str, *, mime: str = "image/jpeg") -> dict:
     """Read ONE competitor post image → a structured, renderable template spec.
 

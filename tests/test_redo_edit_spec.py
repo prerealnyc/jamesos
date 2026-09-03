@@ -97,3 +97,52 @@ async def test_a_cloned_card_edits_its_copy_the_same_way(monkeypatch):
         "make the headline blunter", None)
     assert out["headline"] == "A blunter headline"
     assert out["kicker"] == "2024 OUTLOOK"        # untouched role survives
+
+
+# ---------------------------------------------------- the cloned rebuild path
+
+
+async def test_the_handle_goes_in_the_byline_not_through_the_model(monkeypatch):
+    """"Add my @" is a brand fact, not a copy edit. The nine designed layouts
+    draw it from the brand kit; a cloned template renders through a machine with
+    no handle concept, so the same request quietly did nothing here."""
+    monkeypatch.setattr("james_os.brand_kit.get_brand_kit",
+                        lambda *a, **k: _async({"handle": "@j_prendamano"}))
+    out = await template_clone._apply_handle_request(
+        {"headline": "It's Not a Blowout.", "byline": "PreReal"},
+        "just add @j_prendamano as a text to show his username somewhere",
+        ["headline", "byline"], None)
+    assert "@j_prendamano" in out["byline"]
+    assert "PreReal" in out["byline"]              # what was there is kept
+    assert out["headline"] == "It's Not a Blowout."  # nothing else moves
+
+
+async def test_the_handle_is_not_added_twice(monkeypatch):
+    monkeypatch.setattr("james_os.brand_kit.get_brand_kit",
+                        lambda *a, **k: _async({"handle": "@j_prendamano"}))
+    out = await template_clone._apply_handle_request(
+        {"byline": "PreReal · @j_prendamano"}, "add my handle", ["byline"], None)
+    assert out["byline"].count("@j_prendamano") == 1
+
+
+async def test_no_byline_role_means_no_silent_change(monkeypatch):
+    """A template with nowhere to put it must not have text forced somewhere else."""
+    monkeypatch.setattr("james_os.brand_kit.get_brand_kit",
+                        lambda *a, **k: _async({"handle": "@j_prendamano"}))
+    before = {"headline": "It's Not a Blowout."}
+    assert await template_clone._apply_handle_request(
+        before, "add my handle", ["headline"], None) == before
+
+
+async def test_unrelated_feedback_leaves_the_byline_alone(monkeypatch):
+    monkeypatch.setattr("james_os.brand_kit.get_brand_kit",
+                        lambda *a, **k: _async({"handle": "@j_prendamano"}))
+    before = {"byline": "PreReal"}
+    assert await template_clone._apply_handle_request(
+        before, "make the headline blunter", ["byline"], None) == before
+
+
+def _async(value):
+    async def _f():
+        return value
+    return _f()

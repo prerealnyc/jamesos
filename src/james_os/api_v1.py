@@ -586,6 +586,41 @@ async def v1_queue(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
     }
 
 
+# ───────────────────────────────────────────────── social listening ──
+
+class SocialSearchBody(BaseModel):
+    query: str
+    platforms: list[str] | None = None   # subset of twitter/instagram/tiktok/reddit
+    limit: int = Field(default=12, ge=1, le=50)
+    days: int = Field(default=14, ge=1, le=90)
+    min_likes: int = Field(default=200, ge=0, le=10_000_000)
+
+
+@router.get("/social/account")
+async def v1_social_account(tenant_id: TenantDep) -> dict[str, Any]:
+    """Xpoz account status (plan + remaining credits), or {configured:false} when
+    XPOZ_API_KEY is unset. The tenant only authorizes the caller — Xpoz data is
+    global, not tenant-scoped."""
+    from . import xpoz_intel
+    return await xpoz_intel.account_info()
+
+
+@router.post("/social/search")
+async def v1_social_search(body: SocialSearchBody, tenant_id: TenantDep) -> dict[str, Any]:
+    """Cross-platform niche listening (X / Instagram / TikTok / Reddit) via Xpoz:
+    recent, engagement-ranked posts a brand could comment on, each with a real
+    openable URL. Powers 2.0's 'Engage today' social lane. Returns {error:…}
+    (never raises) when XPOZ_API_KEY is unset, so the caller degrades cleanly."""
+    from datetime import date, timedelta
+
+    from . import xpoz_intel
+    start = (date.today() - timedelta(days=max(1, body.days))).isoformat()
+    return await xpoz_intel.search_social(
+        body.query, platforms=body.platforms, limit=body.limit,
+        start_date=start, min_likes=body.min_likes,
+    )
+
+
 @router.get("/queue/rejected")
 async def v1_queue_rejected(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
     """Posts that were turned down — what was rejected, why, and what replaced it.
@@ -868,6 +903,8 @@ async def _rebuild_cloned_action(
                 "clone_spec": payload.get("clone_spec") or {},
                 "clone_content": payload.get("clone_content") or {},
                 "clone_source_url": payload.get("clone_source_url") or "",
+                **({"hero_photo_key": payload["hero_photo_key"]}
+                   if payload.get("hero_photo_key") else {}),
             }))
     return served, kind or "cloned"
 
