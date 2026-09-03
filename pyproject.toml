@@ -29,6 +29,7 @@ dependencies = [
   "PyJWT>=2.10.0",
   "cryptography>=43",
   "xpoz>=0.7",
+  "fonttools>=4.53",
 ]
 
 [project.optional-dependencies]

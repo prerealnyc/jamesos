@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import os
+from functools import lru_cache
 from io import BytesIO
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
@@ -153,6 +154,7 @@ def _text_bold() -> bool:
 
 
 def _text(draw, xy, s, font, fill, **kw) -> None:
+    s = _drawable(s, font)
     """draw.text, but thickened when the bold text-style is active — a same-colour
     stroke around each glyph, so ANY face reads heavier without needing a bold
     font file. A no-op (plain draw.text) when bold is off, so output is unchanged."""
@@ -164,6 +166,82 @@ def _text(draw, xy, s, font, fill, **kw) -> None:
 
 def _titlecase(t: str) -> str:
     return " ".join((w[:1].upper() + w[1:].lower()) if w else w for w in (t or "").split(" "))
+
+
+# ── never draw a glyph the font does not have ────────────────────────────────
+#
+# U+FFFD (the replacement character) draws as a .notdef box in EVERY face we
+# ship, and it is wider than an apostrophe, so "It’s" became "It□ s" — a box and
+# an apparent space, on the card, in front of the client. It arrives whenever
+# text has been decoded with the wrong codec somewhere upstream, and no amount of
+# understanding the owner's feedback can fix it downstream: a rebuild that
+# faithfully preserves the words preserves the box with them.
+#
+# So the renderer refuses to draw one. Typographic punctuation degrades to its
+# ASCII twin, invisible formatting characters are dropped, and anything left that
+# the active face cannot draw is removed rather than stamped as a box. A missing
+# character is a small loss; a box in the middle of a headline is a broken card.
+_PUNCT_ASCII = {
+    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
+    "\u02bc": "'", "\u02bb": "'", "\u2032": "'", "\uff07": "'",
+    "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u2033": '"',
+    "\u2013": "-", "\u2014": "\u2014", "\u2011": "-", "\u2212": "-",
+    "\u2026": "...", "\u00a0": " ", "\u202f": " ", "\u2009": " ",
+}
+# Dropped outright: the replacement char and zero-width / bidi formatting marks.
+_DROP = "".join((
+    "\u200b", "\u200c", "\u200d", "\u2060", "\ufeff",
+    "\u200e", "\u200f", "\u202a", "\u202b", "\u202c", "\u202d", "\u202e",
+))
+
+
+def _drawable(text: str, font=None) -> str:
+    """`text` with nothing in it the renderer would stamp as a box."""
+    if not text:
+        return text
+    src = str(text)
+    out = []
+    for i, ch in enumerate(src):
+        if ch == "\ufffd":
+            # A replacement char BETWEEN two letters was almost certainly an
+            # apostrophe before something decoded it wrongly — "It□s". Restoring
+            # it reads right; dropping it gives "Its", which reads wrong. Anywhere
+            # else we cannot guess, so it goes.
+            prev = src[i - 1] if i else ""
+            nxt = src[i + 1] if i + 1 < len(src) else ""
+            if prev.isalpha() and nxt.isalpha():
+                out.append("'")
+            continue
+        if ch in _DROP:
+            continue
+        out.append(_PUNCT_ASCII.get(ch, ch))
+    s = "".join(out)
+    if font is None:
+        return s
+    # Last line of defence: whatever survived, ask the FACE whether it can draw
+    # it. An em dash is kept above because most faces have one — this catches the
+    # face that does not, and everything unforeseen.
+    try:
+        cmap = _face_chars(getattr(font, "path", "") or "")
+    except Exception:  # noqa: BLE001 — a coverage read must never stop a render
+        return s
+    if not cmap:
+        return s
+    return "".join(c for c in s if ord(c) < 0x20 or c.isspace() or ord(c) in cmap)
+
+
+@lru_cache(maxsize=32)
+def _face_chars(path: str) -> frozenset:
+    """The codepoints a face can actually draw. Empty when unreadable, which the
+    caller treats as "don't filter" rather than "drop everything"."""
+    if not path:
+        return frozenset()
+    try:
+        from fontTools.ttLib import TTFont
+        with TTFont(path, fontNumber=0, lazy=True) as tt:
+            return frozenset(tt.getBestCmap().keys())
+    except Exception:  # noqa: BLE001 — no fontTools, or an odd face
+        return frozenset()
 
 
 def _case(text: str, default: str = "") -> str:
@@ -282,6 +360,7 @@ def _open_rgb(b: bytes) -> Image.Image:
 
 
 def _text_w(draw: ImageDraw.ImageDraw, text: str, font) -> int:
+    text = _drawable(text, font)
     bb = draw.textbbox((0, 0), text, font=font)
     return bb[2] - bb[0]
 
@@ -311,6 +390,7 @@ def _hard_break(draw, word: str, font, max_w: int) -> list[str]:
 
 
 def _wrap(draw, text: str, font, max_w: int) -> list[str]:
+    text = _drawable(text, font)
     """Word-wrap so EVERY returned line fits max_w. A single token wider than the
     column is hard-broken at the character level — the containment invariant that
     keeps a long URL/hashtag/compound word from being drawn off the frame (the old
