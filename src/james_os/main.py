@@ -1416,15 +1416,29 @@ class _AgentRunRequest(BaseModel):
 
 
 @app.post("/agent/run", status_code=201)
-async def agent_run(req: _AgentRunRequest, background: BackgroundTasks) -> dict:
+async def agent_run(
+    req: _AgentRunRequest, background: BackgroundTasks, request: Request
+) -> dict:
     """Kick an agent run. Returns immediately with the run id — the
     actual tool-use loop runs in the background, persisting state to
-    agent_runs as it goes so the UI can poll for live updates."""
+    agent_runs as it goes so the UI can poll for live updates.
+
+    Runs under the caller's brand: BM2's service client sends X-Tenant-Id, so
+    the agent's write tools (generate_post/carousel/reel, approve, edit_caption)
+    land on THAT brand's tenant, not the default. Absent header (BM1's own /ask
+    'Do' UI) falls back to the default tenant, exactly as before."""
     from .agent import create_run, run_agent
     if not req.prompt.strip():
         raise HTTPException(status_code=400, detail="prompt is required")
-    row = await create_run(req.prompt.strip())
-    background.add_task(run_agent, UUID(row["id"]))
+    tenant_id: UUID | None = None
+    raw_tid = request.headers.get("x-tenant-id")
+    if raw_tid:
+        try:
+            tenant_id = UUID(raw_tid.strip())
+        except ValueError:
+            tenant_id = None
+    row = await create_run(req.prompt.strip(), tenant_id)
+    background.add_task(run_agent, UUID(row["id"]), tenant_id)
     return row
 
 

@@ -94,7 +94,8 @@ def render_designed(
     if fmt == "statement":
         if hero_bytes:
             return statement_card(hero_bytes, spec.get("statement") or q, handle,
-                                  profile_bytes, profile_is_logo), "statement"
+                                  profile_bytes, profile_is_logo,
+                                  brand_kit=kit), "statement"
         return brand_quote_card((spec.get("statement") or q), kit, emph), "brand_quote"
 
     # text-only v2

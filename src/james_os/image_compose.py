@@ -226,6 +226,11 @@ def _lighten(c, t=0.18):
     return tuple(int(c[i] + (255 - c[i]) * t) for i in range(3))
 
 
+def _blend(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
+    """`a` stepped `t` of the way toward `b`."""
+    return tuple(int(round(x + (y - x) * t)) for x, y in zip(a, b))
+
+
 def _colors(brand_kit: dict | None) -> dict:
     """Per-brand palette for the navy templates. With NO colours in brand_kit
     every value is the EXACT James literal, so the render is byte-identical to
@@ -240,15 +245,24 @@ def _colors(brand_kit: dict | None) -> dict:
         c = {"bg": roles.get("background"), "ink": roles.get("ink"),
              "accent": roles.get("accent"), "glow": roles.get("surface")}
     accent = _hex(c.get("accent"), _BRAND_BLUE)
+    _ink = _hex(c.get("ink"), _BRAND_WHITE)
+    _base = _hex(c.get("bg"), _NAVY_BASE)
     pal = {
-        "base": _hex(c.get("bg"), _NAVY_BASE),
+        "base": _base,
         "glow": _hex(c.get("glow"), _NAVY_GLOW),
         "accent": accent,
         # James's emblem mid-ring is a specific tint; keep it exact when no brand
         # accent is set, else derive a lighter accent.
         "accent_light": _lighten(accent) if c.get("accent") else (70, 150, 240),
-        "ink": _hex(c.get("ink"), _BRAND_WHITE),
-        "muted": _hex(c.get("muted"), _BRAND_MUTED),
+        "ink": _ink,
+        # Muted is the footer / handle / kicker tone. NO producer emits a "muted"
+        # role — brand palettes carry background, ink, accent and surface — so
+        # this fell through to James's blue-grey for every brand on earth. It is
+        # derived from the brand's OWN ink and ground instead: the same
+        # relationship (ink stepped toward the background), in their colours.
+        "muted": _hex(c.get("muted"),
+                      _blend(_ink, _base, 0.42) if (c.get("ink") or c.get("bg"))
+                      else _BRAND_MUTED),
     }
     # A forced text colour (from the render knob) overrides the body ink — the
     # accent line stays branded, so "make the text white" whitens the body while
@@ -517,11 +531,24 @@ def meme_card(bg_bytes: bytes, top_text: str, bottom_text: str, handle: str = ""
 
 def statement_card(bg_bytes: bytes, statement: str, handle: str = "",
                    profile_bytes: bytes | None = None,
-                   profile_is_logo: bool = False) -> bytes:
+                   profile_is_logo: bool = False,
+                   brand_kit: dict | None = None) -> bytes:
     """Brad-Lea style, art-directed: an IG-post header (profile + @handle), a
-    bold black STATEMENT optically centered in its own zone, and James framed
-    (inset + rounded corners) at the bottom so the whole card breathes."""
-    canvas = Image.new("RGB", (W, H), (255, 255, 255))
+    bold STATEMENT optically centered in its own zone, and the subject framed
+    (inset + rounded corners) at the bottom so the whole card breathes.
+
+    The ground and the type follow the BRAND's palette. This was the one layout
+    that took no kit at all: it rendered every brand on white with near-black
+    type, so a brand could set its colours and watch this card ignore them. With
+    no palette set it is unchanged — white ground, near-black ink."""
+    _bk = brand_kit or {}
+    _c = dict(_bk.get("colors") or {})
+    if not _c and isinstance(_bk.get("palette"), list):
+        _roles = {p.get("role"): p.get("hex") for p in _bk["palette"] if isinstance(p, dict)}
+        _c = {"bg": _roles.get("background"), "ink": _roles.get("ink")}
+    ground = _hex(_c.get("bg"), (255, 255, 255))
+    ink = _hex(_c.get("ink"), _INK)
+    canvas = Image.new("RGB", (W, H), ground)
     draw = ImageDraw.Draw(canvas)
     M = 78                       # generous outer margin (~7%) — room to breathe
     content_w = W - 2 * M
@@ -535,12 +562,12 @@ def statement_card(bg_bytes: bytes, statement: str, handle: str = "",
         if handle:
             h = handle if handle.startswith("@") else "@" + handle
             hf = _font(_ARCHIVO, 30)
-            draw.text((M + d + 22, y + (d - 30) // 2 - 4), h, font=hf, fill=_INK)
+            draw.text((M + d + 22, y + (d - 30) // 2 - 4), h, font=hf, fill=ink)
         header_bottom = y + d
     elif handle:
         h = handle if handle.startswith("@") else "@" + handle
         hf = _font(_ARCHIVO, 30)
-        draw.text((M, y), h, font=hf, fill=_INK)
+        draw.text((M, y), h, font=hf, fill=ink)
         header_bottom = y + 42
     else:
         header_bottom = y
@@ -562,7 +589,7 @@ def statement_card(bg_bytes: bytes, statement: str, handle: str = "",
                   max(140, zone_bottom - zone_top), start=104, minimum=40)
     total_h = _line_h(draw, sf) * len(sl)
     sy = zone_top + max(0.0, (zone_bottom - zone_top - total_h) / 2.0)
-    _draw_centered(draw, sl, sf, W // 2, sy, fill=_INK)
+    _draw_centered(draw, sl, sf, W // 2, sy, fill=ink)
     return _png(canvas)
 
 

@@ -290,12 +290,108 @@ def _draw_element(base: Image.Image, el: dict, text: str, ink_default, over_phot
         cy += line_h
 
 
+# ── the brand's colours, onto someone else's structure ───────────────────────
+#
+# A cloned template is borrowed STRUCTURE. Its colours came off the competitor's
+# own image, and nothing used to replace them — so a brand's cloned posts came
+# out in the competitor's palette, and the owner's colour picker had no effect on
+# the very grid it sits above. Remapping rather than overwriting is what keeps
+# the design working: a word the competitor set in their accent becomes the
+# brand's accent, a panel on their background becomes the brand's background, so
+# the contrast relationships that made the layout read survive the swap.
+
+_ROLE_ORDER = ("bg", "ink", "accent", "surface")
+
+
+def _roles_from(palette) -> dict:
+    """{role: (r,g,b)} from a brand role-list or an already-keyed dict."""
+    out: dict = {}
+    if isinstance(palette, dict) and palette.get("palette"):
+        palette = palette["palette"]
+    if isinstance(palette, list):
+        named = {str(p.get("role") or "").lower(): p.get("hex")
+                 for p in palette if isinstance(p, dict)}
+        mapping = {"bg": "background", "ink": "ink", "accent": "accent", "surface": "surface"}
+        for role, key in mapping.items():
+            if named.get(key):
+                out[role] = _rgb(named[key], None)
+    elif isinstance(palette, dict):
+        for role in _ROLE_ORDER:
+            if palette.get(role):
+                out[role] = _rgb(palette[role], None)
+    return {k: v for k, v in out.items() if v}
+
+
+def _nearest_role(colour, source: dict) -> str | None:
+    """Which of the source palette's roles is this colour? Plain RGB distance —
+    the question is only "which of four", not a colour-science one."""
+    best, best_d = None, None
+    for role, rgb in source.items():
+        if not rgb:
+            continue
+        d = sum((int(a) - int(b)) ** 2 for a, b in zip(colour, rgb))
+        if best_d is None or d < best_d:
+            best, best_d = role, d
+    return best
+
+
+def rebrand_spec(spec: dict, palette) -> dict:
+    """Return `spec` with every colour moved from the source brand's palette to
+    this brand's, role for role. A no-op when the brand has no palette, so a
+    brand that has not set one still gets the template as designed."""
+    brand = _roles_from(palette)
+    if not brand:
+        return spec
+    source = _roles_from(spec.get("palette") or {})
+    if not source:
+        return spec
+
+    def _swap(hexval, fallback_role: str):
+        rgb = _rgb(hexval, None)
+        if not rgb:
+            return None
+        role = _nearest_role(rgb, source) or fallback_role
+        new = brand.get(role) or brand.get(fallback_role)
+        return "#%02x%02x%02x" % new if new else None
+
+    out = dict(spec)
+    out["palette"] = {
+        role: ("#%02x%02x%02x" % brand[role])
+        for role in _ROLE_ORDER if brand.get(role)
+    }
+    # Keep any role the brand does not define, so a partial palette degrades to
+    # the source's colour for that role rather than to nothing.
+    for role, val in (spec.get("palette") or {}).items():
+        out["palette"].setdefault(role, val)
+
+    out["elements"] = [
+        {**e, **({"color": c} if (c := _swap(e.get("color"), "ink")) else {})}
+        for e in (spec.get("elements") or [])
+    ]
+    out["decorations"] = [
+        {**d, **({"color": c} if (c := _swap(d.get("color"), "accent")) else {})}
+        for d in (spec.get("decorations") or [])
+    ]
+    bg = dict(spec.get("background") or {})
+    if bg.get("color") and (c := _swap(bg["color"], "bg")):
+        bg["color"] = c
+        out["background"] = bg
+    return out
+
+
 def render_spec(spec: dict, content: dict, *, hero_bytes: bytes | None = None,
-                logo_bytes: bytes | None = None) -> tuple[bytes, str]:
+                logo_bytes: bytes | None = None, palette=None) -> tuple[bytes, str]:
     """Rebuild `spec` with the brand's `content` (role → text), photo and logo.
+
+    `palette` is the BRAND's own role list. Given one, the template's colours are
+    remapped onto it role for role (see rebrand_spec) — the structure is what was
+    borrowed, the colours are the brand's. Omitted, the template renders in the
+    colours it was read with, which is the old behaviour.
 
     Returns (png_bytes, kind). A photo treatment with no photo falls back to the
     solid palette background, so it never hard-fails."""
+    if palette:
+        spec = rebrand_spec(spec, palette)
     hero = _load(hero_bytes)
     base = _background(spec, hero)
     over_photo = hero is not None

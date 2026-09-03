@@ -72,6 +72,20 @@ async def _fill_copy(spec: dict, tenant_id, ref: dict) -> dict:
     return {r: str((out or {}).get(r, "")).strip() for r in roles if str((out or {}).get(r, "")).strip()}
 
 
+async def _brand_palette(tenant_id):
+    """This brand's own colours, for re-colouring a borrowed template.
+
+    Best-effort: None means the template renders in the colours it was read
+    with, which is what happened for every cloned post before this — the
+    competitor's. A brand that has set no palette is unchanged."""
+    try:
+        from .brand_identity import ensure_brand_palette
+        return await ensure_brand_palette(tenant_id)
+    except Exception:  # noqa: BLE001 — a palette read must never stop a render
+        logging.getLogger(__name__).warning("brand palette unavailable", exc_info=True)
+        return None
+
+
 async def _brand_logo(tenant_id) -> bytes | None:
     """The brand's uploaded logo bytes (first brand_logo asset), for the design's
     logo slot. Best-effort — None just means no logo is dropped in."""
@@ -165,7 +179,8 @@ async def rebuild_cloned(payload: dict, feedback: str, tenant_id) -> tuple[bytes
         hero_bytes, _generated, _key = await _hero_or_placeholder(
             tenant_id, str(payload.get("topic") or ""))
     logo = await _brand_logo(tenant_id) if spec.get("logo_box") else None
-    return render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo)
+    return render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo,
+                       palette=await _brand_palette(tenant_id))
 
 
 async def _hero_by_key(tenant_id, key: str) -> bytes | None:
@@ -272,7 +287,8 @@ async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None) 
     if hero_bytes is None:
         hero_bytes, generated, hero_key = await _hero_or_placeholder(tenant_id, topic)
     logo = await _brand_logo(tenant_id) if spec.get("logo_box") else None
-    png, kind = render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo)
+    png, kind = render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo,
+                            palette=await _brand_palette(tenant_id))
     return {"png": png, "kind": kind, "content": content, "topic": topic,
             "generated_hero": generated, "from": post.get("handle") or "",
             "hero_photo_key": hero_key,

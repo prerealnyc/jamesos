@@ -681,6 +681,124 @@ _register(Tool(
 ))
 
 
+async def _t_generate_carousel(topic: str, platform: str = "instagram") -> dict:
+    """Create a multi-slide carousel (a designed post with the carousel layout)."""
+    from .autopilot_bulk import _make_text_post
+    idea = {"topic": topic, "title": (topic or "")[:60], "pillar": ""}
+    return await _make_text_post(
+        idea, platform or "instagram", None, image_kind="designed", force_format="carousel"
+    )
+
+
+_register(Tool(
+    name="generate_carousel",
+    description=(
+        "CREATE a multi-slide CAROUSEL post about a topic — a designed, branded "
+        "multi-card layout — and queue it in the Approval Queue. Spends LLM + "
+        "image credits. Use when the user asks for a carousel or a multi-slide post."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "topic": {"type": "string", "description": "What the carousel is about."},
+            "platform": {"type": "string", "default": "instagram"},
+        },
+        "required": ["topic"],
+    },
+    fn=_t_generate_carousel,
+    writes=True,
+))
+
+
+async def _t_generate_designed_post(topic: str, platform: str = "instagram") -> dict:
+    """Create a post with a DESIGNED branded graphic card (not a photo)."""
+    from .autopilot_bulk import _make_text_post
+    idea = {"topic": topic, "title": (topic or "")[:60], "pillar": ""}
+    return await _make_text_post(idea, platform or "instagram", None, image_kind="designed")
+
+
+_register(Tool(
+    name="generate_designed_post",
+    description=(
+        "CREATE an on-voice post with a DESIGNED, branded graphic card (rather "
+        "than a photo) about a topic, queued in the Approval Queue. Spends LLM + "
+        "image credits. Use for a graphic / designed / branded-card image post; "
+        "use generate_post for a photo-based post and generate_carousel for slides."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "topic": {"type": "string", "description": "What the post is about."},
+            "platform": {"type": "string", "default": "instagram"},
+        },
+        "required": ["topic"],
+    },
+    fn=_t_generate_designed_post,
+    writes=True,
+))
+
+
+async def _t_edit_caption(action_id: str, caption: str) -> dict:
+    """Replace a PENDING post's caption in place (a correction, not a rewrite).
+
+    Mirrors PATCH /v1/queue/post/{id}: writes both payload.caption and
+    payload.content (different consumers read different keys) and feeds the
+    before→after delta to the writer as a corrective style rule."""
+    import json as _json
+    from uuid import UUID as _UUID
+
+    from .db import acquire
+
+    text = (caption or "").strip()
+    if not text:
+        return {"ok": False, "error": "caption must not be blank"}
+    try:
+        aid = _UUID(str(action_id))
+    except (ValueError, TypeError):
+        return {"ok": False, "error": f"invalid post id: {action_id!r}"}
+    async with acquire(None) as conn:  # tenant from the run's contextvar
+        row = await conn.fetchrow(
+            "UPDATE actions a SET payload = a.payload || $2::jsonb "
+            "FROM actions prev "
+            "WHERE prev.id = a.id AND a.id = $1 "
+            "  AND a.action_type='content' AND a.status='pending' "
+            "RETURNING coalesce(prev.payload->>'content', prev.payload->>'caption', '') AS old",
+            aid,
+            _json.dumps({"caption": text, "content": text, "edited_by_owner": True}),
+        )
+    if row is None:
+        return {"ok": False, "error": "post not found, or no longer pending"}
+    try:
+        from . import learning
+        await learning.record_edit(aid, row["old"] or "", text, tenant_id=None)
+    except Exception:  # noqa: BLE001 — never fail the edit on the learning leg
+        pass
+    return {"ok": True, "id": str(aid), "caption": text}
+
+
+_register(Tool(
+    name="edit_caption",
+    description=(
+        "Replace the caption/copy of a PENDING post in the Approval Queue, by its "
+        "id (get ids from list_pending_approvals). Corrected in place, not "
+        "regenerated. Use when the user asks to change / fix / reword a post's caption."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "action_id": {
+                "type": "string",
+                "description": "The pending post's id (from list_pending_approvals).",
+            },
+            "caption": {"type": "string", "description": "The new caption text."},
+        },
+        "required": ["action_id", "caption"],
+    },
+    fn=_t_edit_caption,
+    writes=True,
+))
+
+
 # ── analyze performance (read) ───────────────────────────────────────
 
 
@@ -1181,6 +1299,11 @@ async def run_agent(run_id: UUID, tenant_id: UUID | None = None) -> None:
     Provider-aware: dispatches to OpenAI function-calling when
     LLM_PROVIDER=openai and Anthropic tool-use when LLM_PROVIDER=anthropic —
     the same provider the rest of the app runs on (see llm.get_llm)."""
+    # Background tasks lose the request contextvar, so bind the run's tenant here:
+    # every write tool calls acquire(None), which falls back to this contextvar,
+    # so this is what makes generate_*/approve/edit land on the caller's brand.
+    from .db import set_request_tenant
+    set_request_tenant(tenant_id)
     run = await get_run(run_id, tenant_id)
     if run is None:
         return
