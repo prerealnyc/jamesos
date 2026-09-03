@@ -331,6 +331,13 @@ _SERVICE_ALLOWED = (
     "/intake", "/post", "/video", "/long-form", "/autopilot", "/compositions",
     "/events", "/strategy", "/generate", "/generate-multi", "/generate-script",
     "/images", "/competitors",
+    # The tool-using agent. This is the only entry here that can ACT on its own
+    # — approve_item, generate_post, generate_reel, run_autopilot all change
+    # live state — so the caller is responsible for asking a human first. BM2's
+    # copilot starts a run only on an explicit button press, never from a typed
+    # message. Adding it is what lets the copilot do the things the platform
+    # can already do, instead of only talking about them.
+    "/agent",
 )
 
 
