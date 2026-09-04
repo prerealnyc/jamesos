@@ -179,7 +179,7 @@ def _avoid_steer(feedback: str) -> str:
 async def _make_text_post(
     idea: dict, platform: str, tenant_id: UUID | None,
     image_kind: str = "james", avoid_fmt: str = "", force_format: str = "",
-    feedback: str = "",
+    feedback: str = "", canvas: tuple[int, int] | None = None,
 ) -> dict:
     """One text+image post: on-voice draft → queue → attach an image.
 
@@ -187,6 +187,10 @@ async def _make_text_post(
     'designed' runs the branded card machine and, on any failure, falls back to
     a real hero photo so a post is never left with an AI scene or imageless.
     Returns the chosen designed format (or None) so the batch can vary them.
+
+    `canvas` is (width, height) for the designed image — the destination
+    platform's best shape, e.g. 1600x900 for X or 1080x1920 for a Reel. None
+    keeps the 4:5 default, which is what every caller got before this existed.
 
     `feedback` carries the owner's standing rejection notes (what they keep saying
     is off-brand). It steers BOTH the text draft and the designed image away from
@@ -213,12 +217,18 @@ async def _make_text_post(
     try:
         if image_kind == "designed":
             try:
+                from . import image_compose as _ic
                 from .main import _generate_designed_post_image
-                image_url, fmt = await _generate_designed_post_image(
-                    draft.action_id, idea.get("topic", ""),
-                    draft.draft or idea.get("topic", ""), tenant_id, avoid=avoid_fmt,
-                    feedback=feedback, force_format=force_format,
-                )
+                # Render at the destination's shape. A cropped picture loses
+                # whatever sat at the top and bottom — which on a quote card is
+                # the quote — so the canvas is set BEFORE the compositor runs
+                # rather than the output being cut to fit afterwards.
+                with _ic.canvas(*(canvas or (0, 0))):
+                    image_url, fmt = await _generate_designed_post_image(
+                        draft.action_id, idea.get("topic", ""),
+                        draft.draft or idea.get("topic", ""), tenant_id, avoid=avoid_fmt,
+                        feedback=feedback, force_format=force_format,
+                    )
             except Exception as _exc:  # noqa: BLE001 — designed failed → hero photo below
                 # Loudly, not silently: a swallowed failure here is exactly why a
                 # "Build carousel" could quietly come back as a plain photo post.

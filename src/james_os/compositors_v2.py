@@ -22,12 +22,18 @@ from io import BytesIO
 
 from PIL import Image, ImageDraw
 
-from .image_compose import (_ARCHIVO, _case, _cover_safe, _draw_centered, _fit, _font,
+from .image_compose import (_DEFAULT_CANVAS, _h, _w, _ARCHIVO, _case, _cover_safe, _draw_centered, _fit, _font,
                             _forced_ink, _line_h, _open_rgb, _png, _spaced, _spaced_fit,
                             _spaced_w, _text, _text_w, _wrap)
 
 _ANTON = os.path.join(os.path.dirname(__file__), "assets", "fonts", "Anton-Regular.ttf")
-W, H = 1080, 1350
+# This module had its OWN hardcoded canvas, so every layout it owns (big_stat,
+# full_bleed, editorial_split, minimal_over, framed_print) silently ignored the
+# render canvas and came back 4:5 no matter what was asked for. Found by
+# rendering at 16:9 and checking the output size, which is the only way a bug
+# like this shows: the picture looks perfectly fine, just the wrong shape.
+# One source of truth now — image_compose's canvas ContextVar.
+W, H = _DEFAULT_CANVAS
 
 
 def _rgb(s: str, fb=(10, 14, 23)) -> tuple:
@@ -119,10 +125,10 @@ def _spaced_c(d: ImageDraw.ImageDraw, y: int, text: str, font, fill, tr: int, m:
     side margins: tighten the tracking until the spaced run fits, then clamp the
     start to the margin so a long kicker never slices its leading letter off the
     frame. Byte-identical for runs that already fit."""
-    avail = W - 2 * m
+    avail = _w() - 2 * m
     while tr > 0 and _spaced_w(d, text, font, tr) > avail:
         tr -= 1
-    x = max(m, (W - _spaced_w(d, text, font, tr)) // 2)
+    x = max(m, (_w() - _spaced_w(d, text, font, tr)) // 2)
     _spaced(d, (x, y), text, font, fill, tr)
 
 
@@ -143,7 +149,7 @@ def _auto_scrim(img: Image.Image, frac: float, ink: tuple, top: bool = False) ->
     """Darken the text band ONLY as much as the photo under it needs to give
     `ink` real contrast — a bright sky gets a heavy scrim, an already-dark region
     barely any. Replaces the old fixed strength so text never washes out."""
-    band = (0, 0, W, int(H * frac)) if top else (0, int(H * (1 - frac)), W, H)
+    band = (0, 0, _w(), int(_h() * frac)) if top else (0, int(_h() * (1 - frac)), _w(), _h())
     lum = _region_lum(img, band)
     if _rel_lum(ink) > 0.5:                       # light ink → ground must be dark
         strength = int(max(40, min(240, 255 * (1 - 0.20 / max(lum, 0.06)))))
@@ -165,24 +171,24 @@ def full_bleed(photo: bytes, headline: str, kicker: str = "", handle: str = "",
                palette: dict | None = None, focus=(0.5, 0.40)) -> bytes:
     pal = _pal(palette)
     headline, kicker = _clip(headline, 9), _clip(kicker, 4)
-    base = _cover_safe(_open_rgb(photo), W, H, centering=focus)
+    base = _cover_safe(_open_rgb(photo), _w(), _h(), centering=focus)
     base = _auto_scrim(base, 0.55, pal["ink"])
     d = ImageDraw.Draw(base)
     M = 88
-    hf, lines = _fit(d, _case(headline, "upper"), _ANTON, W - 2 * M, int(H * 0.34), start=132, minimum=68)
+    hf, lines = _fit(d, _case(headline, "upper"), _ANTON, _w() - 2 * M, int(_h() * 0.34), start=132, minimum=68)
     lh = _line_h(d, hf, 1.02)
     block_h = lh * len(lines)
-    bottom = H - 150
+    bottom = _h() - 150
     top = bottom - block_h
     # after the adaptive scrim, confirm the ink still reads over the exact block
-    ink = _ink_for(_region_lum(base, (M, top, W - M, int(bottom))), pal["ink"])
+    ink = _ink_for(_region_lum(base, (M, top, _w() - M, int(bottom))), pal["ink"])
     if kicker:
-        _spaced_fit(d, top - 52, kicker.upper(), _ARCHIVO, 28, pal["accent"], 8, W - 2 * M, left=M)
+        _spaced_fit(d, top - 52, kicker.upper(), _ARCHIVO, 28, pal["accent"], 8, _w() - 2 * M, left=M)
     y = top
     for ln in lines:
         _text(d, (M, y), ln, hf, ink)
         y += lh
-    _handle_footer(d, handle, pal, H - 92, M)
+    _handle_footer(d, handle, pal, _h() - 92, M)
     return _png(base)
 
 
@@ -191,21 +197,21 @@ def editorial_split(photo: bytes, headline: str, kicker: str = "", handle: str =
                     palette: dict | None = None, focus=(0.5, 0.42)) -> bytes:
     pal = _pal(palette)
     headline, kicker = _clip(headline, 9), _clip(kicker, 4)
-    photo_h = int(H * 0.58)
-    base = Image.new("RGB", (W, H), pal["bg"])
-    base.paste(_cover_safe(_open_rgb(photo), W, photo_h, centering=focus), (0, 0))
+    photo_h = int(_h() * 0.58)
+    base = Image.new("RGB", (_w(), _h()), pal["bg"])
+    base.paste(_cover_safe(_open_rgb(photo), _w(), photo_h, centering=focus), (0, 0))
     d = ImageDraw.Draw(base)
     M = 88
     y0 = photo_h + 60
     if kicker:
-        _spaced_fit(d, y0, kicker.upper(), _ARCHIVO, 28, pal["accent"], 8, W - 2 * M, left=M)
+        _spaced_fit(d, y0, kicker.upper(), _ARCHIVO, 28, pal["accent"], 8, _w() - 2 * M, left=M)
         y0 += 52
-    hf, lines = _fit(d, _case(headline, "upper"), _ANTON, W - 2 * M, H - y0 - 120, start=104, minimum=52)
+    hf, lines = _fit(d, _case(headline, "upper"), _ANTON, _w() - 2 * M, _h() - y0 - 120, start=104, minimum=52)
     lh = _line_h(d, hf, 1.03)
     for ln in lines:
         _text(d, (M, y0), ln, hf, pal["ink"])
         y0 += lh
-    _handle_footer(d, handle, pal, H - 92, M)
+    _handle_footer(d, handle, pal, _h() - 92, M)
     return _png(base)
 
 
@@ -214,29 +220,29 @@ def big_stat(stat: str, label: str, sub: str = "", handle: str = "",
              palette: dict | None = None) -> bytes:
     pal = _pal(palette)
     stat, label, sub = _clip(stat, 3), _clip(label, 6), _clip(sub, 16)
-    base = Image.new("RGB", (W, H), pal["bg"])
+    base = Image.new("RGB", (_w(), _h()), pal["bg"])
     d = ImageDraw.Draw(base)
     M = 88
     # accent rule top-left
     d.rectangle((M, 150, M + 120, 160), fill=pal["accent"])
-    sf, sl = _fit(d, stat.upper(), _ANTON, W - 2 * M, int(H * 0.42), start=430, minimum=120)
+    sf, sl = _fit(d, stat.upper(), _ANTON, _w() - 2 * M, int(_h() * 0.42), start=430, minimum=120)
     sh = _line_h(d, sf, 0.98) * len(sl)
     y = 230
     for ln in sl:
         d.text((M, y), ln, font=sf, fill=pal["accent"])
         y += _line_h(d, sf, 0.98)
     y += 24
-    lf, ll = _fit(d, label.upper(), _ANTON, W - 2 * M, 260, start=76, minimum=40)
+    lf, ll = _fit(d, label.upper(), _ANTON, _w() - 2 * M, 260, start=76, minimum=40)
     for ln in ll:
         d.text((M, y), ln, font=lf, fill=pal["ink"])
         y += _line_h(d, lf, 1.06)
     if sub:
         y += 18
         bf = _font(_ARCHIVO, 30)
-        for ln in _wrap_words(d, sub, bf, W - 2 * M):
+        for ln in _wrap_words(d, sub, bf, _w() - 2 * M):
             d.text((M, y), ln, font=bf, fill=pal["muted"])
             y += 44
-    _handle_footer(d, handle, pal, H - 110, M)
+    _handle_footer(d, handle, pal, _h() - 110, M)
     return _png(base)
 
 
@@ -245,19 +251,19 @@ def minimal_over(photo: bytes, line: str, kicker: str = "", handle: str = "",
                  palette: dict | None = None, focus=(0.5, 0.4)) -> bytes:
     pal = _pal(palette)
     line, kicker = _clip(line, 7), _clip(kicker, 4)
-    base = _cover_safe(_open_rgb(photo), W, H, centering=focus)
+    base = _cover_safe(_open_rgb(photo), _w(), _h(), centering=focus)
     base = _auto_scrim(base, 0.45, pal["ink"])
     base = _scrim(base, frac=0.28, strength=120, top=True)
     d = ImageDraw.Draw(base)
     if kicker:
         _spaced_c(d, 150, kicker.upper(), _font(_ARCHIVO, 26), pal["ink"], 12)
-    lf, ll = _fit(d, _case(line, "upper"), _ANTON, int(W * 0.82), 300, start=92, minimum=56)
+    lf, ll = _fit(d, _case(line, "upper"), _ANTON, int(_w() * 0.82), 300, start=92, minimum=56)
     lh = _line_h(d, lf, 1.05)
-    y = H - 240 - lh * len(ll)
-    ink = _ink_for(_region_lum(base, (int(W * 0.09), int(y), int(W * 0.91), int(y + lh * len(ll)))), pal["ink"])
-    _draw_centered(d, ll, lf, W // 2, y, fill=ink)
+    y = _h() - 240 - lh * len(ll)
+    ink = _ink_for(_region_lum(base, (int(_w() * 0.09), int(y), int(_w() * 0.91), int(y + lh * len(ll)))), pal["ink"])
+    _draw_centered(d, ll, lf, _w() // 2, y, fill=ink)
     if handle:
-        _spaced_c(d, H - 130, (handle if handle.startswith("@") else "@" + handle),
+        _spaced_c(d, _h() - 130, (handle if handle.startswith("@") else "@" + handle),
                   _font(_ARCHIVO, 26), pal["accent"], 6)
     return _png(base)
 
@@ -267,10 +273,10 @@ def framed_print(photo: bytes, caption: str, kicker: str = "", handle: str = "",
                  palette: dict | None = None) -> bytes:
     pal = _pal(palette)
     caption, kicker = _clip(caption, 7), _clip(kicker, 4)
-    base = Image.new("RGB", (W, H), pal["bg"])
+    base = Image.new("RGB", (_w(), _h()), pal["bg"])
     d = ImageDraw.Draw(base)
     M = 96
-    pw = W - 2 * M
+    pw = _w() - 2 * M
     ph = int(pw * 0.82)          # leave real room for the caption below
     top = 132
     photo_im = _cover_safe(_open_rgb(photo), pw, ph, centering=(0.5, 0.42))
@@ -279,15 +285,15 @@ def framed_print(photo: bytes, caption: str, kicker: str = "", handle: str = "",
     base.paste(photo_im, (M, top), mask)
     y = top + ph + 44
     if kicker:
-        _spaced_fit(d, y, kicker.upper(), _ARCHIVO, 26, pal["accent"], 8, W - 2 * M, left=M)
+        _spaced_fit(d, y, kicker.upper(), _ARCHIVO, 26, pal["accent"], 8, _w() - 2 * M, left=M)
         y += 46
     # caption fits the zone between here and the handle footer — never overlaps
-    zone = (H - 150) - y
+    zone = (_h() - 150) - y
     cf, cl = _fit(d, _case(caption, "upper"), _ANTON, pw, max(120, zone), start=74, minimum=40)
     for ln in cl:
         d.text((M, y), ln, font=cf, fill=pal["ink"])
         y += _line_h(d, cf, 1.06)
-    _handle_footer(d, handle, pal, H - 96, M)
+    _handle_footer(d, handle, pal, _h() - 96, M)
     return _png(base)
 
 

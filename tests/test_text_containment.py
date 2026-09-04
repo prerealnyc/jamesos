@@ -285,3 +285,55 @@ def test_carousel_text_smoke():
                                              emphasis="MORE", eyebrow=LONG_KICKER))
     assert _is_png(carousel_text.cover_slide(pal, LONG_NAME, 7, 7, WIDE_HEADLINE,
                                              emphasis="MORE", cta=(LONG_KICKER, LONG_URL)))
+
+
+# ------------------------------------------------- containment at OTHER canvases
+#
+# The invariant above was only ever exercised at 4:5, because 4:5 was the only
+# shape image_compose could produce. Now a caller can render at the destination
+# platform's ratio — 16:9 for X, 9:16 for a Reel, 2:3 for a Pin — and text that
+# is contained in a tall frame is not automatically contained in a wide one:
+# the same words get a narrower column and fewer lines to use. So the guarantee
+# has to be re-proved on every shape we can now ask for.
+
+OTHER_CANVASES = [
+    (1600, 900),    # X in-stream, 16:9 — the widest and the hardest
+    (1080, 1920),   # TikTok / Reels / Stories, 9:16
+    (1000, 1500),   # Pinterest, 2:3
+    (1080, 1080),   # square
+    (1080, 1440),   # Instagram's 3:4 feed
+]
+
+
+@pytest.mark.parametrize("size", OTHER_CANVASES)
+@pytest.mark.parametrize("fmt", ["brand_quote", "statement", "big_stat"])
+def test_designed_render_survives_other_canvases(fmt, size):
+    """Adversarial copy, rendered at a non-default shape, still produces a PNG
+    of exactly the size asked for."""
+    from james_os import image_compose as ic
+    from james_os.designed_render import render_designed
+
+    spec = {
+        "quote": WIDE_HEADLINE, "headline": WIDE_HEADLINE, "statement": WIDE_HEADLINE,
+        "stat": BIG_STAT, "stat_label": LONG_KICKER, "stat_sub": LONG_URL,
+        "kicker": LONG_KICKER, "caption": LONG_URL, "emphasis": "MORE",
+        "byline_name": LONG_NAME,
+    }
+    kit = {"display_name": LONG_NAME, "website": LONG_URL,
+           "footer_tagline": "We turn houses into homes across the whole region"}
+    with ic.canvas(*size):
+        png, _used = render_designed(fmt, spec, kit=kit, hero_bytes=_photo(),
+                                     handle="prendamanorealestate")
+    assert _is_png(png), f"{fmt} at {size} did not return a PNG"
+    assert Image.open(BytesIO(png)).size == size, f"{fmt} ignored the canvas {size}"
+
+
+def test_the_canvas_resets_after_a_render():
+    """A leaked canvas would silently reshape every later render in the same
+    task — the worst kind of bug, because the picture still looks fine."""
+    from james_os import image_compose as ic
+
+    before = (ic._w(), ic._h())
+    with ic.canvas(1600, 900):
+        pass
+    assert (ic._w(), ic._h()) == before == (ic.W, ic.H)

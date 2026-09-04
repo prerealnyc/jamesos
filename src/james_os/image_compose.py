@@ -272,14 +272,59 @@ def _paste_corner(img: Image.Image, badge: Image.Image, position: str, margin: i
     d = badge.size[0]
     xy = {
         "top_left": (margin, margin),
-        "top_right": (W - d - margin, margin),
-        "bottom_left": (margin, H - d - margin),
-        "bottom_right": (W - d - margin, H - d - margin),
+        "top_right": (_w() - d - margin, margin),
+        "bottom_left": (margin, _h() - d - margin),
+        "bottom_right": (_w() - d - margin, _h() - d - margin),
     }.get(position)
     if xy:
         img.paste(badge, xy, badge)
 
-W, H = 1080, 1350  # 4:5 Instagram feed
+# The canvas. 1080x1350 (4:5) is the default because it is the tallest ratio the
+# Instagram and Facebook feeds accept, and vertical space is the whole game on a
+# phone — but it is no longer the only shape we render.
+#
+# A caller that knows where the picture is going sets the canvas for the render
+# and every compositor below follows, because they all read W/H rather than
+# hard-coding numbers. That is why this is a ContextVar and not a parameter on
+# ten function signatures: same convention as brand_look and text_style above,
+# concurrency-safe, and a caller that says nothing gets exactly what it got
+# before.
+_DEFAULT_CANVAS = (1080, 1350)
+_render_canvas: "contextvars.ContextVar[tuple[int, int]]" = contextvars.ContextVar(
+    "render_canvas", default=_DEFAULT_CANVAS)
+
+
+@contextlib.contextmanager
+def canvas(width: int = 0, height: int = 0):
+    """Render at a specific size — e.g. 1600x900 for X, 1080x1920 for a Reel.
+
+    A missing or nonsensical size falls back to the 4:5 default rather than
+    raising: a wrong-shaped picture is a bad post, but no picture at all is a
+    failed one."""
+    size = (int(width), int(height)) if width > 0 and height > 0 else _DEFAULT_CANVAS
+    token = _render_canvas.set(size)
+    try:
+        yield size
+    finally:
+        _render_canvas.reset(token)
+
+
+# The DEFAULT canvas, exported for callers and tests that mean "the usual
+# shape" — the compositors themselves read _w()/_h(), which follow whatever
+# canvas() the current render set. These two are not the live size; they are
+# the fallback, and they are equal to it whenever nobody asked for anything else.
+W, H = _DEFAULT_CANVAS
+
+
+def _w() -> int:
+    """Canvas width for THIS render."""
+    return _render_canvas.get()[0]
+
+
+def _h() -> int:
+    """Canvas height for THIS render."""
+    return _render_canvas.get()[1]
+
 
 _QUOTE_FILL = (250, 243, 224)   # warm cream — reads as premium on a dark scene
 _INK = (17, 17, 17)
@@ -546,8 +591,8 @@ def _brand_footer(img: Image.Image, handle: str, profile_bytes: bytes | None,
                   profile_is_logo: bool = False) -> None:
     """Profile circle (or brand logo badge) + @handle centered near the bottom."""
     draw = ImageDraw.Draw(img)
-    cx = W // 2
-    base_y = H - 150
+    cx = _w() // 2
+    base_y = _h() - 150
     if profile_bytes and _logo_show():
         d = 88
         circ = _logo_badge(profile_bytes, d) if profile_is_logo else _circle(profile_bytes, d)
@@ -567,15 +612,15 @@ def quote_card(bg_bytes: bytes, quote: str, handle: str = "",
                profile_bytes: bytes | None = None,
                profile_is_logo: bool = False) -> bytes:
     """Full-bleed scene + dark scrim + big centered quote + @handle footer."""
-    base = _cover(_open_rgb(bg_bytes), W, H).convert("RGBA")
-    scrim = Image.new("RGBA", (W, H), (8, 10, 20, 145))
+    base = _cover(_open_rgb(bg_bytes), _w(), _h()).convert("RGBA")
+    scrim = Image.new("RGBA", (_w(), _h()), (8, 10, 20, 145))
     base = Image.alpha_composite(base, scrim).convert("RGB")
     draw = ImageDraw.Draw(base)
     q = (quote or "").strip().strip('"').strip("“”")
-    font, lines = _fit(draw, q, _DISPLAY, int(W * 0.82), int(H * 0.56), start=118, minimum=46)
+    font, lines = _fit(draw, q, _DISPLAY, int(_w() * 0.82), int(_h() * 0.56), start=118, minimum=46)
     total_h = _line_h(draw, font) * len(lines)
-    top = (H - total_h) / 2 - 40
-    _draw_centered(draw, lines, font, W // 2, top, fill=_QUOTE_FILL,
+    top = (_h() - total_h) / 2 - 40
+    _draw_centered(draw, lines, font, _w() // 2, top, fill=_QUOTE_FILL,
                    stroke_fill=(0, 0, 0), stroke_w=3)
     _brand_footer(base, handle, profile_bytes, profile_is_logo)
     return _png(base)
@@ -583,29 +628,29 @@ def quote_card(bg_bytes: bytes, quote: str, handle: str = "",
 
 def meme_card(bg_bytes: bytes, top_text: str, bottom_text: str, handle: str = "") -> bytes:
     """White canvas: bold top line + image panel + bold bottom punchline."""
-    canvas = Image.new("RGB", (W, H), (255, 255, 255))
+    canvas = Image.new("RGB", (_w(), _h()), (255, 255, 255))
     draw = ImageDraw.Draw(canvas)
     pad = 56
 
-    tf, tl = _fit(draw, _case(top_text or "", "upper"), _ANTON, W - 2 * pad, 280, start=96, minimum=40)
-    ty = _draw_centered(draw, tl, tf, W // 2, 42, fill=_INK)
+    tf, tl = _fit(draw, _case(top_text or "", "upper"), _ANTON, _w() - 2 * pad, 280, start=96, minimum=40)
+    ty = _draw_centered(draw, tl, tf, _w() // 2, 42, fill=_INK)
 
-    bf, bl = _fit(draw, _case(bottom_text or "", "upper"), _ANTON, W - 2 * pad, 280, start=96, minimum=40)
+    bf, bl = _fit(draw, _case(bottom_text or "", "upper"), _ANTON, _w() - 2 * pad, 280, start=96, minimum=40)
     b_total = _line_h(draw, bf) * len(bl)
-    by = H - b_total - 52
+    by = _h() - b_total - 52
 
     img_top = int(ty + 26)
     img_bottom = int(by - 26)
     if img_bottom - img_top > 120:
-        panel = ImageOps.fit(_open_rgb(bg_bytes), (W - 2 * pad, img_bottom - img_top),
+        panel = ImageOps.fit(_open_rgb(bg_bytes), (_w() - 2 * pad, img_bottom - img_top),
                              method=Image.LANCZOS, centering=(0.5, 0.4))
         canvas.paste(panel, (pad, img_top))
 
-    _draw_centered(draw, bl, bf, W // 2, by, fill=_INK)
+    _draw_centered(draw, bl, bf, _w() // 2, by, fill=_INK)
     if handle:
         h = handle if handle.startswith("@") else "@" + handle
         hf = _font(_ARCHIVO, 24)
-        draw.text((W - pad - _text_w(draw, h, hf), H - 40), h, font=hf, fill=(120, 120, 120))
+        draw.text((_w() - pad - _text_w(draw, h, hf), _h() - 40), h, font=hf, fill=(120, 120, 120))
     return _png(canvas)
 
 
@@ -628,10 +673,10 @@ def statement_card(bg_bytes: bytes, statement: str, handle: str = "",
         _c = {"bg": _roles.get("background"), "ink": _roles.get("ink")}
     ground = _hex(_c.get("bg"), (255, 255, 255))
     ink = _hex(_c.get("ink"), _INK)
-    canvas = Image.new("RGB", (W, H), ground)
+    canvas = Image.new("RGB", (_w(), _h()), ground)
     draw = ImageDraw.Draw(canvas)
     M = 78                       # generous outer margin (~7%) — room to breathe
-    content_w = W - 2 * M
+    content_w = _w() - 2 * M
 
     # ── IG-post header: profile circle (or brand logo badge) + @handle ──
     y = M
@@ -655,7 +700,7 @@ def statement_card(bg_bytes: bytes, statement: str, handle: str = "",
     # ── James, framed at the bottom: inset by the margin, rounded corners,
     # face-biased crop — so there's clean space on every outside edge. ──
     img_h = 624
-    img_top = H - M - img_h
+    img_top = _h() - M - img_h
     photo = _cover_safe(_open_rgb(bg_bytes), content_w, img_h,
                         centering=(0.5, 0.22))
     rmask = Image.new("L", (content_w, img_h), 0)
@@ -669,7 +714,7 @@ def statement_card(bg_bytes: bytes, statement: str, handle: str = "",
                   max(140, zone_bottom - zone_top), start=104, minimum=40)
     total_h = _line_h(draw, sf) * len(sl)
     sy = zone_top + max(0.0, (zone_bottom - zone_top - total_h) / 2.0)
-    _draw_centered(draw, sl, sf, W // 2, sy, fill=ink)
+    _draw_centered(draw, sl, sf, _w() // 2, sy, fill=ink)
     return _png(canvas)
 
 
@@ -681,9 +726,9 @@ def _navy_bg(glow_xy: tuple[float, float] = (0.5, 0.42), radius: int = 540,
     """Deep-navy canvas with one soft blue glow — the brand background.
     `base_color`/`glow_color` default to James's navy, so an unstyled call is
     byte-identical; a brand palette recolours the whole ground."""
-    base = Image.new("RGBA", (W, H), (*base_color, 255))
-    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    gx, gy = int(W * glow_xy[0]), int(H * glow_xy[1])
+    base = Image.new("RGBA", (_w(), _h()), (*base_color, 255))
+    layer = Image.new("RGBA", (_w(), _h()), (0, 0, 0, 0))
+    gx, gy = int(_w() * glow_xy[0]), int(_h() * glow_xy[1])
     ImageDraw.Draw(layer).ellipse(
         (gx - radius, gy - radius, gx + radius, gy + radius),
         fill=(*glow_color, 205),
@@ -801,14 +846,14 @@ def brand_quote_card(quote: str, brand_kit: dict | None = None,
     pal = _colors(bk)
     base = _navy_bg((0.5, 0.5), 560, glow_color=pal["glow"], base_color=pal["base"])
     draw = ImageDraw.Draw(base)
-    cx = W // 2
+    cx = _w() // 2
 
     # ── brand name (letter-spaced kicker) — omit entirely when the brand has
     #    no name yet, rather than forging one from another brand ──
     name = (bk.get("display_name") or "").strip().upper()
     if name:
         _spaced_fit(draw, 92, name, _ARCHIVO, 34, pal["accent"], 10,
-                    int(W * 0.86), center=cx)
+                    int(_w() * 0.86), center=cx)
 
     # ── ripple emblem ──
     ey, er = 262, 60
@@ -819,17 +864,17 @@ def brand_quote_card(quote: str, brand_kit: dict | None = None,
 
     # ── stacked quote, one line in brand blue ──
     lines, emph = _lines_for(quote, emphasis, 3)
-    zone_top, zone_bottom = ey + er + 70, H - 210
+    zone_top, zone_bottom = ey + er + 70, _h() - 210
     base_font, _ = _fit(draw, max(lines, key=len), _DISPLAY,
-                        int(W * 0.80), 220, start=150, minimum=54)
+                        int(_w() * 0.80), 220, start=150, minimum=54)
     ef_sz = min(int(base_font.size * 1.34), 200)
-    emph_font = _fit(draw, lines[emph], _DISPLAY, int(W * 0.80), 240,
+    emph_font = _fit(draw, lines[emph], _DISPLAY, int(_w() * 0.80), 240,
                      start=ef_sz, minimum=base_font.size)[0]
     # Containment guard: _fit picks a SIZE by re-wrapping internally, but the
     # lines below are drawn UNWRAPPED — so a wide multi-word line could still be
     # drawn past int(W*0.80) (and off-canvas, centered → negative x). Shrink both
     # faces in lockstep until every ACTUAL drawn line fits, keeping emph >= base.
-    _q_max_w = int(W * 0.80)
+    _q_max_w = int(_w() * 0.80)
     def _q_overflow() -> int:
         return max((_text_w(draw, ln, emph_font if i == emph else base_font)
                     for i, ln in enumerate(lines)), default=0)
@@ -855,8 +900,8 @@ def brand_quote_card(quote: str, brand_kit: dict | None = None,
     tag = (bk.get("footer_tagline") or "").strip()
     foot = "   ·   ".join([p for p in (at, site, tag) if p])
     if foot:
-        _spaced_fit(draw, H - 118, foot, _ARCHIVO, 26, pal["muted"], 3,
-                    W - 2 * 72, center=cx)
+        _spaced_fit(draw, _h() - 118, foot, _ARCHIVO, 26, pal["muted"], 3,
+                    _w() - 2 * 72, center=cx)
     return _png(base)
 
 
@@ -890,8 +935,8 @@ def hero_quote_card(quote: str, hero_bytes: bytes, brand_kit: dict | None = None
     base = _navy_bg((0.66, 0.40), 430, glow_color=pal["glow"], base_color=pal["base"])
 
     M = 96                              # outer margin on every side
-    pw = int(W * _knob("image_photo_width", 0.46))   # photo panel width (right)
-    photo_left = W - pw
+    pw = int(_w() * _knob("image_photo_width", 0.46))   # photo panel width (right)
+    photo_left = _w() - pw
     gutter = int(_knob("image_text_gutter", 48))     # clear gap: text ↔ photo
     text_left = M
     text_w = max(300, photo_left - gutter - text_left)   # the text's hard column
@@ -910,25 +955,25 @@ def hero_quote_card(quote: str, hero_bytes: bytes, brand_kit: dict | None = None
     # ── hero photo on the right; its LEFT edge fades into navy so the seam is
     #    invisible and the whole text column stays on clean navy ──
     if hero_bytes:
-        photo = _cover_safe(_open_rgb(hero_bytes), pw, H,
+        photo = _cover_safe(_open_rgb(hero_bytes), pw, _h(),
                             centering=(focus_x, 0.26))
         grad = Image.new("L", (pw, 1), 0)
         for x in range(pw):
             # transparent across the left `fade` of the panel, then ramp to
             # opaque over the next 0.34 — lowering `fade` keeps more of him crisp
             grad.putpixel((x, 0), min(255, int(255 * max(0.0, (x / pw - fade) / 0.34))))
-        base.paste(photo, (photo_left, 0), grad.resize((pw, H)))
+        base.paste(photo, (photo_left, 0), grad.resize((pw, _h())))
 
     draw = ImageDraw.Draw(base)
 
     # ── quote: keep the semantic line split (emphasis isolated), auto-fit to
     #    the column, then HARD-GUARANTEE containment by re-wrapping if needed ──
     lines, emph = _lines_for(quote, emphasis, 3)
-    qfont, _ = _fit(draw, max(lines, key=len), _DISPLAY, text_w, int(H * 0.44),
+    qfont, _ = _fit(draw, max(lines, key=len), _DISPLAY, text_w, int(_h() * 0.44),
                     start=quote_max_pt, minimum=34)
     if max((_text_w(draw, ln, qfont) for ln in lines), default=0) > text_w:
         qfont, lines = _fit(draw, " ".join(lines), _DISPLAY, text_w,
-                            int(H * 0.44), start=qfont.size, minimum=30)
+                            int(_h() * 0.44), start=qfont.size, minimum=30)
         # re-locate the emphasis: first line containing any emphasis word
         ew = [_bare(w) for w in (emphasis or "").split() if w]
         emph = next((i for i, ln in enumerate(lines)
@@ -937,7 +982,7 @@ def hero_quote_card(quote: str, hero_bytes: bytes, brand_kit: dict | None = None
     lh = _line_h(draw, qfont, 1.16)
     block_h = lh * len(lines)
     kick_gap = 62
-    top = max(M + 34, (H - (block_h + kick_gap)) / 2)
+    top = max(M + 34, (_h() - (block_h + kick_gap)) / 2)
 
     # kicker + underline (aligned to the column)
     kf = _font(_ARCHIVO, 28)
@@ -959,7 +1004,7 @@ def hero_quote_card(quote: str, hero_bytes: bytes, brand_kit: dict | None = None
         if not handle.startswith("@"):
             handle = "@" + handle
         hf = _font(_ARCHIVO, 26)
-        draw.text((text_left, H - M - 18), handle, font=hf, fill=pal["muted"])
+        draw.text((text_left, _h() - M - 18), handle, font=hf, fill=pal["muted"])
     return _png(base)
 
 
@@ -1037,14 +1082,14 @@ def bold_statement_card(statement: str, brand_kit: dict | None = None,
     pal = _colors(bk)
     accent, ink, muted = pal["accent"], pal["ink"], pal["muted"]
     ground = tuple(int(c * 0.26) for c in pal["base"])  # push the base to a flat poster black
-    base = Image.new("RGB", (W, H), ground)
+    base = Image.new("RGB", (_w(), _h()), ground)
     draw = ImageDraw.Draw(base)
     M = 96
 
     # ── brand name across the top (letter-spaced, centered) ──
     name = (bk.get("display_name") or "").strip().upper()
     if name:
-        _spaced_fit(draw, 84, name, _ARCHIVO, 30, accent, 8, W - 2 * M, center=W // 2)
+        _spaced_fit(draw, 84, name, _ARCHIVO, 30, accent, 8, _w() - 2 * M, center=_w() // 2)
 
     # ── short accent rule ──
     ry = 300
@@ -1053,13 +1098,13 @@ def bold_statement_card(statement: str, brand_kit: dict | None = None,
     # ── the statement: big, bold, left-aligned, mixed case, inline highlight ──
     words = [w for w in _case(statement or "").split() if w]
     emph = _emph_word_idx(words, emphasis)
-    zone_top, zone_bottom = ry + 62, H - 268
-    font = _fit_left(draw, words, _DISPLAY, W - 2 * M, zone_bottom - zone_top,
+    zone_top, zone_bottom = ry + 62, _h() - 268
+    font = _fit_left(draw, words, _DISPLAY, _w() - 2 * M, zone_bottom - zone_top,
                      start=134, minimum=46)
     space = _text_w(draw, " ", font)
     lh = _line_h(draw, font, 1.14)
     y = zone_top
-    for ln in _wrap_idx(draw, words, font, W - 2 * M):
+    for ln in _wrap_idx(draw, words, font, _w() - 2 * M):
         x = M
         for w, gi in ln:
             draw.text((x, y), w, font=font, fill=(accent if gi in emph else ink))
@@ -1067,10 +1112,10 @@ def bold_statement_card(statement: str, brand_kit: dict | None = None,
         y += lh
 
     # ── byline: optional name, then website · tagline (only what the brand supplies) ──
-    yb = H - 156
+    yb = _h() - 156
     if byline_name.strip():
         _spaced_fit(draw, yb, byline_name.strip().upper(), _ARCHIVO, 26, accent, 6,
-                    W - 2 * M, left=M)
+                    _w() - 2 * M, left=M)
         yb += 46
     site = (bk.get("website") or "").strip()
     tag = (bk.get("footer_tagline") or "").strip()

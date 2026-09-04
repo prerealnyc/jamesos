@@ -228,6 +228,12 @@ class GenerateRequest(BaseModel):
     # post/designed only: pin the layout for an explicit build (e.g. 'carousel').
     # An explicit force is honored even when the design switch is off.
     force_format: str = ""
+    # post/designed only: render the image at THIS size instead of the 4:5
+    # default — the destination platform's best shape (1600x900 for X,
+    # 1080x1920 for a Reel, 1000x1500 for a Pin). Both must be > 0 to take
+    # effect; anything else keeps the default, so an old caller is unaffected.
+    image_width: int = 0
+    image_height: int = 0
     # The owner's standing rejection notes — steers the draft + designed image away
     # from what's been rejected (off-brand style/claims). Applies to posts,
     # reel scripts and rendered videos alike.
@@ -396,7 +402,9 @@ async def _run_generate(job_id: str, tenant_id: UUID, req: GenerateRequest) -> N
         else:
             made = await _make_text_post(
                 idea, req.platform, tenant_id, image_kind=req.image_kind,
-                force_format=req.force_format, feedback=req.feedback)
+                force_format=req.force_format, feedback=req.feedback,
+                canvas=((req.image_width, req.image_height)
+                        if req.image_width > 0 and req.image_height > 0 else None))
             job["result"] = {
                 "kind": "post",
                 "action_id": made.get("action_id"),
