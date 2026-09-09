@@ -64,13 +64,6 @@ MANAGED_FIELDS: list[ManagedField] = [
         "perplexity_model", "Perplexity model", "Market research",
         secret=False, placeholder="sonar-pro",
     ),
-    ManagedField(
-        "google_search_api_key", "Google Custom Search API key", "Market research"
-    ),
-    ManagedField(
-        "google_search_cx", "Google Custom Search engine id (cx)", "Market research",
-        secret=False,
-    ),
     ManagedField("apify_api_key", "Apify API token (trend scraping)", "Market research"),
     ManagedField("xpoz_api_key", "Xpoz API key (social data — X / Instagram / TikTok / Reddit)", "Market research"),
     ManagedField(
@@ -90,7 +83,6 @@ MANAGED_FIELDS: list[ManagedField] = [
     ManagedField("higgsfield_model", "Higgsfield I2V model (e.g. higgsfield-ai/dop/standard, kling-video/v2.1/pro/image-to-video)", "Video & media", secret=False),
     ManagedField("higgsfield_soul_id", "Higgsfield Soul ID — consistent brand hero (James) across B-roll. Copy from Hero → Soul IDs.", "Video & media", secret=False),
     ManagedField("creatomate_api_key", "Creatomate API key (video assembly)", "Video & media"),
-    ManagedField("shotstack_api_key", "Shotstack API key (video assembly)", "Video & media"),
     ManagedField(
         "brand_logo_url", "Brand logo URL (public PNG, alpha)", "Video & media",
         secret=False, placeholder="https://…/logo.png",
@@ -123,11 +115,9 @@ MANAGED_FIELDS: list[ManagedField] = [
         "elevenlabs_voice_id", "ElevenLabs voice id (brand's cloned voice — podcasts)",
         "Video & media", secret=False,
     ),
-    ManagedField("minimax_api_key", "MiniMax API key", "Video & media"),
     # Publishing & social
     ManagedField("postproxy_api_key", "PostProxy API key", "Publishing & social"),
     ManagedField("meta_access_token", "Meta (IG/FB/Threads) token", "Publishing & social"),
-    ManagedField("twitter_bearer_token", "X/Twitter bearer token", "Publishing & social"),
     ManagedField("xpoz_api_key", "Xpoz API key", "Publishing & social"),
     # Meta Developer App credentials — used by the upcoming Instagram /
     # Facebook OAuth flow. App ID is technically public (it ships in
@@ -258,11 +248,11 @@ def _auto_select_providers() -> None:
         settings.video_provider = "higgsfield"
     else:
         settings.video_provider = "stub"
-    # Video assembly: Creatomate preferred, then Shotstack, else stub.
+    # Video assembly: Creatomate, else stub. Shotstack was advertised here as a
+    # second option for a provider class that was never written — a key pasted
+    # into that box selected an assembler that did not exist.
     if (settings.creatomate_api_key or "").strip():
         settings.assembly_provider = "creatomate"
-    elif (settings.shotstack_api_key or "").strip():
-        settings.assembly_provider = "shotstack"
     else:
         settings.assembly_provider = "stub"
     # Media storage: Supabase Storage when its service_role is present,

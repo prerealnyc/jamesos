@@ -32,7 +32,6 @@ class Settings(BaseSettings):
     llm_provider: str = "stub"  # anthropic | google | stub
     llm_model: str = "claude-opus-4-7"
     anthropic_api_key: str = ""
-    google_api_key: str = ""
 
     cohere_api_key: str = ""
 
@@ -45,8 +44,6 @@ class Settings(BaseSettings):
     research_provider: str = "stub"  # perplexity | stub
     perplexity_api_key: str = ""
     perplexity_model: str = "sonar-pro"
-    google_search_api_key: str = ""  # Google Custom Search JSON API
-    google_search_cx: str = ""       # Custom Search engine id (cx)
     apify_api_key: str = ""          # Apify token — IG/TikTok/YouTube trend scraping
     youtube_api_key: str = ""        # YouTube Data API — trend discovery
     # Apify actor that downloads a single YouTube video (residential proxy, so it
@@ -82,7 +79,6 @@ class Settings(BaseSettings):
     heygen_avatar_id: str = ""     # default avatar for renders
     xpoz_api_key: str = ""         # Xpoz social data API (X/IG/TikTok/Reddit)
     runway_api_key: str = ""       # video generation
-    minimax_api_key: str = ""      # video generation
     postproxy_api_key: str = ""    # multi-platform publishing
     meta_access_token: str = ""    # Meta Graph (IG/FB/Threads)
     meta_app_id: str = ""          # Meta Developer App ID (OAuth client)
@@ -91,7 +87,6 @@ class Settings(BaseSettings):
     meta_ad_account_id: str = ""   # Ads Manager account (act_XXXXXXXXX)
     meta_ig_business_id: str = ""  # IG Business account ID (auto-discoverable)
     meta_ads_access_token: str = "" # Separate EAA token for Ads / Marketing API
-    twitter_bearer_token: str = "" # X/Twitter
     xpoz_api_key: str = ""         # social engagement read
 
     # ─── Public /v1 service API ───
@@ -219,10 +214,8 @@ class Settings(BaseSettings):
         "natural lighting, sharp focus, high-quality DSLR look, "
         "NOT cartoon, NOT illustration, NOT 3D render."
     )
-    assembly_provider: str = "stub"   # creatomate | shotstack | stub
+    assembly_provider: str = "stub"   # creatomate | stub
     creatomate_api_key: str = ""
-    shotstack_api_key: str = ""
-    shotstack_env: str = "stage"      # stage | v1 (production)
     # Brand layer applied at assembly. All optional — left empty just skips
     # that element honestly rather than faking it.
     brand_logo_url: str = ""          # public URL to the brand logo (PNG with alpha)

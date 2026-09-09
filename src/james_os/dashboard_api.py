@@ -148,14 +148,10 @@ async def integrations() -> dict:
             "heygen": cfg(settings.heygen_api_key),
             "xpoz": cfg(settings.xpoz_api_key),
             "runway": cfg(settings.runway_api_key),
-            "minimax": cfg(settings.minimax_api_key),
             "postproxy": cfg(settings.postproxy_api_key),
             "meta": cfg(settings.meta_access_token),
-            "twitter": cfg(settings.twitter_bearer_token),
             "xpoz": cfg(settings.xpoz_api_key),
             "perplexity": cfg(settings.perplexity_api_key),
-            "google_search": cfg(settings.google_search_api_key)
-            and cfg(settings.google_search_cx),
         },
         # Only these are wired to real code paths today. openai = Whisper
         # audio transcription in the ingestion pipeline; perplexity = the
@@ -309,27 +305,6 @@ async def _probe(client: httpx.AsyncClient, name: str) -> dict:
                 return {"status": "bad_key", "detail": f"HTTP {r.status_code}"}
             return {"status": "unverified", "detail": f"HTTP {r.status_code}"}
 
-        if name == "google_search":
-            if not (settings.google_search_api_key and settings.google_search_cx):
-                return {"status": "not_configured", "detail": ""}
-            r = await client.get(
-                "https://www.googleapis.com/customsearch/v1",
-                params={
-                    "key": settings.google_search_api_key,
-                    "cx": settings.google_search_cx,
-                    "q": "ping",
-                    "num": 1,
-                },
-            )
-            if r.status_code == 200:
-                return {"status": "ok", "detail": "search returned"}
-            if r.status_code == 429:
-                return {"status": "rate_limited", "detail": "daily quota (HTTP 429)"}
-            if r.status_code in (400, 401, 403):
-                # 400 usually = bad cx; 403 = bad key or quota.
-                return {"status": "bad_key", "detail": f"HTTP {r.status_code}"}
-            return {"status": "unverified", "detail": f"HTTP {r.status_code}"}
-
         if name == "apify":
             if not settings.apify_api_key:
                 return {"status": "not_configured", "detail": ""}
@@ -362,19 +337,7 @@ async def _probe(client: httpx.AsyncClient, name: str) -> dict:
                 return {"status": "bad_key", "detail": f"HTTP {r.status_code}"}
             return {"status": "unverified", "detail": f"HTTP {r.status_code}"}
 
-        if name == "shotstack":
-            if not settings.shotstack_api_key:
-                return {"status": "not_configured", "detail": ""}
-            env = settings.shotstack_env or "stage"
-            r = await client.get(
-                f"https://api.shotstack.io/{env}/assets",
-                headers={"x-api-key": settings.shotstack_api_key},
-            )
-            if r.status_code == 200:
-                return {"status": "ok", "detail": f"auth OK ({env})"}
-            if r.status_code in (401, 403):
-                return {"status": "bad_key", "detail": f"HTTP {r.status_code}"}
-            return {"status": "unverified", "detail": f"HTTP {r.status_code}"}
+
 
         return {"status": "not_configured", "detail": "no probe defined"}
     except httpx.TimeoutException:
