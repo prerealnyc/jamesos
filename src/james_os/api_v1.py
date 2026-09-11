@@ -662,6 +662,28 @@ async def v1_social_search(body: SocialSearchBody, tenant_id: TenantDep) -> dict
     )
 
 
+@router.get("/queue/find-by-image")
+async def v1_queue_find_by_image(url: str, tenant_id: TenantDep) -> dict[str, Any]:
+    """The content draft whose picture is this URL.
+
+    How BM2 finds the draft behind one of its own pieces made before it recorded
+    the draft's id — the card editor opens a piece through its draft. /v1/queue
+    returns only the newest 200, and a brand with more drafts than that (Turtleback
+    had 200+) left its older pieces unreachable: 5 of its 17 pictures awaiting
+    approval could not be opened in the editor."""
+    u = (url or "").strip()
+    if not u:
+        raise HTTPException(422, "url is required")
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            "SELECT id, status FROM actions WHERE action_type='content' "
+            "AND (payload->>'image_url' = $1 OR payload->>'media_url' = $1) "
+            "ORDER BY created_at DESC LIMIT 1", u)
+    if row is None:
+        raise HTTPException(404, "no draft has that picture")
+    return {"id": str(row["id"]), "status": row["status"]}
+
+
 @router.get("/queue/rejected")
 async def v1_queue_rejected(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
     """Posts that were turned down — what was rejected, why, and what replaced it.
