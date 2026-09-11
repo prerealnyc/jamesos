@@ -17,7 +17,7 @@ import io
 
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
-from .image_compose import W, H, _font, _wrap, _ANTON, _ARCHIVO, _remap_face
+from .image_compose import _w, _h, _font, _wrap, _ANTON, _ARCHIVO, _remap_face
 
 # Starting font px per size tier; the fitter shrinks from here to fit the box.
 _SIZE_START = {"sm": 38, "md": 60, "lg": 92, "xl": 150, "xxl": 300}
@@ -35,7 +35,7 @@ def _rgb(h, default=(255, 255, 255)) -> tuple[int, int, int]:
 
 
 def _px(box: dict) -> tuple[int, int, int, int]:
-    return (int(box["x"] * W), int(box["y"] * H), int(box["w"] * W), int(box["h"] * H))
+    return (int(box["x"] * _w()), int(box["y"] * _h()), int(box["w"] * _w()), int(box["h"] * _h()))
 
 
 def _cover(img: Image.Image, w: int, h: int) -> Image.Image:
@@ -70,7 +70,7 @@ def _region_lum(base: Image.Image, x: int, y: int, w: int, h: int) -> float:
     """Mean brightness (0-255) of the background under a text block, so we can
     tell whether the text colour will actually read there."""
     x0, y0 = max(0, int(x)), max(0, int(y))
-    x1, y1 = min(W, int(x + w)), min(H, int(y + h))
+    x1, y1 = min(_w(), int(x + w)), min(_h(), int(y + h))
     if x1 <= x0 or y1 <= y0:
         return 128.0
     px = list(base.crop((x0, y0, x1, y1)).convert("L").getdata())
@@ -111,18 +111,18 @@ def _background(spec: dict, hero: Image.Image | None) -> Image.Image:
     with no photo degrades to the solid palette colour rather than failing."""
     bg = spec.get("background") or {}
     pal = spec.get("palette") or {}
-    base = Image.new("RGB", (W, H), _rgb(pal.get("bg"), (17, 19, 24)))
+    base = Image.new("RGB", (_w(), _h()), _rgb(pal.get("bg"), (17, 19, 24)))
     t = bg.get("treatment") or "full_bleed_photo"
     if hero is None:
         return base  # solid fallback
     if t in ("full_bleed_photo", "photo_with_scrim"):
-        base.paste(_cover(hero, W, H), (0, 0))
+        base.paste(_cover(hero, _w(), _h()), (0, 0))
     elif t == "photo_top":
-        base.paste(_cover(hero, W, int(H * 0.6)), (0, 0))
+        base.paste(_cover(hero, _w(), int(_h() * 0.6)), (0, 0))
     elif t == "photo_bottom":
-        base.paste(_cover(hero, W, int(H * 0.6)), (0, H - int(H * 0.6)))
+        base.paste(_cover(hero, _w(), int(_h() * 0.6)), (0, _h() - int(_h() * 0.6)))
     elif t == "photo_side":
-        base.paste(_cover(hero, int(W * 0.55), H), (W - int(W * 0.55), 0))
+        base.paste(_cover(hero, int(_w() * 0.55), _h()), (_w() - int(_w() * 0.55), 0))
     elif t == "solid":
         pass
     else:  # photo_box or unknown → full-bleed as the safe default
@@ -131,7 +131,7 @@ def _background(spec: dict, hero: Image.Image | None) -> Image.Image:
             x, y, w, h = _px(pbox)
             base.paste(_cover(hero, w, h), (x, y))
         else:
-            base.paste(_cover(hero, W, H), (0, 0))
+            base.paste(_cover(hero, _w(), _h()), (0, 0))
     return base
 
 
@@ -139,9 +139,9 @@ def _scrim(base: Image.Image, where: str) -> None:
     """A dark legibility gradient so text over a photo stays readable."""
     if not where or where == "none":
         return
-    mask = Image.new("L", (1, H), 0)
-    for y in range(H):
-        t = y / H
+    mask = Image.new("L", (1, _h()), 0)
+    for y in range(_h()):
+        t = y / _h()
         if where == "bottom":
             a = max(0.0, (t - 0.40) / 0.60)
         elif where == "top":
@@ -149,7 +149,7 @@ def _scrim(base: Image.Image, where: str) -> None:
         else:  # full
             a = 0.55
         mask.putpixel((0, y), int(255 * min(1.0, a) * 0.78))
-    base.paste(Image.new("RGB", (W, H), (0, 0, 0)), (0, 0), mask.resize((W, H)))
+    base.paste(Image.new("RGB", (_w(), _h()), (0, 0, 0)), (0, 0), mask.resize((_w(), _h())))
 
 
 def _has_text_over(box: dict, content: dict, elements: list) -> bool:
@@ -228,17 +228,52 @@ def _face(weight: str):
     return _ARCHIVO if weight in ("bold", "black") else _ANTON
 
 
+def _ellipsize(draw, line: str, font, box_w: int) -> str:
+    """Trim a line until it and a trailing ellipsis fit the box width."""
+    text = line.rstrip()
+    while text and draw.textlength(text + "…", font=font) > box_w:
+        text = text[:-1].rstrip()
+    return (text + "…") if text else "…"
+
+
 def _fit_block(draw, text: str, face_path: str, box_w: int, box_h: int, start_px: int):
-    """Largest font (from start_px down) whose wrapped text fits the box."""
+    """Largest font (from start_px down) whose wrapped text fits the box — and
+    text that NEVER leaves the box, whatever the copy.
+
+    Two holes this closes, both reachable in production once autopilot renders
+    learned layouts unattended:
+
+      The loop shrank by x0.9 and only accepted a too-tall result when px
+      landed EXACTLY on _MIN_PX. From the headline sizes (lg 92, xl 150, xxl
+      300) it steps 19 -> 17 and skips 18 entirely, so it fell through to the
+      last line and returned the whole text as ONE UNWRAPPED line — wider than
+      the canvas, on the very sizes that carry the longest copy.
+
+      And at the minimum it returned lines that still did not fit the box
+      height, so long copy ran out the bottom of its box and off the frame.
+
+    Now px is clamped to try _MIN_PX exactly, and if even that is too tall the
+    text is cut to the lines that fit with the last one ellipsized. A clipped
+    headline is a worse post than a whole one; a headline running off the
+    picture is not a post at all.
+    """
     px = start_px
-    while px >= _MIN_PX:
+    while True:
+        px = max(px, _MIN_PX)
         font = _font(face_path, px)
         lines = _wrap(draw, text, font, box_w)
         line_h = int(px * 1.12)
-        if len(lines) * line_h <= box_h or px == _MIN_PX:
+        if len(lines) * line_h <= box_h:
             return font, lines, line_h
+        if px == _MIN_PX:
+            break
         px = int(px * 0.9)
-    return _font(face_path, _MIN_PX), [text], int(_MIN_PX * 1.12)
+    # At the minimum and still too tall for the box: keep what fits.
+    max_lines = max(1, box_h // line_h) if line_h > 0 else 1
+    kept = list(lines[:max_lines]) or [text]
+    if len(lines) > max_lines:
+        kept[-1] = _ellipsize(draw, kept[-1], font, box_w)
+    return font, kept, line_h
 
 
 def _draw_element(base: Image.Image, el: dict, text: str, ink_default, over_photo: bool) -> None:

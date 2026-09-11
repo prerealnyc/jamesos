@@ -38,9 +38,14 @@ async def _fetch_bytes(url: str) -> bytes | None:
         return None
 
 
-async def _fill_copy(spec: dict, tenant_id, ref: dict) -> dict:
+async def _fill_copy(spec: dict, tenant_id, ref: dict, *, guidance: str = "") -> dict:
     """Write SHORT on-image copy for each of the spec's text roles, in the
-    brand's voice — never copying the competitor's words, only its structure."""
+    brand's voice — never copying the competitor's words, only its structure.
+
+    `guidance` is the owner's standing feedback (what they have rejected before
+    and why). The nine hand-built formats hand it to the art director; a learned
+    layout's only author is this call, so without it here a learned post would
+    be the one kind of post that ignored everything the owner had said."""
     roles = [e["role"] for e in (spec.get("elements") or [])]
     if not roles:
         return {}
@@ -61,7 +66,9 @@ async def _fill_copy(spec: dict, tenant_id, ref: dict) -> dict:
         f"BRAND:\n{(profile or '')[:800]}\n\n"
         f"The reference design's angle (for inspiration only): "
         f"{ref.get('topic') or ref.get('transferable_pattern') or 'a strong moment for the brand'}\n\n"
-        f"Return STRICT JSON with exactly these keys: {roles}."
+        + (f"THE OWNER'S STANDING FEEDBACK — obey it:\n{guidance.strip()[:1200]}\n\n"
+           if (guidance or "").strip() else "")
+        + f"Return STRICT JSON with exactly these keys: {roles}."
     )
     try:
         out = await get_llm().complete_json(
@@ -277,6 +284,24 @@ async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None) 
     spec = await extract_template_spec(img)
     if spec.get("status") != "ok":
         return None
+    # Keep the layout. This read used to exist only for the one sample it made —
+    # the spec went onto that sample's payload and nowhere else, so every good
+    # layout learned here was used once and then lost. "Don't throw away any
+    # layouts": it goes into the brand's library, where autopilot draws on it.
+    # Best-effort — a library write must never cost the sample.
+    try:
+        from . import design_templates
+
+        await design_templates.save(
+            tenant_id, spec, source_kind="competitor",
+            source_post_id=str(post.get("id")) if post.get("id") else None,
+            source_url=post.get("url") or "",
+            source_image_uri=post.get("stored_media_url") or "",
+            source_handle=post.get("handle") or "",
+            source_engagement=float(post.get("engagement_rate") or 0),
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("could not keep the layout from %s", post.get("id"), exc_info=True)
     content = await _fill_copy(spec, tenant_id, post)
     # A photo_forward post with no text is just "a great photo in this framing" —
     # give it at least a headline so our version reads as a designed post.

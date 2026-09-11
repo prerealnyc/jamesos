@@ -1995,6 +1995,123 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
     return cover_url, "carousel"
 
 
+async def _generate_learned_post_image(
+    action_id, topic: str, draft_text: str, tenant_id,
+    *, extra_sizes: tuple[tuple[int, int], ...] = (), guidance: str = "",
+) -> tuple[str, str] | None:
+    """Render a post from a layout in the brand's design-template library.
+
+    Returns (served_uri, "learned"), or None to fall back to the nine formats —
+    which is what happens whenever the library is too thin to rotate or the
+    render does not pass design QA. It never ships a flawed learned layout:
+    the nine hand-built formats carry a proven text-containment guarantee, and a
+    learned one only replaces them when it clears the same QA gate.
+
+    Every platform shape: the primary is drawn at whatever canvas the caller set
+    (image_compose.canvas), and each extra size re-lays-out the SAME layout, copy
+    and photo — a learned spec's boxes are fractions of the frame, so it reflows.
+    """
+    from . import design_templates, image_compose, template_clone
+    from .media import create_media
+    from .media import storage as media_storage
+    from .spec_render import render_spec
+
+    learned = await design_templates.pick(tenant_id)
+    if not learned:
+        return None
+    spec = learned["spec"]
+    tid = learned["id"]
+
+    # Copy for THIS post, in the brand's voice — grounded in the post's own topic,
+    # not in whatever the reference post happened to be about.
+    content = await template_clone._fill_copy(
+        spec, tenant_id, {"topic": (topic or draft_text or "")[:300]}, guidance=guidance)
+    headline = (content.get("headline") or content.get("stat") or topic or "").strip() \
+        or "a moment that captures the brand"
+    hero_bytes, _generated, hero_key = await template_clone._hero_or_placeholder(
+        tenant_id, headline)
+    palette = await template_clone._brand_palette(tenant_id)
+    logo = await template_clone._brand_logo(tenant_id) if spec.get("logo_box") else None
+
+    png, _kind = render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo,
+                             palette=palette)
+    if not png:
+        return None
+
+    # The same design-QA gate the nine go through. A learned layout that fails
+    # is recorded against the layout (three strikes retires it — never deletes
+    # it) and this post falls back to the nine.
+    if settings.design_qa_enabled:
+        try:
+            from . import render_reviewer
+            _rev = await render_reviewer.review_post(png, mime="image/png")
+        except Exception:  # noqa: BLE001 — QA must never break generation
+            _rev = {"status": "failed"}
+        if _rev.get("status") == "ok" and not _rev.get("passed"):
+            await design_templates.mark_qa(tenant_id, tid, False)
+            return None
+        if _rev.get("status") == "ok":
+            await design_templates.mark_qa(tenant_id, tid, True)
+
+    tenant = str(tenant_id or settings.default_tenant_id)
+    served_uri, file_path = await asyncio.to_thread(
+        media_storage().save, tenant, png, "learned.png")
+    try:
+        await create_media(
+            role="post_image", source_type="upload", uri=served_uri, file_path=file_path,
+            title=(topic or "learned layout")[:120], platform="instagram", mime="image/png",
+            tags=["designed", "learned_layout"], notes=headline[:300], tenant_id=tenant_id,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Every other platform's shape: the same layout, copy and photo, re-laid-out.
+    by_size: dict[str, str] = {}
+    for (_w, _h) in extra_sizes:
+        if not (_w > 0 and _h > 0):
+            continue
+        try:
+            with image_compose.canvas(_w, _h):
+                _png, _ = render_spec(spec, content, hero_bytes=hero_bytes,
+                                      logo_bytes=logo, palette=palette)
+            if not _png:
+                continue
+            _uri, _ = await asyncio.to_thread(
+                media_storage().save, tenant, _png, f"learned-{_w}x{_h}.png")
+            by_size[f"{_w}x{_h}"] = _uri
+        except Exception:  # noqa: BLE001 — one shape must never cost the post
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "learned layout %s failed at %sx%s", tid, _w, _h, exc_info=True)
+
+    await design_templates.mark_used(tenant_id, tid)
+    async with acquire(tenant_id) as conn:
+        await conn.execute(
+            "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1",
+            action_id,
+            json.dumps({
+                "image_url": served_uri, "media_url": served_uri, "has_image": True,
+                "image_format": "learned",
+                # Which library layout this is, and where it was learned from —
+                # so approvals can teach the library, and provenance can say
+                # "layout learned from @handle's post".
+                "design_template_id": tid,
+                "design_template_source": {
+                    "kind": learned.get("source_kind"), "handle": learned.get("source_handle"),
+                    "url": learned.get("source_url"), "platform": learned.get("source_platform"),
+                },
+                # The layout AND the words on it, so a redo can rebuild this card
+                # in its own design (api_v1._rebuild_cloned_action) instead of
+                # replacing it with an unrelated one.
+                "clone_spec": spec,
+                "clone_content": content,
+                **({"hero_photo_key": hero_key} if hero_key else {}),
+                **({"image_urls_by_size": by_size} if by_size else {}),
+            }),
+        )
+    return served_uri, "learned"
+
+
 async def _generate_designed_post_image(
     action_id, topic: str, draft_text: str, tenant_id, avoid: str = "",
     feedback: str = "", force_format: str = "", exclude_photos: tuple[str, ...] = (),
@@ -2025,6 +2142,29 @@ async def _generate_designed_post_image(
     from .imagegen import direct_designed_image, generate_post_image
     from .media import create_media
     from .media import storage as media_storage
+
+    # ── A LEARNED LAYOUT, WHEN ASKED FOR ────────────────────────────────
+    # "learned" is the rotation slot BM2 gives a share of its image orders: draw
+    # this post from the brand's design-template library (layouts read from
+    # reference and competitor posts) instead of the nine hand-built formats.
+    #
+    # It can only ADD variety, never cost a post. A library too thin to rotate,
+    # a render that design QA rejects, or any failure at all falls through to the
+    # nine exactly as if "learned" had never been asked for. Only a fresh post
+    # takes this path — a redo edits the design it already has.
+    if force_format == "learned" and not base_spec and not force_photo and _qa_attempt == 0:
+        try:
+            _learned = await _generate_learned_post_image(
+                action_id, topic, draft_text, tenant_id, extra_sizes=extra_sizes,
+                guidance="\n".join(x for x in ((feedback or "").strip(), (avoid or "").strip()) if x))
+        except Exception:  # noqa: BLE001 — the nine are always the safety net
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "learned layout failed for %s — using the nine", action_id, exc_info=True)
+            _learned = None
+        if _learned:
+            return _learned
+        force_format = ""   # let the art director choose among the nine
 
     # Per-tenant design-intelligence switch: enables the 8-format brain + the
     # brand palette for THIS brand only, without touching the rest.

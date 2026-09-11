@@ -453,6 +453,10 @@ async def set_design_intel_enabled(enabled, tenant_id=None):
     return True
 
 
+# Format names that select a SOURCE of layouts rather than a layout itself.
+LIBRARY_SLOTS = frozenset({"learned"})
+
+
 async def get_enabled_formats(tenant_id=None) -> set[str] | None:
     """The designed-image formats this brand is ALLOWED to produce, synced from
     the Brand Manager admin's per-brand template control. Returns None when the
@@ -471,7 +475,11 @@ async def get_enabled_formats(tenant_id=None) -> set[str] | None:
     v = (cfg or {}).get("enabled_formats")
     if v is None or not isinstance(v, list):
         return None
-    return {str(x).strip().lower() for x in v}
+    # "learned" is a rotation SLOT (draw from the design-template library), not
+    # a layout the art director can draw. Left in, the director is told it may
+    # choose it and the family clamp may pick it at random — a format with no
+    # renderer. The caller asks for the slot with force_format="learned".
+    return {str(x).strip().lower() for x in v} - LIBRARY_SLOTS
 
 
 async def set_enabled_formats(formats, tenant_id=None):

@@ -383,3 +383,90 @@ def test_a_bad_size_is_skipped_not_fatal():
                                  hero_bytes=_photo(), handle="t")
     assert _is_png(png)
     assert Image.open(BytesIO(png)).size == ic._DEFAULT_CANVAS
+
+
+# ================================================================ learned layouts
+#
+# A layout learned from a reference post (design_cloner -> spec_render) is drawn
+# by a GENERIC renderer, not one of the nine hand-built compositors — so it does
+# not inherit their containment by construction and has to be proved here. It
+# matters more than for the nine: autopilot renders these unattended, at volume,
+# at every platform's shape.
+
+LEARNED_START_SIZES = [38, 60, 92, 150, 300]    # sm md lg xl xxl
+LEARNED_BOXES = [(900, 120), (520, 90), (300, 60), (1400, 200), (140, 40)]
+
+
+@pytest.mark.parametrize("text", ADVERSARIAL)
+@pytest.mark.parametrize("start", LEARNED_START_SIZES)
+@pytest.mark.parametrize("box", LEARNED_BOXES)
+def test_a_learned_block_never_leaves_its_box(text, start, box):
+    """Width AND height, for every size a learned spec can ask for."""
+    from james_os.spec_render import _fit_block, _MIN_PX
+
+    box_w, box_h = box
+    d = _draw()
+    font, lines, line_h = _fit_block(d, text, _ARCHIVO, box_w, box_h, start)
+    for ln in lines:
+        assert _text_w(d, ln, font) <= box_w, f"{ln!r} is wider than the box ({box_w})"
+    # height: fits, or is a single minimum-size line in a box too short for one
+    assert len(lines) * line_h <= box_h or (len(lines) == 1 and line_h <= int(_MIN_PX * 1.12)), \
+        f"{len(lines)} lines x {line_h}px overflow a {box_h}px box"
+
+
+@pytest.mark.parametrize("start", [92, 150, 300])
+def test_the_headline_sizes_no_longer_skip_the_minimum(start):
+    """The actual bug. From 92, 150 and 300 the x0.9 shrink goes 19 -> 17 and
+    never lands on 18, so the old loop fell through and returned the whole text
+    as ONE UNWRAPPED line — wider than the canvas, on exactly the sizes that
+    carry the longest copy."""
+    from james_os.spec_render import _fit_block
+
+    d = _draw()
+    font, lines, _ = _fit_block(d, WIDE_HEADLINE * 3, _ARCHIVO, 300, 60, start)
+    assert lines != [WIDE_HEADLINE * 3], "returned the text unwrapped"
+    for ln in lines:
+        assert _text_w(d, ln, font) <= 300
+
+
+def test_overflowing_copy_is_cut_and_marked_not_spilled():
+    """At the minimum and still too tall: keep what fits, ellipsize the last."""
+    from james_os.spec_render import _fit_block
+
+    d = _draw()
+    _, lines, _ = _fit_block(d, " ".join([WIDE_HEADLINE] * 8), _ARCHIVO, 500, 70, 150)
+    assert lines[-1].endswith("…"), f"cut silently: {lines}"
+
+
+LEARNED_SPECS = [
+    {"kind": kind, "background": {"treatment": tr, "scrim": "bottom", "photo_box": None},
+     "palette": {"bg": "#111318", "accent": "#c9a24b", "ink": "#ffffff"},
+     "elements": [
+         {"role": "kicker", "box": {"x": 0.07, "y": 0.06, "w": 0.86, "h": 0.07},
+          "align": "left", "size": "sm", "weight": "bold", "case": "upper", "color": "#c9a24b"},
+         {"role": "headline", "box": {"x": 0.07, "y": 0.55, "w": 0.86, "h": 0.22},
+          "align": "left", "size": "xxl", "weight": "black", "case": "none", "color": "#ffffff"},
+         {"role": "cta", "box": {"x": 0.07, "y": 0.86, "w": 0.5, "h": 0.06},
+          "align": "left", "size": "md", "weight": "bold", "case": "none", "color": "#ffffff"},
+     ],
+     "decorations": [{"type": "bar", "box": {"x": 0.07, "y": 0.52, "w": 0.2, "h": 0.006},
+                      "color": "#c9a24b"}]}
+    for kind, tr in [("graphic_card", "solid"), ("photo_forward", "full_bleed_photo"),
+                     ("photo_forward", "photo_top"), ("photo_forward", "photo_side")]
+]
+
+
+@pytest.mark.parametrize("size", OTHER_CANVASES + [(1080, 1350)])
+@pytest.mark.parametrize("spec", LEARNED_SPECS)
+def test_a_learned_layout_renders_at_every_platform_shape(spec, size):
+    """The owner's rule: templates for every social platform at its recommended
+    size. A learned spec uses normalised boxes, so it reflows — this proves it
+    comes out at exactly the shape each network wants."""
+    from james_os import image_compose as ic
+    from james_os.spec_render import render_spec
+
+    content = {"kicker": LONG_KICKER, "headline": WIDE_HEADLINE, "cta": LONG_URL}
+    with ic.canvas(*size):
+        png, _kind = render_spec(spec, content, hero_bytes=_photo())
+    assert _is_png(png), f"no PNG at {size}"
+    assert Image.open(BytesIO(png)).size == size, f"learned layout ignored the canvas {size}"

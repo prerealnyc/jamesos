@@ -562,6 +562,11 @@ async def v1_queue(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
             # _generate_designed_post_image). Without it the caller gets one
             # image and has to crop it for every other platform.
             "payload->'image_urls_by_size' AS image_urls_by_size, "
+            # Which learned layout the post was drawn from, and the post it was
+            # learned from — so an approval can teach the library and the
+            # approval card can say where the layout came from.
+            "payload->>'design_template_id' AS design_template_id, "
+            "payload->'design_template_source' AS design_template_source, "
             # A regenerated post already records the original it replaces (see
             # the regenerate endpoint), but the queue never returned it — so a
             # redo arrived in the approval board looking like an unrelated new
@@ -597,6 +602,8 @@ async def v1_queue(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
             # {"1600x900": url, "1080x1920": url, ...} — the same post at every
             # extra size that was asked for. Absent when none were.
             "image_urls_by_size": _arr(r["image_urls_by_size"]) or None,
+            "design_template_id": r["design_template_id"] or None,
+            "design_template_source": _arr(r["design_template_source"]) or None,
             # Present only on a redo: which post it replaces, which version it is,
             # and the feedback it was rebuilt from.
             "regen_of": r["regen_of"], "version": r["version"],
@@ -918,12 +925,19 @@ async def _rebuild_cloned_action(
     served, _fp = await _asyncio.to_thread(
         media_storage().save, str(tenant_id or settings.default_tenant_id),
         png, "template-clone.png")
+    learned = payload.get("image_format") == "learned"
     async with acquire(tenant_id) as conn:
         await conn.execute(
             "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1::uuid",
             new_id, json.dumps({
                 "image_url": served, "media_url": served, "has_image": True,
-                "image_format": "cloned", "cloned_from_competitor": True,
+                # A learned post stays learned — and stays tied to its library
+                # layout, so the verdict on the redo still reaches that layout.
+                **({"image_format": "learned",
+                    "design_template_id": payload.get("design_template_id") or "",
+                    "design_template_source": payload.get("design_template_source") or {}}
+                   if learned else
+                   {"image_format": "cloned", "cloned_from_competitor": True}),
                 # Carry the recovered template forward so the NEXT rebuild does
                 # not have to read it back off an image again.
                 "clone_spec": payload.get("clone_spec") or {},
@@ -932,7 +946,7 @@ async def _rebuild_cloned_action(
                 **({"hero_photo_key": payload["hero_photo_key"]}
                    if payload.get("hero_photo_key") else {}),
             }))
-    return served, kind or "cloned"
+    return served, ("learned" if learned else (kind or "cloned"))
 
 
 async def _run_regenerate(
@@ -1064,8 +1078,11 @@ async def _run_regenerate(
         # because a cloned post was always rebuilt in the very template it was
         # being rejected for. Preserving a template is the right default and the
         # wrong answer to "do not use this template".
+        # A LEARNED post is the same kind of thing — a layout from the brand's
+        # design library, not one of the nine — and carries its spec and copy,
+        # so it is rebuilt in its own design the same way.
         rebuild_in_place = (
-            (payload.get("cloned_from_competitor") or prev_format == "cloned")
+            (payload.get("cloned_from_competitor") or prev_format in ("cloned", "learned"))
             and layout != "new"
         )
         if rebuild_in_place:
