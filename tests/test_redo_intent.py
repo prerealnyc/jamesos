@@ -91,3 +91,17 @@ def test_the_text_only_cards_carry_the_brand_handle():
 
     assert "handle" in inspect.signature(bold_statement_card).parameters
     assert "handle" in inspect.getsource(brand_quote_card)
+
+
+def test_a_rejected_cloned_design_can_escape_its_template():
+    """The cloned rebuild ran before intent was consulted, so "i hate this
+    design" — which resolves correctly to a new layout — came back in the very
+    template it was rejecting. Five for five on 8 Sep."""
+    import inspect
+
+    from james_os import api_v1
+
+    src = inspect.getsource(api_v1._run_regenerate)
+    gate = src[src.index("rebuild_in_place = ("):src.index("if rebuild_in_place:")]
+    assert 'layout != "new"' in gate, "the cloned branch must yield to a rejected design"
+    assert _layout_intent("i hate this design. random things added") == "new"

@@ -43,7 +43,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from .config import settings
@@ -1056,8 +1056,19 @@ async def _run_regenerate(
 
         # A CLONED post is a competitor's template read by vision, not one of the
         # nine designed layouts — so the designed-image path cannot preserve it
-        # and never could. Rebuild it in its own design instead.
-        if payload.get("cloned_from_competitor") or prev_format == "cloned":
+        # and never could. Rebuild it in its own design instead...
+        #
+        # ...UNLESS the owner rejected the design itself. This branch used to run
+        # unconditionally, before intent was consulted at all: "i hate this
+        # design" resolved correctly to layout="new" and was then ignored,
+        # because a cloned post was always rebuilt in the very template it was
+        # being rejected for. Preserving a template is the right default and the
+        # wrong answer to "do not use this template".
+        rebuild_in_place = (
+            (payload.get("cloned_from_competitor") or prev_format == "cloned")
+            and layout != "new"
+        )
+        if rebuild_in_place:
             served, fmt = await _rebuild_cloned_action(
                 new_id, payload, reason, tenant_id)
         else:
@@ -1500,3 +1511,113 @@ async def v1_bulk_reject(body: BulkDecision, tenant_id: TenantDep) -> dict[str, 
     rejected = sum(1 for r in results if r["outcome"] == "rejected")
     return {"rejected": rejected, "requested": len(results),
             "skipped": [r for r in results if r["outcome"] != "rejected"]}
+
+
+# ===================================================== design template library
+#
+# Every still layout learned from a reference post, kept forever (see
+# design_templates). Autopilot draws on it when BM2 asks for a "learned" layout;
+# these routes let BM2 grow it, show it, and teach it.
+
+_LEARN_RUNNING: set[str] = set()
+
+
+class DesignReferenceRequest(BaseModel):
+    image_url: str = Field(..., min_length=8, description="The post to learn a layout from")
+    source_url: str = ""
+
+
+class DesignVerdictRequest(BaseModel):
+    approved: bool
+
+
+@router.get("/design-templates")
+async def v1_design_templates(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
+    """The brand's learned layouts, newest first, with where each came from."""
+    from . import design_templates
+
+    lim = max(1, min(200, limit))
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            "SELECT id, kind, source_kind, source_handle, source_platform, source_url, "
+            "source_image_uri, status, times_used, approvals, rejections, qa_passes, "
+            "qa_fails, created_at FROM design_templates ORDER BY created_at DESC LIMIT $1", lim)
+        unread = await conn.fetchval(
+            "SELECT count(*) FROM competitor_posts WHERE stored_media_url <> '' "
+            "AND media_type IN ('image','carousel') AND template_read_at IS NULL")
+    return {
+        "active": await design_templates.count(tenant_id),
+        "total": await design_templates.count(tenant_id, active_only=False),
+        "min_to_rotate": design_templates.MIN_LIBRARY,
+        # competitor stills we hold but have not read yet — what "learn" would do
+        "unread_competitor_posts": int(unread or 0),
+        "templates": [{**{k: (str(v) if k == "id" else v) for k, v in dict(r).items()
+                          if k != "created_at"},
+                       "created_at": r["created_at"].isoformat()} for r in rows],
+    }
+
+
+@router.post("/design-templates/learn", status_code=202)
+async def v1_design_templates_learn(
+    tenant_id: TenantDep, background: BackgroundTasks, limit: int = 12,
+) -> dict[str, Any]:
+    """Read the competitor images we hold into new layouts. Backgrounded — each
+    read is a vision-model call. One run per tenant at a time: two overlapping
+    runs would both pick the same unread posts and pay for each twice."""
+    from . import design_templates
+
+    key = str(tenant_id)
+    if key in _LEARN_RUNNING:
+        return {"started": False, "reason": "already learning for this brand"}
+    _LEARN_RUNNING.add(key)
+
+    async def _run() -> None:
+        try:
+            await design_templates.learn_from_competitors(tenant_id, limit=min(max(1, limit), 24))
+        except Exception:  # noqa: BLE001 — surfaced in logs; the next run retries
+            _log.exception("design template learning failed for %s", tenant_id)
+        finally:
+            _LEARN_RUNNING.discard(key)
+
+    background.add_task(_run)
+    return {"started": True}
+
+
+@router.post("/design-templates/reference", status_code=201)
+async def v1_design_templates_reference(
+    tenant_id: TenantDep, body: DesignReferenceRequest,
+) -> dict[str, Any]:
+    """Learn a layout from ANY post, not only a competitor's. The image is saved
+    to our own storage FIRST, so the reference is kept in-house even after the
+    link it came from dies."""
+    import httpx
+
+    from . import design_templates
+    from .media import storage as media_storage
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.get(body.image_url)
+            r.raise_for_status()
+            img = r.content
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(422, f"could not fetch that image: {str(exc)[:120]}") from exc
+    uri, _ = await asyncio.to_thread(
+        media_storage().save, str(tenant_id), img, "reference.png")
+    tid = await design_templates.learn_from_reference(
+        tenant_id, img, source_url=body.source_url or body.image_url, image_uri=uri)
+    if not tid:
+        raise HTTPException(422, "no usable layout could be read from that image")
+    return {"template_id": tid, "stored_image_uri": uri}
+
+
+@router.post("/design-templates/{template_id}/verdict")
+async def v1_design_template_verdict(
+    tenant_id: TenantDep, template_id: UUID, body: DesignVerdictRequest,
+) -> dict[str, Any]:
+    """The owner approved or rejected a post built on this layout — so layouts
+    that land get drawn more and ones that don't fade (never deleted)."""
+    from . import design_templates
+
+    await design_templates.mark_verdict(tenant_id, str(template_id), body.approved)
+    return {"ok": True}
