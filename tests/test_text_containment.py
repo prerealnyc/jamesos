@@ -337,3 +337,49 @@ def test_the_canvas_resets_after_a_render():
     with ic.canvas(1600, 900):
         pass
     assert (ic._w(), ic._h()) == before == (ic.W, ic.H)
+
+
+# ---------------------------------------------- one design, every platform's shape
+
+
+def test_the_same_spec_and_photo_re_lay_out_at_every_shape():
+    """One post has to go out on Instagram at 4:5, X at 16:9 and TikTok at
+    9:16. Calling generate once per size did NOT do that — each call ran the
+    art director again and rotated to a different hero photo, so four sizes came
+    back as four different posts.
+
+    The fix composes the design once and re-lays-out that exact spec with those
+    exact photo bytes at each canvas. This pins the property that makes that
+    safe: same inputs, different canvas, each image the requested shape."""
+    from james_os import image_compose as ic
+    from james_os.designed_render import render_designed
+
+    spec = {"quote": "The Open returns. Mark your calendars.", "kicker": "SEPT 14",
+            "byline_name": "Turtleback"}
+    kit = {"display_name": "Turtleback"}
+    photo = _photo()
+
+    shapes = [(1080, 1350), (1600, 900), (1080, 1920), (1000, 1500)]
+    renders = {}
+    for size in shapes:
+        with ic.canvas(*size):
+            png, used = render_designed("hero_quote", spec, kit=kit, hero_bytes=photo,
+                                        handle="turtleback")
+        assert _is_png(png), f"no PNG at {size}"
+        assert Image.open(BytesIO(png)).size == size, f"ignored the canvas {size}"
+        renders[size] = used
+
+    # the same layout at every shape — a re-layout, not a re-design
+    assert len(set(renders.values())) == 1, f"the layout changed between sizes: {renders}"
+
+
+def test_a_bad_size_is_skipped_not_fatal():
+    """A zero or negative size must never cost the post its primary image."""
+    from james_os import image_compose as ic
+    from james_os.designed_render import render_designed
+
+    with ic.canvas(0, 0):   # the 'no override' sentinel — must fall back to default
+        png, _ = render_designed("brand_quote", {"quote": "Hello."}, kit={},
+                                 hero_bytes=_photo(), handle="t")
+    assert _is_png(png)
+    assert Image.open(BytesIO(png)).size == ic._DEFAULT_CANVAS

@@ -180,6 +180,7 @@ async def _make_text_post(
     idea: dict, platform: str, tenant_id: UUID | None,
     image_kind: str = "james", avoid_fmt: str = "", force_format: str = "",
     feedback: str = "", canvas: tuple[int, int] | None = None,
+    extra_sizes: tuple[tuple[int, int], ...] = (),
 ) -> dict:
     """One text+image post: on-voice draft → queue → attach an image.
 
@@ -228,6 +229,9 @@ async def _make_text_post(
                         draft.action_id, idea.get("topic", ""),
                         draft.draft or idea.get("topic", ""), tenant_id, avoid=avoid_fmt,
                         feedback=feedback, force_format=force_format,
+                        # The same design re-laid-out at every other network's
+                        # shape — one post, not one post per size.
+                        extra_sizes=extra_sizes,
                     )
             except Exception as _exc:  # noqa: BLE001 — designed failed → hero photo below
                 # Loudly, not silently: a swallowed failure here is exactly why a

@@ -234,6 +234,11 @@ class GenerateRequest(BaseModel):
     # effect; anything else keeps the default, so an old caller is unaffected.
     image_width: int = 0
     image_height: int = 0
+    # post/designed only: ALSO render the same design at each of these sizes, so
+    # one post can go out on every network at that network's shape. The primary
+    # image is still image_width x image_height; these are the extras, returned
+    # as image_urls_by_size on the queued post. Each is [width, height].
+    sizes: list[list[int]] = Field(default_factory=list)
     # The owner's standing rejection notes — steers the draft + designed image away
     # from what's been rejected (off-brand style/claims). Applies to posts,
     # reel scripts and rendered videos alike.
@@ -404,7 +409,13 @@ async def _run_generate(job_id: str, tenant_id: UUID, req: GenerateRequest) -> N
                 idea, req.platform, tenant_id, image_kind=req.image_kind,
                 force_format=req.force_format, feedback=req.feedback,
                 canvas=((req.image_width, req.image_height)
-                        if req.image_width > 0 and req.image_height > 0 else None))
+                        if req.image_width > 0 and req.image_height > 0 else None),
+                extra_sizes=tuple(
+                    (int(w), int(h)) for w, h in (
+                        pair for pair in req.sizes if isinstance(pair, list) and len(pair) == 2
+                    ) if int(w) > 0 and int(h) > 0
+                    and (int(w), int(h)) != (req.image_width, req.image_height)
+                ))
             job["result"] = {
                 "kind": "post",
                 "action_id": made.get("action_id"),
@@ -547,6 +558,10 @@ async def v1_queue(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
             "payload->>'format' AS format, payload->>'caption' AS caption, "
             "payload->>'image_url' AS image_url, payload->'media_urls' AS media_urls, "
             "payload->>'image_format' AS image_format, "
+            # The same design at each other network's shape (see
+            # _generate_designed_post_image). Without it the caller gets one
+            # image and has to crop it for every other platform.
+            "payload->'image_urls_by_size' AS image_urls_by_size, "
             # A regenerated post already records the original it replaces (see
             # the regenerate endpoint), but the queue never returned it — so a
             # redo arrived in the approval board looking like an unrelated new
@@ -579,6 +594,9 @@ async def v1_queue(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
             "format": r["format"], "caption": r["caption"], "image_url": r["image_url"],
             "media_urls": _arr(r["media_urls"]) or None,
             "image_format": r["image_format"],
+            # {"1600x900": url, "1080x1920": url, ...} — the same post at every
+            # extra size that was asked for. Absent when none were.
+            "image_urls_by_size": _arr(r["image_urls_by_size"]) or None,
             # Present only on a redo: which post it replaces, which version it is,
             # and the feedback it was rebuilt from.
             "regen_of": r["regen_of"], "version": r["version"],

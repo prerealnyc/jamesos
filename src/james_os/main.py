@@ -1999,6 +1999,7 @@ async def _generate_designed_post_image(
     action_id, topic: str, draft_text: str, tenant_id, avoid: str = "",
     feedback: str = "", force_format: str = "", exclude_photos: tuple[str, ...] = (),
     force_photo: str = "", base_spec: dict | None = None, _qa_attempt: int = 0,
+    extra_sizes: tuple[tuple[int, int], ...] = (),
 ) -> tuple[str, str]:
     """Art-director → text-free background (Soul James or cinematic scene) →
     Pillow-composited quote card / meme → persist + attach to the action.
@@ -2286,6 +2287,7 @@ async def _generate_designed_post_image(
                     # said this composition is broken, so re-composing is the
                     # point. Editing the broken spec again would return it.
                     base_spec=None, _qa_attempt=_qa_attempt + 1,
+                    extra_sizes=extra_sizes,
                 )
             # Exhausted retries — never ship the flaw. Record why, hold it back.
             try:
@@ -2336,6 +2338,55 @@ async def _generate_designed_post_image(
                 **({"hero_photo_key": hero_key} if hero_key else {}),
             }),
         )
+
+    # ── ONE DESIGN, EVERY PLATFORM'S SHAPE ──────────────────────────────
+    # The same post has to go out on Instagram at 4:5, X at 16:9 and TikTok at
+    # 9:16. Calling generate once per size does NOT do that: each call runs the
+    # art director again and rotates to a different hero photo, so four sizes
+    # came back as four different posts.
+    #
+    # So the design is composed ONCE (above: spec, photo, copy, QA) and then
+    # re-laid-out at each extra canvas from that exact same spec and those exact
+    # same photo bytes. No second art-director call, no second photo pick, no
+    # model call at all — only compositing — so it is cheap and it is the same
+    # post. The canvas ContextVar (image_compose.canvas) is what every compositor
+    # reads, so nesting it here is all that changes between sizes.
+    #
+    # Best-effort per size: a shape that fails to render is simply absent from
+    # the map, and the caller falls back to the primary image for that network.
+    if extra_sizes and out:
+        by_size: dict[str, str] = {}
+        for (_w, _h) in extra_sizes:
+            if not (_w > 0 and _h > 0):
+                continue
+            try:
+                with image_compose.canvas(_w, _h), \
+                        image_compose.brand_fonts(_font_theme), \
+                        image_compose.brand_look(_look), \
+                        image_compose.text_style(_text_color, _text_bold):
+                    _out, _ = render_designed(
+                        fmt, spec, kit=kit, hero_bytes=hero_bytes,
+                        profile_bytes=profile_bytes, profile_is_logo=profile_is_logo,
+                        handle=handle, tuning=_tuning, palette=kit.get("palette"),
+                    )
+                if not _out:
+                    continue
+                _uri, _ = await asyncio.to_thread(
+                    media_storage().save, tenant, _out, f"designed-{fmt}-{_w}x{_h}.png"
+                )
+                by_size[f"{_w}x{_h}"] = _uri
+            except Exception:  # noqa: BLE001 — one shape must never cost the post
+                # main.py has no module-level logger; an undefined name here would
+                # raise INSIDE this handler and take the whole post down with it.
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "could not render %s at %sx%s", action_id, _w, _h, exc_info=True)
+        if by_size:
+            async with acquire(tenant_id) as conn:
+                await conn.execute(
+                    "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1",
+                    action_id, json.dumps({"image_urls_by_size": by_size}),
+                )
     return served_uri, fmt
 
 
