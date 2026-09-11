@@ -227,3 +227,87 @@ def test_owner_edits_have_their_own_cap():
     third edit was refused, fell back to a fresh render, and lost the layout."""
     assert api_v1._regen_cap(False) == api_v1.MAX_REGEN_VERSION == 3
     assert api_v1._regen_cap(True) > api_v1.MAX_REGEN_VERSION
+
+
+# ------------------------------------------------------------------ the words on the card
+
+
+def _capture_llm(monkeypatch):
+    seen: dict = {}
+
+    class _LLM:
+        async def complete_json(self, *, system, messages, max_tokens, temperature):
+            seen["system"], seen["user"] = system, messages[0]["content"]
+            return {"headline": "Notah Begay joins the club", "byline": "Turtleback"}
+
+    async def _voice(tenant_id):
+        return "warm, local", "Turtleback Mountain — golf resort and model homes"
+
+    from james_os import llm, main
+    monkeypatch.setattr(llm, "get_llm", lambda: _LLM())
+    monkeypatch.setattr(main, "_brand_voice_and_profile", _voice)
+    return seen
+
+
+def test_a_learned_card_is_written_about_its_own_post(monkeypatch):
+    """The first live learned post was about the tournament ambassador and its
+    card said "Model Homes Tour": its own topic went in as a reference angle,
+    marked inspiration only, so the brand profile wrote the card."""
+    seen = _capture_llm(monkeypatch)
+    spec = {"elements": [{"role": "headline"}, {"role": "byline"}]}
+    asyncio.run(template_clone._fill_copy(
+        spec, "t", {}, subject="Turn the Notah Begay ambassador into a real storyline",
+        caption="Notah Begay is our new ambassador. Here is why that matters."))
+    assert "THIS POST IS ABOUT" in seen["user"]
+    assert "Notah Begay ambassador" in seen["user"] and "why that matters" in seen["user"]
+    assert "inspiration only" not in seen["user"]
+
+
+def test_cloning_still_borrows_only_the_structure(monkeypatch):
+    seen = _capture_llm(monkeypatch)
+    spec = {"elements": [{"role": "headline"}]}
+    asyncio.run(template_clone._fill_copy(spec, "t", {"topic": "a rival's product launch"}))
+    assert "inspiration only" in seen["user"] and "THIS POST IS ABOUT" not in seen["user"]
+
+
+def test_the_learned_renderer_hands_over_the_post_not_a_reference(monkeypatch):
+    from james_os import design_templates, main
+
+    got: dict = {}
+
+    class _Stop(Exception):
+        pass
+
+    async def _pick(tenant_id):
+        return {"id": "tpl", "spec": SPEC, "source_kind": "competitor"}
+
+    async def _fill(spec, tenant_id, ref, **kw):
+        got.update(ref=ref, **kw)
+        raise _Stop
+
+    monkeypatch.setattr(design_templates, "pick", _pick)
+    monkeypatch.setattr(template_clone, "_fill_copy", _fill)
+    with pytest.raises(_Stop):
+        asyncio.run(main._generate_learned_post_image(
+            "a1", "Turn the Notah Begay ambassador into a real storyline",
+            "Notah Begay is our new ambassador.", "t"))
+    assert got["subject"].startswith("Turn the Notah Begay") and got["caption"].startswith("Notah Begay")
+    assert not got["ref"], "the post's own topic is not a reference angle"
+
+
+def test_a_rebuild_that_must_rewrite_the_card_writes_it_about_the_post(monkeypatch):
+    _stub_rebuild(monkeypatch)
+    got: dict = {}
+
+    async def _fill(spec, tenant_id, ref, **kw):
+        got.update(kw)
+        return {e["role"]: "x" for e in spec["elements"]}
+
+    async def _no_bytes(url):
+        return None
+
+    monkeypatch.setattr(template_clone, "_fill_copy", _fill)
+    monkeypatch.setattr(template_clone, "_fetch_bytes", _no_bytes)
+    payload = _payload(clone_content={}, topic="Sunrise tee times", content="Book the first tee.")
+    asyncio.run(template_clone.rebuild_design(payload, "", "t"))
+    assert got["subject"] == "Sunrise tee times" and got["caption"] == "Book the first tee."

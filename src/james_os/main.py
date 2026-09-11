@@ -2027,7 +2027,8 @@ async def _generate_learned_post_image(
     # Copy for THIS post, in the brand's voice — grounded in the post's own topic,
     # not in whatever the reference post happened to be about.
     content = await template_clone._fill_copy(
-        spec, tenant_id, {"topic": (topic or draft_text or "")[:300]}, guidance=guidance)
+        spec, tenant_id, {}, guidance=guidance,
+        subject=(topic or draft_text or "")[:300], caption=draft_text or "")
     headline = (content.get("headline") or content.get("stat") or topic or "").strip() \
         or "a moment that captures the brand"
     hero_bytes, _generated, hero_key = await template_clone._hero_or_placeholder(

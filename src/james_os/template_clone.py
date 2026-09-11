@@ -38,9 +38,21 @@ async def _fetch_bytes(url: str) -> bytes | None:
         return None
 
 
-async def _fill_copy(spec: dict, tenant_id, ref: dict, *, guidance: str = "") -> dict:
+async def _fill_copy(
+    spec: dict, tenant_id, ref: dict, *, guidance: str = "",
+    subject: str = "", caption: str = "",
+) -> dict:
     """Write SHORT on-image copy for each of the spec's text roles, in the
     brand's voice — never copying the competitor's words, only its structure.
+
+    Two different jobs share this call. CLONING a competitor's post: `ref` is
+    that post, and its angle is inspiration only — we borrow the structure, not
+    the subject. A LEARNED layout on one of our own posts: `subject` and
+    `caption` are what THIS post is about, and every line must be about it.
+    Before they were separate, a learned post handed its own topic in as `ref`,
+    it was read as "inspiration only", and the card came out about whatever the
+    brand profile led with — a post about a tournament ambassador shipped with
+    "Model Homes Tour" on it.
 
     `guidance` is the owner's standing feedback (what they have rejected before
     and why). The nine hand-built formats hand it to the art director; a learned
@@ -65,11 +77,23 @@ async def _fill_copy(spec: dict, tenant_id, ref: dict, *, guidance: str = "") ->
         "Ground it in THIS brand — never copy the competitor's words. Fill only "
         "the roles asked."
     )
+    if (subject or "").strip() or (caption or "").strip():
+        about = (
+            "THIS POST IS ABOUT — every line on the card must be about this, and "
+            "about nothing else the brand does:\n"
+            f"{(subject or '').strip()[:300]}\n\n"
+            + (f"THE POST'S CAPTION — write the card's lines from it:\n{caption.strip()[:900]}\n\n"
+               if (caption or "").strip() else "")
+        )
+    else:
+        about = (
+            f"The reference design's angle (for inspiration only): "
+            f"{ref.get('topic') or ref.get('transferable_pattern') or 'a strong moment for the brand'}\n\n"
+        )
     user = (
         f"BRAND VOICE:\n{(voice or '')[:1500]}\n\n"
         f"BRAND:\n{(profile or '')[:800]}\n\n"
-        f"The reference design's angle (for inspiration only): "
-        f"{ref.get('topic') or ref.get('transferable_pattern') or 'a strong moment for the brand'}\n\n"
+        + about
         + (f"THE OWNER'S STANDING FEEDBACK — obey it:\n{guidance.strip()[:1200]}\n\n"
            if (guidance or "").strip() else "")
         + f"Return STRICT JSON with exactly these keys: {roles}."
@@ -203,7 +227,9 @@ async def rebuild_design(
             content = await read_card_copy(img_bytes, roles)
     if not content:
         # Nothing recoverable — write it fresh, from the post's own words.
-        content = await _fill_copy(spec, tenant_id, {"topic": payload.get("topic") or ""})
+        content = await _fill_copy(
+            spec, tenant_id, {}, subject=str(payload.get("topic") or ""),
+            caption=str(payload.get("content") or payload.get("caption") or ""))
     if feedback.strip() and content:
         content = await _edit_clone_copy(content, feedback, tenant_id)
         content = await _apply_handle_request(content, feedback, roles, tenant_id)
