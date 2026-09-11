@@ -199,7 +199,10 @@ def editorial_split(photo: bytes, headline: str, kicker: str = "", handle: str =
     headline, kicker = _clip(headline, 9), _clip(kicker, 4)
     photo_h = int(_h() * 0.58)
     base = Image.new("RGB", (_w(), _h()), pal["bg"])
-    base.paste(_cover_safe(_open_rgb(photo), _w(), photo_h, centering=focus), (0, 0))
+    # A photo panel with nothing drawn over it: a layer the card editor can move.
+    from .layer_capture import mark_badge
+    base.paste(mark_badge(_cover_safe(_open_rgb(photo), _w(), photo_h, centering=focus), "photo"),
+               (0, 0))
     d = ImageDraw.Draw(base)
     M = 88
     y0 = photo_h + 60
@@ -282,7 +285,8 @@ def framed_print(photo: bytes, caption: str, kicker: str = "", handle: str = "",
     photo_im = _cover_safe(_open_rgb(photo), pw, ph, centering=(0.5, 0.42))
     mask = Image.new("L", (pw, ph), 0)
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, pw, ph), radius=26, fill=255)
-    base.paste(photo_im, (M, top), mask)
+    from .layer_capture import mark_badge
+    base.paste(mark_badge(photo_im, "photo"), (M, top), mask)
     y = top + ph + 44
     if kicker:
         _spaced_fit(d, y, kicker.upper(), _ARCHIVO, 26, pal["accent"], 8, _w() - 2 * M, left=M)

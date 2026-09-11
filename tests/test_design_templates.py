@@ -242,9 +242,9 @@ def test_a_learned_post_is_redone_in_its_own_layout(monkeypatch):
 
     from james_os import api_v1, template_clone
 
-    gate_src = inspect.getsource(api_v1._run_regenerate)
-    gate = gate_src[gate_src.index("rebuild_in_place = ("):gate_src.index("if rebuild_in_place:")]
-    assert '"learned"' in gate and 'layout != "new"' in gate
+    assert api_v1._rebuilds_in_place({"image_format": "learned"}, "keep")
+    assert not api_v1._rebuilds_in_place({"image_format": "learned"}, "new")
+    assert "_rebuilds_in_place(" in inspect.getsource(api_v1._run_regenerate)
 
     written: dict = {}
 

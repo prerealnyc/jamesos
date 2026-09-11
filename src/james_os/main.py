@@ -2112,6 +2112,22 @@ async def _generate_learned_post_image(
                 **({"image_urls_by_size": by_size} if by_size else {}),
             }),
         )
+    # The card in layers, for the editor — see _generate_designed_post_image.
+    try:
+        from io import BytesIO as _LBIO
+
+        from PIL import Image as _LImage
+
+        from . import layer_capture as _lc
+        _cap = _lc.capture(
+            lambda: render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo,
+                                palette=palette),
+            _LImage.open(_LBIO(png)).size)
+        await _lc.keep(action_id, tenant_id, _cap, of=served_uri)
+    except Exception:  # noqa: BLE001 — the editor falls back to rebuilding it
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "could not capture layers for %s", action_id, exc_info=True)
     return served_uri, "learned"
 
 
@@ -2481,6 +2497,35 @@ async def _generate_designed_post_image(
                 **({"hero_photo_key": hero_key} if hero_key else {}),
             }),
         )
+
+    # ── THE CARD IN LAYERS ──────────────────────────────────────────────
+    # Drawn once more in capture mode (layer_capture): the clean background
+    # plate, plus every line of text and every badge exactly where they were
+    # just drawn — kept on the draft, stamped with the picture they are the
+    # layers OF, so the card editor opens THIS card with each part movable.
+    # Exact by construction: the same format, spec, photo, brand and canvas as
+    # the render above. Never allowed to cost the post.
+    try:
+        from io import BytesIO as _LBIO
+
+        from PIL import Image as _LImage
+
+        from . import layer_capture as _lc
+
+        def _redraw():
+            with image_compose.brand_fonts(_font_theme), image_compose.brand_look(_look), \
+                    image_compose.text_style(_text_color, _text_bold):
+                return render_designed(
+                    fmt, spec, kit=kit, hero_bytes=hero_bytes,
+                    profile_bytes=profile_bytes, profile_is_logo=profile_is_logo,
+                    handle=handle, tuning=_tuning, palette=kit.get("palette"),
+                )
+        await _lc.keep(action_id, tenant_id, _lc.capture(_redraw, _LImage.open(_LBIO(out)).size),
+                       of=served_uri)
+    except Exception:  # noqa: BLE001 — the editor falls back to rebuilding it
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "could not capture layers for %s", action_id, exc_info=True)
 
     # ── ONE DESIGN, EVERY PLATFORM'S SHAPE ──────────────────────────────
     # The same post has to go out on Instagram at 4:5, X at 16:9 and TikTok at

@@ -562,7 +562,9 @@ def _circle(b: bytes, d: int) -> Image.Image:
     ImageDraw.Draw(mask).ellipse((0, 0, d, d), fill=255)
     out = Image.new("RGBA", (d, d), (0, 0, 0, 0))
     out.paste(img, (0, 0), mask)
-    return out
+    # A movable layer in the card editor (layer_capture), not part of the plate.
+    from .layer_capture import mark_badge
+    return mark_badge(out, "profile")
 
 
 def _logo_badge(b: bytes, d: int) -> Image.Image:
@@ -578,7 +580,8 @@ def _logo_badge(b: bytes, d: int) -> Image.Image:
     ImageDraw.Draw(mask).ellipse((0, 0, d, d), fill=255)
     out = Image.new("RGBA", (d, d), (0, 0, 0, 0))
     out.paste(filled.convert("RGBA"), (0, 0), mask)
-    return out
+    from .layer_capture import mark_badge
+    return mark_badge(out, "logo")
 
 
 def _png(img: Image.Image) -> bytes:
@@ -705,7 +708,9 @@ def statement_card(bg_bytes: bytes, statement: str, handle: str = "",
                         centering=(0.5, 0.22))
     rmask = Image.new("L", (content_w, img_h), 0)
     ImageDraw.Draw(rmask).rounded_rectangle((0, 0, content_w, img_h), radius=34, fill=255)
-    canvas.paste(photo, (M, img_top), rmask)
+    # A photo panel with nothing drawn over it: a layer the card editor can move.
+    from .layer_capture import mark_badge
+    canvas.paste(mark_badge(photo, "photo"), (M, img_top), rmask)
 
     # ── Bold statement, optically centered in the zone between header & photo ──
     zone_top = header_bottom + 26
@@ -856,11 +861,17 @@ def brand_quote_card(quote: str, brand_kit: dict | None = None,
                     int(_w() * 0.86), center=cx)
 
     # ── ripple emblem ──
+    # Drawn on its own transparent tile and pasted: the same pixels on the card,
+    # and a mark the card editor can move (layer_capture), not part of the plate.
     ey, er = 262, 60
+    tile = Image.new("RGBA", (2 * er + 2, 2 * er + 2), (0, 0, 0, 0))
+    td, c = ImageDraw.Draw(tile), er + 1
     for i, rr in enumerate((er, int(er * 0.62), int(er * 0.30))):
         ring = pal["accent"] if i != 1 else pal["accent_light"]
-        draw.ellipse((cx - rr, ey - rr, cx + rr, ey + rr), outline=ring, width=6)
-    draw.ellipse((cx - 11, ey - 11, cx + 11, ey + 11), fill=pal["accent"])
+        td.ellipse((c - rr, c - rr, c + rr, c + rr), outline=ring, width=6)
+    td.ellipse((c - 11, c - 11, c + 11, c + 11), fill=pal["accent"])
+    from .layer_capture import mark_badge
+    base.paste(mark_badge(tile, "emblem"), (cx - c, ey - c), tile)
 
     # ── stacked quote, one line in brand blue ──
     lines, emph = _lines_for(quote, emphasis, 3)
@@ -962,7 +973,9 @@ def hero_quote_card(quote: str, hero_bytes: bytes, brand_kit: dict | None = None
             # transparent across the left `fade` of the panel, then ramp to
             # opaque over the next 0.34 — lowering `fade` keeps more of him crisp
             grad.putpixel((x, 0), min(255, int(255 * max(0.0, (x / pw - fade) / 0.34))))
-        base.paste(photo, (photo_left, 0), grad.resize((pw, _h())))
+        # The panel, fading into the ground: a layer the card editor can move.
+        from .layer_capture import mark_badge
+        base.paste(mark_badge(photo, "photo"), (photo_left, 0), grad.resize((pw, _h())))
 
     draw = ImageDraw.Draw(base)
 

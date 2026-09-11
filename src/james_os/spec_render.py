@@ -103,7 +103,9 @@ def _place_logo(base: Image.Image, box_px: tuple[int, int, int, int], logo_bytes
     scale = min(w / lw, h / lh)
     nw, nh = max(1, int(lw * scale)), max(1, int(lh * scale))
     logo = logo.resize((nw, nh), Image.Resampling.LANCZOS)
-    base.paste(logo, (x + (w - nw) // 2, y + (h - nh) // 2), logo)
+    # A movable layer in the card editor (layer_capture), not part of the plate.
+    from .layer_capture import mark_badge
+    base.paste(mark_badge(logo, "logo"), (x + (w - nw) // 2, y + (h - nh) // 2), logo)
 
 
 def _background(spec: dict, hero: Image.Image | None) -> Image.Image:

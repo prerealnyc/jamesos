@@ -1090,7 +1090,9 @@ async def _run_regenerate(
         # NOT cleared: it marks a hand-edited CAPTION, which the rebuild keeps.)
         # generated_parts too: they describe the PARENT's card, and the editor
         # would lay the rebuild out from the words it was rejected for.
-        for k in ("edit_layers", "image_edited_by_owner", "original_image_url", "generated_parts"):
+        # render_layers are the parent's card in layers — the rejected picture.
+        for k in ("edit_layers", "image_edited_by_owner", "original_image_url", "generated_parts",
+                  "render_layers"):
             new_payload.pop(k, None)
 
         async with acquire(tenant_id) as conn:
@@ -1466,6 +1468,17 @@ async def v1_post_layers(action_id: UUID, tenant_id: TenantDep) -> dict[str, Any
             media_urls = json.loads(media_urls)
         except (ValueError, TypeError):
             media_urls = None
+    # The card as it was DRAWN, in layers: a clean background plate plus every
+    # line of text and every badge exactly where the renderer put them — so the
+    # editor opens the real card with each part movable, instead of rebuilding
+    # an approximation from the ingredients below. Captured on first open.
+    render_layers = None
+    if not (isinstance(media_urls, list) and len(media_urls) > 1):
+        try:
+            from .layer_capture import ensure_layers
+            render_layers = await ensure_layers(action_id, tenant_id, p)
+        except Exception:  # noqa: BLE001 — the editor still opens from ingredients
+            _log.warning("editor: layer capture failed for %s", action_id, exc_info=True)
     return {
         "id": str(action_id),
         "status": row["status"],
@@ -1490,6 +1503,7 @@ async def v1_post_layers(action_id: UUID, tenant_id: TenantDep) -> dict[str, Any
         "handle": str(kit.get("handle") or ""),
         "display_name": str(kit.get("display_name") or ""),
         "logo_url": logo_url,
+        "render_layers": render_layers,
     }
 
 
@@ -1597,6 +1611,92 @@ async def v1_post_set_image(
         # approved or rejected in the moment between the check and the write
         raise HTTPException(409, "only a post awaiting approval can be edited")
     return {"ok": True, "id": str(action_id), "image_url": served}
+
+
+class ReplateBody(BaseModel):
+    photo_url: str = Field(..., max_length=2000)
+
+
+async def _fetch_photo(url: str) -> bytes:
+    """A photo the owner picked (a brand-library photo, or one they uploaded),
+    fetched the way a user-supplied URL must be: public https only, no
+    redirects, capped, and it has to be an image."""
+    import httpx
+
+    from .netguard import url_is_public
+
+    if not await url_is_public(url):
+        raise HTTPException(422, "the photo must be a public https URL")
+    buf = bytearray()
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as c:
+            async with c.stream("GET", url) as r:
+                if r.status_code != 200:
+                    raise HTTPException(422, "that photo could not be fetched")
+                async for chunk in r.aiter_bytes():
+                    buf += chunk
+                    if len(buf) > _EDIT_MAX_BYTES:
+                        raise HTTPException(413, "that photo is too large (max 15 MB)")
+    except httpx.HTTPError:
+        raise HTTPException(422, "that photo could not be fetched") from None
+    if _sniff_image(bytes(buf)) not in _EDIT_TYPES:
+        raise HTTPException(415, "that file is not a PNG, JPEG or WebP image")
+    return bytes(buf)
+
+
+@router.post("/queue/post/{action_id}/replate")
+async def v1_post_replate(action_id: UUID, body: ReplateBody, tenant_id: TenantDep) -> dict[str, Any]:
+    """This card's design drawn again around another photo, for the editor.
+
+    "Change the picture" used to mean replacing the whole background, which
+    threw away what the design did with its photo — the scrim under the words,
+    the rounded frame, the panel it fades out of. Here the same design is drawn
+    with the new photo and handed back in layers: a new plate, the photo panel if
+    the design has one, and the lines (so the editor can see where they fall).
+
+    {"replated": false} when the design has no photo to replace — the editor
+    then sets the photo as a plain background instead. Nothing is written to the
+    draft; the owner's save is what changes the card. Pending posts only."""
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            "SELECT status, payload FROM actions WHERE id=$1 AND action_type='content'",
+            action_id)
+    if row is None:
+        raise HTTPException(404, "post not found")
+    if row["status"] != "pending":
+        raise HTTPException(409, "only a post awaiting approval can be edited")
+    p = row["payload"]
+    p = json.loads(p) if isinstance(p, str) else (p or {})
+
+    from .layer_capture import replate, takes_photo
+
+    if not takes_photo(p):
+        return {"replated": False}
+    photo = await _fetch_photo(body.photo_url.strip())
+
+    # Drawn at the card's own shape: the one its layers were captured at, or
+    # the size of the picture it is.
+    canvas: tuple[int, int] | None = None
+    rl = p.get("render_layers")
+    if isinstance(rl, dict) and isinstance(rl.get("canvas"), list) and len(rl["canvas"]) == 2:
+        canvas = (int(rl["canvas"][0]), int(rl["canvas"][1]))
+    if not canvas:
+        from io import BytesIO
+
+        from PIL import Image
+
+        from .template_clone import _fetch_bytes
+        src = str(p.get("original_image_url") or p.get("image_url") or "")
+        img = await _fetch_bytes(src) if src else None
+        if not img:
+            return {"replated": False}
+        canvas = Image.open(BytesIO(img)).size
+    try:
+        layers = await replate(tenant_id, p, photo, canvas)
+    except Exception:  # noqa: BLE001 — the editor falls back to a plain background
+        _log.warning("editor: replate failed for %s", action_id, exc_info=True)
+        layers = None
+    return {"replated": True, **layers} if layers else {"replated": False}
 
 
 @router.post("/queue/post/{action_id}/approve")
