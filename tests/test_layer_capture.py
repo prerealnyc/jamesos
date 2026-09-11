@@ -521,3 +521,140 @@ def test_replate_only_fetches_public_https_photos(url):
     with pytest.raises(HTTPException) as e:
         asyncio.run(api_v1._fetch_photo(url))
     assert e.value.status_code == 422
+
+
+# ------------------------------------------------- cards from an older renderer
+
+def _png(im: Image.Image) -> bytes:
+    b = BytesIO()
+    im.save(b, "PNG")
+    return b.getvalue()
+
+
+def _older_version(cap, dx=5, dy=3) -> bytes:
+    """The same card as an earlier renderer drew it: every line a few pixels
+    over from where today's renderer puts it — the same words."""
+    base = Image.open(BytesIO(cap["plate"])).convert("RGBA")
+    shifted = dict(cap, texts=[dict(t, x=t["x"] + dx, y_la=t["y_la"] + dy) for t in cap["texts"]])
+    return _png(lc.recompose(dict(shifted, plate=_png(base.convert("RGB")))))
+
+
+def test_an_old_card_is_cut_into_pieces_of_itself():
+    """Redrawn, an old card's lines land a few pixels off and the gate refuses
+    it. Cut instead, its pieces put back together ARE the picture."""
+    call = _designed("brand_quote", (1080, 1350))
+    cap = lc.capture(call, (1080, 1350))
+    old = _older_version(cap)
+    assert lc.drift(cap, Image.open(BytesIO(old))) > lc.MAX_DRIFT
+    cut = lc.dissect(old, cap)
+    assert cut is not None and cut["cut"] and cut["texts"] == []
+    assert lc.drift(cut, Image.open(BytesIO(old))) < 0.1
+    kinds = [p["kind"] for p in cut["images"]]
+    assert kinds.count("emblem") == 1 and kinds.count("text") == len(cap["texts"])
+    labels = [p["label"] for p in cut["images"] if p["kind"] == "text"]
+    assert labels == [t["text"].strip() for t in cap["texts"]]
+
+
+def test_a_moved_piece_leaves_clean_background_behind():
+    call = _designed("brand_quote", (1080, 1350))
+    cap = lc.capture(call, (1080, 1350))
+    cut = lc.dissect(_older_version(cap), cap)
+    plate = Image.open(BytesIO(cut["plate"])).convert("RGB")
+    words = _img(call()).convert("RGB")
+    # where the words were, the plate is the background — none of them left on it
+    t = cut["images"][2]
+    box = (t["x"], t["y"], t["x"] + t["w"], t["y"] + t["h"])
+    assert plate.crop(box).tobytes() != words.crop(box).tobytes()
+    assert Image.open(BytesIO(t["png"])).mode == "RGBA"
+
+
+def test_a_photo_panel_is_cut_with_its_own_shape():
+    call = _designed("framed_print", (1080, 1350))
+    cap = lc.capture(call, (1080, 1350))
+    cut = lc.dissect(_older_version(cap), cap)
+    photo = next(p for p in cut["images"] if p["kind"] == "photo")
+    alpha = Image.open(BytesIO(photo["png"])).getchannel("A")
+    assert alpha.getpixel((0, 0)) == 0 and alpha.getpixel((photo["w"] // 2, photo["h"] // 2)) == 255
+    assert lc.drift(cut, Image.open(BytesIO(_older_version(cap)))) < 0.1
+
+
+def test_a_card_whose_background_changed_is_not_cut():
+    """Cut against a background that is not the card's, the pieces would carry
+    boxes of the old background with them — so nothing is offered."""
+    call = _designed("brand_quote", (1080, 1350))
+    cap = lc.capture(call, (1080, 1350))
+    other = dict(cap, plate=_png(Image.new("RGB", (1080, 1350), (230, 230, 230))))
+    assert lc.dissect(_older_version(cap), other) is None
+
+
+def test_lines_keep_their_dots_and_split_what_is_far_apart():
+    import numpy as np
+
+    fg = np.zeros((200, 1000), bool)
+    fg[40:44, 100:110] = True            # the dot over an i
+    fg[52:90, 100:300] = True            # its line
+    fg[52:90, 330:420] = True            # the next word, one space along
+    fg[52:90, 800:900] = True            # a date at the far right of the row
+    fg[140:170, 100:400] = True          # the next line
+    boxes = lc._lines(fg)
+    assert (100, 40, 420, 90) in boxes, boxes
+    assert (800, 52, 900, 90) in boxes and (100, 140, 400, 170) in boxes
+    assert len(boxes) == 3
+
+
+def test_a_photo_layout_that_had_no_photo_is_redrawn_as_it_came_out(monkeypatch):
+    """The art director chose a photo layout; there was no photo, so the
+    renderer drew the quote card — from the HEADLINE. Redrawn as a quote card
+    it came out with the quote's words, and the card was refused."""
+    async def ctx(tenant_id, hero):
+        return {"kit": KIT, "handle": "skelonagency", "profile_bytes": None,
+                "profile_is_logo": False, "tuning": {}, "font_theme": None, "look": None,
+                "text_color": "", "text_bold": False}
+
+    async def no_photo(tenant_id, key):
+        return None
+    monkeypatch.setattr(lc, "_designed_context", ctx)
+    monkeypatch.setattr(lc, "_photo", no_photo)
+    spec = {"format": "minimal_over", "quote": "Clarity is the catalyst",
+            "headline": "Clarity is the catalyst.", "emphasis": ""}
+    cap = asyncio.run(lc._draw_again("t1", {"image_format": "brand_quote", "image_spec": spec},
+                                     (1080, 1350)))
+    assert cap is not None
+    assert any(t["text"].strip().endswith("CATALYST.") for t in cap["texts"]), \
+        [t["text"] for t in cap["texts"]]
+
+
+def test_an_old_card_opens_cut_when_its_redraw_is_off(monkeypatch):
+    call = _designed("brand_quote", (1080, 1350))
+    cap = lc.capture(call, (1080, 1350))
+    old = _older_version(cap)
+    kept = {}
+
+    async def fetch(url):
+        return old
+
+    async def again(tenant_id, payload, canvas, **kw):
+        return cap
+
+    async def keep(action_id, tenant_id, c, *, of, drift_=0.0):
+        kept.update(c=c, of=of, drift=drift_)
+        return {"of": of, "cut": bool(c.get("cut"))}
+    import james_os.template_clone as tc
+    monkeypatch.setattr(tc, "_fetch_bytes", fetch)
+    monkeypatch.setattr(lc, "_draw_again", again)
+    monkeypatch.setattr(lc, "keep", keep)
+    out = asyncio.run(lc.ensure_layers("a1", "t1", {"image_url": "https://cdn.example/old.png"}))
+    assert out == {"of": "https://cdn.example/old.png", "cut": True}
+    assert kept["drift"] < 0.1 and kept["c"]["images"]
+
+
+def test_words_the_redraw_never_placed_are_not_silently_dropped():
+    """Words are looked for near the redraw's own lines. A line somewhere else
+    entirely would be left out of the pieces — so the card is refused instead
+    of opening without it."""
+    call = _designed("brand_quote", (1080, 1350))
+    cap = lc.capture(call, (1080, 1350))
+    old = Image.open(BytesIO(_older_version(cap))).convert("RGB")
+    ImageDraw.Draw(old).text((80, 1230), "AN EXTRA LINE", fill="white",
+                              font=ImageFont.truetype(image_compose._ANTON, 70))
+    assert lc.dissect(_png(old), cap) is None

@@ -358,27 +358,38 @@ async def _photo(tenant_id, key: str) -> bytes | None:
     return await _hero_by_key(tenant_id, key)
 
 
-def _design(payload: dict) -> tuple[dict | None, dict | None, dict | None, str]:
-    """(clone_spec, clone_content, image_spec, format) the card was drawn from —
-    read from generated_parts too, where a hand edit moves them."""
+def _design(payload: dict) -> tuple[dict | None, dict | None, dict | None, str, str]:
+    """(clone_spec, clone_content, image_spec, drawn, asked) the card was made
+    from — read from generated_parts too, where a hand edit moves them.
+
+    `asked` is the layout the art director chose (spec["format"]), which is what
+    the generator hands the renderer; `drawn` is the one that came out. They
+    differ when a photo layout had no photo: the renderer then draws the quote
+    card — from the HEADLINE, for most of them. Redrawing that card as a quote
+    card drew the quote instead ("Clarity is the catalyst" without its full
+    stop), and a card that is exactly what the renderer makes was refused."""
     from .designed_render import ALL_FORMATS
 
     gp = payload.get("generated_parts") if isinstance(payload.get("generated_parts"), dict) else {}
     pick = lambda k: payload.get(k) if isinstance(payload.get(k), dict) else gp.get(k)  # noqa: E731
     spec = pick("image_spec")
-    fmt = str(payload.get("image_format") or "")
-    if fmt not in ALL_FORMATS:          # e.g. "owner_edit" after a hand edit
-        fmt = str((spec or {}).get("format") or fmt)
-    return pick("clone_spec"), pick("clone_content"), spec, fmt
+    drawn = str(payload.get("image_format") or "")
+    asked = str((spec or {}).get("format") or "")
+    if drawn not in ALL_FORMATS:        # e.g. "owner_edit" after a hand edit
+        drawn = ""
+    if asked not in ALL_FORMATS:
+        asked = drawn
+    return pick("clone_spec"), pick("clone_content"), spec, drawn, asked
 
 
 def takes_photo(payload: dict) -> bool:
     """Does this card's design draw a photo — so another photo can be put in it?"""
     from .designed_render import ALL_FORMATS, needs_photo
 
-    clone_spec, _content, spec, fmt = _design(payload)
+    clone_spec, _content, spec, drawn, asked = _design(payload)
     if isinstance(clone_spec, dict) and clone_spec.get("elements"):
         return str((clone_spec.get("background") or {}).get("treatment") or "solid") != "solid"
+    fmt = drawn or asked
     return isinstance(spec, dict) and fmt in ALL_FORMATS and needs_photo(fmt)
 
 
@@ -392,7 +403,7 @@ async def _draw_again(tenant_id, payload: dict, canvas: tuple[int, int], *,
     from .spec_render import render_spec
     from . import template_clone
 
-    clone_spec, clone_content, spec, fmt = _design(payload)
+    clone_spec, clone_content, spec, drawn, asked = _design(payload)
     hero = hero_override or await _photo(tenant_id, str(payload.get("hero_photo_key") or ""))
 
     if isinstance(clone_spec, dict) and clone_spec.get("elements"):
@@ -407,9 +418,14 @@ async def _draw_again(tenant_id, payload: dict, canvas: tuple[int, int], *,
                 return render_spec(clone_spec, content, hero_bytes=hero, logo_bytes=logo, palette=palette)
         return capture(call, canvas)
 
-    if isinstance(spec, dict) and fmt in ALL_FORMATS:
-        if needs_photo(fmt) and hero is None:
-            return None
+    if isinstance(spec, dict) and asked in ALL_FORMATS:
+        # Drawn with a photo when the layout that came out takes one (or, after a
+        # hand edit hid that, when there is a photo on record for it).
+        with_photo = needs_photo(drawn) if drawn else (hero is not None and needs_photo(asked))
+        if with_photo and hero is None:
+            return None                 # its photo has left the library
+        hero = hero if with_photo else None
+        fmt = asked
         ctx = await _designed_context(tenant_id, hero)
         spec = dict(spec)
         if not (spec.get("quote") or "").strip():
@@ -456,6 +472,191 @@ def recompose(cap: dict) -> Image.Image:
         else:
             _orig_text(d, (t["x"], t["y_la"]), t["text"], t["fill"], f, None, **stroke)
     return base.convert("RGB")
+
+
+# ------------------------------------------------------------ cut, not redrawn
+#
+# A card drawn by an earlier version of the renderer cannot be redrawn to the
+# pixel: the spacing, sizing and fitting of its lines have been tuned since, so a
+# redraw with the very same words sets them a few pixels off — and a redraw
+# gate cannot tell "the same words, 3px over" from "different words". So such a
+# card is not redrawn at all. Only its BACKGROUND is (that part of the renderer
+# has not moved), and the card itself is cut into pieces against it: wherever the
+# picture differs from its own background is a line of words or a mark, lifted
+# out with exactly the pixels it has on the card. Put back, the pieces ARE the
+# card; moved, the background they came off shows clean underneath.
+
+_FG = 24          # a pixel this far from the background belongs to a piece
+_NOISE = 6        # this close is the background itself
+
+
+def _unblend(o, p, a):
+    """RGBA for a piece whose pixels `o` were laid over background `p` with
+    coverage `a` (0-1): the colour that, laid over `p` at `a`, gives back `o`."""
+    import numpy as np
+
+    a3 = a[..., None]
+    c = np.where(a3 > 0.02, p + (o - p) / np.maximum(a3, 0.02), o)
+    return np.dstack([np.clip(c, 0, 255), np.clip(a * 255.0, 0, 255)]).astype(np.uint8)
+
+
+def _runs(mask) -> list[list[int]]:
+    """[start, end) of each run of True in a 1-D mask."""
+    import numpy as np
+
+    m = np.concatenate([[False], np.asarray(mask, bool), [False]])
+    d = np.flatnonzero(m[1:] != m[:-1])
+    return [[int(d[i]), int(d[i + 1])] for i in range(0, len(d), 2)]
+
+
+def _lines(fg) -> list[tuple[int, int, int, int]]:
+    """Boxes (x0, y0, x1, y1) of the lines of words in a foreground mask: rows
+    that hold ink, joined across the gap to a dot or accent, then split where a
+    row holds two things far apart (a handle on the left, a date on the right)."""
+    bands = _runs(fg.any(axis=1))
+    merged: list[list[int]] = []
+    for b in bands:
+        if merged:
+            a = merged[-1]
+            gap, ha, hb = b[0] - a[1], a[1] - a[0], b[1] - b[0]
+            small = min(ha, hb) < 0.45 * max(ha, hb)
+            if gap <= 2 or (small and gap < 0.6 * max(ha, hb)):
+                a[1] = b[1]
+                continue
+        merged.append(list(b))
+    boxes = []
+    for y0, y1 in merged:
+        h = y1 - y0
+        cols = _runs(fg[y0:y1].any(axis=0))
+        joined: list[list[int]] = []
+        for c in cols:
+            if joined and c[0] - joined[-1][1] <= max(1.6 * h, 28):
+                joined[-1][1] = c[1]
+            else:
+                joined.append(list(c))
+        for x0, x1 in joined:
+            rows = fg[y0:y1, x0:x1].any(axis=1).nonzero()[0]
+            boxes.append((x0, y0 + int(rows[0]), x1, y0 + int(rows[-1]) + 1))
+    return boxes
+
+
+def dissect(original: bytes, cap: dict) -> dict | None:
+    """The card itself cut into pieces over the background a redraw gives it.
+
+    `cap` is a capture of the card drawn again (its plate is the background;
+    its badges say where the photo panel and the marks sit; its lines name the
+    pieces). Returns a capture-shaped dict — plate, no text layers, the pieces as
+    images (kind "text", or the badge's kind) with a `label` — or None when the
+    background does not match the picture well enough to cut it cleanly."""
+    import numpy as np
+    from PIL import ImageFilter
+
+    orig = Image.open(io.BytesIO(original)).convert("RGB")
+    plate = Image.open(io.BytesIO(cap["plate"])).convert("RGB")
+    if plate.size != orig.size:
+        return None
+    W, H = orig.size
+    o = np.asarray(orig, dtype=np.float32)
+    p = np.asarray(plate, dtype=np.float32)
+    D = np.abs(o - p).max(axis=2)
+    if (D > _FG).mean() > 0.5:
+        return None                     # not this card's background
+    claimed = np.zeros((H, W), bool)
+    pieces: list[dict] = []
+
+    def keep_piece(kind, x0, y0, x1, y1, a, z, label=""):
+        buf = io.BytesIO()
+        Image.fromarray(_unblend(o[y0:y1, x0:x1], p[y0:y1, x0:x1], a), "RGBA").save(buf, format="PNG")
+        pieces.append({"kind": kind, "png": buf.getvalue(), "x": x0, "y": y0,
+                       "w": x1 - x0, "h": y1 - y0, "z": z, "label": label})
+
+    # Where the words are, for the pieces' names: the redraw's lines sit within
+    # a few pixels of the card's.
+    def label_for(x0, y0, x1, y1) -> str:
+        names = []
+        for t in cap.get("texts") or []:
+            l, tp, r, b = t.get("ink") or (0, 0, 0, 0)
+            ix = max(0.0, min(x1, r) - max(x0, l))
+            iy = max(0.0, min(y1, b) - max(y0, tp))
+            if ix * iy > 0.3 * max(1.0, (r - l) * (b - tp)):
+                names.append(str(t.get("text") or "").strip())
+        return " ".join(n for n in names if n)
+
+    # The photo panel keeps the exact shape the design gave it (rounded frame,
+    # fade): its mask, not a threshold — a photo can match its background in
+    # places, and a threshold would punch holes in it.
+    for b in cap.get("images") or []:
+        if b.get("kind") != "photo":
+            continue
+        x0, y0 = max(0, b["x"]), max(0, b["y"])
+        x1, y1 = min(W, b["x"] + b["w"]), min(H, b["y"] + b["h"])
+        if x1 <= x0 or y1 <= y0:
+            continue
+        a = np.asarray(Image.open(io.BytesIO(b["png"])).getchannel("A"), dtype=np.float32) / 255.0
+        a = a[y0 - b["y"]:y1 - b["y"], x0 - b["x"]:x1 - b["x"]]
+        if (D[y0:y1, x0:x1][a > 0.5] > _NOISE).mean() < 0.3:
+            continue                    # no photo there on this card
+        keep_piece("photo", x0, y0, x1, y1, a, 0)
+        claimed[y0:y1, x0:x1] |= a > 0.02
+
+    # Everything else that differs from the background: marks and words.
+    #
+    # A photo behind the words is never quite the photo the card was drawn on —
+    # the library's copy is resampled differently — so wherever it has detail
+    # (grass, rooftops) it differs a little from its own redraw. How far a pixel
+    # must be from the background to count scales with how busy the background
+    # is right there, and words are only looked for in the rows around the
+    # redraw's own lines (an older renderer set them a few pixels, or a line,
+    # off). A word missed that way is caught below: the pieces would not add up
+    # to the picture, and nothing is offered.
+    gray = plate.convert("L")
+    busy = (np.asarray(gray.filter(ImageFilter.MaxFilter(5)), dtype=np.float32)
+            - np.asarray(gray.filter(ImageFilter.MinFilter(5)), dtype=np.float32))
+    marks = [b for b in cap.get("images") or [] if b.get("kind") != "photo"]
+    near = np.zeros((H, W), bool)
+    for t in cap.get("texts") or []:
+        _l, tp, _r, b = t.get("ink") or (0, 0, 0, 0)
+        pad = max(16, int(0.8 * (b - tp)))
+        near[max(0, int(tp) - pad):min(H, int(b) + pad), :] = True
+    for m in marks:
+        near[max(0, m["y"] - 16):min(H, m["y"] + m["h"] + 16),
+             max(0, m["x"] - 16):min(W, m["x"] + m["w"] + 16)] = True
+    # Coverage is how far each pixel is from the background, against the
+    # strongest nearby pixel of the same stroke (the stroke's own colour).
+    Dimg = Image.fromarray(np.clip(D, 0, 255).astype(np.uint8), "L")
+    Dmax = np.asarray(Dimg.filter(ImageFilter.MaxFilter(7)), dtype=np.float32)
+    cover = np.clip(D / np.maximum(Dmax, 40.0), 0, 1)
+    cover[D <= np.maximum(_NOISE, 0.35 * busy)] = 0
+    cover[claimed] = 0
+    fg = (D > np.maximum(_FG, 0.6 * busy)) & near & ~claimed
+    for x0, y0, x1, y1 in _lines(fg):
+        if D[y0:y1, x0:x1].max() < 60 or fg[y0:y1, x0:x1].sum() < 40:
+            continue                    # a speck of the photo, not a word
+        x0, y0 = max(0, x0 - 3), max(0, y0 - 3)
+        x1, y1 = min(W, x1 + 3), min(H, y1 + 3)
+        kind = "text"
+        for m in marks:                 # the emblem or the logo, not words
+            ix = max(0, min(x1, m["x"] + m["w"]) - max(x0, m["x"]))
+            iy = max(0, min(y1, m["y"] + m["h"]) - max(y0, m["y"]))
+            if ix * iy > 0.5 * (x1 - x0) * (y1 - y0):
+                kind = m["kind"]
+        keep_piece(kind, x0, y0, x1, y1, cover[y0:y1, x0:x1], 1 + y0,
+                   label_for(x0, y0, x1, y1) if kind == "text" else "")
+        claimed[y0:y1, x0:x1] = True
+
+    cut = {"plate": cap["plate"], "texts": [], "images": pieces,
+           "canvas": [W, H], "cut": True}
+    # The pieces must add up to the picture. A faint difference spread over a
+    # photo is its resampling; a strong one is a word or a mark left out.
+    back = np.asarray(recompose(cut).convert("L"), dtype=np.float32)
+    diff = np.abs(back - np.asarray(orig.convert("L"), dtype=np.float32))
+    d, strong = float(diff.mean()), float((diff > 60).mean())
+    if not pieces or d > 2.5 or strong > 0.0015:
+        logger.info("cut pieces drift %.2f (%.3f%% strong) from the picture — not offered",
+                    d, 100 * strong)
+        return None
+    cut["drift"] = d
+    return cut
 
 
 # How far (mean absolute difference, 0-255) the layers may sit from the real
@@ -510,11 +711,19 @@ async def ensure_layers(action_id, tenant_id, payload: dict) -> dict | None:
         d = drift(cap, Image.open(io.BytesIO(img)))
     except Exception:  # noqa: BLE001
         d = 999.0
-    if d > MAX_DRIFT:
-        logger.info("layers for %s drift %.2f from the picture — not offered", action_id, d)
+    if d <= MAX_DRIFT:
+        return await keep(action_id, tenant_id, cap, of=src, drift_=d)
+    # Drawn by an earlier renderer: cut the card itself into pieces instead.
+    try:
+        cut = dissect(img, cap)
+    except Exception:  # noqa: BLE001
+        logger.warning("could not cut %s into pieces", action_id, exc_info=True)
+        cut = None
+    if cut is None:
+        logger.info("layers for %s drift %.2f and it would not cut cleanly — not offered",
+                    action_id, d)
         return None
-
-    return await keep(action_id, tenant_id, cap, of=src, drift_=d)
+    return await keep(action_id, tenant_id, cut, of=src, drift_=cut["drift"])
 
 
 async def _store(tenant_id, cap: dict, *, of: str, drift_: float = 0.0) -> dict:
@@ -531,9 +740,12 @@ async def _store(tenant_id, cap: dict, *, of: str, drift_: float = 0.0) -> dict:
     for i, im in enumerate(cap["images"]):
         url, _ = await asyncio.to_thread(store.save, tenant, im["png"], f"card-{im['kind']}-{i}.png")
         images.append({"url": url, "kind": im["kind"], "x": im["x"], "y": im["y"],
-                       "w": im["w"], "h": im["h"], "z": im.get("z", 0)})
+                       "w": im["w"], "h": im["h"], "z": im.get("z", 0),
+                       **({"label": im["label"]} if im.get("label") else {})})
     return {"version": 1, "of": str(of or ""), "canvas": list(cap["canvas"]),
             "plate_url": plate_url, "texts": cap["texts"], "images": images,
+            # cut: the words are pieces of the picture itself (see dissect)
+            **({"cut": True} if cap.get("cut") else {}),
             "drift": round(float(drift_), 3)}
 
 
@@ -571,4 +783,4 @@ async def keep(action_id, tenant_id, cap: dict, *, of: str, drift_: float = 0.0)
 
 
 __all__ = ["capture", "mark_badge", "ensure_layers", "keep", "replate", "takes_photo",
-           "recompose", "drift", "MAX_DRIFT"]
+           "dissect", "recompose", "drift", "MAX_DRIFT"]
