@@ -43,6 +43,7 @@ _BADGE = "_layer_badge"
 
 _orig_text = ImageDraw.ImageDraw.text
 _orig_paste = Image.Image.paste
+_orig_save = Image.Image.save
 
 
 def mark_badge(img: Image.Image, kind: str = "logo") -> Image.Image:
@@ -261,8 +262,26 @@ def _patched_paste(self, im, box=None, mask=None):
     return _orig_paste(self, im, box, mask)
 
 
+def _patched_save(self, fp, format=None, **params):
+    # A carousel draws its slides one after another and encodes each once, as
+    # it finishes: in a slide capture, that encode is where one slide's layers
+    # end and the next one's begin.
+    cap = _CAPTURE.get()
+    if cap is not None and cap.get("slides") is not None and self.size == tuple(cap["canvas"]):
+        try:
+            buf = io.BytesIO()
+            _orig_save(self.convert("RGB"), buf, format="PNG")
+            cap["slides"].append({"plate": buf.getvalue(), "texts": _finished(cap["texts"]),
+                                  "images": cap["images"], "canvas": list(cap["canvas"])})
+        except Exception:  # noqa: BLE001
+            logger.warning("could not close a slide's layers", exc_info=True)
+        cap["texts"], cap["images"], cap["_z"] = [], [], 0
+    return _orig_save(self, fp, format, **params)
+
+
 ImageDraw.ImageDraw.text = _patched_text
 Image.Image.paste = _patched_paste
+Image.Image.save = _patched_save
 
 
 def capture(render: Callable[[], Any], canvas: tuple[int, int]) -> dict:
@@ -276,10 +295,27 @@ def capture(render: Callable[[], Any], canvas: tuple[int, int]) -> dict:
     finally:
         _CAPTURE.reset(token)
     plate = out[0] if isinstance(out, tuple) else out
-    texts = []
-    for i, t in enumerate(cap["texts"]):
-        texts.append({k: v for k, v in t.items() if not k.startswith("_")} | {"id": f"t{i}"})
-    return {"plate": plate, "texts": texts, "images": cap["images"], "canvas": cap["canvas"]}
+    return {"plate": plate, "texts": _finished(cap["texts"]), "images": cap["images"],
+            "canvas": cap["canvas"]}
+
+
+def _finished(records: list[dict]) -> list[dict]:
+    return [{k: v for k, v in t.items() if not k.startswith("_")} | {"id": f"t{i}"}
+            for i, t in enumerate(records)]
+
+
+def capture_slides(render: Callable[[], Any], canvas: tuple[int, int]) -> list[dict]:
+    """A carousel drawn in capture mode: one {plate, texts, images, canvas} per
+    slide, in the order the slides were drawn (which is the order `render`
+    returns them)."""
+    cap: dict = {"texts": [], "images": [], "canvas": [int(canvas[0]), int(canvas[1])],
+                 "slides": []}
+    token = _CAPTURE.set(cap)
+    try:
+        render()
+    finally:
+        _CAPTURE.reset(token)
+    return cap["slides"]
 
 
 # ------------------------------------------------------------ existing cards
@@ -548,6 +584,71 @@ def dissect(original: bytes, cap: dict) -> dict | None:
     pieces). Returns a capture-shaped dict — plate, no text layers, the pieces as
     images (kind "text", or the badge's kind) with a `label` — or None when the
     background does not match the picture well enough to cut it cleanly."""
+    return _cut(original, cap, everywhere=False)
+
+
+def _background_of(orig: Image.Image) -> Image.Image | None:
+    """The picture's own background, for one there is no redraw of (an older
+    carousel slide): rebuilt from the parts of it that are background. Each
+    round takes the smooth ground through the pixels judged background so far,
+    and judges again against it; words and marks fall out, and the ground under
+    them is filled in from around them. Only for a ground that IS smooth — a
+    brand colour, a glow, a gradient. A photo is refused (None): its detail is
+    not something to guess."""
+    import numpy as np
+
+    o = np.asarray(orig.convert("RGB"), dtype=np.float32)
+    H, W = o.shape[:2]
+    f = max(8, min(W, H) // 60)                      # ~18 px cells on a 1080 card
+    gh, gw = -(-H // f), -(-W // f)
+    padded = np.pad(o, ((0, gh * f - H), (0, gw * f - W), (0, 0)), mode="edge")
+    bg = np.ones((gh * f, gw * f), bool)
+    B = None
+    for _round in range(4):
+        m = bg.astype(np.float32)
+        sums = (padded * m[..., None]).reshape(gh, f, gw, f, 3).sum(axis=(1, 3))
+        counts = m.reshape(gh, f, gw, f).sum(axis=(1, 3))
+        valid = counts > 0.2 * f * f
+        grid = sums / np.maximum(counts, 1.0)[..., None]
+        for _fill in range(max(gh, gw)):            # fill cells words covered
+            if valid.all():
+                break
+            g = np.pad(grid * valid[..., None], ((1, 1), (1, 1), (0, 0)))
+            v = np.pad(valid.astype(np.float32), 1)
+            nsum = sum(g[1 + dy:1 + dy + gh, 1 + dx:1 + dx + gw]
+                       for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dy or dx)
+            ncnt = sum(v[1 + dy:1 + dy + gh, 1 + dx:1 + dx + gw]
+                       for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dy or dx)
+            grow = ~valid & (ncnt > 0)
+            grid[grow] = nsum[grow] / ncnt[grow][..., None]
+            valid = valid | grow
+        for _smooth in range(2):
+            g = np.pad(grid, ((1, 1), (1, 1), (0, 0)), mode="edge")
+            grid = sum(g[1 + dy:1 + dy + gh, 1 + dx:1 + dx + gw]
+                       for dy in (-1, 0, 1) for dx in (-1, 0, 1)) / 9.0
+        B = np.asarray(Image.fromarray(np.clip(grid, 0, 255).astype(np.uint8), "RGB")
+                       .resize((gw * f, gh * f), Image.Resampling.BICUBIC), dtype=np.float32)
+        bg = np.abs(padded - B).max(axis=2) < 20
+    fit = np.abs(padded - B).max(axis=2)[bg].mean() if bg.any() else 99.0
+    if bg[:H, :W].mean() < 0.55 or fit > 4.0:
+        return None
+    return Image.fromarray(np.clip(B[:H, :W], 0, 255).astype(np.uint8), "RGB")
+
+
+def dissect_flat(original: bytes) -> dict | None:
+    """A picture there is no redraw of, cut into pieces over its own background
+    (see _background_of). The pieces are unnamed — nothing says what they say —
+    and the same test holds: they must add up to the picture."""
+    orig = Image.open(io.BytesIO(original)).convert("RGB")
+    ground = _background_of(orig)
+    if ground is None:
+        return None
+    buf = io.BytesIO()
+    ground.save(buf, format="PNG")
+    return _cut(original, {"plate": buf.getvalue(), "texts": [], "images": []}, everywhere=True)
+
+
+def _cut(original: bytes, cap: dict, *, everywhere: bool) -> dict | None:
     import numpy as np
     from PIL import ImageFilter
 
@@ -613,7 +714,7 @@ def dissect(original: bytes, cap: dict) -> dict | None:
     busy = (np.asarray(gray.filter(ImageFilter.MaxFilter(5)), dtype=np.float32)
             - np.asarray(gray.filter(ImageFilter.MinFilter(5)), dtype=np.float32))
     marks = [b for b in cap.get("images") or [] if b.get("kind") != "photo"]
-    near = np.zeros((H, W), bool)
+    near = np.full((H, W), everywhere, bool)
     for t in cap.get("texts") or []:
         _l, tp, _r, b = t.get("ink") or (0, 0, 0, 0)
         pad = max(16, int(0.8 * (b - tp)))
@@ -676,14 +777,47 @@ def drift(cap: dict, stored: Image.Image) -> float:
     return sum(abs(x - y) for x, y in zip(pa, pb)) / max(1, len(pa))
 
 
-async def ensure_layers(action_id, tenant_id, payload: dict) -> dict | None:
+def slide_urls(payload: dict) -> tuple[list[str], list[str]]:
+    """(the carousel's slides as they are now, the slides as generated)."""
+    now = [u for u in (payload.get("media_urls") or []) if isinstance(u, str) and u]
+    was = [u for u in (payload.get("original_media_urls") or []) if isinstance(u, str) and u]
+    return now, (was if len(was) == len(now) else now)
+
+
+async def ensure_layers(action_id, tenant_id, payload: dict, slide: int | None = None) -> dict | None:
     """This card's layers for the editor — captured once and kept on the draft.
 
     {version, of, canvas:[w,h], plate_url, texts:[...], images:[{url,x,y,w,h,kind,z}]}
     (every text and image carries z, its place in the stack as drawn), or None
     when the card cannot be captured (the editor then falls back to rebuilding
-    it from its ingredients)."""
+    it from its ingredients).
+
+    `slide` asks for one slide of a carousel instead. A carousel is drawn from a
+    deck the draft does not keep, so an older one cannot be redrawn: its slide is
+    cut against its own background (dissect_flat). Slides drawn since are
+    captured as they are drawn, like any other card."""
     from .template_clone import _fetch_bytes
+
+    if slide is not None:
+        now, was = slide_urls(payload)
+        if not (0 <= slide < len(now)):
+            return None
+        src = was[slide]
+        have = (payload.get("render_layers_slides") or {}).get(str(slide))
+        if isinstance(have, dict) and have.get("plate_url") and have.get("of") == src:
+            return have
+        img = await _fetch_bytes(src)
+        if not img:
+            return None
+        try:
+            cut = dissect_flat(img)
+        except Exception:  # noqa: BLE001 — never block the editor on a capture
+            logger.warning("could not cut slide %s of %s into pieces", slide, action_id,
+                           exc_info=True)
+            return None
+        if cut is None:
+            return None
+        return await keep(action_id, tenant_id, cut, of=src, drift_=cut["drift"], slide=slide)
 
     # The picture these layers must be OF: the card as generated (an owner's
     # save keeps it as original_image_url). Layers of any other picture — a redo
@@ -764,9 +898,11 @@ async def replate(tenant_id, payload: dict, photo: bytes, canvas: tuple[int, int
     return await _store(tenant_id, cap, of="")
 
 
-async def keep(action_id, tenant_id, cap: dict, *, of: str, drift_: float = 0.0) -> dict:
+async def keep(action_id, tenant_id, cap: dict, *, of: str, drift_: float = 0.0,
+               slide: int | None = None) -> dict:
     """Store a capture on the draft and return the layers document. `of` is the
-    picture they are the layers of (see ensure_layers)."""
+    picture they are the layers of (see ensure_layers); `slide` files it under
+    that slide of a carousel instead of the card's own layers."""
     import json
 
     from .db import acquire
@@ -774,13 +910,46 @@ async def keep(action_id, tenant_id, cap: dict, *, of: str, drift_: float = 0.0)
     layers = await _store(tenant_id, cap, of=of, drift_=drift_)
     try:
         async with acquire(tenant_id) as conn:
-            await conn.execute(
-                "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1",
-                action_id, json.dumps({"render_layers": layers}))
+            if slide is None:
+                await conn.execute(
+                    "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1",
+                    action_id, json.dumps({"render_layers": layers}))
+            else:
+                # Keyed by slide, not an array: jsonb_set cannot put a value at
+                # an index an array does not reach yet.
+                await conn.execute(
+                    "UPDATE actions SET payload = jsonb_set(payload, '{render_layers_slides}', "
+                    "  COALESCE(payload->'render_layers_slides', '{}'::jsonb) "
+                    "  || jsonb_build_object($2::text, $3::jsonb), true) WHERE id = $1",
+                    action_id, str(slide), json.dumps(layers))
     except Exception:  # noqa: BLE001 — serve it anyway; the next open re-captures
         logger.warning("could not keep the captured layers for %s", action_id, exc_info=True)
     return layers
 
 
-__all__ = ["capture", "mark_badge", "ensure_layers", "keep", "replate", "takes_photo",
-           "dissect", "recompose", "drift", "MAX_DRIFT"]
+async def keep_slides(action_id, tenant_id, caps: list[dict], urls: list[str]) -> None:
+    """Keep the layers of every slide of a carousel, as they were drawn."""
+    import json
+
+    from .db import acquire
+
+    if len(caps) != len(urls):
+        logger.info("carousel %s drew %d slides but stored %d — layers not kept",
+                    action_id, len(caps), len(urls))
+        return
+    doc = {}
+    for i, (cap, url) in enumerate(zip(caps, urls)):
+        doc[str(i)] = await _store(tenant_id, cap, of=url)
+    try:
+        async with acquire(tenant_id) as conn:
+            await conn.execute(
+                "UPDATE actions SET payload = jsonb_set(payload, '{render_layers_slides}', "
+                "  COALESCE(payload->'render_layers_slides', '{}'::jsonb) || $2::jsonb, true) "
+                "WHERE id = $1", action_id, json.dumps(doc))
+    except Exception:  # noqa: BLE001
+        logger.warning("could not keep the slides' layers for %s", action_id, exc_info=True)
+
+
+__all__ = ["capture", "capture_slides", "mark_badge", "ensure_layers", "keep", "keep_slides",
+           "replate", "takes_photo", "dissect", "dissect_flat", "slide_urls", "recompose",
+           "drift", "MAX_DRIFT"]

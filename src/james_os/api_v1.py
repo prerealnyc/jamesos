@@ -1092,7 +1092,8 @@ async def _run_regenerate(
         # would lay the rebuild out from the words it was rejected for.
         # render_layers are the parent's card in layers — the rejected picture.
         for k in ("edit_layers", "image_edited_by_owner", "original_image_url", "generated_parts",
-                  "render_layers"):
+                  "render_layers", "edit_layers_slides", "original_media_urls",
+                  "render_layers_slides"):
             new_payload.pop(k, None)
 
         async with acquire(tenant_id) as conn:
@@ -1400,13 +1401,18 @@ def _first_sentence(text: str, limit: int = 140) -> str:
 
 
 @router.get("/queue/post/{action_id}/layers")
-async def v1_post_layers(action_id: UUID, tenant_id: TenantDep) -> dict[str, Any]:
+async def v1_post_layers(action_id: UUID, tenant_id: TenantDep,
+                         slide: int | None = None) -> dict[str, Any]:
     """Everything the editor needs to rebuild this card as movable parts.
 
     Returns ingredients, not a layout: the words by role, the photo it was made
     from, the brand's palette, typeface, handle and logo, and — when the card was
     edited before — the saved layout itself so the owner picks up where they left
-    off. Laying those out is the editor's job; this only says what exists."""
+    off. Laying those out is the editor's job; this only says what exists.
+
+    `slide` asks for ONE slide of a carousel, as a card of its own: its picture,
+    its layers, and whatever was saved for that slide before. Without it a
+    carousel answers is_carousel — there is no single canvas to edit."""
     async with acquire(tenant_id) as conn:
         row = await conn.fetchrow(
             "SELECT status, payload FROM actions WHERE id=$1 AND action_type='content'",
@@ -1472,8 +1478,23 @@ async def v1_post_layers(action_id: UUID, tenant_id: TenantDep) -> dict[str, Any
     # line of text and every badge exactly where the renderer put them — so the
     # editor opens the real card with each part movable, instead of rebuilding
     # an approximation from the ingredients below. Captured on first open.
+    from .layer_capture import slide_urls
+    slides_now, slides_was = slide_urls(p)
+    carousel = len(slides_now) > 1
+    if slide is not None:
+        if not carousel:
+            raise HTTPException(404, "this post has no slides")
+        if not (0 <= slide < len(slides_now)):
+            raise HTTPException(404, "no such slide")
+
     render_layers = None
-    if not (isinstance(media_urls, list) and len(media_urls) > 1):
+    if slide is not None:
+        try:
+            from .layer_capture import ensure_layers
+            render_layers = await ensure_layers(action_id, tenant_id, p, slide=slide)
+        except Exception:  # noqa: BLE001 — the slide still opens as a flat picture
+            _log.warning("editor: slide capture failed for %s/%s", action_id, slide, exc_info=True)
+    elif not (isinstance(media_urls, list) and len(media_urls) > 1):
         try:
             from .layer_capture import ensure_layers
             render_layers = await ensure_layers(action_id, tenant_id, p)
@@ -1486,18 +1507,22 @@ async def v1_post_layers(action_id: UUID, tenant_id: TenantDep) -> dict[str, Any
         # One image per card in this version — a carousel's slides would each
         # need their own canvas, and pretending to edit slide one of five is worse
         # than saying so.
-        "is_carousel": isinstance(media_urls, list) and len(media_urls) > 1,
-        "image_url": str(p.get("image_url") or ""),
+        "is_carousel": carousel and slide is None,
+        **({"slide": slide} if slide is not None else {}),
+        **({"slide_count": len(slides_now)} if carousel else {}),
+        "image_url": slides_now[slide] if slide is not None else str(p.get("image_url") or ""),
         # The card as it was GENERATED, before any hand edit. After a save,
         # image_url is the edited PNG; starting from that again stacks every
         # addition on top of its own flattened copy.
-        "original_image_url": str(p.get("original_image_url") or p.get("image_url") or ""),
+        "original_image_url": slides_was[slide] if slide is not None
+        else str(p.get("original_image_url") or p.get("image_url") or ""),
         "format": str(p.get("image_format") or ""),
         "photo_url": photo_url,
         "texts": texts,
         "clone_spec": _part("clone_spec"),
         "clone_content": _part("clone_content"),
-        "saved": p.get("edit_layers") if isinstance(p.get("edit_layers"), dict) else None,
+        "saved": ((p.get("edit_layers_slides") or {}).get(str(slide)) if slide is not None
+                  else p.get("edit_layers") if isinstance(p.get("edit_layers"), dict) else None),
         "palette": palette,
         "font_theme": font,
         "handle": str(kit.get("handle") or ""),
@@ -1513,6 +1538,7 @@ async def v1_post_set_image(
     tenant_id: TenantDep,
     file: UploadFile = File(...),
     doc: str = Form(""),
+    slide: int | None = Form(None),
 ) -> dict[str, Any]:
     """Replace a pending post's image with one the owner edited by hand.
 
@@ -1521,7 +1547,11 @@ async def v1_post_set_image(
     is kept beside it, so opening the editor again resumes the edit instead of
     starting over from the generated card. Pending posts only — an approved post
     has already been adopted into a work order, and swapping its image here would
-    change something the owner signed off on."""
+    change something the owner signed off on.
+
+    `slide` replaces ONE slide of a carousel and leaves the rest of the deck
+    alone; the cover is mirrored into image_url the way the renderer mirrors
+    it."""
     data = await file.read()
     if not data:
         raise HTTPException(400, "empty image")
@@ -1549,18 +1579,54 @@ async def v1_post_set_image(
 
     async with acquire(tenant_id) as conn:
         cur = await conn.fetchrow(
-            "SELECT status, payload->>'image_url' AS image_url, "
+            "SELECT status, payload, payload->>'image_url' AS image_url, "
             "payload->>'original_image_url' AS original_image_url "
             "FROM actions WHERE id=$1 AND action_type='content'", action_id)
     if cur is None:
         raise HTTPException(404, "post not found")
     if cur["status"] != "pending":
         raise HTTPException(409, "only a post awaiting approval can be edited")
+    if slide is not None:
+        from .layer_capture import slide_urls
+        _payload = cur["payload"]
+        _payload = json.loads(_payload) if isinstance(_payload, str) else (_payload or {})
+        _now, _was = slide_urls(_payload)
+        if len(_now) < 2:
+            raise HTTPException(404, "this post has no slides")
+        if not (0 <= slide < len(_now)):
+            raise HTTPException(404, "no such slide")
 
     from .media import storage as media_storage
     tenant = str(tenant_id or settings.default_tenant_id)
     served, _fp = await asyncio.to_thread(
         media_storage().save, tenant, data, "edited-card.png")
+
+    # ONE SLIDE of a carousel: the deck keeps its other slides, the slides as
+    # generated are remembered once (so a re-edit starts from the slide as
+    # drawn, not from its own flattened copy), and the layout is kept per slide.
+    if slide is not None:
+        patch: dict[str, Any] = {"has_image": True, "image_edited_by_owner": True,
+                                 "design_qa_failed": False}
+        if slide == 0:
+            patch["image_url"] = patch["media_url"] = served
+        async with acquire(tenant_id) as conn:
+            tag = await conn.execute(
+                "UPDATE actions SET payload = jsonb_set("
+                "    jsonb_set("
+                "      jsonb_set(payload, '{original_media_urls}',"
+                "        COALESCE(payload->'original_media_urls', payload->'media_urls'), true),"
+                "      ARRAY['media_urls', $3::text], to_jsonb($2::text), false),"
+                "    '{edit_layers_slides}',"
+                "    COALESCE(payload->'edit_layers_slides', '{}'::jsonb)"
+                "      || jsonb_build_object($3::text, $4::jsonb), true)"
+                "  || $5::jsonb - $6::text "
+                "WHERE id=$1 AND action_type='content' AND status='pending'",
+                action_id, served, str(slide), json.dumps(layout), json.dumps(patch),
+                # the cover's per-network renders were of the slide just replaced
+                "image_urls_by_size" if slide == 0 else "")
+        if not tag.endswith(" 1"):
+            raise HTTPException(409, "only a post awaiting approval can be edited")
+        return {"ok": True, "id": str(action_id), "image_url": served, "slide": slide}
 
     # Record what is NOW on screen, so nothing downstream acts on the card the
     # owner replaced. A later regenerate reads image_spec / clone_spec to "keep the

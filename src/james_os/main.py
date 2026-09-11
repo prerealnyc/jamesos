@@ -1891,9 +1891,11 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
         # brand-palette ground, the name up top, a big statement with its key phrase
         # in the accent, huge stat slides, an N/total index. NO photos at all.
         from .carousel_text import render_text_carousel
-        with _ic.brand_fonts(_cfont), _ic.brand_look(_clook), \
-                _ic.text_style(_ctext_color, _ctext_bold):
-            slides = render_text_carousel(deck, kit, handle)
+
+        def _draw_slides():
+            with _ic.brand_fonts(_cfont), _ic.brand_look(_clook), \
+                    _ic.text_style(_ctext_color, _ctext_bold):
+                return render_text_carousel(deck, kit, handle)
         cover_key = None
     else:
         # Assign DISTINCT photos from the brand's library to the cover + each photo
@@ -1930,9 +1932,13 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
             else:
                 deck_r["slides"].append({"section_label": s.get("section_label", ""),
                                          "headline": s.get("headline", ""), "stat": s.get("stat", "")})
-        with _ic.brand_fonts(_cfont), _ic.brand_look(_clook), \
-                _ic.text_style(_ctext_color, _ctext_bold):
-            slides = render_carousel(deck_r, palette, handle)
+        def _draw_slides():
+            with _ic.brand_fonts(_cfont), _ic.brand_look(_clook), \
+                    _ic.text_style(_ctext_color, _ctext_bold):
+                return render_carousel(deck_r, palette, handle)
+    # Drawn once for the deck itself; drawn again below, in capture mode, for
+    # the layers each slide opens with in the card editor.
+    slides = _draw_slides()
 
     # ── DESIGN QA GATE (carousel) ───────────────────────────────────────
     # Check the cover + a couple of inner slides for execution flaws before we
@@ -1992,6 +1998,24 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
                 **({"hero_photo_key": cover_key} if cover_key else {}),
             }),
         )
+    # ── EVERY SLIDE IN LAYERS ───────────────────────────────────────────
+    # The deck drawn again in capture mode: each slide's clean background and
+    # its lines, so the editor opens any slide of the carousel with each part
+    # movable (see _generate_designed_post_image). Never costs the post.
+    try:
+        from io import BytesIO as _LBIO
+
+        from PIL import Image as _LImage
+
+        from . import layer_capture as _lc
+        if urls:
+            await _lc.keep_slides(
+                action_id, tenant_id,
+                _lc.capture_slides(_draw_slides, _LImage.open(_LBIO(slides[0])).size), urls)
+    except Exception:  # noqa: BLE001 — the editor falls back to the flat slide
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "could not capture the slides of %s", action_id, exc_info=True)
     return cover_url, "carousel"
 
 

@@ -10,6 +10,7 @@ that outside a capture nothing a compositor draws changes at all.
 """
 
 import asyncio
+import json
 import threading
 from io import BytesIO
 
@@ -658,3 +659,214 @@ def test_words_the_redraw_never_placed_are_not_silently_dropped():
     ImageDraw.Draw(old).text((80, 1230), "AN EXTRA LINE", fill="white",
                               font=ImageFont.truetype(image_compose._ANTON, 70))
     assert lc.dissect(_png(old), cap) is None
+
+
+# ------------------------------------------------------------ carousel slides
+
+DECK = {
+    "cover": {"headline": "Five ways clarity wins", "emphasis": "clarity", "eyebrow": "SKELON",
+              "count_promise": "5 ways"},
+    "slides": [{"kind": "text", "section_label": "ONE", "headline": "Say the thing plainly"},
+               {"kind": "stat", "section_label": "TWO", "stat": "87%", "headline": "decide on sight"},
+               {"kind": "text", "section_label": "THREE", "headline": "Then say it again"}],
+    "cta": {"action": "Ask for the deck", "ask": "DM us"},
+}
+
+
+def _deck_slides():
+    from james_os.carousel_text import render_text_carousel
+
+    return render_text_carousel(DECK, KIT, "skelonagency")
+
+
+def test_a_carousel_is_captured_one_slide_at_a_time():
+    """Every slide's own background and its own lines — in the order drawn."""
+    slides = _deck_slides()
+    size = _img(slides[0]).size
+    caps = lc.capture_slides(_deck_slides, size)
+    assert len(caps) == len(slides)
+    for png, cap in zip(slides, caps):
+        assert cap["texts"], "a slide with no lines captured"
+        assert lc.drift(cap, _img(png)) < 1.0
+    # each slide's lines are its own, not the deck's
+    assert [t["text"] for t in caps[0]["texts"]] != [t["text"] for t in caps[1]["texts"]]
+
+
+def test_capturing_a_deck_leaves_the_slides_it_returns_untouched():
+    plain = _deck_slides()
+    caps = lc.capture_slides(_deck_slides, _img(plain[0]).size)
+    assert len(caps) == len(plain)
+    again = _deck_slides()
+    assert [_img(p).tobytes() for p in again] == [_img(p).tobytes() for p in plain]
+
+
+# --------------------------------------------- a picture with no redraw at all
+
+def test_a_slide_is_cut_against_its_own_background():
+    """A carousel is drawn from a deck the draft does not keep, so there is
+    nothing to redraw it from: its background is rebuilt from the slide itself."""
+    slide = _deck_slides()[0]
+    cut = lc.dissect_flat(slide)
+    assert cut is not None and cut["cut"] and cut["images"]
+    assert lc.drift(cut, _img(slide)) < 1.0
+    plate = _img(cut["plate"]).convert("L")
+    card = _img(slide).convert("L")
+    box = cut["images"][-1]
+    crop = (box["x"], box["y"], box["x"] + box["w"], box["y"] + box["h"])
+    assert plate.crop(crop).tobytes() != card.crop(crop).tobytes(), "a piece was left on the background"
+
+
+def test_a_photograph_is_not_guessed_at():
+    """Rebuilding a background only works where the ground is smooth. A photo
+    is refused rather than smeared."""
+    b = BytesIO()
+    Image.open(BytesIO(PHOTO)).convert("RGB").save(b, "PNG")
+    assert lc.dissect_flat(b.getvalue()) is None
+
+
+def test_which_slides_a_carousel_has():
+    now = ["https://cdn/a.png", "https://cdn/b.png"]
+    was = ["https://cdn/A.png", "https://cdn/B.png"]
+    assert lc.slide_urls({"media_urls": now}) == (now, now)
+    assert lc.slide_urls({"media_urls": now, "original_media_urls": was}) == (now, was)
+    # a half-written list is ignored rather than mismatched with the slides
+    assert lc.slide_urls({"media_urls": now, "original_media_urls": was[:1]}) == (now, now)
+
+
+def test_a_slides_layers_are_kept_under_that_slide(monkeypatch):
+    slide = _deck_slides()[1]
+    kept = {}
+
+    async def fetch(url):
+        return slide
+
+    async def keep(action_id, tenant_id, cap, *, of, drift_=0.0, slide=None):
+        kept.update(of=of, slide=slide, cut=bool(cap.get("cut")))
+        return {"of": of, "plate_url": "https://cdn.example/plate.png"}
+    import james_os.template_clone as tc
+    monkeypatch.setattr(tc, "_fetch_bytes", fetch)
+    monkeypatch.setattr(lc, "keep", keep)
+    payload = {"media_urls": ["https://cdn/0.png", "https://cdn/1.png"],
+               "original_media_urls": ["https://cdn/O0.png", "https://cdn/O1.png"]}
+
+    out = asyncio.run(lc.ensure_layers("a1", "t1", payload, slide=1))
+    assert out and kept == {"of": "https://cdn/O1.png", "slide": 1, "cut": True}
+    assert asyncio.run(lc.ensure_layers("a1", "t1", payload, slide=5)) is None
+
+    # kept once, served from the draft after that
+    payload["render_layers_slides"] = {"1": {"plate_url": "https://cdn/p.png", "of": "https://cdn/O1.png"}}
+    again = asyncio.run(lc.ensure_layers("a1", "t1", payload, slide=1))
+    assert again == payload["render_layers_slides"]["1"]
+
+
+def _carousel_row(monkeypatch, status="pending", n=3, extra=None):
+    """A carousel draft behind the endpoints, with a conn that records writes."""
+    import json as _json
+
+    from james_os import api_v1
+
+    payload = {"image_format": "carousel", "caption": "A deck.",
+               "media_urls": [f"https://cdn.example/s{i}.png" for i in range(n)],
+               "image_url": "https://cdn.example/s0.png", **(extra or {})}
+    wrote = []
+
+    class Conn:
+        async def fetchrow(self, *a):
+            return {"status": status, "payload": _json.dumps(payload),
+                    "image_url": payload.get("image_url"), "original_image_url": None}
+
+        async def execute(self, sql, *args):
+            wrote.append((sql, args))
+            return "UPDATE 1"
+
+    class Acq:
+        async def __aenter__(self):
+            return Conn()
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(api_v1, "acquire", lambda tenant: Acq())
+    return api_v1, payload, wrote
+
+
+def test_one_slide_of_a_carousel_opens_as_a_card_of_its_own(monkeypatch):
+    from uuid import uuid4
+
+    api_v1, payload, _ = _carousel_row(
+        monkeypatch, extra={"original_media_urls": [f"https://cdn.example/O{i}.png" for i in range(3)],
+                            "edit_layers_slides": {"1": {"version": 1, "mode": "layers"}}})
+
+    async def layers(action_id, tenant_id, p, slide=None):
+        return {"plate_url": "https://cdn.example/plate.png", "of": p["original_media_urls"][slide]}
+    monkeypatch.setattr("james_os.layer_capture.ensure_layers", layers)
+
+    out = asyncio.run(api_v1.v1_post_layers(uuid4(), "t", slide=1))
+    assert out["is_carousel"] is False and out["slide"] == 1 and out["slide_count"] == 3
+    assert out["image_url"] == "https://cdn.example/s1.png"
+    assert out["original_image_url"] == "https://cdn.example/O1.png"
+    assert out["saved"] == {"version": 1, "mode": "layers"}
+    assert out["render_layers"]["of"] == "https://cdn.example/O1.png"
+
+    whole = asyncio.run(api_v1.v1_post_layers(uuid4(), "t"))
+    assert whole["is_carousel"] is True and whole["render_layers"] is None and "slide" not in whole
+
+
+@pytest.mark.parametrize("slide", [3, -1])
+def test_a_slide_that_is_not_in_the_deck_is_refused(monkeypatch, slide):
+    from uuid import uuid4
+
+    from fastapi import HTTPException
+
+    api_v1, _p, _w = _carousel_row(monkeypatch)
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(api_v1.v1_post_layers(uuid4(), "t", slide=slide))
+    assert e.value.status_code == 404
+
+
+def test_saving_a_slide_replaces_that_slide_only(monkeypatch):
+    from uuid import uuid4
+
+    api_v1, _p, wrote = _carousel_row(monkeypatch)
+
+    class Up:
+        filename, content_type = "edited.png", "image/png"
+
+        async def read(self):
+            return b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+
+    class Store:
+        def save(self, tenant, data, name):
+            return "https://cdn.example/edited-slide.png", "/tmp/x.png"
+    monkeypatch.setattr("james_os.media.storage", lambda: Store())
+
+    out = asyncio.run(api_v1.v1_post_set_image(uuid4(), "t", file=Up(), doc="{}", slide=2))
+    assert out == {"ok": True, "id": out["id"], "image_url": "https://cdn.example/edited-slide.png",
+                   "slide": 2}
+    sql, args = wrote[-1]
+    assert "ARRAY['media_urls', $3::text]" in sql and "original_media_urls" in sql
+    assert args[1] == "https://cdn.example/edited-slide.png" and args[2] == "2"
+    patch = json.loads(args[4])
+    assert patch["image_edited_by_owner"] is True and "image_url" not in patch, \
+        "only the cover is mirrored into image_url"
+    assert args[5] == "", "the cover's per-network renders are only dropped when the cover changes"
+
+
+def test_saving_the_cover_mirrors_it_and_drops_the_stale_shapes(monkeypatch):
+    from uuid import uuid4
+
+    api_v1, _p, wrote = _carousel_row(monkeypatch)
+
+    class Up:
+        filename, content_type = "edited.png", "image/png"
+
+        async def read(self):
+            return b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+    monkeypatch.setattr("james_os.media.storage",
+                        lambda: type("S", (), {"save": lambda self, t, d, n: ("https://cdn.example/c.png", "/tmp/c")})())
+
+    asyncio.run(api_v1.v1_post_set_image(uuid4(), "t", file=Up(), doc="{}", slide=0))
+    _sql, args = wrote[-1]
+    patch = json.loads(args[4])
+    assert patch["image_url"] == patch["media_url"] == "https://cdn.example/c.png"
+    assert args[5] == "image_urls_by_size"
