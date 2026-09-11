@@ -323,3 +323,102 @@ def test_the_app_cannot_delete_a_layout():
     take it away explicitly, or "never deleted" is only a convention."""
     sql = open("migrations/060_design_templates.sql").read()
     assert "REVOKE DELETE, TRUNCATE ON design_templates FROM james_app" in sql
+
+
+# ------------------------------------------------------------------ drawing a read layout
+# Shapes taken from the first live library (tristatecommercial, prerealinvestments,
+# commercial_observer on 11 Sep): what a vision read of a real post looks like.
+
+
+def _el(role, x, y, w, h, size="md"):
+    return {"role": role, "box": {"x": x, "y": y, "w": w, "h": h}, "size": size,
+            "align": "left", "weight": "bold", "case": "none", "color": "#ffffff"}
+
+
+def _read(elements, decorations=(), treatment="full_bleed_photo"):
+    return {"status": "ok", "kind": "graphic_card", "palette": {"bg": "#111", "ink": "#fff"},
+            "background": {"treatment": treatment, "scrim": "bottom", "photo_box": None},
+            "elements": list(elements), "decorations": list(decorations)}
+
+
+def test_repeated_roles_become_separate_lines():
+    """Three byline slots printed the brand name three times."""
+    spec = _read([_el("headline", .05, .05, .5, .1, "xl"), _el("byline", .05, .80, .4, .05),
+                  _el("byline", .05, .86, .4, .05), _el("byline", .05, .92, .4, .05)])
+    roles = [e["role"] for e in dt.prepare(spec)["elements"]]
+    assert roles == ["headline", "byline", "byline#2", "byline#3"]
+
+
+def test_colliding_boxes_keep_the_more_important_line():
+    """Two subheads half on top of each other garbled into one smear."""
+    spec = _read([_el("headline", .05, .05, .4, .1, "xl"), _el("subhead", .05, .15, .4, .1),
+                  _el("subhead", .05, .20, .4, .1), _el("stat", .05, .25, .4, .1)])
+    kept = dt.prepare(spec)["elements"]
+    boxes = [e["box"] for e in kept]
+    assert all(dt._overlap(a, b) <= dt.MAX_TEXT_OVERLAP
+               for i, a in enumerate(boxes) for b in boxes[i + 1:])
+    assert [e["role"] for e in kept][0] == "headline" and any(e["role"] == "stat" for e in kept), \
+        "the stat outranks a second subhead"
+
+
+def test_an_empty_frame_is_dropped_and_a_framed_line_is_kept():
+    """A frame that held an inset photo is an empty rectangle on its own."""
+    empty = {"type": "frame", "box": {"x": .3, "y": .4, "w": .4, "h": .3}, "color": "#0056ff"}
+    around = {"type": "frame", "box": {"x": .0, "y": .0, "w": .6, "h": .2}, "color": "#fff"}
+    spec = _read([_el("headline", .05, .05, .5, .1, "xl")], [empty, around])
+    assert dt.prepare(spec)["decorations"] == [around]
+
+
+def test_prepare_is_idempotent():
+    spec = _read([_el("headline", .05, .05, .5, .1, "xl"), _el("byline", .05, .8, .4, .05),
+                  _el("byline", .05, .86, .4, .05)])
+    once = dt.prepare(spec)
+    assert dt.prepare(once) == once
+
+
+def test_a_card_with_a_hole_in_it_is_kept_but_not_drawn():
+    """A white card whose photo the read missed: headline in the top fifth,
+    nothing below. Kept (nothing read is thrown away), never drawn."""
+    card = _read([_el("headline", .05, .05, .9, .1, "lg"), _el("byline", .05, .16, .9, .05, "sm")],
+                 treatment="solid")
+    assert dt.usable(card) and not dt.drawable(card)
+    # the same text span over a photo is a real photo-led layout
+    assert dt.drawable({**card, "background": {"treatment": "full_bleed_photo", "photo_box": None}})
+    # and a solid card whose text uses the page is fine
+    tall = _read([_el("kicker", .5, .1, .5, .05, "sm"), _el("headline", .1, .2, .8, .1, "lg"),
+                  _el("byline", .1, .8, .8, .05, "sm")], treatment="solid")
+    assert dt.drawable(tall)
+
+
+def test_the_picker_only_counts_and_draws_drawable_layouts(monkeypatch):
+    import asyncio
+    import contextlib
+    import json as _json
+
+    hole = _read([_el("headline", .05, .05, .9, .1, "lg")], treatment="solid")
+    good = _read([_el("headline", .05, .6, .9, .2, "xl")])
+    rows_seen: list = []
+
+    def _row(i, spec):
+        return {"id": f"t{i}", "spec": _json.dumps(spec), "kind": "graphic_card",
+                "source_handle": "peer", "source_url": "", "source_platform": "instagram",
+                "source_kind": "competitor"}
+
+    def _conn_for(rows):
+        class _C:
+            async def fetch(self, sql, *args):
+                rows_seen.append(sql)
+                return rows
+
+        @contextlib.asynccontextmanager
+        async def _acq(tenant_id=None):
+            yield _C()
+        return _acq
+
+    # hole first in rotation order: skipped, the next drawable one is picked
+    monkeypatch.setattr(dt, "acquire", _conn_for([_row(0, hole), _row(1, good), _row(2, good), _row(3, good)]))
+    got = asyncio.run(dt.pick("t"))
+    assert got["id"] == "t1"
+    # three rows but only two drawable: below the minimum, so the nine are used
+    monkeypatch.setattr(dt, "acquire", _conn_for([_row(0, hole), _row(1, good), _row(2, good)]))
+    assert asyncio.run(dt.pick("t")) is None

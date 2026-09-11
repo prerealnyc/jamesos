@@ -183,7 +183,8 @@ def _fit_buttons(spec: dict, content: dict) -> None:
         pcx, pcy = pb.get("x", 0) + pb.get("w", 0) / 2, pb.get("y", 0) + pb.get("h", 0) / 2
         best, best_d = None, 0.20
         for e in elements:
-            if e.get("role") not in ("cta", "kicker", "stat"):
+            # base role: a numbered repeat ("cta#2") pairs like its first
+            if str(e.get("role") or "").split("#", 1)[0] not in ("cta", "kicker", "stat"):
                 continue
             if not str(content.get(e.get("role"), "")).strip():
                 continue
@@ -256,14 +257,21 @@ def _fit_block(draw, text: str, face_path: str, box_w: int, box_h: int, start_px
     text is cut to the lines that fit with the last one ellipsized. A clipped
     headline is a worse post than a whole one; a headline running off the
     picture is not a post at all.
+
+    A size also only counts as fitting when its LONGEST WORD fits the box width.
+    Otherwise the wrapper breaks the word across lines — "FREE COURS / E",
+    "$1B / +" — which it did in the narrow boxes of the tallest platform shapes,
+    where a slightly smaller size would have kept every word whole.
     """
+    words = text.split()
     px = start_px
     while True:
         px = max(px, _MIN_PX)
         font = _font(face_path, px)
         lines = _wrap(draw, text, font, box_w)
         line_h = int(px * 1.12)
-        if len(lines) * line_h <= box_h:
+        widest = max((draw.textlength(w, font=font) for w in words), default=0)
+        if len(lines) * line_h <= box_h and widest <= box_w:
             return font, lines, line_h
         if px == _MIN_PX:
             break

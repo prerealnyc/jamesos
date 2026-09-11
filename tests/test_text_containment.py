@@ -470,3 +470,17 @@ def test_a_learned_layout_renders_at_every_platform_shape(spec, size):
         png, _kind = render_spec(spec, content, hero_bytes=_photo())
     assert _is_png(png), f"no PNG at {size}"
     assert Image.open(BytesIO(png)).size == size, f"learned layout ignored the canvas {size}"
+
+
+def test_a_word_is_never_broken_when_a_smaller_size_would_keep_it_whole():
+    """Narrow learned boxes on the tallest shapes broke words mid-way — "FREE
+    COURS / E", "$1B / +" — when a smaller size fit the whole word."""
+    from PIL import Image as _Image, ImageDraw as _Draw
+
+    from james_os.spec_render import _ARCHIVO, _fit_block
+
+    draw = _Draw.Draw(_Image.new("RGB", (400, 400)))
+    for text, box_w in [("FREE COURSE", 150), ("prendamanoacademy.com", 260), ("$1B+", 60)]:
+        font, lines, _lh = _fit_block(draw, text, _ARCHIVO, box_w, 200, 150)
+        words = set(text.split())
+        assert all(set(line.split()) <= words for line in lines), (text, lines)

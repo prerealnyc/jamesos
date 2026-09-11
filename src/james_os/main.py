@@ -2019,7 +2019,9 @@ async def _generate_learned_post_image(
     learned = await design_templates.pick(tenant_id)
     if not learned:
         return None
-    spec = learned["spec"]
+    # Numbered repeat roles, collisions resolved, empty frames dropped — the
+    # read describes someone else's post; this is the version we can draw.
+    spec = design_templates.prepare(learned["spec"])
     tid = learned["id"]
 
     # Copy for THIS post, in the brand's voice — grounded in the post's own topic,

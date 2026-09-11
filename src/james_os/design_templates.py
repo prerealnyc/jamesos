@@ -31,6 +31,7 @@ There is no per-platform copy of a template to drift out of sync.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -44,6 +45,8 @@ logger = logging.getLogger("design_templates")
 # the library is a couple of lucky reads, and rotating between them would make
 # the brand's feed look MORE repetitive than the nine formats, not less.
 MIN_LIBRARY = 3
+# How many active layouts pick() weighs at once, in rotation order.
+PICK_WINDOW = 200
 
 # A layout that keeps failing design QA stops being offered. It is not deleted —
 # retired, with its record intact — because the owner asked that nothing be
@@ -92,6 +95,112 @@ def usable(spec: dict | None) -> bool:
     if not isinstance(spec, dict) or spec.get("status") in ("no_key", "failed"):
         return False
     return bool(spec.get("elements"))
+
+
+# ── making a read layout drawable ──────────────────────────────────────────
+# A vision read is a faithful description of someone else's post, not a clean
+# template. Rendering the real library at every platform size showed what that
+# means in practice: three "byline" slots printing the brand name three times,
+# two subhead boxes overlapping so the lines garble, an outlined frame that held
+# an inset photo in the original and is now an empty rectangle, and a white card
+# whose photo the read missed — a headline in the top fifth and nothing else.
+# prepare() fixes what is fixable; drawable() says whether what is left is worth
+# putting in front of the owner. Every read is still KEPT (save() is unchanged) —
+# these only decide what autopilot draws.
+
+# When two text boxes collide, the more important one stays.
+_ROLE_RANK = {"headline": 0, "stat": 1, "subhead": 2, "kicker": 3, "stat_label": 4,
+              "cta": 5, "byline": 6}
+_SIZE_RANK = {"xxl": 0, "xl": 1, "lg": 2, "md": 3, "sm": 4}
+# Share of the smaller box two text boxes may share before one is dropped.
+MAX_TEXT_OVERLAP = 0.25
+# A layout with no photo whose text spans less than this share of the height is
+# a card with a hole in it — almost always a photo the read did not see.
+MIN_TEXT_SPAN_NO_PHOTO = 0.35
+
+
+def _area(b: dict) -> float:
+    return max(0.0, float(b.get("w", 0))) * max(0.0, float(b.get("h", 0)))
+
+
+def _overlap(a: dict, b: dict) -> float:
+    """Shared area as a share of the SMALLER box (0..1)."""
+    ix = min(a.get("x", 0) + a.get("w", 0), b.get("x", 0) + b.get("w", 0)) - max(a.get("x", 0), b.get("x", 0))
+    iy = min(a.get("y", 0) + a.get("h", 0), b.get("y", 0) + b.get("h", 0)) - max(a.get("y", 0), b.get("y", 0))
+    if ix <= 0 or iy <= 0:
+        return 0.0
+    small = min(_area(a), _area(b))
+    return (ix * iy) / small if small > 0 else 0.0
+
+
+def base_role(role: str) -> str:
+    """"byline#2" -> "byline"."""
+    return str(role or "").split("#", 1)[0]
+
+
+def prepare(spec: dict) -> dict:
+    """A copy of `spec` that can be filled and drawn cleanly.
+
+      * Colliding text boxes: the more important element stays (headline over
+        stat over subhead ... over byline; larger size breaks a tie), the other
+        is dropped. Draw order is otherwise unchanged.
+      * Repeated roles are numbered — byline, byline#2, byline#3 — so each slot
+        is written as its own line instead of all of them printing the same one.
+      * A frame with no text inside it is dropped: it framed an inset photo in
+        the original, and on its own it is an empty rectangle.
+    """
+    out = copy.deepcopy(spec) if isinstance(spec, dict) else {}
+    els = [e for e in (out.get("elements") or []) if isinstance(e, dict) and isinstance(e.get("box"), dict)]
+
+    order = sorted(range(len(els)), key=lambda i: (
+        _ROLE_RANK.get(base_role(els[i].get("role")), 9),
+        _SIZE_RANK.get(els[i].get("size"), 5), i))
+    kept: list[int] = []
+    for i in order:
+        if all(_overlap(els[i]["box"], els[j]["box"]) <= MAX_TEXT_OVERLAP for j in kept):
+            kept.append(i)
+    els = [els[i] for i in sorted(kept)]
+
+    seen: dict[str, int] = {}
+    for e in els:
+        r = base_role(e.get("role")) or "line"
+        seen[r] = seen.get(r, 0) + 1
+        e["role"] = r if seen[r] == 1 else f"{r}#{seen[r]}"
+    out["elements"] = els
+
+    def _has_text_inside(box: dict) -> bool:
+        for e in els:
+            b = e["box"]
+            cx, cy = b.get("x", 0) + b.get("w", 0) / 2, b.get("y", 0) + b.get("h", 0) / 2
+            if box.get("x", 0) <= cx <= box.get("x", 0) + box.get("w", 0) and \
+               box.get("y", 0) <= cy <= box.get("y", 0) + box.get("h", 0):
+                return True
+        return False
+
+    out["decorations"] = [
+        d for d in (out.get("decorations") or [])
+        if isinstance(d, dict) and not (d.get("type") == "frame"
+                                        and not _has_text_inside(d.get("box") or {}))
+    ]
+    return out
+
+
+def drawable(spec: dict | None) -> bool:
+    """Is this layout — once prepared — worth drawing a post from?"""
+    if not usable(spec):
+        return False
+    prepped = prepare(spec)
+    els = prepped.get("elements") or []
+    if not els:
+        return False
+    bg = prepped.get("background") or {}
+    has_photo = str(bg.get("treatment") or "solid") != "solid" or bool(bg.get("photo_box"))
+    if not has_photo:
+        top = min(float(e["box"].get("y", 0)) for e in els)
+        bottom = max(float(e["box"].get("y", 0)) + float(e["box"].get("h", 0)) for e in els)
+        if bottom - top < MIN_TEXT_SPAN_NO_PHOTO:
+            return False
+    return True
 
 
 async def save(
@@ -160,12 +269,7 @@ async def pick(tenant_id: UUID | str | None) -> dict | None:
     of learned layouts on rotation looks more repetitive than the nine, not less.
     """
     async with acquire(tenant_id) as conn:
-        n = await conn.fetchval(
-            "SELECT count(*) FROM design_templates WHERE status = 'active'"
-        )
-        if int(n or 0) < MIN_LIBRARY:
-            return None
-        row = await conn.fetchrow(
+        rows = await conn.fetch(
             """SELECT id, spec, kind, source_handle, source_url, source_platform,
                       source_kind
                  FROM design_templates
@@ -174,13 +278,22 @@ async def pick(tenant_id: UUID | str | None) -> dict | None:
                       (approvals - rejections) DESC,
                       qa_fails ASC,
                       source_engagement DESC
-                LIMIT 1"""
+                LIMIT $1""",
+            PICK_WINDOW,
         )
-    if row is None:
+    # Only layouts that draw cleanly count — toward the minimum, and as picks.
+    # The rest stay in the library (nothing read is thrown away); they are just
+    # not put in front of the owner.
+    good = []
+    for r in rows:
+        spec = r["spec"]
+        if isinstance(spec, str):
+            spec = json.loads(spec)
+        if drawable(spec):
+            good.append((r, spec))
+    if len(good) < MIN_LIBRARY:
         return None
-    spec = row["spec"]
-    if isinstance(spec, str):
-        spec = json.loads(spec)
+    row, spec = good[0]
     return {
         "id": str(row["id"]), "spec": spec, "kind": row["kind"],
         "source_handle": row["source_handle"], "source_url": row["source_url"],
@@ -352,7 +465,8 @@ async def learn_from_reference(
 
 
 __all__ = [
-    "MIN_LIBRARY", "RETIRE_AFTER_QA_FAILS", "MAX_READ_ATTEMPTS", "fingerprint", "usable", "save", "count",
+    "MIN_LIBRARY", "RETIRE_AFTER_QA_FAILS", "MAX_READ_ATTEMPTS", "fingerprint", "usable",
+    "prepare", "drawable", "base_role", "save", "count",
     "pick", "mark_used", "mark_qa", "mark_verdict", "learn_from_competitors",
     "learn_from_reference",
 ]

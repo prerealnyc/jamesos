@@ -58,8 +58,12 @@ async def _fill_copy(spec: dict, tenant_id, ref: dict, *, guidance: str = "") ->
         "template's slots in the BRAND's voice. Each role is a few words: a "
         "'stat' is a number + unit (e.g. '20 Years', 'No. 1'); a 'kicker' is a "
         "short label; a 'headline' is ONE punchy line; a 'subhead' one short "
-        "line; a 'cta' is 2-4 words; a 'byline' is the brand name. Ground it in "
-        "THIS brand — never copy the competitor's words. Fill only the roles asked."
+        "line; a 'cta' is 2-4 words; a 'byline' is the brand name. A role with a "
+        "#2 or #3 suffix is ANOTHER line of the same kind and must say something "
+        "different from the others (e.g. byline = the brand name, byline#2 = its "
+        "website or handle, byline#3 = a short credential) — never repeat a line. "
+        "Ground it in THIS brand — never copy the competitor's words. Fill only "
+        "the roles asked."
     )
     user = (
         f"BRAND VOICE:\n{(voice or '')[:1500]}\n\n"
@@ -159,6 +163,8 @@ async def rebuild_cloned(payload: dict, feedback: str, tenant_id) -> tuple[bytes
         if spec.get("status") != "ok":
             return None
 
+    from .design_templates import prepare
+    spec = prepare(spec)   # idempotent on a spec that was already prepared
     roles = [e["role"] for e in (spec.get("elements") or [])]
     content = {k: v for k, v in (payload.get("clone_content") or {}).items() if k in roles}
     if not content:
@@ -302,6 +308,10 @@ async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None) 
         )
     except Exception:  # noqa: BLE001
         logger.warning("could not keep the layout from %s", post.get("id"), exc_info=True)
+    # The library keeps the read as it came; the post is drawn from the version
+    # that renders cleanly (see design_templates.prepare).
+    from .design_templates import prepare
+    spec = prepare(spec)
     content = await _fill_copy(spec, tenant_id, post)
     # A photo_forward post with no text is just "a great photo in this framing" —
     # give it at least a headline so our version reads as a designed post.
