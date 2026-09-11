@@ -134,21 +134,46 @@ async def _hero_or_placeholder(tenant_id, topic: str) -> tuple[bytes | None, boo
 
 
 async def rebuild_cloned(payload: dict, feedback: str, tenant_id) -> tuple[bytes, str] | None:
-    """Render a cloned post AGAIN in its own design, with the owner's change.
+    """Render a cloned (or learned) post AGAIN in its own design — (png, kind),
+    or None when the design cannot be recovered. See rebuild_design."""
+    out = await rebuild_design(payload, feedback, tenant_id)
+    return (out["png"], out["kind"]) if out else None
+
+
+async def rebuild_design(
+    payload: dict, feedback: str, tenant_id, *,
+    exclude_photo_keys: tuple[str, ...] = (), scene_prompt: str = "",
+    sizes: tuple[tuple[int, int], ...] = (),
+) -> dict | None:
+    """Render a cloned or learned post AGAIN in its own design, with the owner's
+    change. Returns {png, kind, spec, content, hero_key, by_size} or None when the
+    design cannot be recovered, which the caller must report rather than quietly
+    substituting another look.
 
     A cloned post is not one of the nine designed layouts — it is a competitor's
-    template read by vision and re-filled in our voice. So the ordinary redo path
-    could never preserve it: image_format is the literal string "cloned", which
-    the renderer has no layout for, and every rebuild silently became the house
-    poster instead. That is what made "keep the template the same" impossible for
-    exactly the posts the owner most wanted kept.
+    template read by vision and re-filled in our voice; a learned post is the same
+    thing drawn from the brand's layout library. So the ordinary redo path could
+    never preserve either: every rebuild silently became another design. Here the
+    layout is kept and only what the owner asked about changes:
+
+      * the words — _edit_clone_copy changes the one line they named;
+      * the look — edit_spec_look changes colours, sizes, weights, alignment,
+        position or darkening ("brighter", "make the headline bigger", "white
+        text") on THIS layout, instead of the art director drawing a new one;
+      * the photo — kept by its recorded key; swapped for a different one of the
+        brand's photos when `exclude_photo_keys` names the current one (and kept,
+        so the caller can say so honestly, when there is no other); replaced by a
+        generated scene when `scene_prompt` is given.
+
+    `sizes` re-lays-out the same design at each extra platform shape, so the
+    other networks never keep showing the version the owner just changed.
 
     Posts cloned from now on carry their spec. Older ones carry nothing, so the
     template is recovered by reading it back off OUR OWN rendered card — the same
     vision pass that produced it in the first place, pointed at the image we
-    still have. Returns (png, kind) or None when the design cannot be recovered,
-    which the caller must report rather than quietly substituting another look."""
+    still have."""
     from .design_cloner import extract_template_spec
+    from .spec_render import rebrand_spec
 
     spec = payload.get("clone_spec") or {}
     if not isinstance(spec, dict) or spec.get("status") != "ok":
@@ -183,17 +208,155 @@ async def rebuild_cloned(payload: dict, feedback: str, tenant_id) -> tuple[bytes
         content = await _edit_clone_copy(content, feedback, tenant_id)
         content = await _apply_handle_request(content, feedback, roles, tenant_id)
 
-    # KEEP THE PHOTO. The picker rotates for variety, which is right when making
-    # something new and wrong when rebuilding something that exists: "keep the
-    # image" came back with a different one. Reuse the exact photo when the card
-    # recorded which one it used.
-    hero_bytes = await _hero_by_key(tenant_id, str(payload.get("hero_photo_key") or ""))
+    # THE LOOK. Put the brand's colours on first (the first render did that
+    # inside render_spec), then apply the owner's change to THOSE colours — and
+    # draw without repainting, or "make the headline white" would be mapped
+    # straight back to the nearest brand colour. The result is stored marked as
+    # already in brand colours, so the next rebuild keeps the owner's choice.
+    palette = None if spec.get("brand_colours") else await _brand_palette(tenant_id)
+    if palette:
+        spec = rebrand_spec(spec, palette)
+    spec["brand_colours"] = True
+    if feedback.strip():
+        spec = await edit_spec_look(spec, feedback)
+
+    # THE PHOTO. Kept by default — the picker rotates for variety, which is right
+    # when making something new and wrong when rebuilding something that exists:
+    # "keep the image" came back with a different one.
+    kept_key = str(payload.get("hero_photo_key") or "")
+    hero_bytes, hero_key = None, ""
+    if scene_prompt.strip():
+        from .imagegen import generate_post_image
+        hero_bytes, _meta, _err = await generate_post_image(
+            topic=scene_prompt.strip()[:300] + " — cinematic editorial photograph, no text, no words, no logos",
+            platform="instagram", aspect="4:5", style="cinematic_real", tenant_id=tenant_id)
+    elif exclude_photo_keys:
+        from .hero_context import get_hero_photo_files
+        from .photo_pick import pick_hero_bytes
+
+        refs = await get_hero_photo_files(tenant_id=tenant_id, limit=None)
+        picked = await pick_hero_bytes(refs, tenant_id, exclude=tuple(exclude_photo_keys)) if refs else None
+        if picked and picked[0] not in exclude_photo_keys:
+            hero_key, hero_bytes = picked[0], picked[1]
+    if hero_bytes is None and kept_key:
+        # Keeping it — or asked to swap with no other photo to swap to: keep it,
+        # and the unchanged key tells the caller there was nothing to swap in.
+        hero_bytes = await _hero_by_key(tenant_id, kept_key)
+        hero_key = kept_key if hero_bytes is not None else ""
     if hero_bytes is None:
-        hero_bytes, _generated, _key = await _hero_or_placeholder(
+        hero_bytes, _generated, hero_key = await _hero_or_placeholder(
             tenant_id, str(payload.get("topic") or ""))
+
     logo = await _brand_logo(tenant_id) if spec.get("logo_box") else None
-    return render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo,
-                       palette=await _brand_palette(tenant_id))
+    png, kind = render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo)
+    by_size: dict[str, bytes] = {}
+    if sizes:
+        from . import image_compose
+        for (w, h) in sizes:
+            if not (w > 0 and h > 0):
+                continue
+            try:
+                with image_compose.canvas(w, h):
+                    _png, _ = render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo)
+                if _png:
+                    by_size[f"{w}x{h}"] = _png
+            except Exception:  # noqa: BLE001 — one shape must never cost the rebuild
+                logger.warning("rebuild at %sx%s failed", w, h, exc_info=True)
+    return {"png": png, "kind": kind, "spec": spec, "content": content,
+            "hero_key": hero_key, "by_size": by_size}
+
+
+# The parts of a layout an owner's words can change without it becoming a
+# different layout. The structure — which lines exist, the photo treatment, the
+# frame — stays: that is what "keep the layout" means.
+_LOOK_SIZES = ("sm", "md", "lg", "xl", "xxl")
+_LOOK_WEIGHTS = ("regular", "bold", "black")
+_LOOK_CASES = ("none", "upper")
+_LOOK_ALIGNS = ("left", "center", "right")
+_LOOK_SCRIMS = ("none", "bottom", "top", "full")
+
+
+def merge_look_edit(original: dict, edited) -> dict:
+    """Take only look changes from `edited` onto `original`, element by element.
+
+    Anything the model returned outside that — a new line, a dropped line, a
+    renamed role, a different photo treatment, a malformed value — is ignored
+    for the original, so a bad edit can at worst change nothing."""
+    import copy as _copy
+
+    from .design_cloner import _hex, _norm_box
+
+    out = _copy.deepcopy(original)
+    if not isinstance(edited, dict):
+        return out
+    new_els = edited.get("elements") if isinstance(edited.get("elements"), list) else []
+    for i, e in enumerate(out.get("elements") or []):
+        ne = new_els[i] if i < len(new_els) and isinstance(new_els[i], dict) else None
+        if ne is None or str(ne.get("role") or "") != str(e.get("role") or ""):
+            continue
+        box = _norm_box(ne.get("box"))
+        if box:
+            e["box"] = box
+        if ne.get("size") in _LOOK_SIZES:
+            e["size"] = ne["size"]
+        if ne.get("weight") in _LOOK_WEIGHTS:
+            e["weight"] = ne["weight"]
+        if ne.get("case") in _LOOK_CASES:
+            e["case"] = ne["case"]
+        if ne.get("align") in _LOOK_ALIGNS:
+            e["align"] = ne["align"]
+        e["color"] = _hex(ne.get("color"), e.get("color") or "#ffffff")
+    new_decs = edited.get("decorations") if isinstance(edited.get("decorations"), list) else []
+    for i, d in enumerate(out.get("decorations") or []):
+        nd = new_decs[i] if i < len(new_decs) and isinstance(new_decs[i], dict) else None
+        if nd is None or nd.get("type") != d.get("type"):
+            continue
+        d["color"] = _hex(nd.get("color"), d.get("color") or "#c9a24b")
+    nbg = edited.get("background") if isinstance(edited.get("background"), dict) else {}
+    if nbg.get("scrim") in _LOOK_SCRIMS:
+        out.setdefault("background", {})["scrim"] = nbg["scrim"]
+    npal = edited.get("palette") if isinstance(edited.get("palette"), dict) else {}
+    for k, v in npal.items():
+        if k in (out.get("palette") or {}):
+            out["palette"][k] = _hex(v, out["palette"][k])
+    return out
+
+
+async def edit_spec_look(spec: dict, feedback: str) -> dict:
+    """Apply the owner's change to how THIS layout looks — and nothing else.
+
+    The nine formats have imagegen.edit_designed_spec for this. A learned or
+    cloned layout had no equivalent, so "make it brighter" rebuilt the same card
+    unchanged (the copy editor rightly ignores requests about the look). Degrades
+    to the input: returning the card unchanged is a better answer to a failed
+    edit than returning a different card."""
+    from .llm import get_llm
+
+    system = (
+        "You are adjusting how ONE finished social card looks, not designing a "
+        "new one. You get its layout as JSON (every box is a fraction of the "
+        "canvas) and the owner's words.\n\n"
+        "Change ONLY what they asked about its look: text colour, size (sm..xxl), "
+        "weight (regular/bold/black), case, alignment, a line's position, the "
+        "palette, or how dark the photo is behind the text (scrim: none, bottom, "
+        "top, full — 'brighter' means less scrim, 'more dramatic' or 'more "
+        "readable' means more). Keep every element, in the same order, with the "
+        "same role. Do not add, remove or rename anything. If the request is "
+        "about the words or the photo, return the layout exactly as given.\n\n"
+        "Return the full layout as STRICT JSON in the same shape."
+    )
+    try:
+        out = await get_llm().complete_json(
+            system=system,
+            messages=[{"role": "user", "content":
+                       "THE LAYOUT:\n" + json.dumps(
+                           {k: spec.get(k) for k in ("background", "palette", "elements", "decorations")},
+                           indent=1)
+                       + "\n\nWHAT THE OWNER WANTS CHANGED:\n" + feedback.strip()[:400]}],
+            max_tokens=1600, temperature=0.0)
+    except Exception:  # noqa: BLE001
+        return spec
+    return merge_look_edit(spec, out)
 
 
 async def _hero_by_key(tenant_id, key: str) -> bytes | None:

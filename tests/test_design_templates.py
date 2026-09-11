@@ -260,11 +260,13 @@ def test_a_learned_post_is_redone_in_its_own_layout(monkeypatch):
         def save(self, tenant, png, name):
             return "file://redo.png", "/tmp/redo.png"
 
-    async def _rebuild(payload, feedback, tenant_id):
-        return b"png", "graphic_card"
+    async def _rebuild(payload, feedback, tenant_id, **kw):
+        return {"png": b"png", "kind": "graphic_card", "spec": payload["clone_spec"],
+                "content": payload["clone_content"], "hero_key": payload["hero_photo_key"],
+                "by_size": {}}
 
     monkeypatch.setattr(api_v1, "acquire", _acquire)
-    monkeypatch.setattr(template_clone, "rebuild_cloned", _rebuild)
+    monkeypatch.setattr(template_clone, "rebuild_design", _rebuild)
     monkeypatch.setattr("james_os.media.storage", lambda: _Store())
     payload = {
         "image_format": "learned", "design_template_id": "tpl-1",

@@ -558,6 +558,11 @@ async def v1_queue(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
             "payload->>'format' AS format, payload->>'caption' AS caption, "
             "payload->>'image_url' AS image_url, payload->'media_urls' AS media_urls, "
             "payload->>'image_format' AS image_format, "
+            # The hero photo this post was composed on. Surfaced so a caller can
+            # PROVE a photo swap actually changed the picture (a fresh render
+            # always yields a new image_url, so image_url alone can't tell a real
+            # swap from a same-photo re-render) and can detect a one-photo no-op.
+            "payload->>'hero_photo_key' AS hero_photo_key, "
             # The same design at each other network's shape (see
             # _generate_designed_post_image). Without it the caller gets one
             # image and has to crop it for every other platform.
@@ -599,6 +604,9 @@ async def v1_queue(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
             "format": r["format"], "caption": r["caption"], "image_url": r["image_url"],
             "media_urls": _arr(r["media_urls"]) or None,
             "image_format": r["image_format"],
+            # The composed-on hero photo key (None for text-only cards) — lets a
+            # caller confirm a swap replaced the picture, not just re-rendered it.
+            "hero_photo_key": r["hero_photo_key"],
             # {"1600x900": url, "1080x1920": url, ...} — the same post at every
             # extra size that was asked for. Absent when none were.
             "image_urls_by_size": _arr(r["image_urls_by_size"]) or None,
@@ -740,6 +748,16 @@ async def v1_queue_rejected(tenant_id: TenantDep, limit: int = 50) -> dict[str, 
 class RegenerateBody(BaseModel):
     feedback: str = ""
     force_format: str = ""
+    # The destination's shape and every other platform shape, like /v1/generate
+    # takes — so a rebuilt post is re-laid-out for every network too, instead of
+    # the others keeping the image the owner just changed.
+    image_width: int = 0
+    image_height: int = 0
+    sizes: list = Field(default_factory=list)
+    # A generated scene to put in the photo slot of a cloned/learned design.
+    scene_prompt: str = ""
+    # The owner is editing by hand (not the automatic reject-and-rebuild loop).
+    by_owner: bool = False
 
 
 # Colours a "make the text <colour>" instruction can request. White/black lead so
@@ -796,6 +814,15 @@ _TEXT_ONLY_FORMATS = ("brand_quote", "bold_statement", "big_stat")
 # automatic rebuild stops, because at that point the brief is what needs to
 # change and that is the owner's call.
 MAX_REGEN_VERSION = 3
+# ...and an owner editing a post by hand ("brighter", "different photo") has a
+# human in every pass, which is what the cap above exists to guarantee. Held to
+# the automatic cap, their third edit was refused and fell back to a fresh render
+# — a different design, on exactly the posts where the design was the point.
+MAX_OWNER_EDIT_VERSION = 13
+
+
+def _regen_cap(by_owner: bool) -> int:
+    return MAX_OWNER_EDIT_VERSION if by_owner else MAX_REGEN_VERSION
 
 # The owner asking for the layout to be LEFT ALONE. This is the strongest signal
 # a redo can receive and it used to be the weakest: none of these matched any
@@ -905,9 +932,13 @@ def _wants_new_photo(feedback: str) -> bool:
 
 
 async def _rebuild_cloned_action(
-    new_id, payload: dict, feedback: str, tenant_id,
+    new_id, payload: dict, feedback: str, tenant_id, *,
+    exclude: tuple[str, ...] = (), extra_sizes: tuple[tuple[int, int], ...] = (),
+    scene_prompt: str = "",
 ) -> tuple[str, str]:
-    """Re-render a cloned post in ITS OWN design and attach it to the new row.
+    """Re-render a cloned or learned post in ITS OWN design and attach it to the
+    new row — with the owner's change to its words and look, a different photo
+    when `exclude` names the current one, and every extra platform shape.
 
     Returns ("", "") when the design cannot be recovered — the caller's contract
     for "no image", which the board already reports honestly. Substituting a
@@ -917,14 +948,22 @@ async def _rebuild_cloned_action(
     from . import template_clone
     from .media import storage as media_storage
 
-    out = await template_clone.rebuild_cloned(payload, feedback, tenant_id)
+    out = await template_clone.rebuild_design(
+        payload, feedback, tenant_id, exclude_photo_keys=tuple(k for k in exclude if k),
+        scene_prompt=scene_prompt, sizes=extra_sizes)
     if not out:
         _log.warning("could not recover the cloned design for %s", new_id)
         return "", ""
-    png, kind = out
+    tenant = str(tenant_id or settings.default_tenant_id)
     served, _fp = await _asyncio.to_thread(
-        media_storage().save, str(tenant_id or settings.default_tenant_id),
-        png, "template-clone.png")
+        media_storage().save, tenant, out["png"], "template-clone.png")
+    by_size: dict[str, str] = {}
+    for key, png in (out.get("by_size") or {}).items():
+        try:
+            uri, _ = await _asyncio.to_thread(media_storage().save, tenant, png, f"rebuild-{key}.png")
+            by_size[key] = uri
+        except Exception:  # noqa: BLE001 — one shape must never cost the rebuild
+            _log.warning("could not store the %s rebuild of %s", key, new_id, exc_info=True)
     learned = payload.get("image_format") == "learned"
     async with acquire(tenant_id) as conn:
         await conn.execute(
@@ -938,19 +977,22 @@ async def _rebuild_cloned_action(
                     "design_template_source": payload.get("design_template_source") or {}}
                    if learned else
                    {"image_format": "cloned", "cloned_from_competitor": True}),
-                # Carry the recovered template forward so the NEXT rebuild does
-                # not have to read it back off an image again.
-                "clone_spec": payload.get("clone_spec") or {},
-                "clone_content": payload.get("clone_content") or {},
+                # The layout AS REBUILT — the owner's look change included — and
+                # the words as edited, so the NEXT edit starts from this card, not
+                # from the one before it.
+                "clone_spec": out.get("spec") or payload.get("clone_spec") or {},
+                "clone_content": out.get("content") or payload.get("clone_content") or {},
                 "clone_source_url": payload.get("clone_source_url") or "",
-                **({"hero_photo_key": payload["hero_photo_key"]}
-                   if payload.get("hero_photo_key") else {}),
+                **({"hero_photo_key": out["hero_key"]} if out.get("hero_key") else {}),
+                **({"image_urls_by_size": by_size} if by_size else {}),
             }))
-    return served, ("learned" if learned else (kind or "cloned"))
+    return served, ("learned" if learned else (out.get("kind") or "cloned"))
 
 
 async def _run_regenerate(
     job_id: str, tenant_id: UUID, parent_id: UUID, feedback: str, force_format: str,
+    *, canvas: tuple[int, int] | None = None, extra_sizes: tuple[tuple[int, int], ...] = (),
+    scene_prompt: str = "", by_owner: bool = False,
 ) -> None:
     """Rebuild the IMAGE for a rejected post, keeping its words.
 
@@ -985,9 +1027,9 @@ async def _run_regenerate(
         reason = (feedback or "").strip() or (parent["rejection_reason_code"] or "").strip()
         prev_photo = str(payload.get("hero_photo_key") or "")
         version = int(str(payload.get("version") or "1") if str(payload.get("version") or "1").isdigit() else 1)
-        if version >= MAX_REGEN_VERSION:
+        if version >= _regen_cap(by_owner):
             raise ValueError(
-                f"this post has already been rebuilt {MAX_REGEN_VERSION - 1} times — "
+                f"this post has already been rebuilt {_regen_cap(by_owner) - 1} times — "
                 "change the brief or edit it by hand rather than asking for another pass"
             )
 
@@ -1000,7 +1042,10 @@ async def _run_regenerate(
         }
         # The parent's own image must not be inherited if the redo fails to make
         # one — a v2 showing v1's rejected picture is the worst possible outcome.
-        for k in ("image_url", "media_url", "has_image", "hero_photo_key", "image_format"):
+        # Nor its other platform shapes: a redo that copied them showed the NEW
+        # picture on one network and the rejected one on every other.
+        for k in ("image_url", "media_url", "has_image", "hero_photo_key", "image_format",
+                  "image_urls_by_size"):
             new_payload.pop(k, None)
 
         async with acquire(tenant_id) as conn:
@@ -1085,9 +1130,12 @@ async def _run_regenerate(
             (payload.get("cloned_from_competitor") or prev_format in ("cloned", "learned"))
             and layout != "new"
         )
+        from . import image_compose as _ic
         if rebuild_in_place:
-            served, fmt = await _rebuild_cloned_action(
-                new_id, payload, reason, tenant_id)
+            with _ic.canvas(*(canvas or (0, 0))):
+                served, fmt = await _rebuild_cloned_action(
+                    new_id, payload, reason, tenant_id, exclude=eff_exclude,
+                    extra_sizes=extra_sizes, scene_prompt=scene_prompt)
         else:
             # KEEP THE CARD, CHANGE THE ONE THING. When the layout is being kept
             # and we still hold the spec that produced it, edit that spec rather
@@ -1100,22 +1148,28 @@ async def _run_regenerate(
                 layout != "new" and not want_photo and not force_format
                 and isinstance(base, dict) and base.get("format")
             )
-            served, fmt = await _main._generate_designed_post_image(
-                new_id,
-                str(payload.get("topic") or ""),
-                str(payload.get("content") or payload.get("caption") or ""),
-                tenant_id,
-                avoid=eff_avoid,
-                feedback=reason,
-                force_format=eff_force,
-                exclude_photos=eff_exclude,
-                force_photo=eff_force_photo,
-                base_spec=base if keep_the_card else None,
-            )
+            with _ic.canvas(*(canvas or (0, 0))):
+                served, fmt = await _main._generate_designed_post_image(
+                    new_id,
+                    str(payload.get("topic") or ""),
+                    str(payload.get("content") or payload.get("caption") or ""),
+                    tenant_id,
+                    avoid=eff_avoid,
+                    feedback=reason,
+                    force_format=eff_force,
+                    exclude_photos=eff_exclude,
+                    force_photo=eff_force_photo,
+                    base_spec=base if keep_the_card else None,
+                    extra_sizes=extra_sizes,
+                )
         job["result"] = {
             "action_id": str(new_id), "regen_of": str(parent_id),
             "version": version + 1, "image_url": served, "image_format": fmt,
             "feedback": reason,
+            # The hero we dropped this pass (empty unless a swap was requested and
+            # the parent had a photo). A caller comparing this to the child's new
+            # hero_photo_key can tell a real swap from a one-photo no-op.
+            "excluded_photo_key": (eff_exclude[0] if eff_exclude else ""),
         }
         job["status"] = "done"
     except Exception as exc:  # noqa: BLE001
@@ -1145,11 +1199,12 @@ async def v1_post_regenerate(
     if row is None:
         raise HTTPException(404, "post not found")
     _v = str(row["version"] or "1")
-    if (int(_v) if _v.isdigit() else 1) >= MAX_REGEN_VERSION:
+    _cap = _regen_cap(body.by_owner)
+    if (int(_v) if _v.isdigit() else 1) >= _cap:
         return {
             "job_id": "",
             "status": "refused",
-            "error": f"already rebuilt {MAX_REGEN_VERSION - 1} times — "
+            "error": f"already rebuilt {_cap - 1} times — "
                      "change the brief or edit it by hand",
         }
     job = {
@@ -1158,8 +1213,15 @@ async def v1_post_regenerate(
         "created_at": _now(), "updated_at": _now(),
     }
     _put_job(job)
+    _w, _h = int(body.image_width or 0), int(body.image_height or 0)
     _spawn(_run_regenerate(
-        job["id"], tenant_id, action_id, body.feedback, body.force_format))
+        job["id"], tenant_id, action_id, body.feedback, body.force_format,
+        canvas=(_w, _h) if _w > 0 and _h > 0 else None,
+        extra_sizes=tuple(
+            (int(p[0]), int(p[1])) for p in body.sizes
+            if isinstance(p, (list, tuple)) and len(p) == 2
+            and int(p[0]) > 0 and int(p[1]) > 0 and (int(p[0]), int(p[1])) != (_w, _h)),
+        scene_prompt=body.scene_prompt, by_owner=body.by_owner))
     return {"job_id": job["id"], "status": "queued"}
 
 
