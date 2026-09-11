@@ -43,7 +43,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from .config import settings
@@ -953,6 +953,20 @@ def _wants_new_photo(feedback: str) -> bool:
     ))
 
 
+def _rebuilds_in_place(payload: dict, layout: str) -> bool:
+    """Is this post redone in ITS OWN design (template_clone.rebuild_design)
+    rather than composed afresh? Cloned and learned posts are — and so is a card
+    the owner edited by hand: its image is theirs now, and rebuild_design reads
+    the layout and the words back off that image, so "brighter" or "a different
+    photo" changes the card they made. Composing afresh threw the edit away and
+    brought back an unrelated design with rewritten copy — for a learned card,
+    one of the nine it had been drawn to replace. Unless they rejected the design
+    itself ("new"), which is the one answer preserving it cannot give."""
+    fmt = str(payload.get("image_format") or "")
+    return bool(payload.get("cloned_from_competitor") or fmt in ("cloned", "learned", "owner_edit")) \
+        and layout != "new"
+
+
 async def _rebuild_cloned_action(
     new_id, payload: dict, feedback: str, tenant_id, *,
     exclude: tuple[str, ...] = (), extra_sizes: tuple[tuple[int, int], ...] = (),
@@ -1069,6 +1083,15 @@ async def _run_regenerate(
         for k in ("image_url", "media_url", "has_image", "hero_photo_key", "image_format",
                   "image_urls_by_size"):
             new_payload.pop(k, None)
+        # Nor the parent's hand IMAGE edit. The card editor resumes whatever layout
+        # a row carries, so a rebuild that kept edit_layers opened on the rejected
+        # parent's canvas — and one save replaced the rebuild's fix with the very
+        # picture the owner had just turned down. (edited_by_owner is deliberately
+        # NOT cleared: it marks a hand-edited CAPTION, which the rebuild keeps.)
+        # generated_parts too: they describe the PARENT's card, and the editor
+        # would lay the rebuild out from the words it was rejected for.
+        for k in ("edit_layers", "image_edited_by_owner", "original_image_url", "generated_parts"):
+            new_payload.pop(k, None)
 
         async with acquire(tenant_id) as conn:
             new_id = await conn.fetchval(
@@ -1148,10 +1171,7 @@ async def _run_regenerate(
         # A LEARNED post is the same kind of thing — a layout from the brand's
         # design library, not one of the nine — and carries its spec and copy,
         # so it is rebuilt in its own design the same way.
-        rebuild_in_place = (
-            (payload.get("cloned_from_competitor") or prev_format in ("cloned", "learned"))
-            and layout != "new"
-        )
+        rebuild_in_place = _rebuilds_in_place(payload, layout)
         from . import image_compose as _ic
         if rebuild_in_place:
             with _ic.canvas(*(canvas or (0, 0))):
@@ -1293,6 +1313,290 @@ async def v1_post_edit_caption(
     except Exception:  # noqa: BLE001 — never fail an edit on the learning leg
         _log.exception("could not record caption edit for %s", action_id)
     return {"ok": True, "id": str(action_id), "caption": text}
+
+
+# ── the card editor ──────────────────────────────────────────────────────────
+#
+# Regeneration asks a model to reinterpret an instruction and re-render the whole
+# card, which is exactly where "move the logo to the center" and "keep everything,
+# just add my handle" kept failing: there was nothing in the card to move. The
+# editor is the other way in — the owner changes the card directly, in the browser,
+# and the PNG they see is the PNG that posts. These two endpoints give it the card
+# as parts, and take the finished image back.
+
+_EDIT_MAX_BYTES = 15 * 1024 * 1024
+_EDIT_TYPES = {"image/png", "image/jpeg", "image/webp"}
+
+
+def _palette_roles(roles) -> dict:
+    """A brand role-list → {bg, ink, accent, surface} hex, for the editor's swatches."""
+    out: dict = {}
+    for p in roles or []:
+        if not isinstance(p, dict):
+            continue
+        role, hexv = str(p.get("role") or "").lower(), str(p.get("hex") or "")
+        key = {"background": "bg", "ink": "ink", "accent": "accent", "surface": "surface"}.get(role)
+        if key and hexv:
+            out[key] = hexv
+    return out
+
+
+def _sniff_image(data: bytes) -> str:
+    """The image type the BYTES say they are — the upload's declared content-type
+    is whatever the client chose to send. Empty for anything that is not one."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+def _layout_urls(layout: dict) -> list[str]:
+    """Every URL a saved layout will make the editor fetch."""
+    urls = []
+    bg = layout.get("background") if isinstance(layout.get("background"), dict) else {}
+    if bg.get("url"):
+        urls.append(str(bg["url"]))
+    for layer in layout.get("layers") or []:
+        if isinstance(layer, dict) and layer.get("url"):
+            urls.append(str(layer["url"]))
+    return urls
+
+
+def _edited_photo(layout: dict, generated: set[str]) -> str | None:
+    """The photo an edited card is built on — what hero_photo_key should say now.
+
+    A URL when the owner put a photo on it (a new background, or a photo panel in
+    a rebuilt card); "" when the card no longer has one (a plain colour); None when
+    it still shows the generated card, whose own photo is still the right answer.
+    The key decides what a later regenerate keeps or excludes, so leaving the old
+    one in place after the owner removed or replaced the photo brought it back."""
+    if not layout:
+        return None
+    bg = layout.get("background") if isinstance(layout.get("background"), dict) else {}
+    url = str(bg.get("url") or "")
+    if bg.get("kind") == "image" and url:
+        # the generated card itself (flattened) is not a photo to pin
+        return None if url in generated else (url if url.startswith("https://") else None)
+    for layer in layout.get("layers") or []:
+        if (isinstance(layer, dict) and layer.get("type") == "image"
+                and layer.get("fit") == "cover" and str(layer.get("url") or "").startswith("https://")
+                and layer["url"] not in generated):
+            return str(layer["url"])
+    return ""
+
+
+def _first_sentence(text: str, limit: int = 140) -> str:
+    t = " ".join((text or "").split())
+    for stop in (". ", "! ", "? ", "\n"):
+        i = t.find(stop)
+        if 0 < i < limit:
+            return t[: i + 1].strip()
+    return t[:limit].rstrip()
+
+
+@router.get("/queue/post/{action_id}/layers")
+async def v1_post_layers(action_id: UUID, tenant_id: TenantDep) -> dict[str, Any]:
+    """Everything the editor needs to rebuild this card as movable parts.
+
+    Returns ingredients, not a layout: the words by role, the photo it was made
+    from, the brand's palette, typeface, handle and logo, and — when the card was
+    edited before — the saved layout itself so the owner picks up where they left
+    off. Laying those out is the editor's job; this only says what exists."""
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            "SELECT status, payload FROM actions WHERE id=$1 AND action_type='content'",
+            action_id)
+    if row is None:
+        raise HTTPException(404, "post not found")
+    p = row["payload"]
+    p = json.loads(p) if isinstance(p, str) else (p or {})
+
+    # After a hand edit the live spec keys are gone (nothing may re-render the
+    # replaced card from them); the card's parts as generated wait in
+    # generated_parts, which only this endpoint reads.
+    gp = p.get("generated_parts") if isinstance(p.get("generated_parts"), dict) else {}
+
+    def _part(key: str) -> dict | None:
+        for v in (p.get(key), gp.get(key)):
+            if isinstance(v, dict):
+                return v
+        return None
+
+    spec = _part("image_spec") or {}
+    caption = str(p.get("caption") or p.get("content") or "")
+    headline = (spec.get("statement") or spec.get("headline") or spec.get("quote")
+                or _first_sentence(caption))
+    texts = {
+        "headline": str(headline or "").strip(),
+        "kicker": str(spec.get("kicker") or spec.get("top_text") or "").strip(),
+        "sub": str(spec.get("bottom_text") or spec.get("stat_label") or "").strip(),
+        "stat": str(spec.get("stat") or "").strip(),
+    }
+
+    # The photo a card was built on is recorded by its source URL — so it can be
+    # put straight back as the editable background.
+    photo = str(p.get("hero_photo_key") or "")
+    photo_url = photo if photo.startswith(("http://", "https://")) else ""
+
+    palette, font, kit, logo_url = {}, "bold", {}, ""
+    try:
+        from .brand_identity import ensure_brand_palette, get_brand_font
+        palette = _palette_roles(await ensure_brand_palette(tenant_id))
+        font = await get_brand_font(tenant_id) or "bold"
+    except Exception:  # noqa: BLE001 — the editor still opens without them
+        _log.warning("editor: palette/font unavailable", exc_info=True)
+    try:
+        from .brand_kit import get_brand_kit
+        kit = await get_brand_kit(tenant_id) or {}
+    except Exception:  # noqa: BLE001
+        kit = {}
+    try:
+        from .media import list_media
+        logos = await list_media(role="brand_logo", tenant_id=tenant_id)
+        logo_url = str((logos[0] if logos else {}).get("uri") or "")
+    except Exception:  # noqa: BLE001
+        logo_url = ""
+
+    media_urls = p.get("media_urls")
+    if isinstance(media_urls, str):
+        try:
+            media_urls = json.loads(media_urls)
+        except (ValueError, TypeError):
+            media_urls = None
+    return {
+        "id": str(action_id),
+        "status": row["status"],
+        "editable": row["status"] == "pending",
+        # One image per card in this version — a carousel's slides would each
+        # need their own canvas, and pretending to edit slide one of five is worse
+        # than saying so.
+        "is_carousel": isinstance(media_urls, list) and len(media_urls) > 1,
+        "image_url": str(p.get("image_url") or ""),
+        # The card as it was GENERATED, before any hand edit. After a save,
+        # image_url is the edited PNG; starting from that again stacks every
+        # addition on top of its own flattened copy.
+        "original_image_url": str(p.get("original_image_url") or p.get("image_url") or ""),
+        "format": str(p.get("image_format") or ""),
+        "photo_url": photo_url,
+        "texts": texts,
+        "clone_spec": _part("clone_spec"),
+        "clone_content": _part("clone_content"),
+        "saved": p.get("edit_layers") if isinstance(p.get("edit_layers"), dict) else None,
+        "palette": palette,
+        "font_theme": font,
+        "handle": str(kit.get("handle") or ""),
+        "display_name": str(kit.get("display_name") or ""),
+        "logo_url": logo_url,
+    }
+
+
+@router.post("/queue/post/{action_id}/image")
+async def v1_post_set_image(
+    action_id: UUID,
+    tenant_id: TenantDep,
+    file: UploadFile = File(...),
+    doc: str = Form(""),
+) -> dict[str, Any]:
+    """Replace a pending post's image with one the owner edited by hand.
+
+    The PNG is stored in the same bucket every generated image publishes from, so
+    the aggregator fetches it at post time like any other. The layout that made it
+    is kept beside it, so opening the editor again resumes the edit instead of
+    starting over from the generated card. Pending posts only — an approved post
+    has already been adopted into a work order, and swapping its image here would
+    change something the owner signed off on."""
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "empty image")
+    if len(data) > _EDIT_MAX_BYTES:
+        raise HTTPException(413, "edited image too large (max 15 MB)")
+    # Judge the bytes, not the label. The content-type is client-chosen; a file
+    # that is not actually an image must not be stored and served as a post.
+    if _sniff_image(data) not in _EDIT_TYPES:
+        raise HTTPException(415, "that file is not a PNG, JPEG or WebP image")
+    layout: dict = {}
+    if doc.strip():
+        try:
+            parsed = json.loads(doc)
+            layout = parsed if isinstance(parsed, dict) else {}
+        except (ValueError, TypeError):
+            raise HTTPException(422, "doc must be a JSON object") from None
+        if len(doc) > 400_000:
+            raise HTTPException(413, "layout too large")
+        # A saved layout is handed back to every member's browser, which then
+        # fetches each URL in it. Only https — no data:, file:, javascript: or
+        # plain-http origins riding along in a stored document.
+        for u in _layout_urls(layout):
+            if not u.startswith("https://"):
+                raise HTTPException(422, "layout images must be https URLs")
+
+    async with acquire(tenant_id) as conn:
+        cur = await conn.fetchrow(
+            "SELECT status, payload->>'image_url' AS image_url, "
+            "payload->>'original_image_url' AS original_image_url "
+            "FROM actions WHERE id=$1 AND action_type='content'", action_id)
+    if cur is None:
+        raise HTTPException(404, "post not found")
+    if cur["status"] != "pending":
+        raise HTTPException(409, "only a post awaiting approval can be edited")
+
+    from .media import storage as media_storage
+    tenant = str(tenant_id or settings.default_tenant_id)
+    served, _fp = await asyncio.to_thread(
+        media_storage().save, tenant, data, "edited-card.png")
+
+    # Record what is NOW on screen, so nothing downstream acts on the card the
+    # owner replaced. A later regenerate reads image_spec / clone_spec to "keep the
+    # card" and hero_photo_key to keep or exclude the photo — left as they were,
+    # a rejection of an edited card silently rebuilt the pre-edit one: the wrong
+    # headline back, and the photo the owner removed pinned in place.
+    photo = _edited_photo(layout, {u for u in (cur["image_url"], cur["original_image_url"]) if u})
+    # design_template_*: the card is no longer that library layout. Left on the
+    # row, approving it credited the layout with a picture the owner made, and a
+    # redo re-adopted the id onto a card of a different design.
+    drop = ["image_spec", "clone_spec", "clone_content", "image_urls_by_size",
+            "design_template_id", "design_template_source"]
+    patch = {
+        "image_url": served, "media_url": served, "has_image": True,
+        "edit_layers": layout, "image_edited_by_owner": True,
+        # the owner made this image; an automated QA verdict on the one it
+        # replaced no longer describes anything on screen
+        "design_qa_failed": False,
+        # not a layout the renderer can reproduce — _is_pinnable_format rejects
+        # it, so a later "keep the layout" composes rather than pins nonsense
+        "image_format": "owner_edit",
+    }
+    if photo:
+        patch["hero_photo_key"] = photo   # the photo the owner put on the card
+    elif photo == "":
+        drop.append("hero_photo_key")     # the owner took the photo off
+    async with acquire(tenant_id) as conn:
+        tag = await conn.execute(
+            # original_image_url and generated_parts are set ONCE, from the card as
+            # generated — the coalesces read the row's pre-update payload, so a
+            # second edit does not overwrite them with the first edit's output.
+            # generated_parts keeps the words and layout the spec keys carried, so
+            # "Rebuild from parts" still has them after a save (only the layers
+            # endpoint reads it; no renderer does).
+            # The per-network renders (image_urls_by_size) were of the OLD picture —
+            # left in place, every other platform would post the card the owner
+            # just replaced. Dropped, they fall back to the edited primary.
+            "UPDATE actions SET payload = (payload - $3::text[]) "
+            "  || jsonb_build_object("
+            "       'original_image_url', COALESCE(payload->>'original_image_url', payload->>'image_url'), "
+            "       'generated_parts', COALESCE(payload->'generated_parts', jsonb_strip_nulls(jsonb_build_object("
+            "           'image_spec', payload->'image_spec', 'clone_spec', payload->'clone_spec', "
+            "           'clone_content', payload->'clone_content')))) "
+            "  || $2::jsonb "
+            "WHERE id=$1 AND action_type='content' AND status='pending'",
+            action_id, json.dumps(patch), drop)
+    if not tag.endswith(" 1"):
+        # approved or rejected in the moment between the check and the write
+        raise HTTPException(409, "only a post awaiting approval can be edited")
+    return {"ok": True, "id": str(action_id), "image_url": served}
 
 
 @router.post("/queue/post/{action_id}/approve")

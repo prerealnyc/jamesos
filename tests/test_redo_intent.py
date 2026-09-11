@@ -102,6 +102,10 @@ def test_a_rejected_cloned_design_can_escape_its_template():
     from james_os import api_v1
 
     src = inspect.getsource(api_v1._run_regenerate)
-    gate = src[src.index("rebuild_in_place = ("):src.index("if rebuild_in_place:")]
-    assert 'layout != "new"' in gate, "the cloned branch must yield to a rejected design"
+    assert "rebuild_in_place = _rebuilds_in_place(payload, layout)" in src, \
+        "the redo must decide its branch with the intent-aware rule"
+    for fmt in ("cloned", "learned", "owner_edit"):
+        assert api_v1._rebuilds_in_place({"image_format": fmt}, "new") is False, \
+            "the cloned branch must yield to a rejected design"
+    assert api_v1._rebuilds_in_place({"cloned_from_competitor": True}, "new") is False
     assert _layout_intent("i hate this design. random things added") == "new"
