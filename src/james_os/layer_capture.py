@@ -510,6 +510,169 @@ def recompose(cap: dict) -> Image.Image:
     return base.convert("RGB")
 
 
+# --------------------------------------------------- a cut piece, back to words
+#
+# A card cut into pieces (dissect) has its words as pictures: they move, but
+# nothing can be typed into them. To type, the words have to be read back off
+# the piece and set again in type — so this reads them, then finds the face,
+# size, tracking and colour that put those words back exactly where the piece
+# sits. The editor swaps the piece for that line, and it is text from then on.
+
+_READ = (
+    "You read the words in a picture and nothing else. Return STRICT JSON "
+    "{\"text\": \"...\"}: exactly the words you see, keeping their case, "
+    "punctuation and order, with \\n between lines. No description, no "
+    "commentary, no guesses — if there are no words, return an empty string."
+)
+
+
+async def read_words(png: bytes) -> str:
+    """The words on a piece, read from the picture. "" when they cannot be."""
+    from .render_reviewer import _MODEL, _as_data_uri, _client
+
+    client = _client()
+    if client is None:
+        return ""
+    try:
+        resp = await client.chat.completions.create(
+            model=_MODEL,
+            messages=[{"role": "system", "content": _READ},
+                      {"role": "user", "content": [
+                          {"type": "text", "text": "The words in this picture:"},
+                          {"type": "image_url",
+                           "image_url": {"url": _as_data_uri(bytes(png)), "detail": "high"}}]}],
+            max_tokens=200, temperature=0.0, response_format={"type": "json_object"})
+        import json as _json
+        return str(_json.loads(resp.choices[0].message.content or "{}").get("text") or "").strip()
+    except Exception:  # noqa: BLE001 — the piece stays a piece
+        logger.warning("could not read the words on a piece", exc_info=True)
+        return ""
+
+
+def _ink_colour(piece: Image.Image) -> str:
+    """The colour of the letters — the commonest solid pixel in the piece."""
+    import numpy as np
+
+    rgba = np.asarray(piece.convert("RGBA"), dtype=np.uint8)
+    solid = rgba[rgba[..., 3] > 200][:, :3]
+    if not len(solid):
+        return "#ffffff"
+    # the commonest colour, at 8 levels per channel so antialiasing does not win
+    keys = (solid // 32).astype(np.int32)
+    flat = keys[:, 0] * 64 + keys[:, 1] * 8 + keys[:, 2]
+    pick = np.bincount(flat).argmax()
+    chosen = solid[flat == pick].mean(axis=0)
+    return "#%02x%02x%02x" % tuple(int(round(c)) for c in chosen)
+
+
+def _faces(font_theme: dict | None) -> list[str]:
+    """The faces this brand's cards are set in — the ones a line could be."""
+    from . import image_compose
+
+    out = []
+    for path in ((font_theme or {}).get("display"), (font_theme or {}).get("body"),
+                 image_compose._ANTON, image_compose._ARCHIVO):
+        if path and path not in out:
+            out.append(str(path))
+    return out
+
+
+def _draw_ink(text: str, font, tracking: float, pad: int):
+    """Set `text` on transparency and say where its letters actually land —
+    measured off the pixels, the same way a piece's own ink is measured, so the
+    two can be lined up exactly."""
+    lines = text.split("\n")
+    step = sum(font.getmetrics())
+    tile = Image.new("L", (int(font.getlength(max(lines, key=len)) + tracking * len(max(lines, key=len))) + 4 * pad,
+                           step * len(lines) + 4 * pad), 0)
+    d = ImageDraw.Draw(tile)
+    for i, line in enumerate(lines):
+        y = pad + i * step
+        if tracking:
+            x = float(pad)
+            for ch in line:
+                _orig_text(d, (x, y), ch, 255, font, None)
+                x += font.getlength(ch) + tracking
+        else:
+            _orig_text(d, (pad, y), line, 255, font, None)
+    return tile.point(lambda v: 255 if v > 40 else 0).getbbox()
+
+
+def as_words(piece_png: bytes, text: str, box: dict, font_theme: dict | None) -> dict | None:
+    """The line that puts `text` back exactly where the piece sits: the face it
+    was set in, its size, tracking, colour and where it stands.
+
+    The face is the one whose own proportions match the piece's — set each
+    candidate as tall as the piece's letters and keep the one whose width comes
+    out closest. Where it stands is then measured off the pixels on both sides,
+    so the words land on the piece's own ink rather than near it. Returns a line
+    the editor lays out the same way it lays out a captured one."""
+    from PIL import ImageFont
+
+    piece = Image.open(io.BytesIO(piece_png)).convert("RGBA")
+    ink = piece.getchannel("A").point(lambda v: 255 if v > 40 else 0).getbbox()
+    if not text.strip() or ink is None:
+        return None
+    ix0, iy0, ix1, iy1 = ink
+    want_w, want_h = ix1 - ix0, iy1 - iy0
+    lines = [ln for ln in text.split("\n") if ln.strip()]
+    text = "\n".join(lines)
+    if not lines:
+        return None
+    pad = 40
+    best = None
+    for face in _faces(font_theme):
+        lo, hi = 6, max(12, int(want_h * 3) + 8)
+        while lo < hi:                       # as tall as the piece's letters
+            mid = (lo + hi + 1) // 2
+            try:
+                got = _draw_ink(text, ImageFont.truetype(face, mid), 0.0, pad)
+            except Exception:  # noqa: BLE001
+                got = None
+            if got and (got[3] - got[1]) <= want_h:
+                lo = mid
+            else:
+                hi = mid - 1
+        try:
+            font = ImageFont.truetype(face, lo)
+        except Exception:  # noqa: BLE001
+            continue
+        got = _draw_ink(text, font, 0.0, pad)
+        if not got:
+            continue
+        err = abs((got[2] - got[0]) - want_w) / max(1.0, want_w)
+        if best is None or err < best[0]:
+            best = (err, face, font, got)
+    if best is None:
+        return None
+    err, face, font, natural = best
+    size = int(getattr(font, "size", 0) or 0)
+    ascent, descent = font.getmetrics()
+    longest = max(len(ln) for ln in lines)
+    # wider than the face sets it? the line was letter-spaced
+    tracking = round((want_w - (natural[2] - natural[0])) / (longest - 1), 2) \
+        if longest > 1 and want_w > (natural[2] - natural[0]) else 0.0
+    laid = _draw_ink(text, font, tracking, pad) or natural
+    # One line stands by its own middle (line height 1); several stand by the
+    # step between them, which the piece's own height gives.
+    line_h = ((iy1 - iy0) / len(lines)) if len(lines) > 1 else size
+    pen_x = box["x"] + ix0 - (laid[0] - pad)
+    pen_top = box["y"] + iy0 - (laid[1] - pad)
+    return {
+        "id": "piece", "text": text,
+        "x": float(pen_x), "baseline": float(pen_top + ascent),
+        "y": float(pen_top + (ascent + descent - size) / 2.0),
+        "size": size, "family": _face(font)[0], "weight": _face(font)[1],
+        "font_path": face, "fill": _ink_colour(piece), "opacity": 1.0,
+        "advance": float(laid[2] - laid[0]), "tracking": tracking,
+        "line_height": round(line_h / max(1, size), 3),
+        "ink": [float(box["x"] + ix0), float(box["y"] + iy0),
+                float(box["x"] + ix1), float(box["y"] + iy1)],
+        "stroke": 0, "stroke_fill": _ink_colour(piece),
+        "fit": round(abs((laid[2] - laid[0]) - want_w) / max(1.0, want_w), 3),
+    }
+
+
 # ------------------------------------------------------------ cut, not redrawn
 #
 # A card drawn by an earlier version of the renderer cannot be redrawn to the
@@ -951,5 +1114,5 @@ async def keep_slides(action_id, tenant_id, caps: list[dict], urls: list[str]) -
 
 
 __all__ = ["capture", "capture_slides", "mark_badge", "ensure_layers", "keep", "keep_slides",
-           "replate", "takes_photo", "dissect", "dissect_flat", "slide_urls", "recompose",
-           "drift", "MAX_DRIFT"]
+           "replate", "takes_photo", "dissect", "dissect_flat", "slide_urls", "read_words",
+           "as_words", "recompose", "drift", "MAX_DRIFT"]

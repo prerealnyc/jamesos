@@ -1710,6 +1710,77 @@ async def _fetch_photo(url: str) -> bytes:
     return bytes(buf)
 
 
+class PieceBody(BaseModel):
+    url: str = Field(..., max_length=2000)
+    slide: int | None = None
+
+
+@router.post("/queue/post/{action_id}/piece-words")
+async def v1_post_piece_words(action_id: UUID, body: PieceBody,
+                              tenant_id: TenantDep) -> dict[str, Any]:
+    """The words on one cut piece, and the line that sets them again in type.
+
+    A card an older renderer drew is opened as pieces of itself (layer_capture
+    .dissect), so its words are pictures: they move, but nothing can be typed
+    into them. This reads the words off the piece and works out the face, size,
+    tracking and colour that put them back exactly where the piece sits — so the
+    editor can swap that picture for text the owner types into.
+
+    Only a piece of THIS draft can be read: the url must be one this card's own
+    layers carry. Read once, then kept on the draft."""
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            "SELECT status, payload FROM actions WHERE id=$1 AND action_type='content'",
+            action_id)
+    if row is None:
+        raise HTTPException(404, "post not found")
+    if row["status"] != "pending":
+        raise HTTPException(409, "only a post awaiting approval can be edited")
+    p = row["payload"]
+    p = json.loads(p) if isinstance(p, str) else (p or {})
+
+    url = body.url.strip()
+    docs = [p.get("render_layers")] + list((p.get("render_layers_slides") or {}).values())
+    box = next((im for doc in docs if isinstance(doc, dict)
+                for im in (doc.get("images") or []) if im.get("url") == url), None)
+    if box is None:
+        raise HTTPException(404, "that piece is not part of this card")
+    cached = (p.get("piece_words") or {}).get(url)
+    if isinstance(cached, dict):
+        return cached
+
+    from .layer_capture import as_words, read_words
+    from .template_clone import _fetch_bytes
+
+    png = await _fetch_bytes(url)
+    if not png:
+        raise HTTPException(404, "that piece could not be read")
+    words = await read_words(png)
+    theme = None
+    try:
+        from . import brand_identity as _bi, font_themes as _ftm
+        theme = _ftm.resolve(await _bi.get_brand_font(tenant_id))
+    except Exception:  # noqa: BLE001 — the house faces are the fallback
+        theme = None
+    line = None
+    try:
+        line = as_words(png, words, box, theme) if words else None
+    except Exception:  # noqa: BLE001 — the piece stays a piece
+        _log.warning("editor: could not set the words of a piece for %s", action_id, exc_info=True)
+    out = {"words": words, "line": line}
+    if line:
+        try:
+            async with acquire(tenant_id) as conn:
+                await conn.execute(
+                    "UPDATE actions SET payload = jsonb_set(payload, '{piece_words}', "
+                    "  COALESCE(payload->'piece_words', '{}'::jsonb) "
+                    "  || jsonb_build_object($2::text, $3::jsonb), true) WHERE id = $1",
+                    action_id, url, json.dumps(out))
+        except Exception:  # noqa: BLE001 — serve it anyway
+            _log.warning("editor: could not keep the words of a piece", exc_info=True)
+    return out
+
+
 @router.post("/queue/post/{action_id}/replate")
 async def v1_post_replate(action_id: UUID, body: ReplateBody, tenant_id: TenantDep) -> dict[str, Any]:
     """This card's design drawn again around another photo, for the editor.

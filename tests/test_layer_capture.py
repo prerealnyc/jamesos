@@ -870,3 +870,112 @@ def test_saving_the_cover_mirrors_it_and_drops_the_stale_shapes(monkeypatch):
     patch = json.loads(args[4])
     assert patch["image_url"] == patch["media_url"] == "https://cdn.example/c.png"
     assert args[5] == "image_urls_by_size"
+
+
+# ------------------------------------------------- a cut piece, back into words
+
+def _piece_of(text, face, size, fill="#f4f6f8", tracking=0.0, at=(120, 300)):
+    """A cut piece as dissect makes one: the words on transparency, and its box."""
+    font = ImageFont.truetype(face, size)
+    tile = Image.new("RGBA", (1080, 400), (0, 0, 0, 0))
+    d = ImageDraw.Draw(tile)
+    if tracking:
+        x = 20.0
+        for ch in text:
+            lc._orig_text(d, (x, 60), ch, fill, font, None)
+            x += font.getlength(ch) + tracking
+    else:
+        lc._orig_text(d, (20, 60), text, fill, font, None)
+    box = tile.getbbox()
+    piece = tile.crop(box)
+    b = BytesIO()
+    piece.save(b, "PNG")
+    return b.getvalue(), {"x": at[0], "y": at[1], "w": piece.width, "h": piece.height,
+                          "kind": "text", "url": "https://cdn.example/piece.png"}
+
+
+def _ink_at(rec, size_px=(1080, 900)):
+    """Where the returned line's letters actually land when it is set."""
+    canvas = Image.new("RGB", size_px, "black")
+    d = ImageDraw.Draw(canvas)
+    font = ImageFont.truetype(rec["font_path"], rec["size"])
+    top = rec["baseline"] - font.getmetrics()[0]
+    if rec["tracking"]:
+        x = rec["x"]
+        for ch in rec["text"]:
+            lc._orig_text(d, (x, top), ch, "#ffffff", font, None)
+            x += font.getlength(ch) + rec["tracking"]
+    else:
+        lc._orig_text(d, (rec["x"], top), rec["text"], "#ffffff", font, None)
+    return canvas.convert("L").point(lambda v: 255 if v > 40 else 0).getbbox()
+
+
+def test_a_piece_becomes_a_line_that_stands_where_it_stood():
+    png, box = _piece_of("Skeleton Makes", image_compose._ARCHIVO, 96)
+    rec = lc.as_words(png, "Skeleton Makes", box, None)
+    assert rec is not None
+    assert rec["family"] == "Archivo Black" and abs(rec["size"] - 96) <= 2
+    l, t, r, b = _ink_at(rec)
+    assert abs(l - box["x"]) <= 2 and abs(t - box["y"]) <= 2, (l, t, box)
+    assert abs((r - l) - box["w"]) <= 4 and abs((b - t) - box["h"]) <= 3
+
+
+def test_the_letter_spacing_of_a_kicker_comes_back():
+    png, box = _piece_of("SKELON AGENCY", image_compose._ARCHIVO, 30, tracking=8.0)
+    rec = lc.as_words(png, "SKELON AGENCY", box, None)
+    assert rec is not None and abs(rec["tracking"] - 8.0) < 1.5
+    l, _t, r, _b = _ink_at(rec)
+    assert abs((r - l) - box["w"]) <= 4, "a tracked line must come back the same width"
+
+
+def test_the_colour_of_the_words_comes_back():
+    png, box = _piece_of("Branding", image_compose._ARCHIVO, 80, fill="#c8a46b")
+    rec = lc.as_words(png, "Branding", box, None)
+    assert rec is not None and rec["fill"].lower() == "#c8a46b"
+
+
+def test_a_piece_with_no_words_stays_a_piece():
+    bar = Image.new("RGBA", (120, 8), (200, 164, 107, 255))
+    b = BytesIO()
+    bar.save(b, "PNG")
+    box = {"x": 90, "y": 400, "w": 120, "h": 8}
+    assert lc.as_words(b.getvalue(), "", box, None) is None
+
+
+def test_the_face_is_chosen_by_how_the_letters_actually_set():
+    """Two faces of very different width: the one the piece was set in wins."""
+    png, box = _piece_of("HANDLE", image_compose._ANTON, 90)
+    rec = lc.as_words(png, "HANDLE", box, None)
+    assert rec is not None and rec["family"] == "Anton", rec["family"]
+
+
+def test_only_a_piece_of_this_card_can_be_read(monkeypatch):
+    from uuid import uuid4
+
+    from fastapi import HTTPException
+
+    api_v1, _payload, _wrote = _carousel_row(
+        monkeypatch, extra={"render_layers": {"images": [{"url": "https://cdn.example/mine.png",
+                                                          "x": 1, "y": 2, "w": 3, "h": 4}]}})
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(api_v1.v1_post_piece_words(
+            uuid4(), api_v1.PieceBody(url="https://cdn.example/someone-elses.png"), "t"))
+    assert e.value.status_code == 404
+
+
+def test_the_words_of_a_piece_are_read_once(monkeypatch):
+    from uuid import uuid4
+
+    kept = {"words": "READ ONCE", "line": {"text": "READ ONCE", "size": 40}}
+    api_v1, _payload, _wrote = _carousel_row(
+        monkeypatch, extra={"render_layers": {"images": [{"url": "https://cdn.example/mine.png",
+                                                          "x": 1, "y": 2, "w": 3, "h": 4}]},
+                            "piece_words": {"https://cdn.example/mine.png": kept}})
+
+    async def never(png):
+        raise AssertionError("the words were read again")
+    monkeypatch.setattr(lc, "read_words", never)
+
+    out = asyncio.run(api_v1.v1_post_piece_words(
+        uuid4(), api_v1.PieceBody(url="https://cdn.example/mine.png"), "t"))
+    assert out == kept
