@@ -990,6 +990,15 @@ async def ensure_layers(action_id, tenant_id, payload: dict, slide: int | None =
     have = payload.get("render_layers")
     if isinstance(have, dict) and have.get("plate_url") and src and have.get("of") == src:
         return have
+    # A card that could not be cut is remembered too. Capturing is three to five
+    # seconds of redrawing and comparing, and a card that will not come apart
+    # will not come apart the next time either — without this the editor paid
+    # that cost on EVERY open of the same card, forever (seven of sixty-four
+    # cards in the queue on 2026-09-15 were doing exactly that). The note is
+    # keyed by the picture it was of, so a redraw or a swapped photo is tried
+    # afresh.
+    if src and payload.get("no_layers_for") == src:
+        return None
     img = await _fetch_bytes(src) if src else None
     if not img:
         return None
@@ -1000,10 +1009,12 @@ async def ensure_layers(action_id, tenant_id, payload: dict, slide: int | None =
     try:
         cap = await _draw_again(tenant_id, payload, canvas)
     except Exception:  # noqa: BLE001 — never block the editor on a capture
+        # NOT noted: a crash here can be a storage blip or a timeout, and a note
+        # would make one bad minute permanent for this card.
         logger.warning("could not capture layers for %s", action_id, exc_info=True)
         return None
     if not cap or not cap.get("plate"):
-        return None
+        return await _no_layers(action_id, tenant_id, src)
     try:
         d = drift(cap, Image.open(io.BytesIO(img)))
     except Exception:  # noqa: BLE001
@@ -1019,7 +1030,7 @@ async def ensure_layers(action_id, tenant_id, payload: dict, slide: int | None =
     if cut is None:
         logger.info("layers for %s drift %.2f and it would not cut cleanly — not offered",
                     action_id, d)
-        return None
+        return await _no_layers(action_id, tenant_id, src)
     return await keep(action_id, tenant_id, cut, of=src, drift_=cut["drift"])
 
 
@@ -1059,6 +1070,26 @@ async def replate(tenant_id, payload: dict, photo: bytes, canvas: tuple[int, int
     if not cap or not cap.get("plate"):
         return None
     return await _store(tenant_id, cap, of="")
+
+
+async def _no_layers(action_id, tenant_id, of: str) -> None:
+    """Remember that this picture would not come apart, so the next open does
+    not spend the capture finding that out again. Always returns None, so it
+    reads as the answer at every call site: there are no layers for this card."""
+    import json
+
+    from .db import acquire
+
+    if not of:
+        return None
+    try:
+        async with acquire(tenant_id) as conn:
+            await conn.execute(
+                "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1",
+                action_id, json.dumps({"no_layers_for": of}))
+    except Exception:  # noqa: BLE001 — the note is an optimisation, not a result
+        logger.warning("could not note the failed capture for %s", action_id, exc_info=True)
+    return None
 
 
 async def keep(action_id, tenant_id, cap: dict, *, of: str, drift_: float = 0.0,

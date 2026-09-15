@@ -979,3 +979,74 @@ def test_the_words_of_a_piece_are_read_once(monkeypatch):
     out = asyncio.run(api_v1.v1_post_piece_words(
         uuid4(), api_v1.PieceBody(url="https://cdn.example/mine.png"), "t"))
     assert out == kept
+
+
+# --------------------------------------------------- a card that will not cut
+
+def test_a_card_that_cannot_be_cut_is_only_tried_once(monkeypatch):
+    """Capturing is three to five seconds of redrawing and comparing. A card
+    that will not come apart will not come apart next time either — and without
+    a note, the editor paid that on EVERY open of the same card, forever. Seven
+    of the sixty-four cards in the queue were doing exactly that on 2026-09-15.
+
+    A CRASH is deliberately not noted: that can be a storage blip, and a note
+    would make one bad minute permanent for the card."""
+    png = BytesIO()
+    Image.new("RGB", (1080, 1350), "white").save(png, format="PNG")
+    payload = {"image_url": "https://example.test/card.png"}
+    noted: list = []
+    tries: list = []
+
+    async def fake_bytes(url):
+        return png.getvalue()
+
+    async def wont_draw(tenant_id, p, canvas):
+        tries.append(canvas)
+        return None  # redrew and there was nothing to cut
+
+    async def fake_note(action_id, tenant_id, of):
+        noted.append(of)
+        payload["no_layers_for"] = of
+        return None
+
+    monkeypatch.setattr("james_os.template_clone._fetch_bytes", fake_bytes)
+    monkeypatch.setattr(lc, "_draw_again", wont_draw)
+    monkeypatch.setattr(lc, "_no_layers", fake_note)
+
+    first = asyncio.run(lc.ensure_layers("act-1", "ten-1", payload))
+    second = asyncio.run(lc.ensure_layers("act-1", "ten-1", payload))
+
+    assert first is None and second is None
+    assert noted == ["https://example.test/card.png"]
+    assert len(tries) == 1, "the second open redrew the card again"
+
+
+def test_a_redrawn_card_is_tried_afresh(monkeypatch):
+    """The note is keyed by the picture it was of, so a card whose picture
+    changes — a redraw, a swapped photo — gets its chance again."""
+    png = BytesIO()
+    Image.new("RGB", (1080, 1350), "white").save(png, format="PNG")
+    payload = {"image_url": "https://example.test/one.png",
+               "no_layers_for": "https://example.test/one.png"}
+    tries: list = []
+
+    async def fake_bytes(url):
+        return png.getvalue()
+
+    async def wont_draw(tenant_id, p, canvas):
+        tries.append(canvas)
+        return None
+
+    monkeypatch.setattr("james_os.template_clone._fetch_bytes", fake_bytes)
+    monkeypatch.setattr(lc, "_draw_again", wont_draw)
+    monkeypatch.setattr(lc, "_no_layers", lambda *a, **k: _none())
+
+    async def _none():
+        return None
+
+    assert asyncio.run(lc.ensure_layers("act-2", "ten-1", payload)) is None
+    assert tries == [], "a noted card was redrawn anyway"
+
+    payload["image_url"] = "https://example.test/two.png"
+    assert asyncio.run(lc.ensure_layers("act-2", "ten-1", payload)) is None
+    assert len(tries) == 1, "a card with a NEW picture was not tried"
