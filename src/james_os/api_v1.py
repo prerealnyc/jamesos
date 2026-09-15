@@ -1449,24 +1449,38 @@ async def v1_post_layers(action_id: UUID, tenant_id: TenantDep,
     photo = str(p.get("hero_photo_key") or "")
     photo_url = photo if photo.startswith(("http://", "https://")) else ""
 
-    palette, font, kit, logo_url = {}, "bold", {}, ""
+    # The brand's palette, typeface, kit and logo: four independent reads, and
+    # they used to be awaited one after another — about 1.5s of the editor's
+    # open, every time, entirely spent waiting. Together they take as long as
+    # the slowest one. Each still fails on its own: gather(return_exceptions)
+    # keeps one missing piece from costing the other three, which is what the
+    # separate try blocks were for.
+    from .brand_identity import ensure_brand_palette, get_brand_font
+    from .brand_kit import get_brand_kit
+    from .media import list_media
+
+    raw_palette, raw_font, raw_kit, raw_logos = await asyncio.gather(
+        ensure_brand_palette(tenant_id),
+        get_brand_font(tenant_id),
+        get_brand_kit(tenant_id),
+        list_media(role="brand_logo", tenant_id=tenant_id),
+        return_exceptions=True,
+    )
+
+    def _ok(v, what: str):
+        if isinstance(v, BaseException):
+            _log.warning("editor: %s unavailable: %s", what, v)
+            return None
+        return v
+
     try:
-        from .brand_identity import ensure_brand_palette, get_brand_font
-        palette = _palette_roles(await ensure_brand_palette(tenant_id))
-        font = await get_brand_font(tenant_id) or "bold"
+        palette = _palette_roles(_ok(raw_palette, "palette") or {})
     except Exception:  # noqa: BLE001 — the editor still opens without them
-        _log.warning("editor: palette/font unavailable", exc_info=True)
-    try:
-        from .brand_kit import get_brand_kit
-        kit = await get_brand_kit(tenant_id) or {}
-    except Exception:  # noqa: BLE001
-        kit = {}
-    try:
-        from .media import list_media
-        logos = await list_media(role="brand_logo", tenant_id=tenant_id)
-        logo_url = str((logos[0] if logos else {}).get("uri") or "")
-    except Exception:  # noqa: BLE001
-        logo_url = ""
+        palette = {}
+    font = str(_ok(raw_font, "font") or "") or "bold"
+    kit = _ok(raw_kit, "brand kit") or {}
+    logos = _ok(raw_logos, "logo") or []
+    logo_url = str((logos[0] if logos else {}).get("uri") or "")
 
     media_urls = p.get("media_urls")
     if isinstance(media_urls, str):
