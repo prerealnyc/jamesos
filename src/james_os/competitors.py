@@ -36,7 +36,12 @@ from .db import acquire
 PLATFORMS = ("instagram", "tiktok", "twitter")
 PLATFORM_LABEL = {"instagram": "Instagram", "tiktok": "TikTok", "twitter": "X"}
 
-STATUSES = ("candidate", "tracked", "rejected")
+# 'reference' is not a competitor: it is the shelf niche_reference.py keeps for
+# high-engagement posts in the niche whose account nobody tracks. It is a status
+# of its own precisely because every scraping loop asks for 'tracked' — so a
+# shelf with no account to scrape is skipped by all of them without a single
+# `if` added to sync, media, analysis or profiles.
+STATUSES = ("candidate", "tracked", "rejected", "reference")
 
 # Per-platform: the discovery fields we ask for, and the field names to read
 # them back from. Xpoz's shapes differ per platform, so normalisation is a
@@ -470,10 +475,15 @@ async def upsert_many(
 async def list_competitors(
     status: str = "", platform: str = "", tenant_id: UUID | None = None
 ) -> list[dict]:
+    """The roster. `status` takes one status or several, comma-separated
+    ("tracked,reference") — the studio wants the accounts it scrapes AND the
+    reference shelf in one read, while every scraping loop asks for 'tracked'
+    alone and must keep getting exactly that."""
     clauses, args = [], []
-    if status:
-        args.append(status)
-        clauses.append(f"status = ${len(args)}")
+    wanted = [s.strip() for s in status.split(",") if s.strip()]
+    if wanted:
+        args.append(wanted)
+        clauses.append(f"status = ANY(${len(args)}::text[])")
     if platform:
         args.append(platform)
         clauses.append(f"platform = ${len(args)}")

@@ -10,6 +10,7 @@
     GET  /competitors/posts               the saved shelf
     GET  /competitors/shelf               how much we hold
     GET  /competitors/gallery             posts + media + analysis, for review
+    POST /competitors/niche-reference     one niche picture onto the reference shelf
     POST /competitors/posts/replicate     the brand's verdict on one post
     GET  /competitors/top                 the highest-ranked pages in the niche
     POST /competitors/analyze             run the visual eyes  (background)
@@ -48,7 +49,15 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from pydantic import BaseModel, Field
 
 from . import (
@@ -60,6 +69,7 @@ from . import (
     competitor_template,
     competitor_vision,
     competitors,
+    niche_reference,
 )
 
 router = APIRouter()
@@ -337,6 +347,50 @@ async def competitors_gallery(
         media_only=media_only, sort=sort, limit=limit)
     return {"posts": posts, "count": len(posts),
             "counts": await competitor_sync.replicate_counts()}
+
+
+@router.post("/competitors/niche-reference", status_code=201)
+async def competitors_niche_reference(
+    file: UploadFile = File(...),
+    source_url: str = Form(""),
+    platform: str = Form(""),
+    author: str = Form(""),
+    interactions: int = Form(0),
+    posted_at: str = Form(""),
+    image_format: str = Form(""),
+    hook: str = Form(""),
+    why: str = Form(""),
+    recipe: str = Form(""),
+    niche: str = Form(""),
+    ref: str = Form(""),
+) -> dict:
+    """File one high-engagement picture from the niche as a layout reference.
+
+    The BYTES come with the request because the caller is the one holding the
+    monitoring vendor's credentials — its image host will not serve us, and
+    handing those credentials around so we could fetch the picture ourselves
+    would be worse than uploading the copy the caller already has.
+
+    A picture we already hold answers 201 with stored=false: a daily scan
+    re-reads the same top images, and that is the normal case, not a failure.
+    """
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "empty image")
+    if len(data) > niche_reference.MAX_IMAGE_BYTES:
+        raise HTTPException(413, "reference image too large (max 8 MB)")
+    if not niche_reference.sniff(data):
+        raise HTTPException(415, "that file is not a PNG, JPEG, GIF or WebP image")
+    return await niche_reference.save_reference(
+        _tenant(), image=data, source_url=source_url, platform=platform,
+        author=author, interactions=interactions, posted_at=posted_at,
+        fmt=image_format, hook=hook, why=why, recipe=recipe, niche=niche, ref=ref)
+
+
+@router.get("/competitors/niche-references")
+async def competitors_niche_reference_count() -> dict:
+    """How many references this brand holds, and how many are already layouts."""
+    return await niche_reference.count(_tenant())
 
 
 class ReplicateRequest(BaseModel):

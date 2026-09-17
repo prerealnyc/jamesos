@@ -346,13 +346,16 @@ async def _unlearned_competitor_stills(tenant_id, limit: int) -> list[dict]:
     async with acquire(tenant_id) as conn:
         rows = await conn.fetch(
             """SELECT p.id, p.stored_media_url, p.url, p.platform, p.engagement_rate,
-                      c.handle
+                      c.handle, c.status AS shelf_status, c.discovered_via
                  FROM competitor_posts p
                  JOIN competitors c ON c.id = p.competitor_id
                 WHERE p.stored_media_url <> ''
                   AND p.media_type IN ('image', 'carousel')
                   AND p.template_read_at IS NULL
-             ORDER BY p.engagement_rate DESC NULLS LAST
+             -- likes breaks the tie: a niche reference has no follower base to
+             -- divide by, so its engagement_rate is 0 and its real signal is
+             -- the interaction count itself.
+             ORDER BY p.engagement_rate DESC NULLS LAST, p.likes DESC
                 LIMIT $1""",
             max(1, min(int(limit), 50)),
         )
@@ -430,8 +433,13 @@ async def learn_from_competitors(tenant_id, *, limit: int = 12) -> dict:
             await _mark_read(tenant_id, p["id"])
             continue
         before = await count(tenant_id, active_only=False)
+        # A picture off the niche-reference shelf is not a competitor's post —
+        # nobody tracks the account, and often the platform never named one. It
+        # is kept apart so provenance can say what it really is: a layout from
+        # the niche, not "what @handle does".
+        kind = "niche" if p.get("shelf_status") == "reference" else "competitor"
         tid = await save(
-            tenant_id, spec, source_kind="competitor", source_post_id=str(p["id"]),
+            tenant_id, spec, source_kind=kind, source_post_id=str(p["id"]),
             source_url=p.get("url") or "", source_image_uri=p["stored_media_url"],
             source_handle=p.get("handle") or "", source_platform=p.get("platform") or "",
             source_engagement=float(p.get("engagement_rate") or 0),
