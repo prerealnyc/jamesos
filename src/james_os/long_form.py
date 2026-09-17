@@ -288,8 +288,17 @@ async def fetch_from_youtube_then_ingest(
 
     from .drive import big_file_tmp_dir
 
-    async with acquire(tenant_id) as conn:
-        await _set(conn, source_id, status="downloading")
+    # 'uploading' is this table's word for "getting the file into our hands" —
+    # the Drive worker stays on it while it streams, too. It used to say
+    # "downloading", which reads better and is not one of the five statuses the
+    # column allows, so EVERY YouTube import died on this line: a CheckViolation
+    # thrown before the try below, leaving the row at 'uploading' with no error
+    # on it, forever. Three of skelon's sat like that on 2026-09-18.
+    try:
+        async with acquire(tenant_id) as conn:
+            await _set(conn, source_id, status="uploading")
+    except Exception as e:  # noqa: BLE001
+        return await _fail(source_id, f"could not start the import: {e}", tenant_id)
 
     try:
         download_url, resolved_title, size = await _apify_youtube_resolve(youtube_url)
