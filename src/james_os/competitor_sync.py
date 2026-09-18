@@ -46,8 +46,14 @@ _POST_FIELDS: dict[str, list[str]] = {
         "username",
     ],
     "tiktok": [
+        # NO "duration". The vendor client types TiktokPost.duration as an int
+        # and TikTok returns seconds as a float (65.713), so asking for it
+        # raises a pydantic ValidationError for the WHOLE page — every TikTok
+        # account synced zero posts, silently, for as long as this list has
+        # existed. The field is worth one integer; the posts are worth the
+        # shelf. `_normalize` already defaults it to 0 when it is absent.
         "id", "description", "like_count", "comment_count", "forward_count",
-        "play_count", "created_at_date", "duration", "post_type",
+        "play_count", "created_at_date", "post_type",
         "video_thumbnail", "video_url", "hashtags", "username",
     ],
     "twitter": [
