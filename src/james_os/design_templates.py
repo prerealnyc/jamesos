@@ -345,7 +345,7 @@ async def _unlearned_competitor_stills(tenant_id, limit: int) -> list[dict]:
     cannot keep the picture for is a layout we cannot show the provenance of."""
     async with acquire(tenant_id) as conn:
         rows = await conn.fetch(
-            """SELECT p.id, p.stored_media_url, p.url, p.platform, p.engagement_rate,
+            r"""SELECT p.id, p.stored_media_url, p.url, p.platform, p.engagement_rate,
                       c.handle, c.status AS shelf_status, c.discovered_via
                  FROM competitor_posts p
                  JOIN competitors c ON c.id = p.competitor_id
