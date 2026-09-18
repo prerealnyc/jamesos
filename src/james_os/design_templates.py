@@ -350,7 +350,12 @@ async def _unlearned_competitor_stills(tenant_id, limit: int) -> list[dict]:
                  FROM competitor_posts p
                  JOIN competitors c ON c.id = p.competitor_id
                 WHERE p.stored_media_url <> ''
-                  AND p.media_type IN ('image', 'carousel')
+                  -- A video post whose stored copy is a PICTURE counts: a
+                  -- YouTube thumbnail is a designed card (big headline, face,
+                  -- brand colours) and in some niches it is the ONLY designed
+                  -- still anyone posts. What we hold decides, not the label.
+                  AND (p.media_type IN ('image', 'carousel')
+                       OR p.stored_media_url ~* '\.(jpe?g|png|webp)$')
                   AND p.template_read_at IS NULL
              -- likes breaks the tie: a niche reference has no follower base to
              -- divide by, so its engagement_rate is 0 and its real signal is

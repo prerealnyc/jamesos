@@ -34,7 +34,17 @@ from .db import acquire
 
 # Xpoz namespace name → how we label it in the UI.
 PLATFORMS = ("instagram", "tiktok", "twitter")
-PLATFORM_LABEL = {"instagram": "Instagram", "tiktok": "TikTok", "twitter": "X"}
+PLATFORM_LABEL = {"instagram": "Instagram", "tiktok": "TikTok", "twitter": "X",
+                  "youtube": "YouTube", "linkedin": "LinkedIn"}
+
+# What we can SCRAPE is wider than what we can DISCOVER. Xpoz searches (and
+# verifies handles on) its own three; YouTube and LinkedIn come in by name —
+# from the brand's approved peers — and are fetched through Apify
+# (competitor_apify). Keeping the two lists apart is the point: a B2B agency's
+# real presence is LinkedIn and a creator's is YouTube, and dropping those
+# peers at the door left their content, their pictures and their layouts out
+# of the shelf entirely.
+SCRAPE_PLATFORMS = PLATFORMS + ("youtube", "linkedin")
 
 # 'reference' is not a competitor: it is the shelf niche_reference.py keeps for
 # high-engagement posts in the niche whose account nobody tracks. It is a status
@@ -98,6 +108,11 @@ _PROFILE_URL = {
     "instagram": "https://www.instagram.com/{h}/",
     "tiktok": "https://www.tiktok.com/@{h}",
     "twitter": "https://x.com/{h}",
+    # Scrape-only platforms (no Xpoz search). A LinkedIn handle may be a
+    # company or a person; the company page is the commoner case for a peer,
+    # and competitor_apify tries both when it fetches.
+    "youtube": "https://www.youtube.com/@{h}",
+    "linkedin": "https://www.linkedin.com/company/{h}/",
 }
 
 
@@ -515,21 +530,28 @@ async def add_competitor(
     already know who to watch and don't need discovery."""
     platform = (platform or "").strip().lower()
     handle = (handle or "").strip().lstrip("@")
-    if platform not in PLATFORMS or not handle:
-        raise ValueError(f"platform must be one of {PLATFORMS} and handle non-empty")
+    if platform not in SCRAPE_PLATFORMS or not handle:
+        raise ValueError(
+            f"platform must be one of {SCRAPE_PLATFORMS} and handle non-empty")
 
     # Resolve the handle before storing it. A typo'd handle would otherwise
     # sit in the table forever failing to sync, and an unresolved row has
     # followers=0 — which silently turns every engagement rate into 0.00%.
-    found, _unresolved = await verify_handles([{"platform": platform, "handle": handle}])
+    # Only Xpoz platforms can be verified; YouTube and LinkedIn are fetched
+    # through Apify and have no search to resolve against, so "unresolved"
+    # there is a fact about our tooling, not about the account.
+    found: list[dict] = []
+    if platform in PLATFORMS:
+        found, _unresolved = await verify_handles([{"platform": platform, "handle": handle}])
     if found:
         cand = found[0]
         cand["why"] = "added by hand"
     else:
         cand = {"platform": platform, "handle": handle, "name": name,
                 "profile_url": _PROFILE_URL[platform].format(h=handle),
-                "why": "added by hand — handle did not resolve on "
-                       f"{PLATFORM_LABEL[platform]}"}
+                "why": ("added by hand" if platform not in PLATFORMS else
+                        "added by hand — handle did not resolve on "
+                        f"{PLATFORM_LABEL[platform]}")}
     if name:
         cand["name"] = name
 

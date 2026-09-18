@@ -31,6 +31,7 @@ from uuid import UUID
 
 import httpx
 
+from . import competitor_apify
 from .competitors import PLATFORMS, _g, _int, configured
 from .config import settings
 from .db import acquire
@@ -379,27 +380,42 @@ async def sync_competitor(
     base = {"competitor_id": competitor.get("id"), "handle": handle,
             "platform": platform, "fetched": 0, "stored": 0,
             "media_stored": 0, "media_skipped": []}
-    if platform not in PLATFORMS or not handle:
+    if not handle:
+        return {**base, "error": "no handle"}
+    # YouTube and LinkedIn have no Xpoz search; they come in by name from the
+    # brand's approved peers and are fetched through Apify instead. Everything
+    # after this point is identical — the two fetchers return the same rows.
+    via_apify = platform in competitor_apify.PLATFORMS
+    if not via_apify and platform not in PLATFORMS:
         return {**base, "error": f"unsupported platform '{platform}'"}
-    if not configured():
-        return {**base, "error": "No Xpoz API key configured."}
-    try:
-        import xpoz
-    except ImportError:
-        return {**base, "error": "The `xpoz` package isn't installed on the server."}
+    if via_apify and not competitor_apify.configured():
+        return {**base, "error": "No Apify token configured (APIFY_API_KEY)."}
+    if not via_apify:
+        if not configured():
+            return {**base, "error": "No Xpoz API key configured."}
+        try:
+            import xpoz
+        except ImportError:
+            return {**base, "error": "The `xpoz` package isn't installed on the server."}
 
     # Follower count first — engagement rate is meaningless without it.
+    # (A no-op on the Apify platforms: there is no profile search to read.)
     competitor = await refresh_profile(competitor, tenant_id=tenant_id)
 
-    try:
-        async with xpoz.AsyncXpozClient(
-            settings.xpoz_api_key.strip(), check_update=False, timeout=45
-        ) as c:
-            posts = await _fetch_posts(c, platform, handle, limit, days)
-    except TimeoutError:
-        return {**base, "error": "timed out"}
-    except Exception as e:  # noqa: BLE001
-        return {**base, "error": f"{type(e).__name__}: {e}"}
+    if via_apify:
+        posts, err = await competitor_apify.fetch_posts(platform, handle, limit, days)
+        if err and not posts:
+            return {**base, "error": err}
+    else:
+        try:
+            async with xpoz.AsyncXpozClient(
+                settings.xpoz_api_key.strip(), check_update=False, timeout=45
+            ) as c:
+                posts = await _fetch_posts(c, platform, handle, limit, days)
+        except TimeoutError:
+            return {**base, "error": "timed out"}
+        except Exception as e:  # noqa: BLE001
+            return {**base, "error": f"{type(e).__name__}: {e}"}
 
     followers = _int(competitor.get("followers"))
     stored: list[dict] = []
@@ -421,13 +437,19 @@ async def sync_competitor(
         for row in ranked:
             if row.get("stored_media_url"):
                 continue
-            kind = "video" if row.get("media_type") == "video" else "image"
+            # What we actually DOWNLOAD decides the kind. A video post with no
+            # file URL (YouTube gives none) falls back to its thumbnail, and
+            # storing a JPEG under .mp4 makes it unreadable to the design eye
+            # and unrenderable in the grid.
+            src = row.get("media_url") or ""
+            kind = "video" if (row.get("media_type") == "video" and src) else "image"
+            if not src:
+                src = row.get("thumbnail_url") or ""
             if kind == "video":
                 if videos_done >= video_cap:
                     skipped.append({"url": row.get("url"), "reason": "video cap"})
                     continue
                 videos_done += 1
-            src = row.get("media_url") or row.get("thumbnail_url") or ""
             durable, err = await _store_media(
                 src, str(row["tenant_id"]), kind, f"{platform}-{handle}-{row['post_id']}")
             if durable:
