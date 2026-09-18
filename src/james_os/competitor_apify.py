@@ -193,6 +193,18 @@ def _recent(rows: list[dict], days: int) -> list[dict]:
     return [r for r in rows if r.get("posted_at") is None or r["posted_at"] >= cutoff]
 
 
+def _window(rows: list[dict], days: int) -> tuple[list[dict], str]:
+    """Apply the date window, and SAY SO when it is what emptied the result.
+
+    A company page that posts monthly has nothing inside 90 days, and
+    "fetched 0, no error" reads as a broken scraper rather than a quiet
+    account — which is exactly how it read the first time."""
+    kept = _recent(rows, days)
+    if rows and not kept:
+        return [], f"found {len(rows)} posts, all older than {days} days"
+    return kept, ""
+
+
 async def fetch_posts(platform: str, handle: str, limit: int = 24,
                       days: int = 120) -> tuple[list[dict], str]:
     """A competitor's own recent posts. Returns (rows, error); never raises."""
@@ -216,7 +228,7 @@ async def fetch_posts(platform: str, handle: str, limit: int = 24,
         if err:
             return [], err
         rows = [x for x in (_youtube_row(handle, i) for i in items) if x]
-        return _recent(rows, days), ""
+        return _window(rows, days)
 
     # LinkedIn: company page first, then the person. A run that finds nothing
     # costs nothing, which is what makes trying twice reasonable.
@@ -231,7 +243,9 @@ async def fetch_posts(platform: str, handle: str, limit: int = 24,
         err = err or err2
     if not rows and not err:
         err = "no posts found for that LinkedIn handle (company or profile)"
-    return _recent(rows, days), ("" if rows else err)
+    if not rows:
+        return [], err
+    return _window(rows, days)
 
 
 __all__ = ["PLATFORMS", "configured", "fetch_posts", "youtube_url", "linkedin_urls"]
