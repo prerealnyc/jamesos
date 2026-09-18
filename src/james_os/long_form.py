@@ -395,6 +395,9 @@ async def _process_local_video(
             return await _fail(
                 source_id, "Whisper returned no transcript", tenant_id,
             )
+        junk = hallucinated(full_text, duration_s or 0.0)
+        if junk:
+            return await _fail(source_id, junk, tenant_id)
 
     async with acquire(tenant_id) as conn:
         await _set(
@@ -703,6 +706,47 @@ def _dedupe_candidates(cands: list[dict]) -> list[dict]:
             continue
         out.append(c)
     return out
+
+
+# Whisper invents speech when there is none. Fed a silent drone shot or a
+# music-only promo it does not return nothing — it returns something, and the
+# something comes from what it was trained on: "Thanks for watching!", Chinese
+# subscribe-spam, or pages of Khmer. On 2026-09-18 three of Turtleback's videos
+# transcribed as Khmer and one as "请不吝点赞 订阅 转发", and reels were cut at
+# moments chosen from those words, captioned with them, and put in front of the
+# owner as their own content.
+#
+# Real speech in these videos runs 1.4 to 2.1 words a second. Every hallucinated
+# transcript measured 0.02 to 0.73. The gap is not close, so the test is simply
+# whether anybody was talking.
+MIN_WORDS_PER_SECOND = 0.8
+# Below this a video is too short for the rate to mean anything.
+_RATE_FLOOR_S = 8.0
+# Whole transcripts Whisper emits for silence, near-verbatim.
+_EMPTY_HALLUCINATIONS = {
+    "thank you", "thanks", "thanks.", "thank you.", "you", "bye", "bye.",
+    "thanks for watching", "thanks for watching!", "thank you for watching",
+    "thank you for watching!", "please subscribe", "subscribe", ".", "!",
+}
+
+
+def hallucinated(full_text: str, duration_s: float) -> str:
+    """Why this transcript cannot be cut on — or "" when it can.
+
+    Not a quality judgement: a transcript this sparse means nobody was talking,
+    and a reel cut from words nobody said is worse than no reel at all."""
+    text = " ".join((full_text or "").split())
+    if not text:
+        return "Whisper returned no transcript"
+    if text.strip().lower().strip("\"'") in _EMPTY_HALLUCINATIONS:
+        return ("no speech in this video — the transcript is what Whisper writes "
+                "for silence")
+    if duration_s >= _RATE_FLOOR_S:
+        rate = len(text.split()) / duration_s
+        if rate < MIN_WORDS_PER_SECOND:
+            return (f"no usable speech — {rate:.2f} words a second over "
+                    f"{duration_s:.0f}s reads as music or silence, not talking")
+    return ""
 
 
 async def find_candidates(
