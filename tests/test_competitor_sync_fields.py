@@ -9,7 +9,7 @@ account in every tenant synced zero posts, silently.
 
 import pytest
 
-from james_os.competitor_sync import _POST_FIELDS, _normalize
+from james_os.competitor_sync import _POST_FIELDS, _normalize, media_choice
 
 pytestmark = pytest.mark.nodb
 
@@ -44,3 +44,45 @@ def test_a_fractional_duration_would_still_normalise_if_it_ever_arrives():
     out = _normalize("tiktok", "x", {"id": "1", "duration": 65.713, "description": "",
                                      "like_count": 0, "comment_count": 0})
     assert out["duration"] == 65
+
+
+def test_a_video_past_the_cap_keeps_its_cover_instead_of_nothing():
+    """Downloading every video is expensive, so a cap is right — but SKIPPING
+    the post means the design eye can never read it. skelon held 100 posts and
+    28 pictures; the other 72 were invisible."""
+    vid = {"media_type": "video", "media_url": "https://cdn/v.mp4",
+           "thumbnail_url": "https://cdn/cover.jpg"}
+    # inside the cap: the file itself
+    assert media_choice(vid, 0, 3) == ("https://cdn/v.mp4", "video", "")
+    # past it: the cover, as an IMAGE (so it is stored as .jpg and readable)
+    assert media_choice(vid, 3, 3) == ("https://cdn/cover.jpg", "image", "")
+    # past it with no cover at all: reported, not silently dropped
+    src, kind, reason = media_choice({**vid, "thumbnail_url": ""}, 3, 3)
+    assert (src, reason) == ("", "video cap, no cover")
+
+
+def test_a_video_with_no_file_url_is_stored_as_the_picture_it_actually_is():
+    """YouTube hands over no file. Storing its JPEG cover under .mp4 made it
+    unreadable to the eye and unrenderable in the grid."""
+    yt = {"media_type": "video", "media_url": "",
+          "thumbnail_url": "https://i.ytimg.com/vi/x/maxresdefault.jpg"}
+    assert media_choice(yt, 0, 3) == (yt["thumbnail_url"], "image", "")
+
+
+def test_an_image_post_takes_its_file_and_a_post_with_nothing_says_so():
+    img = {"media_type": "image", "media_url": "https://cdn/p.jpg", "thumbnail_url": ""}
+    assert media_choice(img, 0, 3) == ("https://cdn/p.jpg", "image", "")
+    assert media_choice({"media_type": "image"}, 0, 3) == ("", "image", "no media url")
+
+
+def test_the_chain_ends_by_measuring_the_gap():
+    """competitor_gaps was empty for two of three brands because the gap was
+    only computed when somebody opened that view."""
+    import inspect
+
+    from james_os import competitor_sync
+
+    src = inspect.getsource(competitor_sync.full_refresh)
+    assert "competitor_gap" in src
+    assert "content_gap(" in src
+    assert '"steps": 5' in src, "the progress line must count the stage it now runs"

@@ -218,6 +218,32 @@ async def _fetch_posts(client: Any, platform: str, handle: str,
 
 # ── durable media ─────────────────────────────────────────────────────
 
+def media_choice(row: dict, videos_done: int, video_cap: int) -> tuple[str, str, str]:
+    """(url to fetch, what it IS, skip reason) for one post's media.
+
+    Two rules learned the hard way:
+
+      * what we actually DOWNLOAD decides the kind. A video post with no file
+        URL (YouTube gives none) falls back to its cover, and storing a JPEG
+        under .mp4 leaves it unreadable to the design eye and unrenderable in
+        the grid.
+      * past the video cap we take the COVER rather than skipping the post.
+        Downloading every video is expensive, so the cap is right — but a post
+        with no picture can never be analysed, and video is most of some
+        niches: skelon held 100 posts and 28 pictures, so the eye had nothing
+        to read for the other 72.
+    """
+    file_url = str(row.get("media_url") or "")
+    cover = str(row.get("thumbnail_url") or "")
+    is_video = (row.get("media_type") == "video") and bool(file_url)
+    if not is_video:
+        src = file_url or cover
+        return (src, "image", "") if src else ("", "image", "no media url")
+    if videos_done >= video_cap:
+        return (cover, "image", "") if cover else ("", "video", "video cap, no cover")
+    return file_url, "video", ""
+
+
 async def _store_media(url: str, tenant: str, kind: str, label: str) -> tuple[str, str]:
     """Copy one media URL into our own storage. Returns (durable_url, error).
 
@@ -437,18 +463,11 @@ async def sync_competitor(
         for row in ranked:
             if row.get("stored_media_url"):
                 continue
-            # What we actually DOWNLOAD decides the kind. A video post with no
-            # file URL (YouTube gives none) falls back to its thumbnail, and
-            # storing a JPEG under .mp4 makes it unreadable to the design eye
-            # and unrenderable in the grid.
-            src = row.get("media_url") or ""
-            kind = "video" if (row.get("media_type") == "video" and src) else "image"
-            if not src:
-                src = row.get("thumbnail_url") or ""
+            src, kind, reason = media_choice(row, videos_done, video_cap)
+            if reason:
+                skipped.append({"url": row.get("url"), "reason": reason})
+                continue
             if kind == "video":
-                if videos_done >= video_cap:
-                    skipped.append({"url": row.get("url"), "reason": "video cap"})
-                    continue
                 videos_done += 1
             durable, err = await _store_media(
                 src, str(row["tenant_id"]), kind, f"{platform}-{handle}-{row['post_id']}")
@@ -762,11 +781,11 @@ async def full_refresh(
     (a capped provider, a dead actor) must not cost the stages that already
     succeeded, so each is caught and reported rather than raised.
     """
-    from . import competitor_media, competitor_profile, competitor_vision
+    from . import competitor_gap, competitor_media, competitor_profile, competitor_vision
 
     def _say(stage: str, n: int) -> None:
         if progress:
-            progress({"stage": stage, "step": n, "steps": 4})
+            progress({"stage": stage, "step": n, "steps": 5})
 
     out: dict = {"stages": {}}
 
@@ -802,6 +821,21 @@ async def full_refresh(
         out["stages"]["profiles"] = {"built": r.get("built", 0)}
     except Exception as e:  # noqa: BLE001
         out["stages"]["profiles"] = {"error": str(e)[:200]}
+
+    # The subtraction — what they post that we don't. It was computed only when
+    # somebody opened the gap view, so the table was empty for every brand
+    # nobody had opened it for: two of three, measured 2026-09-19. It belongs
+    # at the end of the chain because it needs BOTH sides, and the analyses it
+    # reads were only just written.
+    _say("measuring the gap", 5)
+    try:
+        r = await competitor_gap.content_gap(tenant_id=tenant_id)
+        out["stages"]["gap"] = {
+            "gaps": len(((r or {}).get("facts") or {}).get("measured_format_shortfall") or []),
+            "insufficient": list((r or {}).get("insufficient") or []),
+        }
+    except Exception as e:  # noqa: BLE001
+        out["stages"]["gap"] = {"error": str(e)[:200]}
 
     out["status"] = await studio_status(tenant_id)
     return out
