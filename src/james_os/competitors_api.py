@@ -11,6 +11,8 @@
     GET  /competitors/shelf               how much we hold
     GET  /competitors/gallery             posts + media + analysis, for review
     POST /competitors/niche-reference     one niche picture onto the reference shelf
+    POST /competitors/screen              re-read the candidates' bios, cull the
+                                          off-niche ones
     POST /competitors/posts/replicate     the brand's verdict on one post
     GET  /competitors/top                 the highest-ranked pages in the niche
     POST /competitors/analyze             run the visual eyes  (background)
@@ -347,6 +349,39 @@ async def competitors_gallery(
         media_only=media_only, sort=sort, limit=limit)
     return {"posts": posts, "count": len(posts),
             "counts": await competitor_sync.replicate_counts()}
+
+
+class ScreenRequest(BaseModel):
+    niche: str = ""
+    limit: int = 30
+
+
+@router.post("/competitors/screen")
+async def competitors_screen(req: ScreenRequest) -> dict:
+    """Read the waiting candidates' bios and reject the ones in the wrong
+    industry — the same cull discovery runs, on whatever is sitting there now.
+
+    It matters because a keyword search has loose recall and ranks by size: a
+    43M-follower Bollywood account outranks the right answer on "real estate
+    investing", and follower counts cannot tell you an account is in the wrong
+    industry. Anything rejected keeps its row and its reason — one click back.
+    """
+    tid = _tenant()
+    niche = req.niche.strip()
+    if not niche:
+        from .brands import get_niche
+        n = await get_niche(tid)
+        if not n["confirmed"]:
+            raise HTTPException(
+                422, "This brand has not confirmed its niche yet — screening "
+                     "against a guess would reject the wrong accounts.")
+        niche = n["niche"]
+    rows = await competitors.list_competitors(status="candidate", tenant_id=tid)
+    if not rows:
+        return {"screened": 0, "kept": 0, "rejected": 0, "verdicts": [],
+                "note": "no candidates waiting"}
+    return await competitors.screen_candidates(
+        niche, rows[:max(1, min(req.limit, 60))], tenant_id=tid)
 
 
 @router.post("/competitors/niche-reference", status_code=201)

@@ -86,3 +86,15 @@ def test_the_chain_ends_by_measuring_the_gap():
     assert "competitor_gap" in src
     assert "content_gap(" in src
     assert '"steps": 5' in src, "the progress line must count the stage it now runs"
+
+
+def test_the_screen_endpoint_exists_and_refuses_to_guess_a_niche():
+    """Screening against a guessed niche would reject the wrong accounts."""
+    import inspect
+
+    from james_os import competitors_api
+
+    src = inspect.getsource(competitors_api.competitors_screen)
+    assert "screen_candidates" in src
+    assert 'status="candidate"' in src or "status=\"candidate\"" in src
+    assert "has not confirmed its niche" in src, "no niche → refuse, never guess"
