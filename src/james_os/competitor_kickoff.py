@@ -103,7 +103,14 @@ async def picked_posts(
 ) -> list[dict]:
     """The brand's picks, best first. Highest engagement leads, because if we
     are only making ten things they should be the ten with the most evidence
-    behind them."""
+    behind them.
+
+    The cap was 30 ROWS across all verdicts, which was fine while the only
+    caller drafted five at a time and fatal once the pool reader arrived: a
+    brand that picked 43 posts had 30 returned, four of them 'saved', so
+    thirteen 'idea' picks were invisible on every run, not just the first —
+    the same top thirty come back forever. Reading a few hundred small rows
+    costs nothing; silently losing the owner's picks costs everything."""
     statuses = ["saved", "template", "idea"]
     if include_queued:
         statuses.append("queued")
@@ -119,7 +126,7 @@ async def picked_posts(
             LEFT JOIN competitor_post_analysis a ON a.post_id = p.id
                 WHERE p.replicate_status = ANY($1::text[])
              ORDER BY p.engagement_rate DESC NULLS LAST
-                LIMIT $2""", statuses, max(1, min(limit, 30)))
+                LIMIT $2""", statuses, max(1, min(limit, 200)))
     out = []
     for r in rows:
         d = dict(r)
