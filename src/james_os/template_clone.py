@@ -470,9 +470,14 @@ async def _edit_clone_copy(content: dict, feedback: str, tenant_id) -> dict:
     return edited
 
 
-async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None) -> dict | None:
+async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None,
+                     hero_generated: bool = False, hero_key: str = "") -> dict | None:
     """Turn ONE competitor post into our version. Returns {png, kind, content,
-    topic, generated_hero, from} or None if it can't be cloned."""
+    topic, generated_hero, from} or None if it can't be cloned.
+
+    Pass `hero_bytes` to supply the backdrop instead of choosing one here —
+    and pass `hero_generated` with it, or a drawn photo gets recorded as a real
+    one and "used_placeholder_photo" starts lying to the owner."""
     img = await _fetch_bytes(post.get("stored_media_url") or "")
     if not img:
         return None
@@ -506,8 +511,7 @@ async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None) 
     # give it at least a headline so our version reads as a designed post.
     topic = (content.get("headline") or content.get("stat") or post.get("topic") or "").strip() \
         or "a moment that captures the brand"
-    generated = False
-    hero_key = ""
+    generated = hero_generated
     if hero_bytes is None:
         hero_bytes, generated, hero_key = await _hero_or_placeholder(tenant_id, topic)
     logo = await _brand_logo(tenant_id) if spec.get("logo_box") else None
@@ -624,6 +628,12 @@ async def _exemplars(tenant_id, k: int = 2) -> list[bytes]:
     return out
 
 
+# How many backdrops to draw for a brand that has none of its own. Two, not
+# one, so a set of samples is not the same picture six times — and not six,
+# because each is ~57s of gpt-image-1 and the wait is the whole problem.
+_DRAWN_HEROES = 2
+
+
 async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True,
                                     progress=None) -> dict:
     """Clone the top competitor templates into our versions, store each as a
@@ -635,6 +645,7 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
     from .content import generate_content
     from .media import storage as media_storage
     from . import render_reviewer
+    from .hero_context import get_hero_photo_files
 
     def _emit(**p):
         if progress:
@@ -657,13 +668,45 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
     # The quality bar: the best real templates in this niche, handed to the
     # reviewer as reference so it judges against what actually ships here.
     exemplars = await _exemplars(tenant_id)
+
+    # A brand with no photography of its own gets its backdrop DRAWN, and a draw
+    # costs ~57 seconds. Every clone used to commission its own, so six samples
+    # meant six draws — ten minutes of work behind a progress bar the page stops
+    # watching after seven, and which never moved off zero because `done` only
+    # counts finished posts. The owner saw "nothing is happening".
+    #
+    # The photo here is a backdrop for someone else's layout, not the subject of
+    # the post. A couple of draws carry the whole set, so the batch finishes
+    # inside the time anyone is willing to wait. A brand WITH photos is left
+    # alone: picking from the library is cheap and gives every sample its own.
+    drawn: list[bytes] = []
+    if not await get_hero_photo_files(tenant_id=tenant_id, limit=None):
+        for i in range(min(_DRAWN_HEROES, n)):
+            _emit(done=0, total=n,
+                  stage=("Drawing a photo to build on…" if i == 0
+                         else "Drawing one more to vary the set…"))
+            try:
+                img, _gen, _key = await _hero_or_placeholder(
+                    tenant_id, (posts[i] if i < len(posts) else posts[0]).get("topic") or "")
+                if img:
+                    drawn.append(img)
+            except Exception:  # noqa: BLE001 — fall back to per-post drawing
+                logger.warning("could not pre-draw a hero", exc_info=True)
+
     _emit(done=0, total=n, stage=f"Building your first {n} posts…")
 
     samples, failed, rejected, reviewed = [], 0, 0, 0
     for post in posts:
         if len(samples) >= n:
             break
-        cloned = await clone_post(post, tenant_id)
+        # Moves on every ATTEMPT, not only on a success. `done` alone cannot:
+        # a post that gets rejected leaves it untouched, which is exactly when
+        # the owner most needs to see that something is still happening.
+        _emit(done=len(samples), total=n,
+              stage=f"Building in the style of @{post.get('handle') or 'your niche'}…")
+        hero = drawn[len(samples) % len(drawn)] if drawn else None
+        cloned = await clone_post(post, tenant_id, hero_bytes=hero,
+                                  hero_generated=bool(hero))
         if not cloned or not cloned.get("png"):
             failed += 1
             continue
