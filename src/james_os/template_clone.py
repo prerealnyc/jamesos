@@ -576,10 +576,17 @@ async def separate_posts(tenant_id, *, limit: int = 40) -> dict:
 
 
 async def _top_posts(tenant_id, limit: int, *, templates_only: bool = False) -> list[dict]:
-    """Top competitor STILLS to clone — best engagement first, design-analysed
-    where available. Videos are excluded (a still template needs a still). With
-    templates_only, only DESIGNED templates (not plain photos) are returned."""
-    where = "p.stored_media_url <> '' AND p.media_type IN ('image', 'carousel')"
+    """Top competitor STILLS to clone — WHAT THE OWNER PICKED first, then best
+    engagement. Videos are excluded (a still template needs a still). With
+    templates_only, only DESIGNED templates (not plain photos) are returned.
+
+    The pick order is the point. The owner is shown the shelf during onboarding
+    and marks posts Replicate / Templatize / Idea; cloning by score alone threw
+    that away and made the brand's first posts out of whatever happened to have
+    the highest engagement. A post the owner marked 'skipped' is never cloned —
+    saying "not for me" has to mean something."""
+    where = ("p.stored_media_url <> '' AND p.media_type IN ('image', 'carousel')"
+             " AND coalesce(p.replicate_status, '') <> 'skipped'")
     if templates_only:
         where += f" AND a.status = 'ok' AND {_TEMPLATE_COND}"
     async with acquire(tenant_id) as conn:
@@ -592,7 +599,8 @@ async def _top_posts(tenant_id, limit: int, *, templates_only: bool = False) -> 
                   JOIN competitors c ON c.id = p.competitor_id
              LEFT JOIN competitor_post_analysis a ON a.post_id = p.id
                  WHERE {where}
-              ORDER BY coalesce(a.eye_score, 0) * 0.5 + p.engagement_rate DESC NULLS LAST
+              ORDER BY (p.replicate_status IN ('saved','template','idea')) DESC,
+                       coalesce(a.eye_score, 0) * 0.5 + p.engagement_rate DESC NULLS LAST
                  LIMIT $1""", max(1, min(limit, 24)))
     return [_row_out(r) for r in rows]
 
