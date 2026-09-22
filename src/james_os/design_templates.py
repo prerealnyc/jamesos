@@ -340,9 +340,19 @@ async def mark_verdict(tenant_id: UUID | str | None, template_id: str, approved:
 async def _unlearned_competitor_stills(tenant_id, limit: int) -> list[dict]:
     """Competitor stills we hold an in-house copy of and have not yet read.
 
-    Best engagement first. A post with no stored copy is skipped rather than
-    fetched from its source URL — the owner's rule is in-house, and a layout we
-    cannot keep the picture for is a layout we cannot show the provenance of."""
+    WHAT THE OWNER PICKED comes first — a still they marked "Layout only" is
+    them saying, in as many words, *mint me a template from this*, and reading
+    the shelf by engagement alone ignored that. "Layout + writing" and "Idea
+    only" follow, then everything else by engagement, so a brand that picked
+    nothing behaves exactly as it did before.
+
+    A post marked "Not for me" is never read at all. Each read is a paid vision
+    call, and spending one on a layout the owner has already rejected is the
+    one case where the money buys something worse than nothing.
+
+    A post with no stored copy is skipped rather than fetched from its source
+    URL — the owner's rule is in-house, and a layout we cannot keep the picture
+    for is a layout we cannot show the provenance of."""
     async with acquire(tenant_id) as conn:
         rows = await conn.fetch(
             r"""SELECT p.id, p.stored_media_url, p.url, p.platform, p.engagement_rate,
@@ -357,10 +367,14 @@ async def _unlearned_competitor_stills(tenant_id, limit: int) -> list[dict]:
                   AND (p.media_type IN ('image', 'carousel')
                        OR p.stored_media_url ~* '\.(jpe?g|png|webp)$')
                   AND p.template_read_at IS NULL
+                  -- "Not for me" is a verdict about the LAYOUT too.
+                  AND coalesce(p.replicate_status, '') <> 'skipped'
              -- likes breaks the tie: a niche reference has no follower base to
              -- divide by, so its engagement_rate is 0 and its real signal is
              -- the interaction count itself.
-             ORDER BY p.engagement_rate DESC NULLS LAST, p.likes DESC
+             ORDER BY (p.replicate_status = 'template') DESC,
+                      (p.replicate_status IN ('saved','idea')) DESC,
+                      p.engagement_rate DESC NULLS LAST, p.likes DESC
                 LIMIT $1""",
             max(1, min(int(limit), 50)),
         )

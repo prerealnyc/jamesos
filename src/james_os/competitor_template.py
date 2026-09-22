@@ -185,7 +185,13 @@ async def templatize_post(post_id: str, tenant_id: UUID | None = None) -> dict:
 async def templatize_all_picked(
     limit: int = 10, tenant_id: UUID | None = None
 ) -> dict:
-    """Mint templates for every reel the brand marked 'template'.
+    """Mint templates for every reel the brand marked "Layout only".
+
+    REELS only, and that is the split, not an oversight: a "Layout only" pick
+    that is a still goes to design_templates, which reads the picture and mints
+    a card layout the brand's own posts render into. One verdict, two minters,
+    chosen by what the post actually is — so picking "Layout only" always means
+    something, whichever kind of post it was.
 
     Sequential and bounded: each is an LLM call, and a library filling itself
     with near-identical formats is worse than a small deliberate one.
