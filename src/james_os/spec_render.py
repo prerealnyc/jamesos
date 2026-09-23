@@ -38,10 +38,97 @@ def _px(box: dict) -> tuple[int, int, int, int]:
     return (int(box["x"] * _w()), int(box["y"] * _h()), int(box["w"] * _w()), int(box["h"] * _h()))
 
 
-def _cover(img: Image.Image, w: int, h: int) -> Image.Image:
-    """Crop-to-cover: fill (w,h) with the image, center-cropping the overflow."""
+# How the photo used to be cropped, whatever was in it and wherever the copy
+# was going to land. Kept as the answer when there is nothing to reason about.
+_DEFAULT_CENTERING = (0.5, 0.4)
+# Candidate crops. Coarse on purpose: this decides WHICH PART of the photo
+# survives the crop, and a five-by-five grid already moves a face out from
+# under a headline. Finer would cost more and change the picture less.
+_PAN = (0.15, 0.3, 0.5, 0.7, 0.85)
+_TILT = (0.2, 0.35, 0.5, 0.65, 0.8)
+# The probe the search runs on. Busyness is a broad-strokes judgement, so it is
+# made on a thumbnail — twenty-five candidate crops of a 96px image cost less
+# than one crop of the real one.
+_PROBE_W = 96
+_PROBE_CELLS = (48, 60)
+
+
+def _busy(img: Image.Image, size: tuple[int, int]) -> Image.Image:
+    """Edge energy, small. A face, a horizon, foliage and lettering all light
+    this up; sky, water, a wall and open sand do not — which is exactly the
+    difference between a spot that ruins a headline and a spot that carries one."""
+    grey = img.convert("L").resize(size, Image.Resampling.BILINEAR)
+    return grey.filter(ImageFilter.FIND_EDGES)
+
+
+def _zone_cost(edges: Image.Image, zones: list[tuple[float, float, float, float]]) -> float:
+    """Total edge energy under the rectangles the copy will occupy."""
+    cw, ch = edges.size
+    px = edges.load()
+    total = 0.0
+    for zx, zy, zw, zh in zones:
+        x0, y0 = max(0, int(zx * cw)), max(0, int(zy * ch))
+        x1, y1 = min(cw, int((zx + zw) * cw)), min(ch, int((zy + zh) * ch))
+        for yy in range(y0, max(y0 + 1, y1)):
+            for xx in range(x0, max(x0 + 1, x1)):
+                total += px[xx, yy]
+    return total
+
+
+def _best_centering(img: Image.Image, w: int, h: int,
+                    zones: list[tuple[float, float, float, float]]) -> tuple[float, float]:
+    """Which crop puts the quiet part of the photo under the copy.
+
+    The layout came from a competitor whose photo happened to be empty where
+    their words went. Ours is not: the reviewer kept saying "text overlaps with
+    the subjects" and "logo overlaps with subject's leg", because the crop was
+    fixed and the people landed under the headline. Nothing here moves the
+    text — the design is the design — it moves the PHOTO inside its frame,
+    which is the one degree of freedom that costs nothing.
+
+    Ties go to the old centering, so a photo with nothing to avoid renders
+    exactly as it did before.
+    """
+    if not zones:
+        return _DEFAULT_CENTERING
+    try:
+        probe_h = max(1, int(_PROBE_W * img.height / max(1, img.width)))
+        probe = img.convert("L").resize((_PROBE_W, probe_h), Image.Resampling.BILINEAR)
+        cells = (_PROBE_CELLS[0], max(1, int(_PROBE_CELLS[0] * h / max(1, w))))
+        def cost_of(c: tuple[float, float]) -> float:
+            fitted = ImageOps.fit(probe, cells, method=Image.Resampling.BILINEAR,
+                                  centering=c)
+            return _zone_cost(_busy(fitted, cells), zones)
+
+        # The incumbent is measured FIRST and is the score to beat. Seeding the
+        # search with "no result yet" made the first candidate win by default,
+        # so the old centering was never really in the running.
+        best = _DEFAULT_CENTERING
+        best_cost = cost_of(best)
+        for cy in _TILT:
+            for cx in _PAN:
+                if (cx, cy) == _DEFAULT_CENTERING:
+                    continue
+                cost = cost_of((cx, cy))
+                # Meaningfully better, not merely different: a 2% edge is noise,
+                # and recomposing a photo for noise is a change nobody asked for.
+                if cost < best_cost * 0.98:
+                    best, best_cost = (cx, cy), cost
+        return best
+    except Exception:  # noqa: BLE001 — a crop heuristic must never cost the render
+        return _DEFAULT_CENTERING
+
+
+def _cover(img: Image.Image, w: int, h: int,
+           zones: list[tuple[float, float, float, float]] | None = None) -> Image.Image:
+    """Crop-to-cover: fill (w,h) with the image.
+
+    With `zones` — the rectangles the copy and logo will occupy, in this
+    frame's own coordinates — the crop is chosen to keep those rectangles over
+    the calmest part of the picture. Without them, the old fixed centering."""
+    centering = _best_centering(img, w, h, zones or [])
     return ImageOps.fit(img.convert("RGB"), (max(1, w), max(1, h)),
-                        method=Image.Resampling.LANCZOS, centering=(0.5, 0.4))
+                        method=Image.Resampling.LANCZOS, centering=centering)
 
 
 def _load(b: bytes | None) -> Image.Image | None:
@@ -108,32 +195,92 @@ def _place_logo(base: Image.Image, box_px: tuple[int, int, int, int], logo_bytes
     base.paste(mark_badge(logo, "logo"), (x + (w - nw) // 2, y + (h - nh) // 2), logo)
 
 
+def _occupied(spec: dict) -> list[tuple[float, float, float, float]]:
+    """Every rectangle the finished card will put something ON TOP of the photo:
+    the text boxes and the logo slot, as fractions of the whole canvas.
+
+    Content is not consulted. A box whose copy turns out empty costs nothing to
+    have kept clear, and a box we wrongly skipped is a face under a headline."""
+    out: list[tuple[float, float, float, float]] = []
+    for el in (spec.get("elements") or []):
+        b = el.get("box") or {}
+        try:
+            r = (float(b["x"]), float(b["y"]), float(b["w"]), float(b["h"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if r[2] > 0 and r[3] > 0:
+            out.append(r)
+    lb = spec.get("logo_box") or {}
+    try:
+        if float(lb.get("w", 0)) > 0 and float(lb.get("h", 0)) > 0:
+            out.append((float(lb["x"]), float(lb["y"]), float(lb["w"]), float(lb["h"])))
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
+def _zones_for(frame: tuple[float, float, float, float],
+               occupied: list[tuple[float, float, float, float]]
+               ) -> list[tuple[float, float, float, float]]:
+    """The occupied rectangles expressed in ONE photo frame's own coordinates.
+
+    A photo that fills the canvas sees them unchanged; a photo in the top 60%,
+    or down one side, sees only the part that lands on it, rescaled. Without
+    this a side-panel photo would be cropped to dodge a headline that never
+    touches it."""
+    fx, fy, fw, fh = frame
+    if fw <= 0 or fh <= 0:
+        return []
+    out = []
+    for zx, zy, zw, zh in occupied:
+        ix0, iy0 = max(fx, zx), max(fy, zy)
+        ix1, iy1 = min(fx + fw, zx + zw), min(fy + fh, zy + zh)
+        if ix1 <= ix0 or iy1 <= iy0:
+            continue
+        out.append(((ix0 - fx) / fw, (iy0 - fy) / fh, (ix1 - ix0) / fw, (iy1 - iy0) / fh))
+    return out
+
+
 def _background(spec: dict, hero: Image.Image | None) -> Image.Image:
     """Paint the canvas per the spec's background treatment. A photo treatment
-    with no photo degrades to the solid palette colour rather than failing."""
+    with no photo degrades to the solid palette colour rather than failing.
+
+    Where a photo goes under copy, the crop is chosen so the busy part of the
+    picture lands where the copy is NOT — see _best_centering."""
     bg = spec.get("background") or {}
     pal = spec.get("palette") or {}
     base = Image.new("RGB", (_w(), _h()), _rgb(pal.get("bg"), (17, 19, 24)))
     t = bg.get("treatment") or "full_bleed_photo"
     if hero is None:
         return base  # solid fallback
+    occupied = _occupied(spec)
+
+    def place(frame: tuple[float, float, float, float]) -> None:
+        fx, fy, fw, fh = frame
+        x, y = int(fx * _w()), int(fy * _h())
+        w, h = int(fw * _w()), int(fh * _h())
+        base.paste(_cover(hero, w, h, _zones_for(frame, occupied)), (x, y))
+
     if t in ("full_bleed_photo", "photo_with_scrim"):
-        base.paste(_cover(hero, _w(), _h()), (0, 0))
+        place((0.0, 0.0, 1.0, 1.0))
     elif t == "photo_top":
-        base.paste(_cover(hero, _w(), int(_h() * 0.6)), (0, 0))
+        place((0.0, 0.0, 1.0, 0.6))
     elif t == "photo_bottom":
-        base.paste(_cover(hero, _w(), int(_h() * 0.6)), (0, _h() - int(_h() * 0.6)))
+        place((0.0, 0.4, 1.0, 0.6))
     elif t == "photo_side":
-        base.paste(_cover(hero, int(_w() * 0.55), _h()), (_w() - int(_w() * 0.55), 0))
+        place((0.45, 0.0, 0.55, 1.0))
     elif t == "solid":
         pass
     else:  # photo_box or unknown → full-bleed as the safe default
         pbox = bg.get("photo_box")
         if pbox:
-            x, y, w, h = _px(pbox)
-            base.paste(_cover(hero, w, h), (x, y))
+            try:
+                place((float(pbox["x"]), float(pbox["y"]),
+                       float(pbox["w"]), float(pbox["h"])))
+            except (KeyError, TypeError, ValueError):
+                place((0.0, 0.0, 1.0, 1.0))
         else:
-            base.paste(_cover(hero, _w(), _h()), (0, 0))
+            place((0.0, 0.0, 1.0, 1.0))
     return base
 
 
