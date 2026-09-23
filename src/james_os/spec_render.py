@@ -77,6 +77,13 @@ def _zone_cost(edges: Image.Image, zones: list[tuple[float, float, float, float]
 
 def _best_centering(img: Image.Image, w: int, h: int,
                     zones: list[tuple[float, float, float, float]]) -> tuple[float, float]:
+    """The crop alone. See _centering_and_cost for the score behind it."""
+    return _centering_and_cost(img, w, h, zones)[0]
+
+
+def _centering_and_cost(img: Image.Image, w: int, h: int,
+                        zones: list[tuple[float, float, float, float]]
+                        ) -> tuple[tuple[float, float], float]:
     """Which crop puts the quiet part of the photo under the copy.
 
     The layout came from a competitor whose photo happened to be empty where
@@ -90,7 +97,7 @@ def _best_centering(img: Image.Image, w: int, h: int,
     exactly as it did before.
     """
     if not zones:
-        return _DEFAULT_CENTERING
+        return _DEFAULT_CENTERING, 0.0
     try:
         probe_h = max(1, int(_PROBE_W * img.height / max(1, img.width)))
         probe = img.convert("L").resize((_PROBE_W, probe_h), Image.Resampling.BILINEAR)
@@ -114,9 +121,9 @@ def _best_centering(img: Image.Image, w: int, h: int,
                 # and recomposing a photo for noise is a change nobody asked for.
                 if cost < best_cost * 0.98:
                     best, best_cost = (cx, cy), cost
-        return best
+        return best, best_cost
     except Exception:  # noqa: BLE001 — a crop heuristic must never cost the render
-        return _DEFAULT_CENTERING
+        return _DEFAULT_CENTERING, 0.0
 
 
 def _cover(img: Image.Image, w: int, h: int,
@@ -241,16 +248,103 @@ def _zones_for(frame: tuple[float, float, float, float],
     return out
 
 
+def _photo_frame(spec: dict) -> tuple[float, float, float, float] | None:
+    """Where the photo sits on the canvas, as fractions. None = no photo shown.
+
+    Shared by the renderer and by photo scoring on purpose: if these two ever
+    disagreed we would rank photos against a frame the render does not use."""
+    bg = spec.get("background") or {}
+    t = bg.get("treatment") or "full_bleed_photo"
+    if t in ("full_bleed_photo", "photo_with_scrim"):
+        return (0.0, 0.0, 1.0, 1.0)
+    if t == "photo_top":
+        return (0.0, 0.0, 1.0, 0.6)
+    if t == "photo_bottom":
+        return (0.0, 0.4, 1.0, 0.6)
+    if t == "photo_side":
+        return (0.45, 0.0, 0.55, 1.0)
+    if t == "solid":
+        return None
+    pbox = bg.get("photo_box")
+    if pbox:
+        try:
+            return (float(pbox["x"]), float(pbox["y"]), float(pbox["w"]), float(pbox["h"]))
+        except (KeyError, TypeError, ValueError):
+            return (0.0, 0.0, 1.0, 1.0)
+    return (0.0, 0.0, 1.0, 1.0)
+
+
+def photo_fit_cost(spec: dict, img: Image.Image) -> float:
+    """How badly this photo suits this template — lower is better.
+
+    The busyness left under the copy once the photo has been cropped as kindly
+    as it can be. Normalised by the area being judged so a template with a lot
+    of copy is not automatically 'worse' than one with a little, and so the
+    number means the same thing across templates.
+
+    A template that puts nothing over the photo scores 0: everything suits it.
+    """
+    frame = _photo_frame(spec)
+    if frame is None:
+        return 0.0
+    zones = _zones_for(frame, _occupied(spec))
+    if not zones:
+        return 0.0
+    area = sum(zw * zh for _, _, zw, zh in zones) or 1.0
+    w = max(1, int(frame[2] * _w()))
+    h = max(1, int(frame[3] * _h()))
+    try:
+        _, cost = _centering_and_cost(img, w, h, zones)
+        return cost / area
+    except Exception:  # noqa: BLE001 — scoring must never cost a render
+        return 0.0
+
+
+# "Near enough" in score units. Edge energy under copy runs from ~0 over sky to
+# six figures over a face, so this admits genuinely comparable photos without
+# admitting a subject sitting under the headline.
+_FIT_SLACK = 500.0
+
+
+def suited_photos(spec: dict, refs: list[tuple[str, bytes]],
+                  tolerance: float = 1.25) -> list[tuple[str, bytes]]:
+    """The photos worth using for THIS template, best first.
+
+    Not just the single best: the picker downstream rotates the library so the
+    brand does not post the same picture every time, and collapsing the pool to
+    one photo would throw that away. Anything within `tolerance` of the best
+    score stays in the running, so rotation continues among the photos that
+    genuinely suit the layout — and when a layout does not discriminate, every
+    photo survives and nothing changes.
+    """
+    scored: list[tuple[float, tuple[str, bytes]]] = []
+    for ref in refs:
+        img = _load(ref[1]) if len(ref) > 1 else None
+        if img is None:
+            continue
+        scored.append((photo_fit_cost(spec, img), ref))
+    if not scored:
+        return list(refs)
+    scored.sort(key=lambda pair: pair[0])
+    best = scored[0][0]
+    # Ratio AND slack. A ratio alone breaks at both ends: when the best photo
+    # scores a perfect zero every other photo is infinitely worse than it, and
+    # a first version of this read that as "the template does not discriminate"
+    # and kept the lot — including a photo with the subject squarely under the
+    # headline. The slack is what says "near enough", in the units of the score
+    # rather than as a multiple of something that may be zero.
+    keep = [ref for cost, ref in scored if cost <= best * tolerance + _FIT_SLACK]
+    return keep or [scored[0][1]]
+
+
 def _background(spec: dict, hero: Image.Image | None) -> Image.Image:
     """Paint the canvas per the spec's background treatment. A photo treatment
     with no photo degrades to the solid palette colour rather than failing.
 
     Where a photo goes under copy, the crop is chosen so the busy part of the
     picture lands where the copy is NOT — see _best_centering."""
-    bg = spec.get("background") or {}
     pal = spec.get("palette") or {}
     base = Image.new("RGB", (_w(), _h()), _rgb(pal.get("bg"), (17, 19, 24)))
-    t = bg.get("treatment") or "full_bleed_photo"
     if hero is None:
         return base  # solid fallback
     occupied = _occupied(spec)
@@ -261,26 +355,9 @@ def _background(spec: dict, hero: Image.Image | None) -> Image.Image:
         w, h = int(fw * _w()), int(fh * _h())
         base.paste(_cover(hero, w, h, _zones_for(frame, occupied)), (x, y))
 
-    if t in ("full_bleed_photo", "photo_with_scrim"):
-        place((0.0, 0.0, 1.0, 1.0))
-    elif t == "photo_top":
-        place((0.0, 0.0, 1.0, 0.6))
-    elif t == "photo_bottom":
-        place((0.0, 0.4, 1.0, 0.6))
-    elif t == "photo_side":
-        place((0.45, 0.0, 0.55, 1.0))
-    elif t == "solid":
-        pass
-    else:  # photo_box or unknown → full-bleed as the safe default
-        pbox = bg.get("photo_box")
-        if pbox:
-            try:
-                place((float(pbox["x"]), float(pbox["y"]),
-                       float(pbox["w"]), float(pbox["h"])))
-            except (KeyError, TypeError, ValueError):
-                place((0.0, 0.0, 1.0, 1.0))
-        else:
-            place((0.0, 0.0, 1.0, 1.0))
+    frame = _photo_frame(spec)
+    if frame is not None:
+        place(frame)
     return base
 
 
@@ -604,4 +681,4 @@ def render_spec(spec: dict, content: dict, *, hero_bytes: bytes | None = None,
     return out.getvalue(), spec.get("kind", "graphic_card")
 
 
-__all__ = ["render_spec"]
+__all__ = ["render_spec", "photo_fit_cost", "suited_photos"]
