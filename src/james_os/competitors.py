@@ -254,6 +254,7 @@ async def discover(
     min_followers: int = 1000,
     screen: bool = True,
     use_research: bool = True,
+    location: str = "",
     tenant_id: UUID | None = None,
 ) -> dict:
     """Find the accounts that own `niche`, rank them, and PERSIST every one as
@@ -317,6 +318,14 @@ async def discover(
             # they were written to surface PEERS, which a niche sentence
             # ("public golf course in Kohler, Wisconsin") often is not.
             queries = confirmed_terms[:2] or [niche]
+            # WHERE, not just what. A niche alone returns the accounts that own
+            # the category — for a regional brand, a list of global giants it
+            # does not compete with and whose posts are the wrong thing to
+            # learn from. One un-placed query is kept so a location that
+            # matches nothing cannot empty the result.
+            place = (location or "").strip()
+            if place:
+                queries = [f"{q} {place}" for q in queries] + queries[:1]
             results_nested = await asyncio.gather(
                 *[_discover_platform(c, p, q, fetch_n)
                   for p in plats for q in queries]
@@ -355,7 +364,7 @@ async def discover(
     # the platform before it is allowed to become a candidate.
     research_note: dict | None = None
     if use_research:
-        accounts, r_err = await _research_handles(niche, plats)
+        accounts, r_err = await _research_handles(niche, plats, location=location)
         verified, unresolved = await verify_handles(accounts)
         seen = {(c["platform"], c["handle"].lower()) for c in found}
         added = 0
@@ -742,7 +751,9 @@ Return JSON:
 (no @), "name": str, "why": str (one short clause on why they lead)}]}"""
 
 
-async def _research_handles(niche: str, platforms: list[str]) -> tuple[list[dict], str | None]:
+async def _research_handles(
+    niche: str, platforms: list[str], location: str = ""
+) -> tuple[list[dict], str | None]:
     """Ask the live research provider who leads this niche, then pull the
     handles out of the prose. Returns (accounts, error)."""
     from .research import get_research_provider
@@ -750,12 +761,19 @@ async def _research_handles(niche: str, platforms: list[str]) -> tuple[list[dict
     if provider.name == "stub":
         return [], "No research provider connected (add a Perplexity key)."
     names = " / ".join(PLATFORM_LABEL[p] for p in platforms)
+    place = (location or "").strip()
+    where = f" based in or serving {place}" if place else ""
+    focus = ("Name the specific accounts and give their exact handles. "
+             "Prioritise accounts whose ongoing subject IS this niche "
+             "and who post consistently. Give handles verbatim.")
+    if place:
+        focus += (f" Prioritise accounts based in or primarily serving {place} "
+                  "over global names in the same category — a regional brand "
+                  "competes with its region.")
     try:
         res = await provider.research(
-            subject=f"the leading {names} accounts in {niche}",
-            focus="Name the specific accounts and give their exact handles. "
-                  "Prioritise accounts whose ongoing subject IS this niche "
-                  "and who post consistently. Give handles verbatim.",
+            subject=f"the leading {names} accounts in {niche}{where}",
+            focus=focus,
         )
     except Exception as e:  # noqa: BLE001
         return [], f"{type(e).__name__}: {e}"

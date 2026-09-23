@@ -115,6 +115,10 @@ class DiscoverRequest(BaseModel):
     min_followers: int = 1000
     screen: bool = True
     use_research: bool = True
+    # Where to look. A niche alone finds the accounts that own the CATEGORY,
+    # which for a regional brand is a list of global giants it does not compete
+    # with. Optional: empty searches the way it always did.
+    location: str = ""
 
 
 @router.post("/competitors/discover", status_code=202)
@@ -126,17 +130,19 @@ async def competitors_discover(
     engagement rate, screened for false positives, and persisted."""
     tid = _tenant()
     job_id = str(uuid4())
-    _DISCOVER_JOBS[job_id] = {"status": "running", "niche": req.niche}
+    _DISCOVER_JOBS[job_id] = {"status": "running", "niche": req.niche,
+                              "location": (req.location or "").strip()}
     _prune(_DISCOVER_JOBS)
     plats = [p for p in req.platforms if p in competitors.PLATFORMS]
     niche, limit = req.niche.strip(), max(1, min(req.limit, 30))
     floor, screen, research = req.min_followers, req.screen, req.use_research
+    place = (req.location or "").strip()[:80]
 
     async def _run() -> None:
         try:
             res = await competitors.discover(
                 niche, platforms=plats, limit=limit, min_followers=floor,
-                screen=screen, use_research=research, tenant_id=tid)
+                screen=screen, use_research=research, location=place, tenant_id=tid)
             _DISCOVER_JOBS[job_id] = {"status": "done", **res}
         except Exception as e:  # noqa: BLE001
             _DISCOVER_JOBS[job_id] = {"status": "failed", "error": str(e)[:300],
