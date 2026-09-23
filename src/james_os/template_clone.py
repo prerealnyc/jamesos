@@ -134,9 +134,22 @@ async def _brand_logo(tenant_id) -> bytes | None:
         return None
 
 
-async def _hero_or_placeholder(tenant_id, topic: str) -> tuple[bytes | None, bool, str]:
+async def _hero_or_placeholder(tenant_id, topic: str,
+                               spec: dict | None = None) -> tuple[bytes | None, bool, str]:
     """The brand's own photo if it has one (sharpness-gated pick), else an AI
     placeholder scene from the topic.
+
+    With `spec`, the library is first narrowed to the photos that suit THAT
+    template. Cropping alone could only bend one photo to fit a layout; when
+    the brand has several, the better question is which of them belongs under
+    this particular headline. A portrait with the subject dead centre is wrong
+    for a card with copy across the middle and right for one with copy down the
+    side, and nothing was asking.
+
+    Narrowed, not chosen: the picker below rotates the library so a brand does
+    not post the same picture every week, and collapsing the pool to a single
+    "best" photo would quietly end that. Photos that score close to the best
+    all stay in the running.
 
     Returns (bytes, was_generated, hero_photo_key). The KEY is what lets a later
     rebuild reuse this exact photo instead of rotating to another one — "keep the
@@ -270,8 +283,10 @@ async def rebuild_design(
         hero_bytes = await _hero_by_key(tenant_id, kept_key)
         hero_key = kept_key if hero_bytes is not None else ""
     if hero_bytes is None:
+        # A redo picks from the photos that suit this design too — the owner
+        # asked for a different picture, not a worse-matched one.
         hero_bytes, _generated, hero_key = await _hero_or_placeholder(
-            tenant_id, str(payload.get("topic") or ""))
+            tenant_id, str(payload.get("topic") or ""), spec=spec)
 
     logo = await _brand_logo(tenant_id) if spec.get("logo_box") else None
     png, kind = render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo)
@@ -470,6 +485,43 @@ async def _edit_clone_copy(content: dict, feedback: str, tenant_id) -> dict:
     return edited
 
 
+# How much busyness under the copy is too much to put a photo there at all.
+# Calibrated against a real library: a photo with clear sky or water where the
+# headline goes scores near zero, and the pictures that produced "text overlaps
+# with the subjects" scored 63,000 and up.
+_PHOTO_FIT_CEILING = 25_000.0
+# How much of the canvas the design must cover before it can stand WITHOUT a
+# photograph. Dropping the photo from a sparse layout does not produce a clean
+# typographic card, it produces a void: the first cut of this fallback traded
+# every "text overlaps with the subjects" for an "excessive empty space at the
+# top", because the layouts it emptied were built around a picture filling
+# them. Below this, a busy photo is still the better of two bad options.
+_SOLID_MIN_COVERAGE = 0.22
+
+
+def _coverage(spec: dict) -> float:
+    """Fraction of the canvas the design's own boxes occupy."""
+    total = 0.0
+    for item in list(spec.get("elements") or []) + list(spec.get("decorations") or []):
+        b = item.get("box") or {}
+        try:
+            total += float(b.get("w", 0)) * float(b.get("h", 0))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _too_busy_for(spec: dict, hero_bytes: bytes) -> bool:
+    """Is every part of this photo too busy for this template's copy?"""
+    try:
+        from .spec_render import _load, photo_fit_cost
+
+        img = _load(hero_bytes)
+        return img is not None and photo_fit_cost(spec, img) > _PHOTO_FIT_CEILING
+    except Exception:  # noqa: BLE001 — a judgement call must never cost the post
+        return False
+
+
 async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None,
                      hero_generated: bool = False, hero_key: str = "") -> dict | None:
     """Turn ONE competitor post into our version. Returns {png, kind, content,
@@ -483,6 +535,13 @@ async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None,
         return None
     spec = await extract_template_spec(img)
     if spec.get("status") != "ok":
+        return None
+    # A spec with nowhere to put copy is not a template. One came back like
+    # this from a real shelf and rendered a blank coloured rectangle, which
+    # then cost a vision call to be told it was blank. Skipping it here lets
+    # the batch spend that slot on a candidate that can actually carry a post.
+    if not (spec.get("elements") or []):
+        logger.info("skipped a template with no text elements (%s)", post.get("id"))
         return None
     # Keep the layout. This read used to exist only for the one sample it made —
     # the spec went onto that sample's payload and nowhere else, so every good
@@ -513,7 +572,24 @@ async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None,
         or "a moment that captures the brand"
     generated = hero_generated
     if hero_bytes is None:
-        hero_bytes, generated, hero_key = await _hero_or_placeholder(tenant_id, topic)
+        hero_bytes, generated, hero_key = await _hero_or_placeholder(
+            tenant_id, topic, spec=spec)
+    # A photo the copy cannot live on top of is worse than no photo at all.
+    #
+    # The layout came from a competitor whose picture was empty where their
+    # words went; if every photo this brand owns is busy there, forcing one in
+    # buys a headline across somebody's face — which the design review rejects,
+    # and rightly. Dropping to the design's solid background keeps the
+    # structure that was borrowed and loses only the photograph. Measured on a
+    # real shelf, solid cards from the same templates scored 69.3 and 68.6
+    # while their photo versions failed on "text overlaps with the subjects".
+    if (hero_bytes is not None
+            and _too_busy_for(spec, hero_bytes)
+            and _coverage(spec) >= _SOLID_MIN_COVERAGE):
+        logger.info("no photo suits this template — rendering it solid")
+        hero_bytes, generated, hero_key = None, False, ""
+        spec = {**spec, "background": {**(spec.get("background") or {}),
+                                       "treatment": "solid"}}
     logo = await _brand_logo(tenant_id) if spec.get("logo_box") else None
     png, kind = render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo,
                             palette=await _brand_palette(tenant_id))
@@ -605,7 +681,7 @@ async def _top_posts(tenant_id, limit: int, *, templates_only: bool = False) -> 
                  WHERE {where}
               ORDER BY (p.replicate_status IN ('saved','template','idea')) DESC,
                        coalesce(a.eye_score, 0) * 0.5 + p.engagement_rate DESC NULLS LAST
-                 LIMIT $1""", max(1, min(limit, 24)))
+                 LIMIT $1""", max(1, min(limit, 60)))
     return [_row_out(r) for r in rows]
 
 
@@ -657,9 +733,15 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
     _emit(done=0, total=n, stage="Studying the templates winning in your niche…")
     # Prefer DESIGNED templates (the reusable layouts). Pull a generous candidate
     # pool because the QA reviewer will reject some — we keep going until n PASS.
-    posts = await _top_posts(tenant_id, 24, templates_only=True)
+    # A generous pool, because the QA gate is strict: a run that attempted 34
+    # clones for trouvaillertours passed ONE. Asking for six finished samples
+    # out of 48 candidates was asking the reviewer to approve one in eight, and
+    # it approves nearer one in thirty. Widening the pool does not fix the pass
+    # rate — that is a separate problem — but it stops the batch running out of
+    # material before it runs out of budget.
+    posts = await _top_posts(tenant_id, 60, templates_only=True)
     seen = {p["id"] for p in posts}
-    posts += [p for p in await _top_posts(tenant_id, 24) if p["id"] not in seen]
+    posts += [p for p in await _top_posts(tenant_id, 60) if p["id"] not in seen]
     if not posts:
         return {"samples": [], "count": 0,
                 "note": "No competitor posts to learn from yet — confirm a few "
