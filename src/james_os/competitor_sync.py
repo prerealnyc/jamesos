@@ -391,6 +391,27 @@ async def refresh_profile(competitor: dict, tenant_id: UUID | None = None) -> di
             "name": competitor.get("name") or fresh.get("name") or ""}
 
 
+# VIDEO SCRAPING IS PAUSED, deliberately and reversibly.
+#
+# Downloading a competitor's video files is the most expensive thing this
+# pipeline does, and nothing downstream can use one yet: the reel builder is
+# not wired to competitor video, so every megabyte bought a file that sits
+# there. Meanwhile the still cloner runs short of material — 34 candidates,
+# one survivor — because half a shelf was video.
+#
+# A video post is still KEPT, and its cover still becomes an image: a cover is
+# a designed still (big headline, face, brand colours) and in some niches it is
+# the only designed still anyone posts. What stops is fetching the video file.
+#
+# Set this False when competitor video has somewhere to go.
+VIDEO_SCRAPING_PAUSED = True
+
+
+def effective_video_cap(video_cap: int) -> int:
+    """0 while video scraping is paused — covers only, no video files."""
+    return 0 if VIDEO_SCRAPING_PAUSED else video_cap
+
+
 async def sync_competitor(
     competitor: dict, limit: int = 24, days: int = 90,
     video_cap: int = 3, store_media: bool = True,
@@ -460,10 +481,11 @@ async def sync_competitor(
         ranked = sorted(stored, key=lambda r: (r.get("likes", 0) + r.get("comments", 0)),
                         reverse=True)
         videos_done = 0
+        cap = effective_video_cap(video_cap)
         for row in ranked:
             if row.get("stored_media_url"):
                 continue
-            src, kind, reason = media_choice(row, videos_done, video_cap)
+            src, kind, reason = media_choice(row, videos_done, cap)
             if reason:
                 skipped.append({"url": row.get("url"), "reason": reason})
                 continue
