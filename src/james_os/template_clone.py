@@ -485,6 +485,36 @@ async def _edit_clone_copy(content: dict, feedback: str, tenant_id) -> dict:
     return edited
 
 
+# The two families the owner actually chooses between when they pick formats:
+# a poster carries type on a plain ground, a photo post carries type on a
+# picture. Every designed key belongs to one or the other.
+_POSTER_FORMATS = frozenset({"bold_statement", "brand_quote", "big_stat", "text_carousel"})
+_PHOTO_FORMATS = frozenset({"hero_quote", "statement", "full_bleed", "editorial_split",
+                            "minimal_over", "framed_print", "photo_carousel"})
+
+
+def _family_of(spec: dict) -> str:
+    """'poster' or 'photo' — what this cloned design would produce."""
+    from .spec_render import _photo_frame
+
+    return "photo" if _photo_frame(spec) is not None else "poster"
+
+
+def _family_allowed(family: str, allowed: set[str] | None) -> bool:
+    """Would the brand accept a post of this family?
+
+    A travel brand that asked for photo posts should not be handed a quote
+    card cloned off a competitor's typographic poster — which is exactly what
+    it got, because this path never consulted the choice at all. None means no
+    restriction, and an unrecognised set is treated as permissive rather than
+    silently producing nothing.
+    """
+    if not allowed:
+        return True
+    wanted = _POSTER_FORMATS if family == "poster" else _PHOTO_FORMATS
+    return bool(allowed & wanted) or not (allowed & (_POSTER_FORMATS | _PHOTO_FORMATS))
+
+
 # How much busyness under the copy is too much to put a photo there at all.
 # Calibrated against a real library: a photo with clear sky or water where the
 # headline goes scores near zero, and the pictures that produced "text overlaps
@@ -522,8 +552,28 @@ def _too_busy_for(spec: dict, hero_bytes: bytes) -> bool:
         return False
 
 
+def _best_stock(spec: dict, pool: list[tuple[str, bytes]]) -> tuple[str, bytes] | None:
+    """The stock photo that suits this template, if any of them do."""
+    best, best_cost = None, None
+    for key, raw in pool:
+        try:
+            from .spec_render import _load, photo_fit_cost
+
+            img = _load(raw)
+            if img is None:
+                continue
+            cost = photo_fit_cost(spec, img)
+        except Exception:  # noqa: BLE001
+            continue
+        if cost <= _PHOTO_FIT_CEILING and (best_cost is None or cost < best_cost):
+            best, best_cost = (key, raw), cost
+    return best
+
+
 async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None,
-                     hero_generated: bool = False, hero_key: str = "") -> dict | None:
+                     hero_generated: bool = False, hero_key: str = "",
+                     stock_pool: list[tuple[str, bytes]] | None = None,
+                     allowed_formats: set[str] | None = None) -> dict | None:
     """Turn ONE competitor post into our version. Returns {png, kind, content,
     topic, generated_hero, from} or None if it can't be cloned.
 
@@ -542,6 +592,12 @@ async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None,
     # the batch spend that slot on a candidate that can actually carry a post.
     if not (spec.get("elements") or []):
         logger.info("skipped a template with no text elements (%s)", post.get("id"))
+        return None
+    # The brand's own answer to "what kind of posts do you want" decides this,
+    # not the competitor's art direction.
+    family = _family_of(spec)
+    if not _family_allowed(family, allowed_formats):
+        logger.info("skipped a %s template — this brand did not ask for those", family)
         return None
     # Keep the layout. This read used to exist only for the one sample it made —
     # the spec went onto that sample's payload and nowhere else, so every good
@@ -583,13 +639,23 @@ async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None,
     # structure that was borrowed and loses only the photograph. Measured on a
     # real shelf, solid cards from the same templates scored 69.3 and 68.6
     # while their photo versions failed on "text overlaps with the subjects".
-    if (hero_bytes is not None
-            and _too_busy_for(spec, hero_bytes)
-            and _coverage(spec) >= _SOLID_MIN_COVERAGE):
-        logger.info("no photo suits this template — rendering it solid")
-        hero_bytes, generated, hero_key = None, False, ""
-        spec = {**spec, "background": {**(spec.get("background") or {}),
-                                       "treatment": "solid"}}
+    if hero_bytes is not None and _too_busy_for(spec, hero_bytes):
+        # The brand's own photo cannot carry this layout's copy. Before giving
+        # up on photography altogether, try a real stock photograph that can —
+        # a landscape with open sky is exactly what a headline needs, and it is
+        # what the competitor's own picture had. Dropping straight to a flat
+        # typographic card, which is what this did first, made every post in a
+        # batch look like a notice board.
+        stock = _best_stock(spec, stock_pool or [])
+        if stock is not None:
+            logger.info("brand photo does not suit this template — using stock")
+            hero_key, hero_bytes = stock[0], stock[1]
+            generated = False
+        elif _coverage(spec) >= _SOLID_MIN_COVERAGE:
+            logger.info("no photo suits this template — rendering it solid")
+            hero_bytes, generated, hero_key = None, False, ""
+            spec = {**spec, "background": {**(spec.get("background") or {}),
+                                           "treatment": "solid"}}
     logo = await _brand_logo(tenant_id) if spec.get("logo_box") else None
     png, kind = render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo,
                             palette=await _brand_palette(tenant_id))
@@ -761,6 +827,21 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
     # the post. A couple of draws carry the whole set, so the batch finishes
     # inside the time anyone is willing to wait. A brand WITH photos is left
     # alone: picking from the library is cheap and gives every sample its own.
+    # Real photographs for the templates the brand's own library cannot carry.
+    # Fetched from the posts' own subjects so they are at least on-topic.
+    # What the owner said they want. None = they have not narrowed it.
+    try:
+        from .brand_identity import get_enabled_formats
+        allowed = await get_enabled_formats(tenant_id)
+    except Exception:  # noqa: BLE001 — a missing preference is not a restriction
+        allowed = None
+    if allowed:
+        _emit(done=0, total=n, stage="Using the post styles you chose…")
+
+    stock = await _stock_pool([str(p.get("topic") or "") for p in posts[:8]])
+    if stock:
+        _emit(done=0, total=n, stage=f"Found {len(stock)} photos to build on…")
+
     drawn: list[bytes] = []
     if not await get_hero_photo_files(tenant_id=tenant_id, limit=None):
         for i in range(min(_DRAWN_HEROES, n)):
@@ -788,7 +869,8 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
               stage=f"Building in the style of @{post.get('handle') or 'your niche'}…")
         hero = drawn[len(samples) % len(drawn)] if drawn else None
         cloned = await clone_post(post, tenant_id, hero_bytes=hero,
-                                  hero_generated=bool(hero))
+                                  hero_generated=bool(hero), stock_pool=stock,
+                                  allowed_formats=allowed)
         if not cloned or not cloned.get("png"):
             failed += 1
             continue
