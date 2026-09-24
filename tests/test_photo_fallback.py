@@ -91,3 +91,23 @@ def test_a_design_that_fills_the_card_can_stand_alone():
         ],
     }
     assert tc._coverage(dense) >= tc._SOLID_MIN_COVERAGE
+
+
+def test_a_stock_photo_that_suits_is_preferred_over_a_flat_card():
+    """A headline needs open sky; the brand's own photo may not have any, and
+    a real photograph that does is better than dropping photography entirely."""
+    spec = _spec()
+    calm, busy = _calm(), _busy()
+    pool = [("busy-stock", busy), ("calm-stock", calm)]
+    got = tc._best_stock(spec, pool)
+    assert got is not None and got[0] == "calm-stock"
+
+
+def test_stock_that_also_fails_the_layout_is_not_used():
+    """Falling back to a photo that is just as unusable helps nobody."""
+    spec = _spec()
+    assert tc._best_stock(spec, [("busy", _busy())]) is None
+
+
+def test_no_stock_pool_is_not_an_error():
+    assert tc._best_stock(_spec(), []) is None

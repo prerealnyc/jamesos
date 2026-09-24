@@ -159,6 +159,12 @@ async def _hero_or_placeholder(tenant_id, topic: str,
 
     refs = await get_hero_photo_files(tenant_id=tenant_id, limit=None)
     if refs:
+        if spec:
+            try:
+                from .spec_render import suited_photos
+                refs = suited_photos(spec, refs) or refs
+            except Exception:  # noqa: BLE001 — a ranking miss must not cost the post
+                logger.warning("could not rank photos for this template", exc_info=True)
         picked = await pick_hero_bytes(refs, tenant_id)
         if picked:
             return picked[1], False, picked[0]
@@ -774,6 +780,37 @@ async def _exemplars(tenant_id, k: int = 2) -> list[bytes]:
 # one, so a set of samples is not the same picture six times — and not six,
 # because each is ~57s of gpt-image-1 and the wait is the whole problem.
 _DRAWN_HEROES = 2
+# Stock photographs fetched ONCE for the whole batch, not once per clone.
+# Unsplash's demo tier allows 50 calls an hour and a single batch attempts
+# seventy-odd clones, so per-clone fetching would exhaust the quota inside one
+# run and then 403 for the rest of the hour — which is exactly what the logs
+# showed while this was being built. A handful of photographs, scored per
+# template and reused, costs three calls.
+_STOCK_HEROES = 4
+
+
+async def _stock_pool(topics: list[str]) -> list[tuple[str, bytes]]:
+    """A few real photographs for this brand's subject matter, best-effort."""
+    out: list[tuple[str, bytes]] = []
+    seen: set[str] = set()
+    try:
+        from .stock_photo import fetch_unsplash_hero
+    except Exception:  # noqa: BLE001 — no stock module, no stock photos
+        return out
+    for topic in topics:
+        if len(out) >= _STOCK_HEROES:
+            break
+        q = (topic or "").strip()
+        if not q or q.lower() in seen:
+            continue
+        seen.add(q.lower())
+        try:
+            got = await fetch_unsplash_hero(q)
+        except Exception:  # noqa: BLE001 — a stock miss never costs the batch
+            continue
+        if got:
+            out.append((got[0], got[1]))
+    return out
 
 
 async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True,
