@@ -70,7 +70,9 @@ def set_request_tenant(tenant_id: UUID | None) -> None:
 
 
 @asynccontextmanager
-async def acquire(tenant_id: UUID | None = None) -> AsyncIterator[asyncpg.Connection]:
+async def acquire(
+    tenant_id: UUID | None = None, *, require_tenant: bool = False
+) -> AsyncIterator[asyncpg.Connection]:
     """Acquire a connection with the per-request tenant set on it.
 
     Resolution order: explicit arg → request contextvar (set by auth
@@ -84,7 +86,19 @@ async def acquire(tenant_id: UUID | None = None) -> AsyncIterator[asyncpg.Connec
     Wraps the use in a transaction so set_config(..., is_local=true) persists
     across the contained statements and is automatically reset on release.
     """
-    tenant = tenant_id or _request_tenant.get() or settings.default_tenant_id
+    resolved = tenant_id or _request_tenant.get()
+    if resolved is None:
+        if require_tenant:
+            # A tenant-scoped WRITE (e.g. a video render) must never silently fall
+            # back to the default tenant: that tenant is a real brand (the operator's
+            # own), so an un-scoped write is mis-attributed to it — exactly how
+            # foreign videos leaked into a brand's approval queue. Fail loudly.
+            raise RuntimeError(
+                "acquire(require_tenant=True) with no tenant in context; refusing to "
+                "fall back to the default tenant and mis-attribute a tenant-scoped write"
+            )
+        resolved = settings.default_tenant_id
+    tenant = resolved
     pool = get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():

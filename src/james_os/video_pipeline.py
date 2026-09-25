@@ -221,7 +221,9 @@ async def start_production(
         raise ValueError("engaging_avatar mode requires a script")
     if mode in ("split_horizontal", "split_screen", "split_vertical") and not script.strip():
         raise ValueError("split-screen modes require a script")
-    async with acquire(tenant_id) as conn:
+    # require_tenant=True: never let a render fall back to the default tenant and
+    # get mis-attributed to the operator's own brand (cross-brand video leak).
+    async with acquire(tenant_id, require_tenant=True) as conn:
         row = await conn.fetchrow(
             """INSERT INTO video_productions
                  (status, title, platform, aspect, script, scenes, mode,
