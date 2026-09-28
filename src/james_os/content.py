@@ -195,15 +195,31 @@ async def _voice_exemplars(
     """
     if limit <= 0:
         return []
-    # Heuristic: a doc whose filename marks it as the voice profile/spec.
+    # Filenames that mark a doc as the brand's OWN voice: the distilled
+    # profile/spec, and the harvested corpus BM2 keeps in step with the accounts
+    # the owner confirmed (services/voice_sync.py CORPUS_FILE,
+    # "bm2-voice-corpus.txt" — hyphen, which is why the three _profile patterns
+    # never matched it).
+    #
+    # That omission was the whole problem. Those passages are the only verbatim
+    # record of how this brand actually sounds, and they were landing in the
+    # cadence lottery below: sampled at random, behind a 200-character floor that
+    # most real social captions fall under, and ranked beneath the engine's own
+    # approved drafts. The words the owner wrote could not outrank the words the
+    # engine wrote. They anchor now, like the spec does.
     _PROFILE = (
         "(coalesce(payload->>'filename','') ILIKE '%voice_profile%' "
         "OR coalesce(payload->>'filename','') ILIKE '%brand_voice%' "
-        "OR coalesce(payload->>'filename','') ILIKE '%voice_spec%')"
+        "OR coalesce(payload->>'filename','') ILIKE '%voice_spec%' "
+        "OR coalesce(payload->>'filename','') ILIKE '%voice-corpus%' "
+        "OR coalesce(payload->>'filename','') ILIKE '%voice_corpus%')"
     )
     async with acquire(tenant_id) as conn:
-        # Approved exemplars — drafts a human blessed (positive feedback loop).
-        # Strongest "make more like this" signal; newest first.
+        # Approved exemplars — captions the owner REWROTE by hand and then
+        # approved (learning.record_approval gates on edited_by_owner, so an
+        # unedited draft never reaches this table). Real corrections, worth
+        # imitating, but kept behind the anchors below: these are single social
+        # captions, and a brand's voice is not defined by its last two posts.
         approved = await conn.fetch(
             """
             SELECT id, event_type, raw_content, payload, effective_at
@@ -212,7 +228,7 @@ async def _voice_exemplars(
               AND superseded_by IS NULL
               AND payload ->> 'source' = 'approved_exemplar'
               AND length(raw_content) > 60
-            ORDER BY created_at DESC LIMIT 3
+            ORDER BY created_at DESC LIMIT 2
             """
         )
         anchors = await conn.fetch(
@@ -239,9 +255,14 @@ async def _voice_exemplars(
             """,
             limit,
         )
-    # Approved exemplars + profile anchors FIRST so they win the bucket cap;
-    # cadence fills the rest. Falls back to all-random when neither exists.
-    rows = [*approved, *anchors, *cadence]
+    # The brand's own words FIRST so they win the bucket cap (buckets["voice"]
+    # is truncated to content_voice_k, so this order decides what the model
+    # actually sees), then the owner's hand-edits, then cadence. Anchors lead
+    # rather than approved exemplars because they are the brand speaking at
+    # length; an exemplar is one caption, and letting a caption outrank the
+    # corpus is how the engine's voice drifted away from the owner's.
+    # Falls back to all-random when none of the three exists.
+    rows = [*anchors, *approved, *cadence]
     out: list[RetrievedEvent] = []
     for r in rows:
         payload = r["payload"]

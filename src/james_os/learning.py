@@ -73,9 +73,11 @@ APPROVED_EXEMPLAR_SOURCE = "approved_exemplar"
 
 
 def approval_to_event(payload: dict) -> EventCreate | None:
-    """Turn an APPROVED draft into a voice_corpus exemplar — the positive
-    half of the loop. The human blessed this as on-brand, so future drafts
-    should imitate it. Returns None when there's nothing worth learning."""
+    """Turn an owner-EDITED approved draft into a voice_corpus exemplar — the
+    positive half of the loop. Callers must have established that a human
+    actually wrote this text (record_approval gates on edited_by_owner); an
+    unedited draft is the engine's own prose and teaches it nothing but itself.
+    Returns None when there's nothing worth learning."""
     text = str(
         payload.get("content") or payload.get("caption") or payload.get("draft") or ""
     ).strip()
@@ -123,8 +125,9 @@ async def record_approval(
     action_id: UUID, tenant_id: UUID | None = None
 ) -> str | None:
     """Positive feedback: promote an approved content draft into voice_corpus
-    as an exemplar so the engine makes MORE like it. Idempotent (dedupe on
-    content). Only learns from content drafts; returns None otherwise."""
+    as an exemplar so the engine makes MORE like it — but only when the owner
+    rewrote it by hand. Idempotent (dedupe on content). Only learns from
+    content drafts; returns None otherwise."""
     async with acquire(tenant_id) as conn:
         row = await conn.fetchrow(
             "SELECT action_type, payload FROM actions WHERE id = $1", action_id
@@ -141,6 +144,23 @@ async def record_approval(
     # "imitate this" — promoting it would teach the engine to repeat the very
     # violation the gate caught.
     if payload.get("flagged") is True or payload.get("qa_passed") is False:
+        return None
+    # Learn the words the OWNER wrote — never the engine's own draft.
+    #
+    # Approving says "ship it". It does not say "this is how I sound". The text
+    # on an unedited card was written by THIS engine, so promoting it into
+    # voice_corpus at confidence 1.0 fed the engine its own output back as the
+    # brand's authoritative voice — and _voice_exemplars ranked those samples
+    # ahead of the brand's real harvested words. Every approval therefore pulled
+    # the next draft one step further from the person and one step closer to
+    # whatever the model last happened to write, while both corpora claimed the
+    # owner's blessing. Nothing about an unedited approval carries voice
+    # information: the words came from here.
+    #
+    # PATCH /v1/queue/post/{id} stamps edited_by_owner when a human rewrites a
+    # caption by hand. That rewrite is the only text on this row the owner
+    # actually authored, so it is the only text worth imitating.
+    if payload.get("edited_by_owner") is not True:
         return None
     event = approval_to_event(payload)
     if event is None:
