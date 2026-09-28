@@ -13,8 +13,12 @@ Contract: render_spec(spec, content, hero_bytes=None) -> (png_bytes, used_kind).
 
 from __future__ import annotations
 
+import hashlib
 import io
 
+from functools import lru_cache
+
+import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 from .image_compose import _w, _h, _font, _wrap, _ANTON, _ARCHIVO, _remap_face
@@ -75,14 +79,88 @@ def _zone_cost(edges: Image.Image, zones: list[tuple[float, float, float, float]
     return total
 
 
+# A face under a text block costs more than ANY amount of texture. Edge energy
+# tops out at 255 per cell, so a weight above that makes "on a face" dominate
+# "on a busy hedge" rather than merely outrank it — which is the distinction the
+# edge score cannot make on its own: a face and foliage light it up identically,
+# and only one of them ruins a post.
+_FACE_WEIGHT = 700.0
+
+
+def _crop_window(src: tuple[int, int], out_aspect: float,
+                 centering: tuple[float, float]) -> tuple[float, float, float, float]:
+    """The rectangle ImageOps.fit will take, as fractions of the SOURCE.
+
+    Mirrors fit()'s own geometry: it keeps the largest sub-rectangle of the
+    source that has the output's aspect, positioned by `centering`. Needed
+    because faces are detected on the whole photo, while the cost is scored on
+    the cropped frame — without this transform a face that the crop excludes
+    would still be penalised.
+    """
+    sw, sh = src
+    if sw <= 0 or sh <= 0 or out_aspect <= 0:
+        return 0.0, 0.0, 1.0, 1.0
+    src_aspect = sw / sh
+    if src_aspect > out_aspect:          # source is wider: full height, crop width
+        cw, ch = out_aspect / src_aspect, 1.0
+    else:                                 # source is taller: full width, crop height
+        cw, ch = 1.0, src_aspect / out_aspect
+    cx = (1.0 - cw) * centering[0]
+    cy = (1.0 - ch) * centering[1]
+    return cx, cy, cw, ch
+
+
+def _face_cost(face_zones: list[tuple[float, float, float, float]],
+               window: tuple[float, float, float, float],
+               zones: list[tuple[float, float, float, float]],
+               cells: tuple[int, int]) -> float:
+    """Penalty for any head landing under the copy, in edge-energy units.
+
+    Scored per text zone and scaled by that zone's area in probe cells, so it
+    adds to `_zone_cost` on the same scale and the existing thresholds
+    (_FIT_SLACK, _PHOTO_FIT_CEILING) keep their meaning.
+    """
+    if not face_zones or not zones:
+        return 0.0
+    wx, wy, ww, wh = window
+    if ww <= 0 or wh <= 0:
+        return 0.0
+    total = 0.0
+    for fx, fy, fw, fh in face_zones:
+        # source fractions -> cropped-frame fractions
+        cx0, cy0 = (fx - wx) / ww, (fy - wy) / wh
+        cw_, ch_ = fw / ww, fh / wh
+        for zx, zy, zw, zh in zones:
+            ix = max(0.0, min(cx0 + cw_, zx + zw) - max(cx0, zx))
+            iy = max(0.0, min(cy0 + ch_, zy + zh) - max(cy0, zy))
+            if ix <= 0 or iy <= 0:
+                continue
+            covered = (ix * iy) / max(1e-6, zw * zh)
+            total += covered * (zw * cells[0]) * (zh * cells[1]) * _FACE_WEIGHT
+    # BOUNDED, and this matters more than the weight does. The same number is
+    # compared against absolute thresholds downstream — _PHOTO_FIT_CEILING
+    # (25,000) decides whether to abandon the photo for a solid card, and it was
+    # calibrated on texture, where the photos that drew "text overlaps with the
+    # subjects" scored 63,000 and up. Unbounded, a crowd of faces scored over a
+    # million and would have re-tuned that threshold by accident for every
+    # people-heavy brand. Capped at three times the busiest a photo can possibly
+    # be, a face still outranks any texture and the scale still means what it
+    # meant.
+    max_edge = 255.0 * sum((zw * cells[0]) * (zh * cells[1]) for _, _, zw, zh in zones)
+    return min(total, 3.0 * max_edge)
+
+
 def _best_centering(img: Image.Image, w: int, h: int,
-                    zones: list[tuple[float, float, float, float]]) -> tuple[float, float]:
+                    zones: list[tuple[float, float, float, float]],
+                    face_zones: list[tuple[float, float, float, float]] | None = None,
+                    ) -> tuple[float, float]:
     """The crop alone. See _centering_and_cost for the score behind it."""
-    return _centering_and_cost(img, w, h, zones)[0]
+    return _centering_and_cost(img, w, h, zones, face_zones)[0]
 
 
 def _centering_and_cost(img: Image.Image, w: int, h: int,
-                        zones: list[tuple[float, float, float, float]]
+                        zones: list[tuple[float, float, float, float]],
+                        face_zones: list[tuple[float, float, float, float]] | None = None,
                         ) -> tuple[tuple[float, float], float]:
     """Which crop puts the quiet part of the photo under the copy.
 
@@ -102,10 +180,16 @@ def _centering_and_cost(img: Image.Image, w: int, h: int,
         probe_h = max(1, int(_PROBE_W * img.height / max(1, img.width)))
         probe = img.convert("L").resize((_PROBE_W, probe_h), Image.Resampling.BILINEAR)
         cells = (_PROBE_CELLS[0], max(1, int(_PROBE_CELLS[0] * h / max(1, w))))
+        out_aspect = w / max(1, h)
+
         def cost_of(c: tuple[float, float]) -> float:
             fitted = ImageOps.fit(probe, cells, method=Image.Resampling.BILINEAR,
                                   centering=c)
-            return _zone_cost(_busy(fitted, cells), zones)
+            cost = _zone_cost(_busy(fitted, cells), zones)
+            if face_zones:
+                cost += _face_cost(face_zones,
+                                   _crop_window(img.size, out_aspect, c), zones, cells)
+            return cost
 
         # The incumbent is measured FIRST and is the score to beat. Seeding the
         # search with "no result yet" made the first candidate win by default,
@@ -132,10 +216,58 @@ def _cover(img: Image.Image, w: int, h: int,
 
     With `zones` — the rectangles the copy and logo will occupy, in this
     frame's own coordinates — the crop is chosen to keep those rectangles over
-    the calmest part of the picture. Without them, the old fixed centering."""
-    centering = _best_centering(img, w, h, zones or [])
+    the calmest part of the picture, and OFF anybody's face. Without them, the
+    old fixed centering."""
+    centering = _best_centering(img, w, h, zones or [], _head_zones(img) if zones else None)
     return ImageOps.fit(img.convert("RGB"), (max(1, w), max(1, h)),
                         method=Image.Resampling.LANCZOS, centering=centering)
+
+
+# Heads already found, keyed by a hash of the pixels. A plain dict rather than
+# lru_cache because a PIL Image is not hashable, and passing one to lru_cache
+# raises TypeError at the worst possible moment — inside the render.
+_HEADS: dict[bytes, tuple] = {}
+_HEADS_MAX = 16
+
+
+def _head_zones(img: Image.Image) -> list[tuple[float, float, float, float]]:
+    """Heads in this photo, as fractions, or [] — never raises.
+
+    Kept behind a function rather than called inline so the whole feature is one
+    import that can be absent: a container without opencv renders exactly as it
+    did before, which is the same answer as a photo with nobody in it.
+
+    MEMOISED ON CONTENT, because one idea asks the same question repeatedly: the
+    photo ranking detects on each candidate, then the winning photo is detected
+    again for the primary render, again for every extra platform shape, and once
+    more for the layer-capture pass — six to eight detections of one picture at
+    ~25 ms each.
+
+    Keyed on a hash of the pixels, never on id(img): _load() builds a fresh
+    object per render and CPython recycles ids, so an identity key would
+    eventually hand one photo another photo's faces, and the text would dodge a
+    face that is not in the picture. Hashing a 64x64 thumbnail costs ~1 ms
+    against a 25 ms detection.
+    """
+    if img is None:
+        return []
+    try:
+        key = hashlib.blake2b(
+            img.convert("RGB").resize((64, 64), Image.Resampling.BILINEAR).tobytes(),
+            digest_size=16).digest()
+        hit = _HEADS.get(key)
+        if hit is not None:
+            return list(hit)
+
+        from . import people
+
+        found = tuple(people.keep_out(f) for f in people.faces(img))
+        if len(_HEADS) >= _HEADS_MAX:
+            _HEADS.pop(next(iter(_HEADS)), None)   # oldest out; insertion-ordered
+        _HEADS[key] = found
+        return list(found)
+    except Exception:  # noqa: BLE001 — placement is a nicety, the render is not
+        return []
 
 
 def _load(b: bytes | None) -> Image.Image | None:
@@ -157,18 +289,110 @@ def _load_rgba(b: bytes | None) -> Image.Image | None:
 
 
 def _lum(rgb) -> float:
+    """Perceived brightness 0-255. Kept for the pill/stroke decisions that only
+    need "is this light or dark"; legibility uses _rel_lum below."""
     return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
 
 
+def _rel_lum(rgb) -> float:
+    """WCAG 2.x relative luminance (0-1), sRGB-linearised.
+
+    Not interchangeable with _lum: that one is NTSC luma on a 0-255 scale and
+    has no defined relationship to a contrast RATIO. Legibility is a ratio
+    question, so it needs this."""
+    out = []
+    for c in rgb[:3]:
+        c = max(0.0, min(1.0, c / 255.0))
+        out.append(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2]
+
+
+def _ratio(l1: float, l2: float) -> float:
+    """WCAG contrast ratio between two relative luminances. 1.0 = identical,
+    21.0 = black on white."""
+    hi, lo = (l1, l2) if l1 >= l2 else (l2, l1)
+    return (hi + 0.05) / (lo + 0.05)
+
+
 def _region_lum(base: Image.Image, x: int, y: int, w: int, h: int) -> float:
-    """Mean brightness (0-255) of the background under a text block, so we can
-    tell whether the text colour will actually read there."""
+    """Mean brightness (0-255) of the background under a text block."""
     x0, y0 = max(0, int(x)), max(0, int(y))
     x1, y1 = min(_w(), int(x + w)), min(_h(), int(y + h))
     if x1 <= x0 or y1 <= y0:
         return 128.0
     px = list(base.crop((x0, y0, x1, y1)).convert("L").getdata())
     return sum(px) / len(px) if px else 128.0
+
+
+# How much of a region may fall outside the contrast target before we plate it.
+# Not zero: a few stray pixels of sky between letters should not force a plate
+# over an otherwise clean photo.
+_LUM_TAIL = 8.0          # percentile — sample the dark and light tails, not the mean
+_MIN_RATIO_LARGE = 3.0   # WCAG AA for large text (our display sizes)
+_MIN_RATIO_SMALL = 4.5   # WCAG AA for body-sized text
+
+
+def _region_extremes(base: Image.Image, x: int, y: int, w: int, h: int) -> tuple[float, float]:
+    """The dark and light TAILS of the background under a text block, as WCAG
+    relative luminance.
+
+    The mean is what the previous guard measured, and it is precisely what fails
+    on a high-variance region. Measured on a real render 2026-09-28: a headline
+    crossing a floodlit tower and a night sky averaged to mid-grey, the guard
+    saw ample contrast and drew no plate — and half the headline was invisible
+    against the lit half. Judging the worst case instead of the average is the
+    whole fix; the percentile rather than min/max keeps a handful of specular
+    pixels from plating every photo.
+    """
+    x0, y0 = max(0, int(x)), max(0, int(y))
+    x1, y1 = min(_w(), int(x + w)), min(_h(), int(y + h))
+    if x1 <= x0 or y1 <= y0:
+        mid = _rel_lum((128, 128, 128))
+        return mid, mid
+    crop = base.crop((x0, y0, x1, y1)).convert("RGB")
+    # A small sample is plenty for a distribution and keeps this off the hot path.
+    crop.thumbnail((48, 48), Image.Resampling.BILINEAR)
+    arr = np.asarray(crop, dtype=np.float64) / 255.0
+    lin = np.where(arr <= 0.04045, arr / 12.92, ((arr + 0.055) / 1.055) ** 2.4)
+    lum = 0.2126 * lin[..., 0] + 0.7152 * lin[..., 1] + 0.0722 * lin[..., 2]
+    return float(np.percentile(lum, _LUM_TAIL)), float(np.percentile(lum, 100 - _LUM_TAIL))
+
+
+def _min_plate_alpha(text_rgb: tuple, plate_rgb: tuple,
+                     dark_lum: float, light_lum: float, target: float) -> float:
+    """The LEAST plate opacity that brings BOTH tails of the region to `target`.
+
+    The old guard used a fixed 0.42, which is two mistakes at once: too little
+    over a bright sky (text still lost) and too much over an already-safe photo
+    (the picture needlessly dimmed). Compositing is linear per channel but
+    luminance is not linear in alpha, so this bisects rather than solving
+    algebraically — 12 iterations is exact to ~0.0002 and costs nothing.
+    Returns 0.0 when the region already passes.
+    """
+    t = _rel_lum(text_rgb)
+
+    def worst(alpha: float) -> float:
+        # Composite the plate over each tail and take the worse resulting ratio.
+        out = []
+        for bg in (dark_lum, light_lum):
+            # approximate the tail as a grey of that luminance, composite in sRGB
+            g = 255.0 * (bg ** (1 / 2.2))
+            mixed = tuple(alpha * p + (1 - alpha) * g for p in plate_rgb[:3])
+            out.append(_ratio(t, _rel_lum(mixed)))
+        return min(out)
+
+    if worst(0.0) >= target:
+        return 0.0
+    if worst(1.0) < target:
+        return 1.0          # even an opaque plate cannot reach it; caller re-colours
+    lo, hi = 0.0, 1.0
+    for _ in range(12):
+        mid = (lo + hi) / 2
+        if worst(mid) >= target:
+            hi = mid
+        else:
+            lo = mid
+    return hi
 
 
 def _plate(base: Image.Image, box_px: tuple[int, int, int, int], rgb: tuple, alpha: float) -> None:
@@ -274,8 +498,24 @@ def _photo_frame(spec: dict) -> tuple[float, float, float, float] | None:
     return (0.0, 0.0, 1.0, 1.0)
 
 
-def photo_fit_cost(spec: dict, img: Image.Image) -> float:
+def photo_fit_cost(spec: dict, img: Image.Image, *, faces: bool = False) -> float:
     """How badly this photo suits this template — lower is better.
+
+    `faces` controls whether heads under the copy count, and the two callers
+    genuinely want different answers. It defaults to OFF — the conservative
+    value — so a caller that has not thought about it gets today's behaviour
+    rather than the surprising one:
+
+      * RANKING one photo against another (suited_photos) wants faces counted —
+        given two photos, the one without a head under the headline is better,
+        and by a lot.
+      * The ABSOLUTE ceiling (_PHOTO_FIT_CEILING, which abandons the photo for a
+        solid card) must not, because that number was calibrated on texture
+        alone. Real photos average ~50 edge energy a cell against a 255 maximum,
+        so a face reads as roughly fourteen times typical texture — enough to
+        push every people photo over a threshold tuned for something else, and
+        a brand whose library is all people would start rendering solid cards.
+        That is a worse outcome than a photo with a face in an awkward spot.
 
     The busyness left under the copy once the photo has been cropped as kindly
     as it can be. Normalised by the area being judged so a template with a lot
@@ -294,7 +534,16 @@ def photo_fit_cost(spec: dict, img: Image.Image) -> float:
     w = max(1, int(frame[2] * _w()))
     h = max(1, int(frame[3] * _h()))
     try:
-        _, cost = _centering_and_cost(img, w, h, zones)
+        # The SAME cost the renderer will pay, faces included. If this ranked on
+        # texture alone while the render scored faces too, the two would
+        # disagree and the "best" photo could be the one the crop search then
+        # cannot rescue. Measured 2026-09-29: on a close-up where two faces fill
+        # the frame, every one of the 25 candidate crops leaves them under the
+        # headline — moving the photo cannot fix a photo with nowhere to move
+        # to, and the only real remedy is to prefer a different photo. That
+        # decision belongs here, in the ranking, not in the crop.
+        heads = _head_zones(img) if faces else None
+        _, cost = _centering_and_cost(img, w, h, zones, heads)
         return cost / area
     except Exception:  # noqa: BLE001 — scoring must never cost a render
         return 0.0
@@ -322,7 +571,8 @@ def suited_photos(spec: dict, refs: list[tuple[str, bytes]],
         img = _load(ref[1]) if len(ref) > 1 else None
         if img is None:
             continue
-        scored.append((photo_fit_cost(spec, img), ref))
+        # faces=True here and only here: RANKING is the question faces answer.
+        scored.append((photo_fit_cost(spec, img, faces=True), ref))
     if not scored:
         return list(refs)
     scored.sort(key=lambda pair: pair[0])
@@ -539,10 +789,16 @@ def _draw_element(base: Image.Image, el: dict, text: str, ink_default, over_phot
     # always reads — only when actually needed, so the photo stays visible. Skip
     # a label sitting ON a pill: it already has a solid, contrasting background.
     if over_photo and not el.get("_on_pill"):
-        bg_lum = _region_lum(base, blk_x, cy0, maxw, block_h)
-        if abs(text_lum - bg_lum) < 95:
-            plate_rgb = (0, 0, 0) if text_lum > 128 else (255, 255, 255)
-            _plate(base, (int(blk_x), int(cy0), int(maxw), int(block_h)), plate_rgb, 0.42)
+        dark, light = _region_extremes(base, blk_x, cy0, maxw, block_h)
+        # Large display type may sit at AA-large (3:1); small type must clear 4.5:1.
+        target = _MIN_RATIO_LARGE if font.size >= _h() * 0.045 else _MIN_RATIO_SMALL
+        plate_rgb = (0, 0, 0) if text_lum > 128 else (255, 255, 255)
+        alpha = _min_plate_alpha(col, plate_rgb, dark, light, target)
+        if alpha > 0.0:
+            # Never a whisper of a plate — below this it reads as a smudge rather
+            # than a deliberate surface, and does not help legibility either.
+            _plate(base, (int(blk_x), int(cy0), int(maxw), int(block_h)),
+                   plate_rgb, max(0.28, min(0.92, alpha)))
 
     # A crisp contrasting outline keeps every letter legible on any background.
     stroke_col = (0, 0, 0) if text_lum > 128 else (255, 255, 255)

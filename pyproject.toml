@@ -30,6 +30,12 @@ dependencies = [
   "cryptography>=43",
   "xpoz>=0.7",
   "fonttools>=4.53",
+  # Face detection for text placement (src/james_os/people.py). HEADLESS on
+  # purpose: plain opencv-python wants libGL.so.1, which python:3.12-slim has
+  # not got, and opencv-contrib (what MediaPipe pins) is the 82 MB GUI build.
+  # The 232 KB YuNet model is vendored at src/james_os/models/ rather than
+  # downloaded at boot, so a render never waits on the network.
+  "opencv-python-headless>=4.9",
 ]
 
 [project.optional-dependencies]
