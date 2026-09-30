@@ -298,6 +298,31 @@ class MediaRehost(BaseModel):
     label: str = "clip"
 
 
+# The stored NAME carries the extension, and the extension is what every later
+# reader uses to decide what the file IS. It was hardcoded ".mp4" — right for the
+# clip library this endpoint was built for, wrong the moment anything else used
+# it. A brand's own post STILL now comes through here, so the single durable copy
+# of the picture was announcing itself as a video to everything downstream.
+_REHOST_EXT = {
+    "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png",
+    "image/webp": ".webp", "image/gif": ".gif", "image/avif": ".avif",
+    "video/mp4": ".mp4", "video/quicktime": ".mov", "video/webm": ".webm",
+}
+
+
+def _rehost_ext(content_type: str, url: str) -> str:
+    """What this actually is, best evidence first: the server's own
+    Content-Type, then the extension on the url, then the historical .mp4
+    assumption so the clip library behaves exactly as it always has."""
+    ct = (content_type or "").split(";")[0].strip().lower()
+    if ct in _REHOST_EXT:
+        return _REHOST_EXT[ct]
+    tail = urlparse(url).path.rsplit(".", 1)
+    if len(tail) == 2 and tail[1].isalnum() and 1 <= len(tail[1]) <= 5:
+        return f".{tail[1].lower()}"
+    return ".mp4"
+
+
 @router.post("/media/rehost")
 async def v1_media_rehost(body: MediaRehost, tenant_id: TenantDep) -> dict[str, Any]:
     """Download a third-party, time-limited media URL (e.g. an OpusClip signed mp4
@@ -316,6 +341,7 @@ async def v1_media_rehost(body: MediaRehost, tenant_id: TenantDep) -> dict[str, 
             r = await c.get(url, follow_redirects=True)
             r.raise_for_status()
             data = r.content
+            content_type = str(r.headers.get("content-type", ""))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"could not fetch source media ({type(exc).__name__})") from exc
     if not data:
@@ -323,7 +349,7 @@ async def v1_media_rehost(body: MediaRehost, tenant_id: TenantDep) -> dict[str, 
     safe = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in (body.label or "clip"))[:60] or "clip"
     try:
         durable, _ = await asyncio.to_thread(
-            media_storage().save, str(tenant_id), data, f"{safe}.mp4"
+            media_storage().save, str(tenant_id), data, f"{safe}{_rehost_ext(content_type, url)}"
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"durable storage save failed ({type(exc).__name__})") from exc
