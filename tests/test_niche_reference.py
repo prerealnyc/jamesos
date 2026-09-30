@@ -186,3 +186,127 @@ async def test_the_learner_files_a_reference_as_niche_not_as_a_competitor():
     # has none (no follower base to divide by) and is ordered by its own
     # interaction count instead of being dropped to the bottom arbitrarily.
     assert stills[0]["handle"] == "rival"
+
+
+async def test_a_reference_is_read_even_behind_a_deep_competitor_backlog():
+    """The starvation this shelf was losing to.
+
+    Ordering is right — a brand's own competitors lead on engagement rate, and a
+    reference has no follower base so its rate is 0. But a read is a dozen posts
+    at a time, and a brand with a hundred unread competitor stills never reaches
+    the tail the shelf lives in. Measured on Trouvailler 2026-09-28: two
+    references filed, a 12-post read ran, and both layouts it minted came from a
+    tracked YouTube channel. A reserved slice fixes the inclusion without
+    disturbing the order.
+    """
+    tenant = await _tenant()
+    await nr.save_reference(tenant, image=PNG, source_url="https://example.test/p/deep",
+                            platform="facebook", interactions=4200, ref="onc-deep")
+    async with acquire(tenant) as conn:
+        cid = await conn.fetchval(
+            "INSERT INTO competitors (platform, handle, name, status, discovered_via) "
+            "VALUES ('instagram', 'busy', 'Busy', 'tracked', 'manual') RETURNING id")
+        for i in range(40):
+            await conn.execute(
+                "INSERT INTO competitor_posts (competitor_id, platform, post_id, url, "
+                "media_type, stored_media_url, engagement_rate) "
+                "VALUES ($1, 'instagram', $2, $3, 'image', 'stored://x', $4)",
+                cid, f"ig-{i}", f"https://ig/{i}", 0.5 + i)
+
+    stills = await dt._unlearned_competitor_stills(tenant, 12)
+    assert len(stills) == 12, "the read is still a full batch"
+    shelves = [s["shelf_status"] for s in stills]
+    assert "reference" in shelves, "the shelf was starved behind the backlog"
+    # and the order is untouched: the brand's own competitors still lead
+    assert stills[0]["handle"] == "busy"
+
+
+async def test_a_brand_with_no_shelf_reads_exactly_as_before():
+    """The reserved slice must cost nothing to a brand that has no media
+    monitoring — every slot still goes to its competitors."""
+    tenant = await _tenant()
+    async with acquire(tenant) as conn:
+        cid = await conn.fetchval(
+            "INSERT INTO competitors (platform, handle, name, status, discovered_via) "
+            "VALUES ('instagram', 'only', 'Only', 'tracked', 'manual') RETURNING id")
+        for i in range(8):
+            await conn.execute(
+                "INSERT INTO competitor_posts (competitor_id, platform, post_id, url, "
+                "media_type, stored_media_url, engagement_rate) "
+                "VALUES ($1, 'instagram', $2, $3, 'image', 'stored://x', $4)",
+                cid, f"ig-{i}", f"https://ig/{i}", 1.0 + i)
+
+    stills = await dt._unlearned_competitor_stills(tenant, 12)
+    assert len(stills) == 8
+    assert all(s["shelf_status"] == "tracked" for s in stills)
+
+
+# ------------------------------------------------------- what the shelf reports
+
+
+async def test_the_listing_pairs_each_picture_with_the_layout_it_produced():
+    """The operator's question is "did this pull earn its keep", which needs the
+    picture and its layout in one row, not two counts that have to be trusted."""
+    tenant = await _tenant("list-a")
+    saved = await nr.save_reference(
+        tenant, image=PNG, source_url="https://example.test/p/11", platform="facebook",
+        interactions=4321, fmt="graphic card", hook="7 days in Bali",
+        why="price is the headline", ref="onc-11")
+    post_id = saved["post_id"]
+    async with acquire(tenant) as conn:
+        await conn.execute(
+            "INSERT INTO design_templates (tenant_id, kind, spec, fingerprint, "
+            "source_kind, source_post_id, status) "
+            "VALUES ($1::uuid, 'graphic_card', '{}'::jsonb, 'fp-11', 'niche', $2::uuid, 'active')",
+            tenant, post_id)
+
+    out = await nr.listing(tenant)
+    assert out["held"] == 1 and out["source"] == nr.VIA
+    ref = out["references"][0]
+    assert ref["id"] == post_id
+    assert ref["image"].startswith("http") or ref["image"]
+    assert ref["source_url"] == "https://example.test/p/11"
+    assert ref["interactions"] == 4321
+    # the read the scan already paid for rides along, so the page needs no second look
+    assert ref["format"] == "graphic card" and ref["hook"] == "7 days in Bali"
+    assert ref["template_kind"] == "graphic_card" and ref["template_status"] == "active"
+
+
+async def test_a_picture_that_was_read_but_yielded_nothing_is_still_listed():
+    """The honest half of the yield.
+
+    A read that found no text to learn from, or whose fingerprint matched a
+    layout we already held, marks the picture read and mints NOTHING. Hiding
+    those would make every pull look like it converted perfectly — the exact
+    number this page exists to report truthfully."""
+    tenant = await _tenant("list-b")
+    await nr.save_reference(tenant, image=PNG, source_url="https://example.test/p/12",
+                            platform="instagram", ref="onc-12")
+    async with acquire(tenant) as conn:
+        await conn.execute(
+            "UPDATE competitor_posts SET template_read_at = now()")
+
+    out = await nr.listing(tenant)
+    assert out["held"] == 1, "a barren read must not vanish from the shelf"
+    ref = out["references"][0]
+    assert ref["read"] is True
+    assert ref["template_id"] is None and ref["times_used"] == 0
+
+
+async def test_the_listing_only_reports_what_monitoring_filed():
+    """A tracked competitor's post is not an Onclusive pull and must not pad it."""
+    tenant = await _tenant("list-c")
+    await nr.save_reference(tenant, image=PNG, source_url="https://example.test/p/13",
+                            platform="facebook", ref="onc-13")
+    async with acquire(tenant) as conn:
+        cid = await conn.fetchval(
+            "INSERT INTO competitors (platform, handle, name, status, discovered_via) "
+            "VALUES ('instagram', 'rival', 'Rival', 'tracked', 'manual') RETURNING id")
+        await conn.execute(
+            "INSERT INTO competitor_posts (competitor_id, platform, post_id, url, "
+            "media_type, stored_media_url) "
+            "VALUES ($1, 'instagram', 'ig-9', 'https://ig/9', 'image', 'stored://y')", cid)
+
+    out = await nr.listing(tenant)
+    assert out["held"] == 1
+    assert [r["source_url"] for r in out["references"]] == ["https://example.test/p/13"]

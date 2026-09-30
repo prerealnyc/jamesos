@@ -86,6 +86,11 @@ def _zone_cost(edges: Image.Image, zones: list[tuple[float, float, float, float]
 # and only one of them ruins a post.
 _FACE_WEIGHT = 700.0
 
+# How many photo regions one layout may have. A collage past this stops being a
+# layout and starts being a contact sheet, and every extra frame is another photo
+# the brand has to own.
+_MAX_PHOTO_FRAMES = 6
+
 
 def _crop_window(src: tuple[int, int], out_aspect: float,
                  centering: tuple[float, float]) -> tuple[float, float, float, float]:
@@ -498,6 +503,43 @@ def _photo_frame(spec: dict) -> tuple[float, float, float, float] | None:
     return (0.0, 0.0, 1.0, 1.0)
 
 
+def photo_frames(spec: dict) -> list[tuple[float, float, float, float]]:
+    """EVERY photo region this layout wants, as fractions, in drawing order.
+
+    A collage is not a decoration — it is the layout. Measured across the 439
+    layouts learned so far: `full_bleed_photo` accounts for 279 of them and
+    `photo_side` for exactly one, not because competitors post one big photo but
+    because ONE photo box is all the vocabulary could say. A Vietnam travel post
+    with four framed photographs and torn-paper edges came back as a single
+    full-bleed image and three text blocks. We did not fail to read it; we had no
+    way to write it down.
+
+    Backward compatible by construction: a spec with no `photo_boxes` yields
+    exactly the one frame `_photo_frame` already returned, so every existing
+    layout renders identically.
+    """
+    bg = spec.get("background") or {}
+    boxes = bg.get("photo_boxes")
+    if isinstance(boxes, list) and boxes:
+        out = []
+        for b in boxes[:_MAX_PHOTO_FRAMES]:
+            if not isinstance(b, dict):
+                continue
+            try:
+                x, y, w, h = (float(b[k]) for k in ("x", "y", "w", "h"))
+            except (KeyError, TypeError, ValueError):
+                continue
+            # Clamp into the canvas; a frame with no area is not a frame.
+            x, y = max(0.0, min(1.0, x)), max(0.0, min(1.0, y))
+            w, h = max(0.0, min(1.0 - x, w)), max(0.0, min(1.0 - y, h))
+            if w > 0.02 and h > 0.02:
+                out.append((x, y, w, h))
+        if out:
+            return out
+    one = _photo_frame(spec)
+    return [one] if one is not None else []
+
+
 def photo_fit_cost(spec: dict, img: Image.Image, *, faces: bool = False) -> float:
     """How badly this photo suits this template — lower is better.
 
@@ -587,7 +629,8 @@ def suited_photos(spec: dict, refs: list[tuple[str, bytes]],
     return keep or [scored[0][1]]
 
 
-def _background(spec: dict, hero: Image.Image | None) -> Image.Image:
+def _background(spec: dict, hero: Image.Image | None,
+                extra: list[Image.Image] | None = None) -> Image.Image:
     """Paint the canvas per the spec's background treatment. A photo treatment
     with no photo degrades to the solid palette colour rather than failing.
 
@@ -599,15 +642,18 @@ def _background(spec: dict, hero: Image.Image | None) -> Image.Image:
         return base  # solid fallback
     occupied = _occupied(spec)
 
-    def place(frame: tuple[float, float, float, float]) -> None:
+    def place(frame: tuple[float, float, float, float], img: Image.Image) -> None:
         fx, fy, fw, fh = frame
         x, y = int(fx * _w()), int(fy * _h())
         w, h = int(fw * _w()), int(fh * _h())
-        base.paste(_cover(hero, w, h, _zones_for(frame, occupied)), (x, y))
+        base.paste(_cover(img, w, h, _zones_for(frame, occupied)), (x, y))
 
-    frame = _photo_frame(spec)
-    if frame is not None:
-        place(frame)
+    pool = [p for p in (extra or []) if p is not None] or [hero]
+    for i, frame in enumerate(photo_frames(spec)):
+        # Cycle rather than leave a hole: a brand with three photos and a
+        # four-up collage repeats one, which reads as a design choice. An empty
+        # frame reads as a bug.
+        place(frame, pool[i % len(pool)])
     return base
 
 
@@ -701,7 +747,25 @@ def _decorations(base: Image.Image, spec: dict, content: dict) -> None:
             draw.rectangle([x, y, x + w, y + h], fill=col + (150,))
 
 
-def _face(weight: str):
+def _face(weight: str, face: str = ""):
+    """Which face a text block takes.
+
+    `face` is the READ typographic role — display or body — and it is the whole
+    point of carrying it: the renderer used to infer this from `weight` alone,
+    so a reference that set a light geometric headline over a heavy condensed
+    stat rendered identically to one that did the reverse. The relationship
+    between the blocks was simply lost.
+
+    These two paths resolve through _remap_face onto the BRAND's own theme
+    (Anton -> the theme's display face, Archivo -> its body face), so what is
+    borrowed is which blocks shout, never the competitor's typeface. A spec with
+    no `face` — every one of the 454 learned so far — falls back to the old
+    weight rule and renders byte-identically.
+    """
+    if face == "display":
+        return _ANTON
+    if face == "body":
+        return _ARCHIVO
     return _ARCHIVO if weight in ("bold", "black") else _ANTON
 
 
@@ -760,14 +824,15 @@ def _fit_block(draw, text: str, face_path: str, box_w: int, box_h: int, start_px
     return font, kept, line_h
 
 
-def _draw_element(base: Image.Image, el: dict, text: str, ink_default, over_photo: bool) -> None:
+def _draw_element(base: Image.Image, el: dict, text: str, ink_default, over_photo: bool,
+                  palette_inks: list | None = None) -> None:
     if not (text or "").strip():
         return
     draw = ImageDraw.Draw(base)
     x, y, bw, bh = _px(el["box"])
     if el.get("case") == "upper":
         text = text.upper()
-    face = _remap_face(_face(el.get("weight", "bold")))
+    face = _remap_face(_face(el.get("weight", "bold"), str(el.get("face") or "")))
     start = _SIZE_START.get(el.get("size", "md"), 60)
     font, lines, line_h = _fit_block(draw, text, face, bw, bh, start)
     col = _rgb(el.get("color"), ink_default)
@@ -788,6 +853,30 @@ def _draw_element(base: Image.Image, el: dict, text: str, ink_default, over_phot
     # it (light text on bright sky, dark text on shadow), lay a soft plate so it
     # always reads — only when actually needed, so the photo stays visible. Skip
     # a label sitting ON a pill: it already has a solid, contrasting background.
+    # INK FIRST, PLATE SECOND. The rebrand maps the template's colours onto the
+    # brand's palette BY ROLE, with no idea what the photo underneath looks
+    # like. Measured on a real render 2026-09-30: a competitor's gold stat — a
+    # colour chosen for THEIR dark background — became Turtleback's #971d23 and
+    # landed on sunlit grass at 2.10:1, and on shaded grass at 1.22:1. The brand
+    # already owned white, which scores 3.98 and 6.86 on the same pixels.
+    #
+    # So before dimming the photograph with a plate, try the brand's OWN other
+    # inks. Keeping the rebranded choice whenever it passes means this changes
+    # nothing for the layouts that were already legible.
+    if over_photo and not el.get("_on_pill") and palette_inks:
+        dark_l, light_l = _region_extremes(base, blk_x, cy0, maxw, block_h)
+        target = _MIN_RATIO_LARGE if font.size >= _h() * 0.045 else _MIN_RATIO_SMALL
+
+        def worst_ratio(rgb) -> float:
+            t = _rel_lum(rgb)
+            return min(_ratio(t, dark_l), _ratio(t, light_l))
+
+        if worst_ratio(col) < target:
+            better = max(palette_inks, key=worst_ratio)
+            if worst_ratio(better) > worst_ratio(col):
+                col = better
+                text_lum = _lum(col)
+
     if over_photo and not el.get("_on_pill"):
         dark, light = _region_extremes(base, blk_x, cy0, maxw, block_h)
         # Large display type may sit at AA-large (3:1); small type must clear 4.5:1.
@@ -801,8 +890,19 @@ def _draw_element(base: Image.Image, el: dict, text: str, ink_default, over_phot
                    plate_rgb, max(0.28, min(0.92, alpha)))
 
     # A crisp contrasting outline keeps every letter legible on any background.
+    # HOW the glyphs are finished. Every line used to get the same thin
+    # auto-flip stroke, which is why our version of a card whose headline is
+    # extruded four ways came out flat: the renderer had exactly one treatment
+    # and never read which one the reference used. Unstated — every one of the
+    # 454 layouts learned so far — keeps that thin stroke exactly.
+    treatment = str(el.get("treatment") or "")
     stroke_col = (0, 0, 0) if text_lum > 128 else (255, 255, 255)
     stroke_w = max(1, font.size // 34)
+    if treatment == "outline":
+        # A deliberate outline is a design element, not a legibility hedge.
+        stroke_w = max(2, font.size // 14)
+    elif treatment == "none":
+        stroke_w = 0
     cy = cy0
     for i, ln in enumerate(lines):
         if align == "center":
@@ -811,7 +911,18 @@ def _draw_element(base: Image.Image, el: dict, text: str, ink_default, over_phot
             tx = x + bw - widths[i]
         else:
             tx = x
-        draw.text((tx, cy), ln, font=font, fill=col, stroke_width=stroke_w, stroke_fill=stroke_col)
+        if treatment == "extrude":
+            # Offset copies BEHIND the fill, nearest last, so the face sits on
+            # top of its own shadow — the block-letter look a milestone card
+            # lives on. Depth scales with the type so it holds at any canvas.
+            depth = max(2, int(font.size * 0.055))
+            for k in range(depth, 0, -1):
+                draw.text((tx + k, cy + k), ln, font=font, fill=stroke_col)
+        elif treatment == "shadow":
+            off = max(2, int(font.size * 0.04))
+            draw.text((tx + off, cy + off), ln, font=font, fill=stroke_col)
+        draw.text((tx, cy), ln, font=font, fill=col,
+                  stroke_width=stroke_w, stroke_fill=stroke_col)
         cy += line_h
 
 
@@ -905,7 +1016,8 @@ def rebrand_spec(spec: dict, palette) -> dict:
 
 
 def render_spec(spec: dict, content: dict, *, hero_bytes: bytes | None = None,
-                logo_bytes: bytes | None = None, palette=None) -> tuple[bytes, str]:
+                logo_bytes: bytes | None = None, palette=None,
+                photos: list[bytes] | None = None) -> tuple[bytes, str]:
     """Rebuild `spec` with the brand's `content` (role → text), photo and logo.
 
     `palette` is the BRAND's own role list. Given one, the template's colours are
@@ -913,12 +1025,21 @@ def render_spec(spec: dict, content: dict, *, hero_bytes: bytes | None = None,
     borrowed, the colours are the brand's. Omitted, the template renders in the
     colours it was read with, which is the old behaviour.
 
+    `photos` supplies a COLLAGE layout with one picture per region, in drawing
+    order; `hero_bytes` remains the single-photo path and is used for every
+    layout that wants one region. Fewer photos than regions cycles the ones
+    given — an empty frame reads as a bug, a repeated photo reads as a choice.
+
     Returns (png_bytes, kind). A photo treatment with no photo falls back to the
     solid palette background, so it never hard-fails."""
     if palette:
         spec = rebrand_spec(spec, palette)
     hero = _load(hero_bytes)
-    base = _background(spec, hero)
+    extra = [img for img in (_load(b) for b in (photos or [])) if img is not None]
+    if hero is None and extra:
+        hero = extra[0]        # a collage-only call still has "a photo" for the
+                               # over_photo contrast decisions below
+    base = _background(spec, hero, extra)
     over_photo = hero is not None
     # Unify buttons (label onto pill) before anything is drawn.
     _fit_buttons(spec, content)
@@ -927,8 +1048,22 @@ def render_spec(spec: dict, content: dict, *, hero_bytes: bytes | None = None,
         _scrim(base, (spec.get("background") or {}).get("scrim") or "none")
     _decorations(base, spec, content)
     ink_default = _rgb((spec.get("palette") or {}).get("ink"), (255, 255, 255))
+    # The brand's OWN inks, for the legibility fallback in _draw_element. Only
+    # the brand's palette — never an invented colour, and never the competitor's:
+    # a swap that reached outside the brand's own colours would fix contrast by
+    # breaking identity, which is a worse trade.
+    palette_inks = []
+    if palette:
+        for p in palette:
+            try:
+                rgb = _rgb((p or {}).get("hex"), None) if isinstance(p, dict) else None
+            except Exception:  # noqa: BLE001
+                rgb = None
+            if rgb and rgb not in palette_inks:
+                palette_inks.append(rgb)
     for el in spec.get("elements") or []:
-        _draw_element(base, el, str(content.get(el["role"], "")), ink_default, over_photo)
+        _draw_element(base, el, str(content.get(el["role"], "")), ink_default, over_photo,
+                      palette_inks)
     # The brand's own logo in the slot the design reserved for one.
     if logo_bytes and spec.get("logo_box"):
         _place_logo(base, _px(spec["logo_box"]), logo_bytes)

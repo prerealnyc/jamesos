@@ -155,10 +155,22 @@ async def _hero_or_placeholder(tenant_id, topic: str,
     rebuild reuse this exact photo instead of rotating to another one — "keep the
     image" is unanswerable without it."""
     from .hero_context import get_hero_photo_files
-    from .photo_pick import pick_hero_bytes
+    from .photo_pick import pick_hero_bytes, pick_hero_set
 
     refs = await get_hero_photo_files(tenant_id=tenant_id, limit=None)
     if refs:
+        # WHAT the photo is of, before HOW it fits. Layout fit and the
+        # least-recently-used rotation are both questions about shape, which is
+        # why "Unforgettable Dubai Awaits" could render over Thailand and no
+        # component involved was wrong. This runs first for a second reason: it
+        # is a vector comparison over stored numbers, and cutting the pool here
+        # means suited_photos decodes and edge-scores fewer images — the pass
+        # pays for itself.
+        try:
+            from .photo_subject import subject_ranked
+            refs = await subject_ranked(tenant_id, topic, refs) or refs
+        except Exception:  # noqa: BLE001 — a ranking miss must not cost the post
+            logger.warning("could not rank photos by subject", exc_info=True)
         if spec:
             try:
                 from .spec_render import suited_photos
@@ -174,6 +186,53 @@ async def _hero_or_placeholder(tenant_id, topic: str,
         topic=(topic or "the brand") + " — cinematic editorial photograph, no text, no words, no logos",
         platform="instagram", aspect="4:5", style="cinematic_real", tenant_id=tenant_id)
     return png, True, ""
+
+
+async def extra_photos_for(tenant_id, topic: str, spec: dict | None,
+                           exclude: list[str] | None = None) -> list[bytes]:
+    """The EXTRA photographs a collage layout needs, beyond the hero.
+
+    Deliberately a second function rather than a wider return from
+    `_hero_or_placeholder`: four callers unpack exactly three values from that,
+    and widening it to carry a list almost every caller ignores would break all
+    of them to serve one. This asks the narrower question and is called only by
+    the one render path that has regions to fill.
+
+    Returns [] for a single-photo layout, an empty library, or any failure — the
+    renderer then cycles the hero across the regions, which reads as a design
+    choice rather than a hole.
+    """
+    if not spec:
+        return []
+    try:
+        from .spec_render import photo_frames
+
+        want = len(photo_frames(spec))
+        if want < 2:
+            return []
+        from .hero_context import get_hero_photo_files
+        from .photo_pick import pick_hero_set
+
+        refs = await get_hero_photo_files(tenant_id=tenant_id, limit=None)
+        if not refs:
+            return []
+        try:
+            from .photo_subject import subject_ranked
+            refs = await subject_ranked(tenant_id, topic, refs) or refs
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from .spec_render import suited_photos
+            refs = suited_photos(spec, refs) or refs
+        except Exception:  # noqa: BLE001
+            pass
+        # want - 1: the hero already holds the first region.
+        got = await pick_hero_set(refs, tenant_id, n=want - 1,
+                                  exclude=list(exclude or []))
+        return [b for _k, b in got]
+    except Exception:  # noqa: BLE001 — extra photos are a nicety, the post is not
+        logger.warning("could not gather extra photos for a collage", exc_info=True)
+        return []
 
 
 async def rebuild_cloned(payload: dict, feedback: str, tenant_id) -> tuple[bytes, str] | None:
@@ -277,7 +336,7 @@ async def rebuild_design(
             platform="instagram", aspect="4:5", style="cinematic_real", tenant_id=tenant_id)
     elif exclude_photo_keys:
         from .hero_context import get_hero_photo_files
-        from .photo_pick import pick_hero_bytes
+        from .photo_pick import pick_hero_bytes, pick_hero_set
 
         refs = await get_hero_photo_files(tenant_id=tenant_id, limit=None)
         picked = await pick_hero_bytes(refs, tenant_id, exclude=tuple(exclude_photo_keys)) if refs else None
@@ -553,7 +612,10 @@ def _too_busy_for(spec: dict, hero_bytes: bytes) -> bool:
         from .spec_render import _load, photo_fit_cost
 
         img = _load(hero_bytes)
-        return img is not None and photo_fit_cost(spec, img) > _PHOTO_FIT_CEILING
+        # faces=False on purpose: this ceiling decides whether to ABANDON the
+        # photo for a solid card, and it was calibrated on texture. Counting
+        # heads here would drop nearly every people photo — see photo_fit_cost.
+        return img is not None and photo_fit_cost(spec, img, faces=False) > _PHOTO_FIT_CEILING
     except Exception:  # noqa: BLE001 — a judgement call must never cost the post
         return False
 
@@ -613,8 +675,16 @@ async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None,
     try:
         from . import design_templates
 
+        # NOT always "competitor". A still on the niche-reference shelf came
+        # from media monitoring — an account nobody tracks, which Instagram and
+        # LinkedIn never name — and migration 061 added source_kind='niche'
+        # precisely so a layout learned from one does not credit an account we
+        # never identified. design_templates.learn() has always got this right;
+        # this path hardcoded the label, so the same picture produced different
+        # provenance depending on which pass happened to read it first.
         await design_templates.save(
-            tenant_id, spec, source_kind="competitor",
+            tenant_id, spec,
+            source_kind="niche" if post.get("shelf_status") == "reference" else "competitor",
             source_post_id=str(post.get("id")) if post.get("id") else None,
             source_url=post.get("url") or "",
             source_image_uri=post.get("stored_media_url") or "",
@@ -744,6 +814,7 @@ async def _top_posts(tenant_id, limit: int, *, templates_only: bool = False) -> 
     async with acquire(tenant_id) as conn:
         rows = await conn.fetch(
             f"""SELECT p.id, p.stored_media_url, p.caption, p.media_type, c.handle,
+                       c.status AS shelf_status,
                        a.format, a.topic, a.transferable_pattern, a.design_dna,
                        a.eye_score, p.engagement_rate,
                        ({_TEMPLATE_COND}) AS is_template

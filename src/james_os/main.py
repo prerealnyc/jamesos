@@ -2056,12 +2056,22 @@ async def _generate_learned_post_image(
     headline = (content.get("headline") or content.get("stat") or topic or "").strip() \
         or "a moment that captures the brand"
     hero_bytes, _generated, hero_key = await template_clone._hero_or_placeholder(
-        tenant_id, headline)
+        tenant_id, headline, spec)
+    # A collage layout wants one photograph per region. Empty for every
+    # single-photo template, which is all of them until the cloner starts
+    # reading collages — so this costs nothing until it is needed.
+    extra = await template_clone.extra_photos_for(
+        tenant_id, headline, spec, exclude=[hero_key] if hero_key else [])
     palette = await template_clone._brand_palette(tenant_id)
     logo = await template_clone._brand_logo(tenant_id) if spec.get("logo_box") else None
 
+    # Named once: the primary render, every extra platform shape and the
+    # layer-capture pass must all draw the SAME pictures, or a collage would
+    # differ between the post and its own editable layers.
+    photo_set = [hero_bytes, *extra] if extra else None
+
     png, _kind = render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo,
-                             palette=palette)
+                             palette=palette, photos=photo_set)
     if not png:
         return None
 
@@ -2100,7 +2110,8 @@ async def _generate_learned_post_image(
         try:
             with image_compose.canvas(_w, _h):
                 _png, _ = render_spec(spec, content, hero_bytes=hero_bytes,
-                                      logo_bytes=logo, palette=palette)
+                                      logo_bytes=logo, palette=palette,
+                                      photos=photo_set)
             if not _png:
                 continue
             _uri, _ = await asyncio.to_thread(
@@ -2145,7 +2156,7 @@ async def _generate_learned_post_image(
         from . import layer_capture as _lc
         _cap = _lc.capture(
             lambda: render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo,
-                                palette=palette),
+                                palette=palette, photos=photo_set),
             _LImage.open(_LBIO(png)).size)
         await _lc.keep(action_id, tenant_id, _cap, of=served_uri)
     except Exception:  # noqa: BLE001 — the editor falls back to rebuilding it

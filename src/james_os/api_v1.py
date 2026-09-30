@@ -2214,16 +2214,25 @@ class DesignVerdictRequest(BaseModel):
 
 
 @router.get("/design-templates")
-async def v1_design_templates(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
-    """The brand's learned layouts, newest first, with where each came from."""
+async def v1_design_templates(
+    tenant_id: TenantDep, limit: int = 50, offset: int = 0,
+) -> dict[str, Any]:
+    """The brand's learned layouts, newest first, with where each came from.
+
+    Paged: a page is capped at 200 and real libraries are already past that
+    (Trouvailler holds 223), so a caller that reads only the first page and
+    counts the rows under-reports the library. `total` and `active` are COUNTs
+    over the whole table and are the numbers to trust."""
     from . import design_templates
 
     lim = max(1, min(200, limit))
+    off = max(0, int(offset))
     async with acquire(tenant_id) as conn:
         rows = await conn.fetch(
             "SELECT id, kind, source_kind, source_handle, source_platform, source_url, "
             "source_image_uri, status, times_used, approvals, rejections, qa_passes, "
-            "qa_fails, created_at FROM design_templates ORDER BY created_at DESC LIMIT $1", lim)
+            "qa_fails, created_at FROM design_templates "
+            "ORDER BY created_at DESC LIMIT $1 OFFSET $2", lim, off)
         unread = await conn.fetchval(
             "SELECT count(*) FROM competitor_posts WHERE stored_media_url <> '' "
             "AND media_type IN ('image','carousel') AND template_read_at IS NULL")
@@ -2237,6 +2246,20 @@ async def v1_design_templates(tenant_id: TenantDep, limit: int = 50) -> dict[str
                           if k != "created_at"},
                        "created_at": r["created_at"].isoformat()} for r in rows],
     }
+
+
+@router.get("/niche-references")
+async def v1_niche_references(
+    tenant_id: TenantDep, limit: int = 200, offset: int = 0,
+) -> dict[str, Any]:
+    """The pictures monitoring filed for this brand, and what became of each.
+
+    Pairs the two halves the operator wants side by side: the image we pulled,
+    and the layout (if any) that was learned from it. A picture that was read
+    but yielded nothing still appears — see `niche_reference.listing`."""
+    from . import niche_reference
+
+    return await niche_reference.listing(tenant_id, limit=limit, offset=offset)
 
 
 @router.post("/design-templates/learn", status_code=202)
@@ -2293,6 +2316,27 @@ async def v1_design_templates_reference(
     return {"template_id": tid, "stored_image_uri": uri}
 
 
+class TemplatePause(BaseModel):
+    paused: bool = True
+
+
+@router.put("/design-templates/{template_id}/paused")
+async def v1_design_template_paused(
+    template_id: str, req: TemplatePause, tenant_id: TenantDep,
+) -> dict[str, Any]:
+    """Switch one learned layout off for this brand, or back on.
+
+    Separate from 'retired', which is design QA's verdict after repeated render
+    failures — an owner's preference and a measured failure are different facts
+    and the screen has to be able to show which is which."""
+    from . import design_templates
+
+    out = await design_templates.set_paused(tenant_id, template_id, bool(req.paused))
+    if out is None:
+        raise HTTPException(404, "no such layout for this brand")
+    return out
+
+
 @router.post("/design-templates/{template_id}/verdict")
 async def v1_design_template_verdict(
     tenant_id: TenantDep, template_id: UUID, body: DesignVerdictRequest,
@@ -2303,3 +2347,195 @@ async def v1_design_template_verdict(
 
     await design_templates.mark_verdict(tenant_id, str(template_id), body.approved)
     return {"ok": True}
+
+
+# ───────────────────────────────────────────── the house catalogue ──
+# The shared pool every brand may adopt from, and the curator's screen over it.
+#
+# PLATFORM KEY ONLY, all of it. Every other /v1 route is tenant-bound and a
+# brand's key is the right credential for it. This table is not a brand's: a
+# layout approved here is forked into every brand that runs short, so a
+# tenant-bound key that could approve rows would let one brand push shapes into
+# its competitors' libraries. require_curator() is require_service with that one
+# extra condition.
+
+
+async def require_curator(authorization: str | None = Header(default=None)) -> bool:
+    """Gate for catalogue writes: the platform key, never a tenant's."""
+    if not (settings.service_api_platform_key or "").strip():
+        raise HTTPException(503, "no platform key configured")
+    if not is_platform_key(authorization):
+        raise HTTPException(403, "the house catalogue needs the platform key")
+    return True
+
+
+CuratorDep = Annotated[bool, Depends(require_curator)]
+
+# An uploaded reference is read by a vision model and drawn at full size, so the
+# ceiling is the editor's, not a thumbnail's.
+_HOUSE_MAX_BYTES = 15 * 1024 * 1024
+_HOUSE_MAX_FILES = 12
+
+
+@router.get("/house-layouts")
+async def v1_house_layouts(
+    _: CuratorDep, status: str = "", layout_type: str = "", niche: str = "",
+    limit: int = 200, offset: int = 0,
+) -> dict[str, Any]:
+    """The catalogue, with its status and type breakdowns."""
+    from . import house_layouts
+
+    return await house_layouts.catalogue(
+        status=status.strip(), layout_type=layout_type.strip(), niche=niche.strip(),
+        limit=limit, offset=offset)
+
+
+@router.post("/house-layouts/upload", status_code=201)
+async def v1_house_layouts_upload(
+    _: CuratorDep,
+    files: list[UploadFile] = File(...),
+    title: str = Form(""),
+    niches: str = Form(""),
+    by: str = Form(""),
+    approve: bool = Form(True),
+    source_url: str = Form(""),
+) -> dict[str, Any]:
+    """Add reference images to the shared pool by hand.
+
+    This is the ceiling-remover. Learning only from competitors means the
+    catalogue can only ever contain shapes competitors already post — a brand
+    wanting a kind of post nobody in its niche makes has nowhere to get it. Here
+    the curator supplies the shape directly.
+
+    Every file is read INDEPENDENTLY and reported on independently: one image the
+    extractor cannot read must not fail the other eleven. `approve` defaults true
+    because the person holding the platform key IS the curator — sending your own
+    uploads to your own review queue is a step with no reader.
+
+    Only the ARRANGEMENT is kept. The extracted spec holds boxes, roles and
+    treatments; the image itself is stored as the reference a curator browses,
+    and its colours, words and photographs never reach a generated post.
+    """
+    from . import house_layouts
+    from .media import storage as media_storage
+
+    if not files:
+        raise HTTPException(400, "no files")
+    if len(files) > _HOUSE_MAX_FILES:
+        raise HTTPException(413, f"at most {_HOUSE_MAX_FILES} images per upload")
+    tags = [t.strip() for t in niches.split(",") if t.strip()]
+
+    results: list[dict[str, Any]] = []
+    for f in files:
+        name = (f.filename or "reference")[:120]
+        try:
+            data = await f.read()
+            if not data:
+                results.append({"file": name, "ok": False, "reason": "empty file"})
+                continue
+            if len(data) > _HOUSE_MAX_BYTES:
+                results.append({"file": name, "ok": False, "reason": "larger than 15 MB"})
+                continue
+            # Judge the bytes, not the declared content-type.
+            if _sniff_image(data) not in _EDIT_TYPES:
+                results.append({"file": name, "ok": False,
+                                "reason": "not a PNG, JPEG or WebP image"})
+                continue
+            # Stored under the platform's own id, not a tenant's: this reference
+            # belongs to the catalogue and outlives any brand.
+            uri, _ = await asyncio.to_thread(
+                media_storage().save, "house", data, name)
+            got = await house_layouts.ingest(
+                data, title=(title or name), source_url=source_url, image_uri=uri,
+                niches=tags, by=by, approve=bool(approve))
+            results.append({"file": name, "stored_image_uri": uri, **got})
+        except Exception as exc:  # noqa: BLE001 — one bad file, eleven good ones
+            _log.exception("house layout ingest failed for %s", name)
+            results.append({"file": name, "ok": False, "reason": str(exc)[:160]})
+
+    added = [r for r in results if r.get("ok")]
+    return {
+        "added": len(added),
+        "duplicates": sum(1 for r in added if r.get("duplicate")),
+        "failed": len(results) - len(added),
+        "results": results,
+    }
+
+
+class HouseReview(BaseModel):
+    verdict: str  # approved | rejected | discard
+    by: str = ""
+    note: str = ""
+
+
+@router.put("/house-layouts/{layout_id}/review")
+async def v1_house_layout_review(
+    layout_id: UUID, req: HouseReview, _: CuratorDep,
+) -> dict[str, Any]:
+    """Approve, reject or discard one catalogue row.
+
+    'rejected' keeps the row and the reason. 'discard' really deletes — the one
+    destructive verb in this system, and deliberate: a curated pool that cannot
+    forget is not curated."""
+    from . import house_layouts
+
+    out = await house_layouts.review(
+        str(layout_id), req.verdict.strip(), by=req.by, note=req.note)
+    if not out.get("ok"):
+        raise HTTPException(422 if "verdict" in str(out.get("reason", "")) else 404,
+                            out.get("reason") or "no such catalogue layout")
+    return out
+
+
+class HouseTags(BaseModel):
+    title: str | None = None
+    niches: list[str] | None = None
+
+
+@router.put("/house-layouts/{layout_id}/tags")
+async def v1_house_layout_tags(
+    layout_id: UUID, req: HouseTags, _: CuratorDep,
+) -> dict[str, Any]:
+    """Rename a catalogue row, or change which niches it suits."""
+    from . import house_layouts
+
+    out = await house_layouts.retag(str(layout_id), title=req.title, niches=req.niches)
+    if not out.get("ok"):
+        raise HTTPException(404, out.get("reason") or "no such catalogue layout")
+    return out
+
+
+@router.post("/house-layouts/{layout_id}/promote", status_code=201)
+async def v1_house_layout_promote(
+    layout_id: UUID, tenant_id: TenantDep, note: str = "",
+) -> dict[str, Any]:
+    """Copy one of THIS brand's learned layouts into the catalogue as a candidate.
+
+    Tenant-bound, unlike the rest of this section: a brand offering its own
+    competitor-derived layout to the pool is the brand's action. It lands as a
+    candidate whatever the caller thinks of it — only the platform key approves."""
+    from . import house_layouts
+
+    out = await house_layouts.promote(tenant_id, str(layout_id), note=note)
+    if not out.get("promoted"):
+        raise HTTPException(422, out.get("reason") or "could not promote that layout")
+    return out
+
+
+@router.post("/house-layouts/retype")
+async def v1_house_layouts_retype(_: CuratorDep, limit: int = 1000) -> dict[str, Any]:
+    """Name any rows that predate the taxonomy."""
+    from . import house_layouts
+
+    return await house_layouts.retype(limit=limit)
+
+
+@router.post("/house-layouts/adopt")
+async def v1_house_layouts_adopt(
+    tenant_id: TenantDep, limit: int = 8,
+) -> dict[str, Any]:
+    """Fork approved catalogue layouts into this brand now, rather than waiting
+    for a pick to find the library short."""
+    from . import house_layouts
+
+    return await house_layouts.adopt(tenant_id, limit=limit)

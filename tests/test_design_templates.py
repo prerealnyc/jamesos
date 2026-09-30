@@ -424,3 +424,158 @@ def test_the_picker_only_counts_and_draws_drawable_layouts(monkeypatch):
     # three rows but only two drawable: below the minimum, so the nine are used
     monkeypatch.setattr(dt, "acquire", _conn_for([_row(0, hole), _row(1, good), _row(2, good)]))
     assert asyncio.run(dt.pick("t")) is None
+
+
+# ------------------------------------------------- the picker's two lanes
+
+
+def _lane_rows(n_other: int, n_niche: int, used_other: int = 0, used_niche: int = 0):
+    """Rows as the picker's query returns them: both lanes, already rank-ordered."""
+    import json as _json
+
+    spec = _read([_el("headline", .05, .6, .9, .2, "xl")])
+    out = []
+    for i in range(n_other):
+        out.append({"id": f"c{i}", "spec": _json.dumps(spec), "kind": "graphic_card",
+                    "source_handle": "rival", "source_url": "", "source_platform": "instagram",
+                    "source_kind": "competitor", "times_used": used_other})
+    for i in range(n_niche):
+        out.append({"id": f"n{i}", "spec": _json.dumps(spec), "kind": "graphic_card",
+                    "source_handle": "niche", "source_url": "", "source_platform": "niche",
+                    "source_kind": "niche", "times_used": used_niche})
+    return out
+
+
+def _picker_over(rows, monkeypatch):
+    import contextlib
+
+    class _C:
+        async def fetch(self, sql, *args):
+            return rows
+
+    @contextlib.asynccontextmanager
+    async def _acq(tenant_id=None):
+        yield _C()
+
+    monkeypatch.setattr(dt, "acquire", _acq)
+
+
+def test_a_niche_layout_is_drawn_even_behind_a_wall_of_competitor_layouts(monkeypatch):
+    """The starvation this fix exists for.
+
+    `source_engagement` is a RATE, and a niche reference has no follower base to
+    divide by, so every monitoring-learned layout carries 0.0 by construction —
+    not because it performed badly. Ranked against competitor layouts that scored
+    above zero, the whole lane sank: measured on Trouvailler 2026-09-28, 30 niche
+    layouts and ZERO of them in the top 100 the picker considered.
+    """
+    import asyncio
+
+    _picker_over(_lane_rows(n_other=193, n_niche=30), monkeypatch)
+    got = asyncio.run(dt.pick("t"))
+    assert got is not None
+    assert got["source_kind"] == "niche", "an unused niche lane must get the first turn"
+
+
+def test_the_niche_lane_is_a_MINORITY_of_picks_not_a_takeover(monkeypatch):
+    """Fixing starvation must not invert it. A brand's own tracked competitors
+    are the closer comparison; monitoring is the wider net."""
+    import asyncio
+
+    # niche already over its share of what has been used -> the other lane draws
+    _picker_over(_lane_rows(n_other=10, n_niche=10, used_other=1, used_niche=3), monkeypatch)
+    got = asyncio.run(dt.pick("t"))
+    assert got["source_kind"] == "competitor"
+
+    # under its share -> niche draws
+    _picker_over(_lane_rows(n_other=10, n_niche=10, used_other=9, used_niche=1), monkeypatch)
+    assert asyncio.run(dt.pick("t"))["source_kind"] == "niche"
+
+
+def test_a_brand_with_only_competitor_layouts_picks_exactly_as_before(monkeypatch):
+    """No niche lane means no lane choice at all — the old path, untouched."""
+    import asyncio
+
+    _picker_over(_lane_rows(n_other=6, n_niche=0), monkeypatch)
+    got = asyncio.run(dt.pick("t"))
+    assert got["source_kind"] == "competitor" and got["id"] == "c0"
+
+
+def test_a_brand_with_only_niche_layouts_still_draws_them(monkeypatch):
+    import asyncio
+
+    _picker_over(_lane_rows(n_other=0, n_niche=5), monkeypatch)
+    assert asyncio.run(dt.pick("t"))["source_kind"] == "niche"
+
+
+def test_the_minimum_library_counts_BOTH_lanes_together(monkeypatch):
+    """MIN_LIBRARY is about how repetitive the feed looks, which does not care
+    which lane a layout came from."""
+    import asyncio
+
+    _picker_over(_lane_rows(n_other=1, n_niche=1), monkeypatch)
+    assert asyncio.run(dt.pick("t")) is None, "2 drawable layouts is below the minimum"
+    _picker_over(_lane_rows(n_other=2, n_niche=1), monkeypatch)
+    assert asyncio.run(dt.pick("t")) is not None, "3 across both lanes clears it"
+
+
+# ------------------------------------------- an owner switching one layout off
+
+
+def _pause_conn(monkeypatch, status: str, seen: list):
+    import contextlib
+
+    class _C:
+        async def fetchrow(self, sql, *a):
+            return None if status is None else {"status": status}
+
+        async def execute(self, sql, *a):
+            seen.append(a)
+
+    @contextlib.asynccontextmanager
+    async def _acq(tenant_id=None):
+        yield _C()
+
+    monkeypatch.setattr(dt, "acquire", _acq)
+
+
+def test_pausing_a_layout_is_not_the_same_event_as_qa_retiring_it(monkeypatch):
+    """'retired' means design QA gave up after repeated render failures. If an
+    owner's "not this one" reused that value, the QA record would stop meaning
+    anything — you could no longer ask how many layouts the renderer rejected."""
+    import asyncio
+
+    seen: list = []
+    _pause_conn(monkeypatch, "active", seen)
+    out = asyncio.run(dt.set_paused("t", "abc", True))
+    assert out["status"] == "paused" and out["changed"] is True
+    assert any("paused" in str(a) for a in seen)
+
+
+def test_un_pausing_restores_active(monkeypatch):
+    import asyncio
+
+    seen: list = []
+    _pause_conn(monkeypatch, "paused", seen)
+    out = asyncio.run(dt.set_paused("t", "abc", False))
+    assert out["status"] == "active" and out["changed"] is True
+
+
+def test_a_layout_retired_by_qa_cannot_be_switched_back_on_from_the_screen(monkeypatch):
+    """Un-pausing a retired layout would quietly overturn a verdict the renderer
+    reached on evidence. That is not a decision a toggle should make."""
+    import asyncio
+
+    seen: list = []
+    _pause_conn(monkeypatch, "retired", seen)
+    out = asyncio.run(dt.set_paused("t", "abc", False))
+    assert out["changed"] is False
+    assert out["status"] == "retired"
+    assert seen == [], "a retired layout must not be written to at all"
+
+
+def test_pausing_a_layout_that_does_not_exist_reports_nothing(monkeypatch):
+    import asyncio
+
+    _pause_conn(monkeypatch, None, [])
+    assert asyncio.run(dt.set_paused("t", "nope", True)) is None

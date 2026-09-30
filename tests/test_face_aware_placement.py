@@ -5,6 +5,8 @@ across two people's faces, and a headline crossing a floodlit tower and a night
 sky was half invisible while the contrast guard saw nothing wrong.
 """
 
+import io
+
 import numpy as np
 import pytest
 from PIL import Image, ImageDraw
@@ -270,3 +272,64 @@ def test_a_detector_that_raises_still_renders(monkeypatch):
     monkeypatch.setattr(people, "faces", boom)
     assert sr._head_zones(Image.new("RGB", (100, 100), "white")) == []
     sr._HEADS.clear()
+
+
+# ------------------------------------------- the brand's own ink before a plate
+
+
+def test_a_rebranded_ink_that_fails_is_swapped_for_one_that_passes():
+    """The defect this closes, measured on a real render 2026-09-30.
+
+    rebrand_spec maps the template's colours onto the brand palette BY ROLE, with
+    no idea what the photo underneath looks like. A competitor's gold stat — gold
+    because THEIR background was dark — became Turtleback's #971d23 and landed on
+    sunlit grass at 2.10:1 and shaded grass at 1.22:1. The brand already owned
+    white, which scores 3.98 and 6.86 on the same pixels. Dimming the photograph
+    with a plate treats the symptom; the brand's own palette had the answer.
+    """
+    from PIL import ImageDraw as _D
+
+    from james_os.spec_render import render_spec
+
+    grass = Image.new("RGB", (900, 1100), (90, 140, 70))
+    d = _D.Draw(grass)
+    for i in range(0, 1100, 40):
+        d.line([(0, i), (900, i)], fill=(60, 100, 50), width=14)
+    buf = io.BytesIO(); grass.save(buf, "PNG")
+
+    brand = [{"hex": "#ffffff", "role": "background"}, {"hex": "#000000", "role": "ink"},
+             {"hex": "#971d23", "role": "accent"}, {"hex": "#fac82b", "role": "surface"}]
+    spec = {"kind": "graphic_card",
+            "palette": {"bg": "#111318", "ink": "#FFFFFF", "accent": "#FFD700"},
+            "background": {"treatment": "full_bleed_photo"},
+            "elements": [{"role": "stat", "size": "xl", "weight": "black", "align": "center",
+                          "color": "#FFD700", "box": {"x": .08, "y": .42, "w": .84, "h": .16}}],
+            "decorations": []}
+    png, _ = render_spec(spec, {"stat": "EVERY WEEKEND"},
+                         hero_bytes=buf.getvalue(), palette=brand)
+    im = Image.open(io.BytesIO(png)).convert("RGB")
+    red = (0x97, 0x1d, 0x23)
+    hits = sum(1 for y in range(int(im.height * .42), int(im.height * .58), 2)
+               for x in range(int(im.width * .08), int(im.width * .92), 2)
+               if all(abs(im.getpixel((x, y))[c] - red[c]) < 45 for c in range(3)))
+    assert hits == 0, "the failing ink must not survive onto the photo"
+
+
+def test_an_ink_that_already_passes_is_left_alone():
+    """Legible layouts must not be repainted. The swap fires on failure only."""
+    from james_os.spec_render import _rel_lum, _ratio
+
+    # white on mid-grass already clears AA-large; nothing should change it
+    assert _ratio(_rel_lum((255, 255, 255)), _rel_lum((90, 140, 70))) > 3.0
+
+
+def test_the_swap_never_leaves_the_brands_palette():
+    """Fixing contrast by inventing a colour would fix legibility and break
+    identity — the worse trade. Only the brand's own inks are candidates."""
+    import inspect
+
+    from james_os import spec_render as sr
+
+    src = inspect.getsource(sr.render_spec)
+    assert "palette_inks" in src
+    assert "p.get(\"hex\")" in src or 'get("hex")' in src

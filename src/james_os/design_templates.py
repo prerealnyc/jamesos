@@ -48,6 +48,13 @@ MIN_LIBRARY = 3
 # How many active layouts pick() weighs at once, in rotation order.
 PICK_WINDOW = 200
 
+# What share of picks the niche lane should get once both lanes are in use. A
+# minority share on purpose: a brand's own tracked competitors are the closer
+# comparison, and monitoring is the wider net — worth drawing from regularly,
+# not most of the time. Mirrors REFERENCE_SHARE, which fixed the same starvation
+# one stage earlier, at learning.
+NICHE_SHARE = 0.25
+
 # A layout that keeps failing design QA stops being offered. It is not deleted —
 # retired, with its record intact — because the owner asked that nothing be
 # thrown away, and a later renderer may draw it fine.
@@ -263,22 +270,69 @@ async def count(tenant_id: UUID | str | None, *, active_only: bool = True) -> in
 async def pick(tenant_id: UUID | str | None) -> dict | None:
     """The layout autopilot should use next, or None to use the nine formats.
 
+    Two attempts, and the second only ever happens to a brand that is SHORT. A
+    library below MIN_LIBRARY tops itself up from the house catalogue and asks
+    again — which is how a brand-new brand gets learned layouts on day one
+    instead of waiting for its own competitor scrape to finish.
+
+    Topping up here rather than once at signup is deliberate: seeding at creation
+    strands a brand that later drops back under the minimum (layouts retire
+    themselves after repeated QA failures), and nothing would notice. Adoption is
+    idempotent, so asking on every short pick costs one query and changes nothing
+    when the catalogue is empty.
+    """
+    got = await _pick_once(tenant_id)
+    if got is not None:
+        return got
+    try:
+        from . import house_layouts
+
+        if not (await house_layouts.adopt(tenant_id)).get("adopted"):
+            return None
+    except Exception:  # noqa: BLE001 — the nine hand-built formats are a fine fallback
+        logger.warning("could not top up from the house catalogue", exc_info=True)
+        return None
+    return await _pick_once(tenant_id)
+
+
+async def _pick_once(tenant_id: UUID | str | None) -> dict | None:
+    """The layout autopilot should use next, or None to use the nine formats.
+
     Least recently used first, so the feed rotates through the library instead of
     leaning on one layout. Ties go to the layouts the owner has approved more and
     design QA has failed less. A library below MIN_LIBRARY returns None: a couple
     of learned layouts on rotation looks more repetitive than the nine, not less.
+
+    TWO LANES, because one tiebreak is not comparable across them.
+    `source_engagement` is an engagement RATE, and a niche reference has no
+    follower base to divide by, so every layout learned from monitoring carries
+    0.0 by construction — not because it performed badly. Ordering the whole
+    library by it therefore buries the niche lane under every competitor layout
+    that ever scored above zero. Measured on Trouvailler 2026-09-28: 30 niche
+    layouts, 193 competitor layouts, and ZERO niche layouts in the top 100 the
+    picker would consider — they could never be drawn at all.
+
+    So each lane is ranked against ITSELF (a rate compared with a rate), and the
+    lane to draw from is whichever is under-represented in what has actually been
+    used. That share is read from times_used rather than kept as state, so it
+    self-corrects and needs nothing migrated.
     """
     async with acquire(tenant_id) as conn:
         rows = await conn.fetch(
             """SELECT id, spec, kind, source_handle, source_url, source_platform,
-                      source_kind
-                 FROM design_templates
-                WHERE status = 'active'
-             ORDER BY last_used_at NULLS FIRST,
-                      (approvals - rejections) DESC,
-                      qa_fails ASC,
-                      source_engagement DESC
-                LIMIT $1""",
+                      source_kind, times_used
+                 FROM (
+                   SELECT *, row_number() OVER (
+                            PARTITION BY (source_kind = 'niche')
+                                 ORDER BY last_used_at NULLS FIRST,
+                                          (approvals - rejections) DESC,
+                                          qa_fails ASC,
+                                          source_engagement DESC) AS lane_rank
+                     FROM design_templates
+                    WHERE status = 'active'
+                 ) ranked
+                WHERE lane_rank <= $1
+             ORDER BY lane_rank, (source_kind = 'niche')""",
             PICK_WINDOW,
         )
     # Only layouts that draw cleanly count — toward the minimum, and as picks.
@@ -293,12 +347,59 @@ async def pick(tenant_id: UUID | str | None) -> dict | None:
             good.append((r, spec))
     if len(good) < MIN_LIBRARY:
         return None
+
+    niche = [g for g in good if str(g[0]["source_kind"]) == "niche"]
+    other = [g for g in good if str(g[0]["source_kind"]) != "niche"]
+    if niche and other:
+        def _used(rec) -> int:
+            # Tolerant on purpose: the picker's tests build rows by hand, and a
+            # missing counter must read as "never used", never as a KeyError in
+            # the path that produces every designed post.
+            try:
+                return int(rec["times_used"] or 0)
+            except (KeyError, TypeError, ValueError):
+                return 0
+
+        used_niche = sum(_used(g[0]) for g in niche)
+        used_all = used_niche + sum(_used(g[0]) for g in other)
+        # Nothing used yet reads as a 0 share, so the starved lane goes first —
+        # which is the state every library is in the day monitoring is switched on.
+        share = (used_niche / used_all) if used_all else 0.0
+        good = niche if share < NICHE_SHARE else other
     row, spec = good[0]
     return {
         "id": str(row["id"]), "spec": spec, "kind": row["kind"],
         "source_handle": row["source_handle"], "source_url": row["source_url"],
         "source_platform": row["source_platform"], "source_kind": row["source_kind"],
     }
+
+
+async def set_paused(
+    tenant_id: UUID | str | None, template_id: str, paused: bool,
+) -> dict | None:
+    """An owner switching one layout off, or back on.
+
+    Deliberately NOT the same as 'retired', which means design QA gave up on it
+    after MAX_QA_FAILS. Keeping the two apart is what lets the QA record stay
+    readable, and stops re-enabling a layout from looking like a QA reprieve.
+
+    Refuses to touch a retired layout: un-pausing one would quietly overturn a
+    verdict the renderer reached on evidence, which is not an owner's call to
+    make by flipping a switch.
+    """
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            "SELECT status FROM design_templates WHERE id = $1::uuid", template_id)
+        if not row:
+            return None
+        if row["status"] == "retired":
+            return {"id": template_id, "status": "retired",
+                    "changed": False, "reason": "retired by design QA"}
+        want = "paused" if paused else "active"
+        await conn.execute(
+            "UPDATE design_templates SET status = $2, updated_at = now() "
+            "WHERE id = $1::uuid", template_id, want)
+        return {"id": template_id, "status": want, "changed": row["status"] != want}
 
 
 async def mark_used(tenant_id: UUID | str | None, template_id: str) -> None:
@@ -369,16 +470,74 @@ async def _unlearned_competitor_stills(tenant_id, limit: int) -> list[dict]:
                   AND p.template_read_at IS NULL
                   -- "Not for me" is a verdict about the LAYOUT too.
                   AND coalesce(p.replicate_status, '') <> 'skipped'
-             -- likes breaks the tie: a niche reference has no follower base to
-             -- divide by, so its engagement_rate is 0 and its real signal is
-             -- the interaction count itself.
+             -- Competitors lead on engagement RATE; a reference has no follower
+             -- base to divide by, so its rate is 0 and likes breaks the tie.
+             -- Do NOT rank the two pools on one key: a like COUNT and a RATE are
+             -- different units, and a CASE that swapped in likes for references
+             -- made a 900-like reference outrank a 0.2-rate competitor every
+             -- time — dominance, not fairness. Inclusion is handled below by a
+             -- reserved slice instead, which is the actual problem: measured on
+             -- Trouvailler 2026-09-28, two references sat behind a 100+ post
+             -- competitor backlog and a 12-post read never reached them.
              ORDER BY (p.replicate_status = 'template') DESC,
                       (p.replicate_status IN ('saved','idea')) DESC,
                       p.engagement_rate DESC NULLS LAST, p.likes DESC
                 LIMIT $1""",
             max(1, min(int(limit), 50)),
         )
+    general = [dict(r) for r in rows]
+    # Reserve a slice of every read for the niche shelf. The ordering above is
+    # right — a brand's own competitors lead — but with a deep backlog the tail
+    # is never reached, and the shelf lives in the tail by construction. So keep
+    # the order and guarantee the inclusion: take the general pool first, then
+    # append references until the batch is full. Kept INSIDE this function
+    # deliberately — it is the one seam callers and tests know, and a second
+    # entry point would route around both.
+    reserved = max(1, round(int(limit) * REFERENCE_SHARE)) if int(limit) > 1 else 0
+    refs = await _unlearned_reference_stills(tenant_id, reserved) if reserved else []
+    keep_general = max(0, int(limit) - len(refs))
+    out, seen = [], set()
+    for row in [*general[:keep_general], *refs]:
+        if row["id"] in seen:
+            continue
+        seen.add(row["id"])
+        out.append(row)
+        if len(out) >= int(limit):
+            break
+    return out
+
+
+# Of each read, at least this share is drawn from the niche-reference shelf when
+# one has anything unread. Ranking references fairly is not enough on its own:
+# the two pools are ordered by different measures (a rate against a count), so a
+# brand with a deep competitor backlog could still spend every read on it for
+# weeks. A reserved slot makes the media-monitoring half of the pipeline
+# independent of how much the scrapers happen to have brought in.
+REFERENCE_SHARE = 0.25
+
+
+async def _unlearned_reference_stills(tenant_id, limit: int) -> list[dict]:
+    """The same read, restricted to the niche-reference shelf."""
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            r"""SELECT p.id, p.stored_media_url, p.url, p.platform, p.engagement_rate,
+                      c.handle, c.status AS shelf_status, c.discovered_via
+                 FROM competitor_posts p
+                 JOIN competitors c ON c.id = p.competitor_id
+                WHERE p.stored_media_url <> ''
+                  AND c.status = 'reference'
+                  AND (p.media_type IN ('image', 'carousel')
+                       OR p.stored_media_url ~* '\.(jpe?g|png|webp)$')
+                  AND p.template_read_at IS NULL
+                  AND coalesce(p.replicate_status, '') <> 'skipped'
+             ORDER BY (p.replicate_status = 'template') DESC,
+                      (p.replicate_status IN ('saved','idea')) DESC,
+                      p.likes DESC NULLS LAST
+                LIMIT $1""",
+            max(1, min(int(limit), 50)),
+        )
     return [dict(r) for r in rows]
+
 
 
 async def _mark_read(tenant_id, post_id) -> None:

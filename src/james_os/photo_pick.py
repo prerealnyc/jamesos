@@ -106,6 +106,34 @@ async def pick_hero_bytes(
     return chosen[0], chosen[1]
 
 
+async def pick_hero_set(
+    refs: list[tuple[str, bytes]], tenant_id: UUID | None = None,
+    n: int = 1, exclude: Sequence[str] = (),
+) -> list[tuple[str, bytes]]:
+    """Up to `n` DISTINCT photos, for a layout with several photo regions.
+
+    Repeated application of pick_hero_bytes rather than a second picker: every
+    gate that makes a single pick good — the sharpness floor, the
+    least-recently-used rotation, the exclusion list — should apply to the
+    second photo and the fourth exactly as it does to the first. Feeding each
+    chosen key back in as an exclusion is the whole implementation.
+
+    Returns FEWER than `n` when the library has fewer usable photos, and that is
+    the honest answer. The renderer cycles what it is given rather than leaving a
+    frame empty, so a brand with two good photos gets a four-up collage with two
+    repeats instead of two holes.
+    """
+    out: list[tuple[str, bytes]] = []
+    seen = list(exclude)
+    for _ in range(max(1, int(n))):
+        got = await pick_hero_bytes(refs, tenant_id, exclude=seen)
+        if not got:
+            break                      # the library is exhausted; say so by stopping
+        out.append(got)
+        seen.append(got[0])
+    return out
+
+
 _URL_SHARPNESS: dict[str, float] = {}   # hero libraries are small + stable
 
 
@@ -153,4 +181,5 @@ async def pick_hero_url(
     return _least_used(sharp, counts)
 
 
-__all__ = ["pick_hero_bytes", "pick_hero_url", "photo_key", "sharpness_score"]
+__all__ = ["pick_hero_bytes", "pick_hero_set", "pick_hero_url", "photo_key",
+           "sharpness_score"]

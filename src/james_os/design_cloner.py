@@ -32,7 +32,18 @@ from .config import settings
 
 logger = logging.getLogger("design_cloner")
 
-CLONE_RUBRIC_VERSION = "v1"
+# v2 added photo_boxes: a layout may have SEVERAL photo regions. Bumped rather
+# than edited in place so a v1 spec is still readable as what it was — a read
+# taken when the vocabulary had no word for a collage.
+#
+# PLACEMENT, not wording, decided whether this worked. The first v2 described
+# photo_boxes only inside the `background` field and left it out of the output
+# schema below; run over 24 real monitoring images it found ZERO collages, four
+# of which were plainly several photographs. Naming the count as the FIRST thing
+# to decide, and listing photo_boxes in the schema, took that to 2 of 4 with 0
+# false positives on 7 single-photograph posts (measured 2026-09-30). The other
+# two — a three-photo strip and a two-panel stack — are still missed.
+CLONE_RUBRIC_VERSION = "v2"
 _MODEL = "gpt-4o"
 
 # The roles our renderer knows how to fill from a brand's content. The extractor
@@ -53,7 +64,13 @@ _SYSTEM = (
     "its OWN photo and words. Describe the STRUCTURE only — never transcribe the "
     "brand's actual words or describe the specific photo content; a role and a "
     "position, not the copy.\n\n"
-    "First decide the KIND:\n"
+    "First decide the KIND. Before anything else, count how many SEPARATE "
+    "PHOTOGRAPHS the post contains — a post is very often several "
+    "photographs arranged together (a collage, a grid, a strip, a "
+    "before/after, framed cutouts), which is extremely common in social "
+    "advertising. When it is, you MUST return background.photo_boxes with "
+    "one box per photograph.\n\n"
+    "The KIND:\n"
     "  photo_forward — the post IS the photograph (a strong image, at most a "
     "small caption/logo). The template is really 'a great photo in this framing'.\n"
     "  graphic_card — a BUILT layout: a big number/milestone, a listing card, a "
@@ -63,10 +80,28 @@ _SYSTEM = (
     "  background: {treatment: one of [full_bleed_photo, photo_top, photo_bottom, "
     "photo_side, solid, photo_with_scrim], scrim: one of [none, bottom, top, "
     "full] (a dark gradient for text legibility), photo_box: {x,y,w,h} (where the "
-    "photo sits when it is not full-bleed, else null)}.\n"
+    "photo sits when it is not full-bleed, else null), photo_boxes: a LIST of "
+    "{x,y,w,h} when the post shows SEVERAL photographs — a collage, a grid, a "
+    "before/after split, a set of framed or overlapping pictures. List them in "
+    "reading order, top-left first. This is common and important: do NOT flatten "
+    "a four-photo collage into one full-bleed box. Give photo_boxes ONLY for "
+    "genuinely separate pictures, not for one photo with shapes drawn over it; "
+    "omit it entirely for a single-photograph post.}\n"
     "  palette: {bg: #hex (dominant background/panel), accent: #hex (the one "
     "punch colour), ink: #hex (main text colour)}.\n"
     f"  elements: a list of text blocks, each {{role: one of {list(_TEXT_ROLES)}, "
+    "treatment: one of [none,outline,extrude,shadow] — how the glyphs are "
+    "FINISHED. extrude for block letters with offset depth behind them, "
+    "outline for a deliberate thick contrasting edge, shadow for a single "
+    "soft offset, none for flat type. This is a lot of what makes a card "
+    "look designed rather than typed, so read it carefully; say none when "
+    "the type is genuinely flat, "
+    "face: one of [display,body] — DISPLAY for the blocks set in the loud "
+    "attention-grabbing face (the headline, a big number, a shouted label), "
+    "BODY for the quieter supporting face. Judge the CONTRAST you see between "
+    "the blocks, not the specific typeface: we never reuse their font, only "
+    "which blocks they chose to shout with. If every block is the same face, "
+    "say display for the largest and body for the rest, "
     "box: {x,y,w,h}, align: one of [left,center,right], size: one of "
     "[sm,md,lg,xl,xxl] (xxl = a hero number/word filling much of the width), "
     "weight: one of [regular,bold,black], case: one of [none,upper], color: "
@@ -80,7 +115,9 @@ _SYSTEM = (
     "the same spot — else null. Do NOT also list the logo as a text element.\n"
     "  design_notes: one line on what makes this layout work.\n\n"
     "Return STRICT JSON: {\"kind\": \"photo_forward\"|\"graphic_card\", "
-    "\"background\": {...}, \"palette\": {...}, \"elements\": [...], "
+    "\"background\": {\"treatment\": ..., \"scrim\": ..., \"photo_box\": "
+    "...|null, \"photo_boxes\": [{x,y,w,h}, ...] (omit entirely for a single "
+    "photograph)}, \"palette\": {...}, \"elements\": [...], "
     "\"decorations\": [...], \"logo_box\": {...}|null, \"design_notes\": str}. If "
     "the image is unreadable, say so in design_notes and return kind "
     "'photo_forward' with empty elements."
@@ -104,6 +141,23 @@ def _norm_box(b) -> dict | None:
     if w <= 0 or h <= 0:
         return None
     return {"x": round(x, 3), "y": round(y, 3), "w": round(w, 3), "h": round(h, 3)}
+
+
+def _photo_boxes(bg: dict) -> dict:
+    """The collage regions, cleaned — or nothing at all.
+
+    Returns `{}` rather than `{"photo_boxes": []}` when there is nothing to say,
+    so a single-photograph spec is byte-identical to what v1 produced and the
+    renderer's one-frame path is reached by absence rather than by an empty list.
+
+    A single-entry list is dropped for the same reason: one region IS the
+    existing photo_box, and carrying both invites them to disagree.
+    """
+    raw = bg.get("photo_boxes")
+    if not isinstance(raw, list) or len(raw) < 2:
+        return {}
+    boxes = [b for b in (_norm_box(x) for x in raw[:6]) if b]
+    return {"photo_boxes": boxes} if len(boxes) >= 2 else {}
 
 
 def _hex(v, default: str) -> str:
@@ -141,6 +195,19 @@ def _sanitize(out: dict) -> dict:
             "weight": e.get("weight") if e.get("weight") in ("regular", "bold", "black") else "bold",
             "case": e.get("case") if e.get("case") in ("none", "upper") else "none",
             "color": _hex(e.get("color"), palette["ink"]),
+            # Which of the BRAND's two faces this block takes. Not the
+            # competitor's typeface — never that; the brand's own display/body
+            # pair is its identity and must win. What is borrowed is which
+            # blocks the reference chose to shout with, which the renderer
+            # previously guessed from `weight` alone and so lost entirely: a
+            # light geometric headline over a heavy condensed stat rendered
+            # exactly like the reverse.
+            "face": e.get("face") if e.get("face") in ("display", "body") else None,
+            # How the glyphs are finished. None when unstated, so the 454 specs
+            # learned before this vocabulary existed keep the thin default
+            # stroke rather than inheriting a treatment nobody read.
+            "treatment": e.get("treatment") if e.get("treatment") in (
+                "none", "outline", "extrude", "shadow") else None,
         })
 
     decorations = []
@@ -156,7 +223,9 @@ def _sanitize(out: dict) -> dict:
         "status": "ok",
         "rubric_version": CLONE_RUBRIC_VERSION,
         "kind": kind,
-        "background": {"treatment": treatment, "scrim": scrim, "photo_box": _norm_box(bg.get("photo_box"))},
+        "background": {"treatment": treatment, "scrim": scrim,
+                       "photo_box": _norm_box(bg.get("photo_box")),
+                       **_photo_boxes(bg)},
         "palette": palette,
         "elements": elements,
         "decorations": decorations,

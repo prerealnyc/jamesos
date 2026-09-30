@@ -208,6 +208,81 @@ async def save_reference(
     return {"stored": True, "post_id": str(post_id), "competitor_id": where["id"]}
 
 
+async def listing(
+    tenant_id: UUID | str | None, *, limit: int = 200, offset: int = 0,
+) -> dict:
+    """Every picture on the shelf, newest first, with what became of it.
+
+    `count` answers "how many"; this answers "which ones, and did each one
+    actually turn into a layout" — the question an operator asks when deciding
+    whether the monitoring feed is earning its keep.
+
+    The template is LEFT-joined: a picture that has been read but produced no
+    usable layout (the read found no text to learn from, or its fingerprint
+    matched one we already held) must still appear, marked read with no
+    template, because a shelf that silently hid those would overstate the
+    yield. `read_at` and `template_id` are therefore independent — read
+    without a template is the honest "we looked, and there was nothing new".
+    """
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            """SELECT p.id::text            AS id,
+                      p.stored_media_url    AS image,
+                      p.url                 AS source_url,
+                      p.platform            AS platform,
+                      p.caption             AS caption,
+                      p.likes               AS interactions,
+                      p.posted_at           AS posted_at,
+                      p.first_seen_at       AS filed_at,
+                      p.template_read_at    AS read_at,
+                      a.format              AS format,
+                      a.hook                AS hook,
+                      a.why_it_works        AS why,
+                      d.id::text            AS template_id,
+                      d.kind                AS template_kind,
+                      d.status              AS template_status,
+                      d.times_used          AS times_used
+                 FROM competitor_posts p
+                 JOIN competitors c ON c.id = p.competitor_id
+            LEFT JOIN competitor_post_analysis a ON a.post_id = p.id
+            LEFT JOIN design_templates d ON d.source_post_id = p.id
+                WHERE c.status = $1 AND c.discovered_via = $2
+             ORDER BY p.first_seen_at DESC, p.id DESC
+                LIMIT $3 OFFSET $4""",
+            SHELF_STATUS, VIA, max(1, min(int(limit), 500)), max(0, int(offset)))
+        held = await conn.fetchval(
+            """SELECT count(*) FROM competitor_posts p
+                 JOIN competitors c ON c.id = p.competitor_id
+                WHERE c.status = $1 AND c.discovered_via = $2""",
+            SHELF_STATUS, VIA)
+    return {
+        "held": int(held or 0),
+        "shown": len(rows),
+        "source": VIA,
+        "references": [
+            {
+                "id": r["id"],
+                "image": r["image"] or "",
+                "source_url": r["source_url"] or "",
+                "platform": r["platform"] or "",
+                "caption": r["caption"] or "",
+                "interactions": int(r["interactions"] or 0),
+                "posted_at": r["posted_at"].isoformat() if r["posted_at"] else "",
+                "filed_at": r["filed_at"].isoformat() if r["filed_at"] else "",
+                "read": r["read_at"] is not None,
+                "format": r["format"] or "",
+                "hook": r["hook"] or "",
+                "why": r["why"] or "",
+                "template_id": r["template_id"],
+                "template_kind": r["template_kind"],
+                "template_status": r["template_status"],
+                "times_used": int(r["times_used"] or 0) if r["template_id"] else 0,
+            }
+            for r in rows
+        ],
+    }
+
+
 async def count(tenant_id: UUID | str | None) -> dict:
     """How many references this tenant holds, and how many are already layouts."""
     async with acquire(tenant_id) as conn:
@@ -222,4 +297,4 @@ async def count(tenant_id: UUID | str | None) -> dict:
 
 
 __all__ = ["SHELF_HANDLE", "SHELF_PLATFORM", "SHELF_STATUS", "VIA", "MAX_IMAGE_BYTES",
-           "sniff", "key_for", "shelf", "save_reference", "count"]
+           "sniff", "key_for", "shelf", "save_reference", "count", "listing"]
