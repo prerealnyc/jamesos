@@ -45,6 +45,21 @@ logger = logging.getLogger("design_templates")
 # the library is a couple of lucky reads, and rotating between them would make
 # the brand's feed look MORE repetitive than the nine formats, not less.
 MIN_LIBRARY = 3
+
+# Below THIS many drawable layouts a brand tops itself up from the house
+# catalogue. A SECOND number on purpose, because MIN_LIBRARY answers a different
+# question: "have I enough variety to rotate without looking repetitive" (and
+# under it, fall back to the nine hand-built formats), where this one asks "am I
+# thin enough to be worth stocking".
+#
+# Collapsing the two is what kept adoption dead. Measured against production
+# 2026-10-01: the thinnest brand had 4 drawable layouts and MIN_LIBRARY was 3, so
+# no brand was ever short enough to trigger a top-up. And simply RAISING
+# MIN_LIBRARY would have been worse than leaving it alone — that brand would adopt
+# the 4 layouts in the pool, still sit under a raised floor at 8, and _pick_once
+# would hand back None, so a brand that draws from its own 4 layouts today would
+# stop using learned layouts altogether and fall back to the nine formats.
+STOCK_BELOW = 12
 # How many active layouts pick() weighs at once, in rotation order.
 PICK_WINDOW = 200
 
@@ -270,38 +285,52 @@ async def count(tenant_id: UUID | str | None, *, active_only: bool = True) -> in
 async def pick(tenant_id: UUID | str | None) -> dict | None:
     """The layout autopilot should use next, or None to use the nine formats.
 
-    Two attempts, and the second only ever happens to a brand that is SHORT. A
-    library below MIN_LIBRARY tops itself up from the house catalogue and asks
-    again — which is how a brand-new brand gets learned layouts on day one
-    instead of waiting for its own competitor scrape to finish.
+    Two attempts, and the second only ever happens to a brand that is SHORT —
+    fewer than STOCK_BELOW drawable layouts. Such a brand tops itself up from the
+    house catalogue and asks again, which is how a brand-new brand gets learned
+    layouts on day one instead of waiting for its own competitor scrape to finish.
+
+    The trigger is the COUNT, not a failed pick. Keying it on "pick returned
+    nothing" meant a brand only ever stocked itself once it had too little to draw
+    at all, so every brand sitting just above the floor stayed there forever.
 
     Topping up here rather than once at signup is deliberate: seeding at creation
-    strands a brand that later drops back under the minimum (layouts retire
+    strands a brand that later drops back under the line (layouts retire
     themselves after repeated QA failures), and nothing would notice. Adoption is
     idempotent, so asking on every short pick costs one query and changes nothing
-    when the catalogue is empty.
+    when the catalogue is empty or already drained into this brand.
+
+    A top-up that cannot clear MIN_LIBRARY must not cost a brand what it already
+    had: if the first attempt produced a pick, that pick is returned even when the
+    catalogue added nothing. Stocking can only improve the answer — it can never
+    replace a working library with the nine formats.
     """
-    got = await _pick_once(tenant_id)
-    if got is not None:
+    got, have = await _pick_once(tenant_id)
+    if have >= STOCK_BELOW:
         return got
     try:
         from . import house_layouts
 
-        if not (await house_layouts.adopt(tenant_id)).get("adopted"):
-            return None
+        if (await house_layouts.adopt(tenant_id)).get("adopted"):
+            again, _ = await _pick_once(tenant_id)
+            if again is not None:
+                return again
     except Exception:  # noqa: BLE001 — the nine hand-built formats are a fine fallback
         logger.warning("could not top up from the house catalogue", exc_info=True)
-        return None
-    return await _pick_once(tenant_id)
+    return got
 
 
-async def _pick_once(tenant_id: UUID | str | None) -> dict | None:
-    """The layout autopilot should use next, or None to use the nine formats.
+async def _pick_once(tenant_id: UUID | str | None) -> tuple[dict | None, int]:
+    """(the layout to use or None, how many drawable layouts this brand has).
+
+    The count comes back with the pick because the caller needs it to decide
+    whether to stock this brand, and counting it again would be a second query
+    over the same rows.
 
     Least recently used first, so the feed rotates through the library instead of
     leaning on one layout. Ties go to the layouts the owner has approved more and
-    design QA has failed less. A library below MIN_LIBRARY returns None: a couple
-    of learned layouts on rotation looks more repetitive than the nine, not less.
+    design QA has failed less. Below MIN_LIBRARY the pick is None: a couple of
+    learned layouts on rotation looks more repetitive than the nine, not less.
 
     TWO LANES, because one tiebreak is not comparable across them.
     `source_engagement` is an engagement RATE, and a niche reference has no
@@ -346,8 +375,9 @@ async def _pick_once(tenant_id: UUID | str | None) -> dict | None:
         if drawable(spec):
             good.append((r, spec))
     if len(good) < MIN_LIBRARY:
-        return None
+        return None, len(good)
 
+    n_drawable = len(good)
     niche = [g for g in good if str(g[0]["source_kind"]) == "niche"]
     other = [g for g in good if str(g[0]["source_kind"]) != "niche"]
     if niche and other:
@@ -367,11 +397,12 @@ async def _pick_once(tenant_id: UUID | str | None) -> dict | None:
         share = (used_niche / used_all) if used_all else 0.0
         good = niche if share < NICHE_SHARE else other
     row, spec = good[0]
+    # `good` is narrowed to one lane above, so the count is taken before that.
     return {
         "id": str(row["id"]), "spec": spec, "kind": row["kind"],
         "source_handle": row["source_handle"], "source_url": row["source_url"],
         "source_platform": row["source_platform"], "source_kind": row["source_kind"],
-    }
+    }, n_drawable
 
 
 async def set_paused(
@@ -651,7 +682,8 @@ async def learn_from_reference(
 
 
 __all__ = [
-    "MIN_LIBRARY", "RETIRE_AFTER_QA_FAILS", "MAX_READ_ATTEMPTS", "fingerprint", "usable",
+    "MIN_LIBRARY", "STOCK_BELOW", "RETIRE_AFTER_QA_FAILS", "MAX_READ_ATTEMPTS",
+    "fingerprint", "usable",
     "prepare", "drawable", "base_role", "save", "count",
     "pick", "mark_used", "mark_qa", "mark_verdict", "learn_from_competitors",
     "learn_from_reference",
