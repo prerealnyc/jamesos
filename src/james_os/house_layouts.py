@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from uuid import UUID
 
 from .db import acquire
@@ -59,6 +60,81 @@ ADOPT_SOURCE_KIND = {"curated": "reference"}
 # MIN_LIBRARY and leave the rotation something to rotate through, not so many
 # that a new brand's feed is entirely inherited.
 ADOPT_BATCH = 8
+
+# How many approved rows to consider before ranking. Ranking happens in Python
+# (the tags are free text, so `&&` on the arrays is useless), so the candidate
+# set has to be pulled first — wide enough that a brand's match is not cut off by
+# the pre-sort, small enough to stay one cheap query.
+CANDIDATE_POOL = 200
+
+
+# Niche tags are FREE TEXT on both sides and nobody agreed a vocabulary: brands
+# carry "golf resort", "commercial real estate", "tour packages, travel and
+# holidays"; the pool carries "golf", "real estate". Matching those as whole
+# strings — or with Postgres `&&` on the arrays — finds almost nothing, which is
+# how niche targeting would look implemented and still behave randomly. So match
+# on TOKENS, and rank rather than filter.
+_NICHE_STOP = frozenset({
+    "and", "the", "for", "of", "a", "an", "in", "on", "to", "with", "by",
+    # words that appear in so many niches they carry no signal
+    "packages", "package", "services", "service", "company", "brand", "business",
+    "agency", "group", "new", "york",
+})
+
+
+def niche_tokens(values) -> set[str]:
+    """The meaningful words in one or more niche phrases, lowercased."""
+    if isinstance(values, str):
+        values = [values]
+    out: set[str] = set()
+    for v in values or []:
+        if v is None:
+            continue          # a stray null must not become the token "none"
+        for word in re.split(r"[^a-z0-9]+", str(v).lower()):
+            if len(word) > 2 and word not in _NICHE_STOP:
+                out.add(word)
+    return out
+
+
+def niche_rank(brand_niches, layout_niches) -> int:
+    """How well a catalogue layout suits a brand. Higher is better.
+
+      2+  shares N meaningful words with the brand's niche (2 + N)
+      1   carries NO tags at all — generic, suits anybody
+      0   tagged, but for a different niche
+
+    Untagged beats off-niche on purpose. 12 of the 17 live pool rows carry no
+    tags, so filtering strictly on a match would hand most brands nothing at all
+    and the feature would read as broken. Ranking degrades instead of starving.
+    """
+    # `if str(t).strip()` is NOT enough: str(None) is "None", so a null in the
+    # array would read as a real tag and rank the layout BELOW an untagged one.
+    tags = [str(t).strip() for t in (layout_niches or [])
+            if t is not None and str(t).strip()]
+    if not tags:
+        return 1
+    shared = niche_tokens(brand_niches) & niche_tokens(tags)
+    return 2 + len(shared) if shared else 0
+
+
+async def tenant_niches(conn, tenant_id) -> list[str]:
+    """What this brand is in, as it already knows it.
+
+    Read from its OWN competitors rows — the niche a human confirmed during
+    onboarding is recorded against the competitors discovered for it, so no new
+    field and nothing to backfill. Live values today: 'golf resort',
+    'commercial real estate', 'tour packages, travel and holidays',
+    'political candidates', 'commercial spaceport'.
+    """
+    if not tenant_id:
+        return []
+    try:
+        rows = await conn.fetch(
+            "SELECT DISTINCT niche FROM competitors WHERE coalesce(niche,'') <> ''")
+        return [str(r["niche"]) for r in rows]
+    except Exception:  # noqa: BLE001 — a brand with no competitors yet is normal
+        logger.debug("no niche readable for %s", tenant_id, exc_info=True)
+        return []
 
 
 def family_key(spec: dict) -> str:
@@ -341,8 +417,15 @@ def _adopt_kind(source_kind) -> str:
     return ADOPT_SOURCE_KIND.get(kind, kind)
 
 
-async def adopt(tenant_id: UUID | str | None, *, limit: int = ADOPT_BATCH) -> dict:
+async def adopt(tenant_id: UUID | str | None, *, limit: int = ADOPT_BATCH,
+                niches: list[str] | None = None) -> dict:
     """Fork approved catalogue layouts into this brand's own library.
+
+    NICHE-RANKED, not niche-filtered. A layout tagged for this brand's niche goes
+    first, an untagged one next (generic, suits anybody), an off-niche one last.
+    Filtering strictly would starve almost everyone — 12 of the 17 live pool rows
+    carry no tags at all — so a brand always gets its batch, just the best-fitting
+    rows in it.
 
     Idempotent per layout: `design_templates_house_uniq` makes a second adoption
     of the same house layout a no-op, which is what lets this run on every pick
@@ -352,19 +435,31 @@ async def adopt(tenant_id: UUID | str | None, *, limit: int = ADOPT_BATCH) -> di
     """
     if not tenant_id:
         return {"adopted": 0, "reason": "no tenant"}
+    want = max(1, min(int(limit), 50))
+
+    # What this brand is in. The caller may name it; otherwise the brand tells us
+    # itself, from the niche recorded against its own competitors.
+    if niches is None:
+        async with acquire(tenant_id) as conn:
+            niches = await tenant_niches(conn, tenant_id)
+
     async with acquire(None) as conn:
         rows = await conn.fetch(
             """SELECT id::text, kind, spec, fingerprint, source_kind, source_url,
-                      source_image_uri
+                      source_image_uri, niches
                  FROM house_layouts
                 WHERE status = 'approved'
              ORDER BY (approvals - rejections) DESC, adopted_count DESC, created_at
-                LIMIT $1""", max(1, min(int(limit), 50)))
+                LIMIT $1""", CANDIDATE_POOL)
     if not rows:
         return {"adopted": 0, "reason": "the catalogue has no approved layouts yet"}
 
+    # Rank by fit, then take the batch. sorted() is stable, so layouts of equal
+    # fit keep the order the query gave them — best-performing first.
+    ranked = sorted(rows, key=lambda r: -niche_rank(niches, r["niches"]))[:want]
+
     taken = []
-    for r in rows:
+    for r in ranked:
         spec = r["spec"]
         if isinstance(spec, str):
             spec = json.loads(spec)
@@ -388,8 +483,10 @@ async def adopt(tenant_id: UUID | str | None, *, limit: int = ADOPT_BATCH) -> di
             await conn.execute(
                 "UPDATE house_layouts SET adopted_count = adopted_count + 1, "
                 "updated_at = now() WHERE id = any($1::uuid[])", taken)
-    return {"adopted": len(taken), "offered": len(rows)}
+    return {"adopted": len(taken), "offered": len(ranked),
+            "considered": len(rows), "matched_on": list(niches or [])}
 
 
 __all__ = ["SHAREABLE", "ADOPT_BATCH", "family_key", "promote", "ingest", "retag",
-           "retype", "catalogue", "review", "adopt", "ADOPT_SOURCE_KIND"]
+           "retype", "catalogue", "review", "adopt", "ADOPT_SOURCE_KIND",
+           "niche_tokens", "niche_rank", "tenant_niches"]
