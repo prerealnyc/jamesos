@@ -1,0 +1,114 @@
+# DEPLOY JAMES OS TO RAILWAY — THE FALLBACK, NOT THE DEPLOY. Run it from the Actions tab.
+#
+# Two services in the `bountiful-prosperity` Railway project, both named by their own
+# Dockerfile rather than guessed here:
+#
+#   james-os-backend   FastAPI. Build context is the REPOSITORY ROOT (the Dockerfile at
+#                      the root COPYs pyproject.toml and src/ from there).
+#   james-os-frontend  Next.js. Build context is web/, which has its own Dockerfile.
+#
+# WHY THERE IS NO `push:` TRIGGER, and why that is deliberate rather than unfinished.
+#
+# If Railway's own GitHub connection is attached to this project, merging to main already
+# builds and ships. Adding a push trigger on top of that gives two builds per merge,
+# seconds apart, one killing the other, and a winner decided by a coin toss. That is not
+# hypothetical: it happened five times in one day in prereal-platform, and `railway up`
+# records nothing about what it shipped, so when this kind of workflow won, production
+# could not say which commit was live. See .github/workflows/deploy.yml in that repo for
+# the whole story and the same conclusion.
+#
+# So this is the button for when the connection goes quiet, which is the other half of
+# that story — prereal sat three days and ~185 commits behind main with two merged PRs
+# that reached nobody, and a workflow exactly like this one is what got it out.
+#
+# IF THIS PROJECT HAS NO RAILWAY↔GITHUB CONNECTION, and you want merges to ship by
+# themselves, uncomment the `push:` block below. Do it only after checking the Railway
+# project, because turning it on against a live connection is the race described above.
+#
+# WHAT TO WATCH FOR either way: /health answering from an older build than main. This
+# repo has no equivalent of prereal's /api/version, so there is no commit to compare —
+# which is itself an argument for preferring the Railway-native deploy, since that one
+# knows what it built.
+#
+# ONE-TIME SETUP (nothing here works until this is done):
+#   1. Railway → the `bountiful-prosperity` project → Settings → Tokens → create a
+#      PROJECT token scoped to the `production` environment. It must be THAT project:
+#      prereal, prereal-crm and brand-manager-2 are different apps, and a token from the
+#      wrong one authenticates cleanly and deploys nothing anybody was waiting for.
+#   2. GitHub → this repo → Settings → Secrets and variables → Actions → New secret:
+#        name  RAILWAY_TOKEN
+#        value the token from step 1
+#
+# It FAILS without that secret rather than skipping. A deploy workflow that reports
+# success without deploying is worse than not having one — brand-manager-2-0 ran 30 green
+# builds that shipped nothing at all, behind a warning annotation nobody opened.
+#
+# A repository VARIABLE overrides either service name without a code change if one is
+# ever renamed: RAILWAY_SERVICE_BACKEND, RAILWAY_SERVICE_FRONTEND.
+#
+# The token is a repository secret: never in the source, never printed by a step, and
+# masked in logs. Do not paste it into a chat or a commit.
+name: Deploy to Railway (manual fallback)
+
+on:
+  workflow_dispatch:        # a manual "Run workflow" button in the Actions tab
+    inputs:
+      services:
+        description: 'Which services to deploy'
+        required: true
+        default: both
+        type: choice
+        options: [both, backend, frontend]
+
+  # Uncomment ONLY if this project has no Railway↔GitHub connection — see the top of
+  # this file. With one attached, this causes two racing builds per merge.
+  # push:
+  #   branches: [main]
+
+concurrency:
+  # A newer merge should win rather than queue behind an older deploy.
+  group: railway-bountiful-prosperity-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fail with a sentence a person can act on, rather than an auth error from the CLI.
+      - name: Check the token is configured
+        run: |
+          if [ -z "${{ secrets.RAILWAY_TOKEN }}" ]; then
+            echo "::error::RAILWAY_TOKEN is not set, so NOTHING WAS DEPLOYED. Add a Railway PROJECT token for bountiful-prosperity under Settings → Secrets and variables → Actions. See the comment at the top of .github/workflows/deploy.yml."
+            exit 1
+          fi
+
+      - name: Install the Railway CLI
+        run: npm i -g @railway/cli
+
+      # From the REPOSITORY ROOT, because the backend Dockerfile reads pyproject.toml and
+      # src/ relative to it. Uploading from anywhere else makes the build miss them.
+      - name: Deploy the backend
+        if: inputs.services == 'both' || inputs.services == 'backend' || github.event_name == 'push'
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE: ${{ vars.RAILWAY_SERVICE_BACKEND || 'james-os-backend' }}
+        run: railway up --service "$RAILWAY_SERVICE" --ci
+
+      # From web/, which holds the frontend Dockerfile.
+      #
+      # BACKEND_ORIGIN has to be set ON THE SERVICE in Railway, not here. Next bakes its
+      # rewrites into .next/routes-manifest.json at BUILD time, and the Dockerfile picks
+      # the value up by declaring `ARG BACKEND_ORIGIN` — Railway injects service variables
+      # as build args for declared ARGs. An origin passed only at runtime arrives after
+      # the manifest is already written, and every /ask, /events and /ingest rewrite then
+      # points at localhost:8001 in production.
+      - name: Deploy the frontend
+        if: inputs.services == 'both' || inputs.services == 'frontend' || github.event_name == 'push'
+        working-directory: web
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE: ${{ vars.RAILWAY_SERVICE_FRONTEND || 'james-os-frontend' }}
+        run: railway up --service "$RAILWAY_SERVICE" --ci
