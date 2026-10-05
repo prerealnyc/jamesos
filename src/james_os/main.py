@@ -251,11 +251,24 @@ async def lifespan(app: FastAPI):
     await close_pool()
 
 
+# The docs are gated in TWO places on purpose. auth.docs_public() decides
+# whether the middleware lets the paths through; these three arguments decide
+# whether the routes exist at all. One of them would do — but the middleware is
+# a single `if` standing between the open internet and a full description of
+# every endpoint here, and the cheapest way not to depend on it is to serve no
+# schema in the first place. Set JOS_PUBLIC_DOCS=1 for local development.
+from .auth import docs_public as _docs_public  # noqa: E402
+
+_docs_on = _docs_public()
+
 app = FastAPI(
     title="JAMES OS",
     description="Memory substrate for AI-native operations.",
     version="0.1.0",
     lifespan=lifespan,
+    docs_url="/docs" if _docs_on else None,
+    redoc_url="/redoc" if _docs_on else None,
+    openapi_url="/openapi.json" if _docs_on else None,
 )
 
 # CORS — dev defaults (Next.js on :3000), extend via ALLOWED_ORIGINS env
