@@ -73,6 +73,9 @@ Two authoritative references — no manual endpoint list to maintain:
 1. **`GET {BACKEND_ORIGIN}/openapi.json`** — FastAPI auto-generates the complete,
    always-current schema for every endpoint (params + response models). Point the
    other session at this to know everything.
+   **Run the backend with `JOS_PUBLIC_DOCS=1`** to get it. `/openapi.json`, `/docs`
+   and `/redoc` are off by default now: unconditional, they handed anyone a live map
+   of every endpoint on the deployed host. Local development is what the flag is for.
 2. **`web/lib/api.ts`** — the same surface, already typed in TypeScript.
 
 Top-level API path families to proxy (from `next.config.mjs` — copy the whole list):
