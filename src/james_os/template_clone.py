@@ -180,6 +180,15 @@ async def _hero_or_placeholder(tenant_id, topic: str,
         picked = await pick_hero_bytes(refs, tenant_id)
         if picked:
             return picked[1], False, picked[0]
+    # No library photo — try a REAL stock photo (Unsplash) before the slow
+    # gpt-image-1 draw. Key-gated + fail-safe: any miss falls through to fabricate.
+    try:
+        from .stock_photo import fetch_unsplash_hero
+        u = await fetch_unsplash_hero(topic)
+        if u:
+            return u[1], False, u[0]  # bytes, was_generated=False (a real photo), key=url
+    except Exception:  # noqa: BLE001 — a stock lookup must never stop a render
+        pass
     # No usable photo — fabricate a clean scene so the template still shows.
     from .imagegen import generate_post_image
     png, _meta, _err = await generate_post_image(

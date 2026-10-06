@@ -655,6 +655,22 @@ async def _placement_assets(tenant_id):
     return broll, heroes
 
 
+def _production_options(row) -> dict:
+    """The per-production options bag (`video_productions.options`).
+
+    Always a dict: a missing column, a NULL, or malformed JSON all mean "no
+    per-production overrides", never a failed render."""
+    try:
+        raw = row["options"]
+    except (KeyError, TypeError):
+        return {}
+    try:
+        opts = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except (TypeError, ValueError):
+        return {}
+    return opts if isinstance(opts, dict) else {}
+
+
 async def _cards_and_bed(row, assets, pid, tenant_id):
     """The production's designed cards + its pinned music bed, both read off
     the style template.
@@ -670,12 +686,7 @@ async def _cards_and_bed(row, assets, pid, tenant_id):
     # Per-production options (migration 058) win over the template, so the
     # one-click front door can turn cards on for a single reel without needing
     # a saved template first.
-    opts = {}
-    try:
-        raw = row["options"]
-        opts = json.loads(raw) if isinstance(raw, str) else (raw or {})
-    except (KeyError, TypeError, ValueError):
-        opts = {}
+    opts = _production_options(row)
 
     try:
         tpl_id = row["template_id"]
@@ -1530,6 +1541,29 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
         except Exception:  # noqa: BLE001
             cstyle = "clean_white"
 
+    # WHERE the captions sit, and whether they are drawn at all. Resolution order
+    # is the same as the style above: this production's own options win, then the
+    # brand's default, then the automatic lower-third placement. Until now this
+    # was hard-coded to 78% with no way to say otherwise — the owner could
+    # restyle captions but never move them.
+    _opts = _production_options(row)
+    cap_y = str(_opts.get("caption_y") or "").strip()
+    hook_y = str(_opts.get("hook_y") or "").strip()
+    cap_off = _opts.get("captions_off")
+    cap_off = None if cap_off is None else bool(cap_off)
+    if not cap_y or not hook_y or cap_off is None:
+        try:
+            from .autopilot import get_config
+            _cfg = await get_config(tenant_id)
+        except Exception:  # noqa: BLE001 — placement is never worth failing a render
+            _cfg = {}
+        if not cap_y:
+            cap_y = str(_cfg.get("default_caption_y") or "").strip()
+        if not hook_y:
+            hook_y = str(_cfg.get("default_hook_y") or "").strip()
+        if cap_off is None:
+            cap_off = bool(_cfg.get("default_captions_off") or False)
+
     # Short, punchy on-screen HOOK (big bold white) generated from the spoken
     # words — not the long run-on opening line.
     from .content import gen_video_hook
@@ -1564,7 +1598,29 @@ async def _run_long_form_reel(row, tenant_id: UUID | None) -> None:
         source_overflow_pct=assets.speaker_overflow_pct or source_overflow_pct,
         speaker_keyframes=assets.speaker_keyframes,
         speaker_tags=assets.speaker_tags,     # lower-third name-tags
+        caption_y=cap_y or None,
+        captions_off=bool(cap_off),
+        hook_y=hook_y or None,
     )
+
+    # Keep what a later caption-only re-render needs: the captionless cut the
+    # captions are about to be drawn on, and the flashes themselves. Both exist
+    # only as locals here — without this the finished reel is the only artifact
+    # and moving a caption costs a whole new pipeline run (migration 062).
+    # Best-effort: a reel that rendered is not worth failing over a stash.
+    try:
+        from .caption_styles import hook_hold_seconds
+        _hook_text = (short_hook or (meta.get("hook_quote") or row["title"] or ""))[:80]
+        async with acquire(tenant_id) as conn:
+            await _set(conn, pid,
+                       clean_cut_url=assets.avatar_video_url or "",
+                       caption_cues=json.dumps(assets.captions or []),
+                       caption_hook=json.dumps(
+                           {"text": _hook_text,
+                            "hold": hook_hold_seconds(assets.audio_duration or 0.0)}
+                           if _hook_text else {}))
+    except Exception as e:  # noqa: BLE001
+        print(f"[recaption] could not stash the cut/cues for {pid}: {e}")
     if res.status == "processing":
         for _ in range(_MAX_POLLS):
             await asyncio.sleep(_POLL_EVERY)

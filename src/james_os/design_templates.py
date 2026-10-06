@@ -70,6 +70,33 @@ PICK_WINDOW = 200
 # one stage earlier, at learning.
 NICHE_SHARE = 0.25
 
+# The brand's OWN posts, read back as layouts — the "give me more of what I
+# already make" lane. Same share as niche, and a governed minority for the same
+# reason: competitors keep the majority (1 - 0.25 - 0.25), which is the invariant
+# test_the_niche_lane_is_a_MINORITY_of_picks_not_a_takeover exists to hold.
+#
+# Deliberately not higher on the first outing. The share is measured on USAGE,
+# not on how many layouts a lane holds, so a brand with two own layouts and a
+# large target would draw those same two over and over until the ratio caught up
+# — continuation turning into repetition. It is a dial; the honest time to raise
+# it is after watching a real brand's own lane fill.
+OWN_SHARE = 0.25
+
+# How a row is assigned to a lane — ONE definition, used by the SQL and by the
+# Python below. They used to disagree by construction: the partition was the
+# BOOLEAN (source_kind = 'niche'), so every other kind shared one lane and one
+# set of ranks, and a kind nobody had written yet would have joined the
+# competitor lane silently, ungoverned, the moment it first appeared.
+_LANE_SQL = "(CASE WHEN source_kind = 'niche' THEN 1 WHEN source_kind = 'own' THEN 2 ELSE 0 END)"
+# lane -> the share of USED picks it should hold. A lane that is absent here is
+# ungoverned and takes whatever is left, which is where competitors live.
+_LANE_TARGET = {"niche": NICHE_SHARE, "own": OWN_SHARE}
+
+
+def _lane_of(source_kind: object) -> str:
+    kind = str(source_kind or "")
+    return kind if kind in _LANE_TARGET else "other"
+
 # A layout that keeps failing design QA stops being offered. It is not deleted —
 # retired, with its record intact — because the owner asked that nothing be
 # thrown away, and a later renderer may draw it fine.
@@ -348,11 +375,11 @@ async def _pick_once(tenant_id: UUID | str | None) -> tuple[dict | None, int]:
     """
     async with acquire(tenant_id) as conn:
         rows = await conn.fetch(
-            """SELECT id, spec, kind, source_handle, source_url, source_platform,
+            f"""SELECT id, spec, kind, source_handle, source_url, source_platform,
                       source_kind, times_used
                  FROM (
                    SELECT *, row_number() OVER (
-                            PARTITION BY (source_kind = 'niche')
+                            PARTITION BY {_LANE_SQL}
                                  ORDER BY last_used_at NULLS FIRST,
                                           (approvals - rejections) DESC,
                                           qa_fails ASC,
@@ -361,7 +388,7 @@ async def _pick_once(tenant_id: UUID | str | None) -> tuple[dict | None, int]:
                     WHERE status = 'active'
                  ) ranked
                 WHERE lane_rank <= $1
-             ORDER BY lane_rank, (source_kind = 'niche')""",
+             ORDER BY lane_rank, {_LANE_SQL}""",
             PICK_WINDOW,
         )
     # Only layouts that draw cleanly count — toward the minimum, and as picks.
@@ -378,24 +405,38 @@ async def _pick_once(tenant_id: UUID | str | None) -> tuple[dict | None, int]:
         return None, len(good)
 
     n_drawable = len(good)
-    niche = [g for g in good if str(g[0]["source_kind"]) == "niche"]
-    other = [g for g in good if str(g[0]["source_kind"]) != "niche"]
-    if niche and other:
-        def _used(rec) -> int:
-            # Tolerant on purpose: the picker's tests build rows by hand, and a
-            # missing counter must read as "never used", never as a KeyError in
-            # the path that produces every designed post.
-            try:
-                return int(rec["times_used"] or 0)
-            except (KeyError, TypeError, ValueError):
-                return 0
 
-        used_niche = sum(_used(g[0]) for g in niche)
-        used_all = used_niche + sum(_used(g[0]) for g in other)
+    def _used(rec) -> int:
+        # Tolerant on purpose: the picker's tests build rows by hand, and a
+        # missing counter must read as "never used", never as a KeyError in
+        # the path that produces every designed post.
+        try:
+            return int(rec["times_used"] or 0)
+        except (KeyError, TypeError, ValueError):
+            return 0
+
+    lanes: dict[str, list] = {}
+    for g in good:
+        lanes.setdefault(_lane_of(g[0]["source_kind"]), []).append(g)
+    # One lane present means no choice to make — which is the old behaviour for
+    # a brand that only has competitor layouts, exactly as before.
+    if len(lanes) > 1:
+        used_all = sum(_used(g[0]) for g in good)
         # Nothing used yet reads as a 0 share, so the starved lane goes first —
-        # which is the state every library is in the day monitoring is switched on.
-        share = (used_niche / used_all) if used_all else 0.0
-        good = niche if share < NICHE_SHARE else other
+        # the state every library is in the day a new lane is switched on.
+        deficits = {
+            lane: target - ((sum(_used(g[0]) for g in rows) / used_all) if used_all else 0.0)
+            for lane, target in _LANE_TARGET.items()
+            if (rows := lanes.get(lane))
+        }
+        starved = max(deficits, key=lambda k: deficits[k]) if deficits else ""
+        # A governed lane below its share draws; otherwise the ungoverned
+        # majority does, and if there is no ungoverned lane the least-served
+        # governed one takes it rather than nobody drawing at all.
+        if starved and deficits[starved] > 0:
+            good = lanes[starved]
+        else:
+            good = lanes.get("other") or (lanes[starved] if starved else good)
     row, spec = good[0]
     # `good` is narrowed to one lane above, so the count is taken before that.
     return {
@@ -686,5 +727,5 @@ __all__ = [
     "fingerprint", "usable",
     "prepare", "drawable", "base_role", "save", "count",
     "pick", "mark_used", "mark_qa", "mark_verdict", "learn_from_competitors",
-    "learn_from_reference",
+    "learn_from_reference", "NICHE_SHARE", "OWN_SHARE",
 ]

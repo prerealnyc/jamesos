@@ -110,21 +110,31 @@ async def _autopilot_scheduler() -> None:
     hasn't run yet (checks last_run_date), so a restart can't double-fire.
     Honest limit: scheduled runs only happen while the server is up."""
     import asyncio
+    import logging
 
     from .autopilot import get_config, run_batch, should_run_today
     from .research_roster import maybe_weekly_refresh
 
+    # Log successes, not just failures, and never swallow errors silently — otherwise
+    # there is no way to tell from the logs whether autopilot runs at all.
+    log = logging.getLogger("autopilot.scheduler")
+    log.info("autopilot scheduler loop started (30-min tick)")
     while True:
         try:
             if should_run_today(await get_config()):
-                await run_batch("scheduled")
+                log.info("autopilot: scheduled run starting")
+                run = await run_batch("scheduled") or {}
+                log.info(
+                    "autopilot: scheduled run %s finished status=%s generated=%s queued=%s",
+                    run.get("id"), run.get("status"), run.get("generated"), run.get("queued"),
+                )
         except Exception:  # noqa: BLE001 — a tick failure must not kill the loop
-            pass
+            log.exception("autopilot: scheduled tick failed")
         try:
             # Self-gates to >7-day-stale; safe to call every tick.
             await maybe_weekly_refresh()
         except Exception:  # noqa: BLE001
-            pass
+            log.exception("autopilot: weekly refresh tick failed")
         await asyncio.sleep(1800)  # check every 30 minutes
 
 
@@ -2166,11 +2176,69 @@ async def _generate_learned_post_image(
     return served_uri, "learned"
 
 
+async def _generate_scene_post_image(
+    action_id, topic: str, draft_text: str, tenant_id, *,
+    aspect: str = "", feedback: str = "",
+) -> tuple[str, str]:
+    """A FRESH, brand-relevant image drawn from a description — the generative
+    "imagine this" door (the copilot's 'Generate an image' path), as opposed to the
+    designed quote/meme CARD machine or a real library photo. Runs gpt-image-1 through
+    imagegen.generate_post_image (which folds in the brand's visual style guidelines),
+    then persists + attaches to the action exactly like the designed path. No text is
+    composited on top — the picture IS the deliverable; the caption stays a separate,
+    editable field.
+
+    Returns (served_uri, "scene"). Raises on any failure so _make_text_post's caller
+    can fall back to a real hero photo rather than leave the post imageless."""
+    from .imagegen import generate_post_image
+    from .media import create_media
+    from .media import storage as media_storage
+
+    steer = (feedback or "").strip()
+    brief = "\n".join(x for x in ((draft_text or "").strip(), steer and f"Avoid: {steer}") if x)
+    # "1:1" is a real gpt-image-1 size (1024x1024) and a universal feed shape; the
+    # scene picture IS the deliverable (no Pillow crop/compose afterwards), so it must
+    # be asked for at a supported ratio — "4:5" is NOT in _SIZE_FOR_ASPECT and would
+    # silently fall back to landscape 1536x1024.
+    png, meta, err = await generate_post_image(
+        topic=(topic or draft_text or "").strip(),
+        platform="instagram", brief=brief[:1200], aspect=aspect or "1:1",
+        tenant_id=tenant_id,
+    )
+    if err or not png:
+        raise RuntimeError(err or "scene image generation returned no bytes")
+    tenant = str(tenant_id or settings.default_tenant_id)
+    served_uri, file_path = await asyncio.to_thread(
+        media_storage().save, tenant, png, "scene.png"
+    )
+    prompt = str(meta.get("prompt") or topic or "")[:500]
+    try:
+        await create_media(
+            role="post_image", source_type="generated", uri=served_uri,
+            file_path=file_path, title=(topic or "Generated image")[:120],
+            platform="instagram", mime="image/png",
+            tags=["style:scene", "generated"], notes=prompt, tenant_id=tenant_id,
+        )
+    except Exception:  # noqa: BLE001 — library bookkeeping must not lose the URL
+        pass
+    async with acquire(tenant_id) as conn:
+        await conn.execute(
+            "UPDATE actions SET payload = payload || $2::jsonb WHERE id = $1",
+            action_id,
+            json.dumps({
+                "image_url": served_uri, "media_url": served_uri,
+                "has_image": True, "image_prompt": prompt,
+            }),
+        )
+    return served_uri, "scene"
+
+
 async def _generate_designed_post_image(
     action_id, topic: str, draft_text: str, tenant_id, avoid: str = "",
     feedback: str = "", force_format: str = "", exclude_photos: tuple[str, ...] = (),
     force_photo: str = "", base_spec: dict | None = None, _qa_attempt: int = 0,
     extra_sizes: tuple[tuple[int, int], ...] = (),
+    edit_photo_instruction: str = "",
 ) -> tuple[str, str]:
     """Art-director → text-free background (Soul James or cinematic scene) →
     Pillow-composited quote card / meme → persist + attach to the action.
@@ -2242,7 +2310,14 @@ async def _generate_designed_post_image(
         return "", ""
     # Voice first: give the art director THIS brand's real cadence so the card
     # headline sounds like the brand, with the hook/CTA playbook as structure only.
-    if base_spec:
+    if base_spec and edit_photo_instruction:
+        # PHOTO EDIT (the ChatGPT/Gemini "same image, apply this change" path): the
+        # owner asked to change the PICTURE, not the words. Keep the existing spec
+        # byte-identical — same layout, same on-card text — and only the hero photo
+        # pixels change (edited below via imagegen.edit_hero_photo). Do NOT run the
+        # art director or edit_designed_spec, so no copy is rewritten.
+        spec = dict(base_spec)
+    elif base_spec:
         # EDIT the card that exists rather than authoring a new one. Without this
         # a redo re-ran the art director at temperature 0.7, so "keep everything
         # the same, just change X" came back with every line of on-image copy
@@ -2288,8 +2363,65 @@ async def _generate_designed_post_image(
                     if _k == force_photo:
                         _picked = (_k, _b)
                         break
+                # Same-photo EDIT on a hero that isn't in the upload library — an
+                # Unsplash/stock hero (its key IS its image URL, so brands with no
+                # uploaded photos land here) or a hero we persisted by URL after a
+                # previous edit. Re-fetch the exact bytes so the edit lands on the
+                # picture ON SCREEN (and so successive edits compound), instead of
+                # substituting a different photo. Edit path only; SSRF-guarded;
+                # fully fail-safe (any miss falls through to a normal pick).
+                if _picked is None and edit_photo_instruction and force_photo.startswith("http"):
+                    try:
+                        from .netguard import url_is_public
+                        if await url_is_public(force_photo, allow_http=True):
+                            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as _c:
+                                _rr = await _c.get(force_photo)
+                                _rr.raise_for_status()
+                            if _rr.content:
+                                _picked = (force_photo, _rr.content)
+                    except Exception:  # noqa: BLE001 — fall through to a normal pick
+                        _picked = None
             if _picked is None:
                 _picked = await pick_hero_bytes(_refs, tenant_id, exclude=exclude_photos)
+            if _picked is None and exclude_photos and not _refs:
+                # A SWAP was asked for, but this brand has NO uploaded photos of
+                # its own — its current hero is a stock/Unsplash or previously
+                # generated picture. Serving another near-identical stock shot
+                # reads as "nothing changed" (the exact complaint: "when image
+                # change was requested same image came"). Instead, reimagine the
+                # current hero into a genuinely DIFFERENT image on the same theme
+                # via gpt-image-1 (strong mode) and store it under a NEW key — so
+                # it visibly differs AND so BM2's swap guard (new hero must not
+                # equal the excluded one) accepts it rather than discarding it.
+                # SSRF-guarded and fully fail-safe: any miss falls through to the
+                # honest-repeat / stock paths below.
+                try:
+                    _src = exclude_photos[0]
+                    if isinstance(_src, str) and _src.startswith("http"):
+                        from .netguard import url_is_public
+                        if await url_is_public(_src, allow_http=True):
+                            async with httpx.AsyncClient(
+                                    timeout=30, follow_redirects=True) as _c:
+                                _rr = await _c.get(_src)
+                                _rr.raise_for_status()
+                            if _rr.content:
+                                from .imagegen import edit_hero_photo
+                                _varied, _vm, _verr = await edit_hero_photo(
+                                    _rr.content,
+                                    (bg_prompt or topic
+                                     or "a fresh, different take on this scene"),
+                                    strong=True, tenant_id=tenant_id)
+                                if _varied:
+                                    _vkey, _ = await asyncio.to_thread(
+                                        media_storage().save,
+                                        str(tenant_id or settings.default_tenant_id),
+                                        _varied, "hero-varied.png")
+                                    if (isinstance(_vkey, str)
+                                            and _vkey.startswith("http")
+                                            and _vkey not in exclude_photos):
+                                        _picked = (_vkey, _varied)
+                except Exception:  # noqa: BLE001 — miss falls through to reuse/stock
+                    _picked = None
             if _picked is None and exclude_photos:
                 # The library has nothing else. Better an honest repeat than a
                 # silent one: fall back to the full set, and the layout change
@@ -2306,6 +2438,56 @@ async def _generate_designed_post_image(
                 hero_key, hero_bytes = _picked
         except Exception:  # noqa: BLE001
             hero_bytes = None
+
+    # PHOTO EDIT: the owner typed a change to the PICTURE ("brighter", "make the sky
+    # orange"). Edit THIS photo in place through gpt-image-1 (input_fidelity high) and
+    # keep everything else — same layout, same on-card text — so they get their image
+    # back with the one change, not a new design. The text is re-composited by Pillow
+    # afterwards and never sent to the model, so it can't be mangled. Fail-safe: any
+    # miss keeps the unedited photo.
+    if edit_photo_instruction and hero_bytes is not None:
+        try:
+            from .imagegen import edit_hero_photo
+            _edited, _em, _eerr = await edit_hero_photo(
+                hero_bytes, edit_photo_instruction, tenant_id=tenant_id)
+            if _edited:
+                hero_bytes = _edited
+                # Persist the edited photo and point the stored hero key at it, so a
+                # follow-up edit ("brighter" then "warmer") compounds onto THIS result
+                # (force_photo re-fetches it above) instead of reloading the pristine
+                # original. Fail-safe: a storage miss just leaves the key on the original.
+                try:
+                    _euri, _ = await asyncio.to_thread(
+                        media_storage().save,
+                        str(tenant_id or settings.default_tenant_id),
+                        _edited, "hero-edited.png")
+                    if isinstance(_euri, str) and _euri.startswith("http"):
+                        hero_key = _euri
+                except Exception:  # noqa: BLE001 — persistence miss keeps the original key
+                    pass
+            else:
+                import logging as _logging
+                _logging.getLogger(__name__).info(
+                    "photo edit made no change (%s) for %s", _eerr, action_id)
+        except Exception:  # noqa: BLE001 — an edit miss must keep the original photo
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "photo edit failed for %s", action_id, exc_info=True)
+
+    # Empty (or exhausted) library on a photo layout used to downgrade to a
+    # text-only card. Try a REAL stock photo (Unsplash) before that — and before
+    # the slow gpt-image-1 draw on the learned/cloned paths. Key-gated + fully
+    # fail-safe: any miss leaves hero_bytes None and today's behaviour stands.
+    # exclude_photos carries prior heroes so a design-QA retry won't re-serve one.
+    _credit: dict | None = None
+    if fmt in PHOTO_FORMATS and hero_bytes is None:
+        try:
+            from .stock_photo import fetch_unsplash_hero_credited
+            _u = await fetch_unsplash_hero_credited(bg_prompt or topic, exclude=exclude_photos)
+            if _u:
+                hero_key, hero_bytes, _credit = _u  # url is http → reuse key + persists
+        except Exception:  # noqa: BLE001 — a stock lookup must never stop a render
+            pass
 
     bg_bytes: bytes | None = None
     soul = (settings.higgsfield_soul_id or "").strip()
@@ -2471,17 +2653,23 @@ async def _generate_designed_post_image(
                 # layout can be chosen.
                 _next_exclude = exclude_photos if force_photo else tuple(
                     set(exclude_photos) | ({hero_key} if hero_key else set()))
+                # A QA retry normally drops the base spec: the design QA said this
+                # composition is broken, so re-composing is the point. But a PHOTO
+                # EDIT keeps a layout that already passed QA and only changes the
+                # photo — so preserve its spec (same on-card text) AND its edit
+                # instruction on retry, or the retry would re-author different copy
+                # over the ORIGINAL photo and lose the owner's change.
+                _is_photo_edit = bool(base_spec and edit_photo_instruction)
                 return await _generate_designed_post_image(
                     action_id, topic, draft_text, tenant_id,
                     avoid=(f"{avoid} {fmt}").strip(),
                     feedback=(f"{feedback}; {_issues}").strip("; "),
                     force_format="", exclude_photos=_next_exclude,
                     force_photo=force_photo,
-                    # A QA retry deliberately drops the base spec: the design QA
-                    # said this composition is broken, so re-composing is the
-                    # point. Editing the broken spec again would return it.
-                    base_spec=None, _qa_attempt=_qa_attempt + 1,
+                    base_spec=(base_spec if _is_photo_edit else None),
+                    _qa_attempt=_qa_attempt + 1,
                     extra_sizes=extra_sizes,
+                    edit_photo_instruction=(edit_photo_instruction if _is_photo_edit else ""),
                 )
             # Exhausted retries — never ship the flaw. Record why, hold it back.
             try:
@@ -2530,6 +2718,10 @@ async def _generate_designed_post_image(
                 # Reuse memory: which hero photo this post consumed, so the
                 # picker can rotate away from it on the next posts.
                 **({"hero_photo_key": hero_key} if hero_key else {}),
+                # Unsplash attribution (photographer + UTM links) when the hero
+                # was sourced from stock — carried so a caption/render can credit
+                # it, per the Unsplash API Terms.
+                **({"hero_credit": _credit} if _credit else {}),
             }),
         )
 
@@ -3715,6 +3907,24 @@ async def long_form_set_speaker_tags(source_id: UUID, req: SpeakerTagsRequest) -
     return {"source_id": str(source_id), "speaker_tags": tags}
 
 
+def _caption_placement_options(caption_y: str, captions_off: bool) -> dict:
+    """Per-production caption placement, for the options bag (migration 058).
+
+    Only keys the caller actually set are returned: an absent key means "use the
+    brand default", which is not the same as an explicit 78% or an explicit
+    "on". Sending the defaults for every render would silently pin each reel to
+    whatever the brand default was on the day it was made."""
+    from .caption_styles import clamp_caption_y
+
+    opts: dict = {}
+    y = clamp_caption_y(caption_y)
+    if y:
+        opts["caption_y"] = y
+    if captions_off:
+        opts["captions_off"] = True
+    return opts
+
+
 @app.post("/long-form/candidates/{candidate_id}/render", status_code=201)
 async def long_form_candidate_render(
     candidate_id: UUID, background: BackgroundTasks,
@@ -3722,6 +3932,7 @@ async def long_form_candidate_render(
     image_style: str = Form(""), caption_style: str = Form(""),
     video_engine: str = Form(""), broll_pacing: str = Form(""),
     broll_style: str = Form(""),
+    caption_y: str = Form(""), captions_off: bool = Form(False),
 ) -> dict:
     """Take a candidate window and produce a Reel — kicks a
     long_form_reel production. Returns the production row so the
@@ -3762,6 +3973,7 @@ async def long_form_candidate_render(
             video_engine=video_engine,
             broll_pacing=broll_pacing,
             broll_style=broll_style,
+            options=_caption_placement_options(caption_y, captions_off),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -3788,6 +4000,7 @@ async def long_form_render_whole(
     image_style: str = Form(""), caption_style: str = Form(""),
     video_engine: str = Form(""), broll_pacing: str = Form(""),
     broll_style: str = Form(""),
+    caption_y: str = Form(""), captions_off: bool = Form(False),
 ) -> dict:
     """Render the ENTIRE source as a single reel — for short talking
     clips (1-2 min) where the whole clip already IS the reel and we
@@ -3831,6 +4044,7 @@ async def long_form_render_whole(
             video_engine=video_engine,
             broll_pacing=broll_pacing,
             broll_style=broll_style,
+            options=_caption_placement_options(caption_y, captions_off),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

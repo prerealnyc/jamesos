@@ -756,6 +756,9 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         speaker_keyframes: list[dict] | None = None,  # x keyframes: follow the speaker
         speaker_tags: list[dict] | None = None,        # lower-third name-tag overlays
         card_elements: list[dict] | None = None,       # designed cutaway cards (reel_cards)
+        caption_y: str | float | None = None,   # owner's caption position; None = auto
+        captions_off: bool = False,             # owner wants no burned-in captions
+        hook_y: str | float | None = None,      # owner's headline position; None = auto
     ) -> dict:
         """engaging_avatar layout. The avatar video carries its own
         audio across the whole timeline; B-roll images overlay on top
@@ -810,7 +813,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         # is about (top human-feedback ask). Off the face, within safe margins.
         if hook_title:
             from .caption_styles import hook_title_elements
-            elements.extend(hook_title_elements(hook_title, total))
+            elements.extend(hook_title_elements(hook_title, total, y_override=hook_y))
 
         # track 2 — insert overlays with short fade in/out. Prefer the
         # Runway-animated video clip when available so the cutaway has
@@ -863,8 +866,15 @@ class CreatomateAssemblyProvider(AssemblyProvider):
 
         # track 3 — captions with safe-zone awareness. For each flash,
         # treat as broll-zone iff an insert overlays its midpoint.
+        #
+        # captions_off is the owner saying "no words burned onto my video". It
+        # has to be honoured HERE and not by passing a caption_style, because a
+        # blank/"none" style means "pick one for me", not "draw none".
+        if captions_off:
+            captions = []
         preset = get_preset(caption_style)
-        _styled = styled_caption_elements(caption_style, captions, track=3)
+        _styled = (None if captions_off
+                   else styled_caption_elements(caption_style, captions, track=3))
         if _styled is not None:
             # Designer styles (viral_hook, magenta_blocks, editorial_serif,
             # gradient_mint) emit their complete multi-element track here;
@@ -887,7 +897,7 @@ class CreatomateAssemblyProvider(AssemblyProvider):
                     break
             elements.append(caption_element(
                 text=text, start=start, end=end, preset=preset, track=3,
-                role=role, raw_text=c.get("raw_text", ""),
+                role=role, raw_text=c.get("raw_text", ""), y_override=caption_y,
             ))
 
         # track 5 — ONE transition whoosh at the first cutaway only (only
@@ -1342,6 +1352,9 @@ class CreatomateAssemblyProvider(AssemblyProvider):
         speaker_keyframes: list[dict] | None = None,
         speaker_tags: list[dict] | None = None,
         card_elements: list[dict] | None = None,
+        caption_y: str | float | None = None,
+        captions_off: bool = False,
+        hook_y: str | float | None = None,
     ) -> RenderResult:
         """Submit an engaging_avatar render. Same poll contract."""
         if not (avatar_video_url or "").startswith("http"):
@@ -1358,6 +1371,9 @@ class CreatomateAssemblyProvider(AssemblyProvider):
             speaker_keyframes=speaker_keyframes,
             speaker_tags=speaker_tags,
             card_elements=card_elements,
+            caption_y=caption_y,
+            captions_off=captions_off,
+            hook_y=hook_y,
             music_track_url=music_track_url or await resolve_music_url(music_mood),
             sfx_url=await resolve_sfx_url("whoosh"),
             brand=await get_brand_kit(),
