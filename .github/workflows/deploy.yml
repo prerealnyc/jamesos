@@ -60,10 +60,15 @@ on:
         type: choice
         options: [both, backend, frontend]
 
-  # Uncomment ONLY if this project has no Railway↔GitHub connection — see the top of
-  # this file. With one attached, this causes two racing builds per merge.
-  # push:
-  #   branches: [main]
+  # CHECKED 7 Oct 2026 and turned on: this project has NO Railway↔GitHub connection.
+  # `railway status --json` reports no `repo` on either service and the last deployment
+  # of each has reason=deploy — a CLI upload, not a git push. So there is no second
+  # builder to race, and the alternative is what this repo actually had: shipping only
+  # when somebody remembered to run `railway up` from a laptop, which uploads that
+  # laptop's working tree rather than what was merged. If a Railway connection is ever
+  # attached, comment this back out the same day.
+  push:
+    branches: [main]
 
 concurrency:
   # A newer merge should win rather than queue behind an older deploy.
@@ -74,6 +79,9 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: production
+    env:
+      # A secret cannot be read in an `if:`, so its presence is hoisted here once.
+      HAVE_DB: ${{ secrets.DATABASE_URL != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -84,6 +92,45 @@ jobs:
             echo "::error::RAILWAY_TOKEN is not set, so NOTHING WAS DEPLOYED. Add a Railway PROJECT token for bountiful-prosperity under Settings → Secrets and variables → Actions. See the comment at the top of .github/workflows/deploy.yml."
             exit 1
           fi
+
+      # MIGRATIONS FIRST, and this is the step brand-manager-2-0's deploy does not need.
+      #
+      # Supabase does not apply migrations/ on connect — the local Docker compose does,
+      # which is exactly why it is easy to forget — and nothing applies them on deploy.
+      # So a merge can ship code whose columns do not exist yet: three migrations were
+      # sitting unapplied in a working tree while the code that needed them was written.
+      #
+      # All 67 are written guarded (CREATE TABLE IF NOT EXISTS, DROP POLICY IF EXISTS,
+      # DO $$ blocks — checked, every one), so re-applying the whole set every time is
+      # safe and leaves no "which ones have run" state to drift from the database.
+      #
+      # Skipped, loudly, when DATABASE_URL is absent: a deploy that silently skips its
+      # migrations is the failure mode this file's own header is about, so it says so in
+      # the summary rather than in an annotation nobody opens.
+      - uses: actions/setup-python@v5
+        if: ${{ env.HAVE_DB == 'true' }}
+        with:
+          python-version: '3.12'
+
+      - name: Apply migrations
+        if: ${{ env.HAVE_DB == 'true' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DB_SSL: ${{ vars.DB_SSL || 'require' }}
+        run: |
+          # migrate.py reads its connection from james_os.config, which is
+          # pydantic-settings and nothing else — four packages, not the engine's 43.
+          pip install --quiet asyncpg pydantic pydantic-settings python-dotenv
+          PYTHONPATH=src python migrate.py
+
+      - name: Say that migrations were skipped
+        if: ${{ env.HAVE_DB != 'true' }}
+        run: |
+          echo "### Migrations were NOT applied" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "No \`DATABASE_URL\` secret, so \`migrations/*.sql\` did not run and this deploy may be" >> "$GITHUB_STEP_SUMMARY"
+          echo "serving code whose columns do not exist. Add the production Postgres URL as a" >> "$GITHUB_STEP_SUMMARY"
+          echo "repository secret named \`DATABASE_URL\`, or run \`PYTHONPATH=src python migrate.py\` by hand." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install the Railway CLI
         run: npm i -g @railway/cli
