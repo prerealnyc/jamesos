@@ -305,15 +305,32 @@ async def get_session(token: str) -> Optional[dict]:
 
 # Exact public paths — a bare startswith("/openapi") would ALSO expose a future
 # route like /openapi-admin or /docs-export, so match these exactly.
-_PUBLIC_EXACT = frozenset({
-    "/health", "/healthz", "/openapi.json", "/docs", "/redoc",
-    "/docs/oauth2-redirect",
+_PUBLIC_EXACT = frozenset({"/health", "/healthz"})
+# The interactive docs, kept apart because they are now CONDITIONAL — see
+# docs_public(). They were in the set above, unconditionally, which published a
+# complete live map of the API to anyone who asked: every route, with its
+# request and response shape, on a service whose middleware exists precisely to
+# make those routes need a session. The repo being public is not the same
+# exposure — source says what COULD be deployed, /openapi.json says what IS,
+# right now, on this host.
+_DOCS_PATHS = frozenset({
+    "/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect",
 })
 # True prefixes (must end in '/', so a boundary is enforced).
 _PUBLIC_PREFIXES = ("/auth/",)
 
 
+def docs_public() -> bool:
+    """OFF BY DEFAULT — the same posture as _cookie_secure() further down: the
+    safe thing in production, opted out of for local work. Set JOS_PUBLIC_DOCS=1
+    for development, where /docs is how you drive the thing by hand."""
+    v = (os.environ.get("JOS_PUBLIC_DOCS", "") or "").strip().lower()
+    return v in ("1", "true", "yes")
+
+
 def is_public_path(path: str) -> bool:
+    if path in _DOCS_PATHS:
+        return docs_public()
     return path in _PUBLIC_EXACT or any(path.startswith(p) for p in _PUBLIC_PREFIXES)
 
 
@@ -620,5 +637,5 @@ __all__ = [
     "signup_user", "login_user", "create_session", "revoke_session",
     "get_session", "require_user", "maybe_user",
     "set_session_cookie", "clear_session_cookie", "set_csrf_cookie",
-    "is_public_path",
+    "is_public_path", "docs_public",
 ]
