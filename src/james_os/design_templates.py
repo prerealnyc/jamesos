@@ -63,7 +63,13 @@ NICHE_SHARE = 0.25
 # It governs nothing for a brand-new brand: with no library of its own there is
 # no competing lane, so a day-one brand draws entirely from the catalogue, which
 # is exactly what "a new brand should get good templates immediately" means.
-HOUSE_SHARE = 0.25
+#
+# 0.5, not 0.25, since 2026-10-07 — equal footing. Roy's direction is that the
+# system chooses, not a person, and fit_rank now decides WHICH catalogue layout;
+# the share only exists to stop novelty (never-used rows sort first) from
+# emptying the whole pool into one brand's next month. Half is enough restraint
+# for that and no more.
+HOUSE_SHARE = 0.5
 
 # The brand's OWN posts, read back as layouts — the "give me more of what I
 # already make" lane. Same share as niche, and a governed minority for the same
