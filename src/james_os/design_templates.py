@@ -329,6 +329,48 @@ async def pick(tenant_id: UUID | str | None) -> dict | None:
     return got
 
 
+# How many of the best-ranked catalogue rows a pick tries before giving the
+# turn back to the brand's own library.
+HOUSE_TRIES = 5
+
+
+async def _recent_families(conn, hl) -> list[str]:
+    """family_key of the brand's most recently USED drawable layouts, newest
+    first — what the catalogue ranking steers away from repeating.
+
+    Its OWN query, not the pick window: that window keeps each lane's
+    PICK_WINDOW LEAST-recently-used rows, so in a lane bigger than the window
+    the layouts drawn most recently are exactly the ones it leaves out, and
+    the "recent" families read from it would be weeks old. A few extra rows
+    are read so undrawable ones can be skipped.
+    """
+    try:
+        rows = await conn.fetch(
+            """SELECT spec FROM design_templates
+                WHERE status = 'active' AND last_used_at IS NOT NULL
+             ORDER BY last_used_at DESC
+                LIMIT $1""",
+            hl.RECENT_FAMILIES * 3,
+        )
+    except Exception:  # noqa: BLE001 — freshness is a tiebreak; never cost a pick
+        logger.warning("could not read the brand's recent layouts", exc_info=True)
+        return []
+    out: list[str] = []
+    for r in rows or []:
+        try:
+            spec = r["spec"]
+            if isinstance(spec, str):
+                spec = json.loads(spec)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not isinstance(spec, dict) or not drawable(spec):
+            continue
+        out.append(hl.family_key(spec))
+        if len(out) >= hl.RECENT_FAMILIES:
+            break
+    return out
+
+
 async def _pick_once(tenant_id: UUID | str | None) -> tuple[dict | None, int]:
     """(the layout to use or None, how many drawable layouts this brand has).
 
@@ -397,7 +439,9 @@ async def _pick_once(tenant_id: UUID | str | None) -> tuple[dict | None, int]:
         async with acquire(tenant_id) as conn:
             niches = await _hl.tenant_niches(conn, tenant_id)
             profile = _hl.type_profile([g[1] for g in good])
-            house = await _hl.candidates(conn, tenant_id, niches=niches, profile=profile)
+            recent = await _recent_families(conn, _hl)
+            house = await _hl.candidates(conn, tenant_id, niches=niches, profile=profile,
+                                         recent_families=recent)
     except Exception:  # noqa: BLE001 — the brand's own library is a fine answer
         logger.warning("could not read the house catalogue", exc_info=True)
 
@@ -430,11 +474,16 @@ async def _pick_once(tenant_id: UUID | str | None) -> tuple[dict | None, int]:
         used_house = sum(_used(g[0]) for g in good if _house_id(g[0]))
         share = (used_house / used_all) if used_all else 0.0
         if share < HOUSE_SHARE:
-            best = house[0]
-            spec = best["spec"]
-            if isinstance(spec, str):
-                spec = json.loads(spec)
-            if drawable(spec):
+            # The first of the best few that draws AND that the brand can own.
+            # Trying house[0] alone meant one undrawable or unadoptable row at the
+            # top of the ranking switched the catalogue lane off for this brand
+            # on every pick until somebody noticed.
+            for best in house[:HOUSE_TRIES]:
+                spec = best["spec"]
+                if isinstance(spec, str):
+                    spec = json.loads(spec)
+                if not drawable(spec):
+                    continue
                 # The id returned MUST be the brand's own row: the caller marks it
                 # used, and a catalogue id would update zero rows silently, leaving
                 # the counters frozen and this layout offered on every pick.
@@ -444,17 +493,19 @@ async def _pick_once(tenant_id: UUID | str | None) -> tuple[dict | None, int]:
                         own_id = await _hl.adopt_one(conn, best)
                 except Exception:  # noqa: BLE001
                     logger.warning("could not adopt %s on pick", best.get("id"), exc_info=True)
-                if not own_id:
-                    # Could not give the brand a row to own, so fall through to its
-                    # own library rather than hand back an id nothing can record.
-                    house = []
-                else:
+                if own_id:
                     return {
                         "id": own_id, "spec": spec, "kind": best["kind"],
                         "source_handle": "", "source_url": str(best["source_url"] or ""),
                         "source_platform": "house",
                         "source_kind": _hl._adopt_kind(best["source_kind"]),
                     }, n_drawable
+            # None of them could be drawn and owned, so fall through to the
+            # brand's own library rather than hand back an id nothing can record.
+            house = []
+            if not good:
+                # A day-one brand has no library to fall back to: the nine formats.
+                return None, n_drawable
 
     lanes: dict[str, list] = {}
     for g in good:

@@ -2976,13 +2976,14 @@ _HOUSE_MAX_FILES = 12
 async def v1_house_layouts(
     _: CuratorDep, status: str = "", layout_type: str = "", niche: str = "",
     limit: int = 200, offset: int = 0,
+    harvested: bool | None = None, run_id: str = "",
 ) -> dict[str, Any]:
     """The catalogue, with its status and type breakdowns."""
     from . import house_layouts
 
     return await house_layouts.catalogue(
         status=status.strip(), layout_type=layout_type.strip(), niche=niche.strip(),
-        limit=limit, offset=offset)
+        limit=limit, offset=offset, harvested=harvested, run_id=run_id.strip())
 
 
 @router.post("/house-layouts/upload", status_code=201)
@@ -3134,3 +3135,141 @@ async def v1_house_layouts_adopt(
     from . import house_layouts
 
     return await house_layouts.adopt(tenant_id, limit=limit)
+
+
+# ───────────────────────────────────────── the nightly niche harvest ──
+# BM2's automatic intake into the catalogue: ONE harvested image per request,
+# behind machine gates (see house_harvest.py). Platform key only, like the rest
+# of the catalogue, and tenant-free: no X-Tenant-Id is read and none is needed.
+#
+# Fails CLOSED, unlike /upload: approve defaults false, nothing undrawable is
+# approved, nothing is stored before the gates pass. That is why this is its own
+# route rather than a flag on /upload — an engine that did not know the flag
+# would ignore it and approve everything usable.
+#
+# Route order: these paths are literal (/harvest, /harvest/stats,
+# /harvest/revoke). The only parameterised siblings are {layout_id}/review
+# (PUT), {layout_id}/tags (PUT) and {layout_id}/promote (POST), whose last
+# segment is literal too, so none of them can match a harvest path even though
+# they are registered first (pinned by test_house_harvest_api).
+
+from fastapi import Query  # noqa: E402 — kept with the routes that use it
+
+_TRUE = {"true", "1", "yes", "on"}
+_FALSE = {"false", "0", "no", "off", ""}
+
+
+def _form_bool(name: str, raw: str | None) -> bool:
+    val = str(raw if raw is not None else "").strip().lower()
+    if val in _TRUE:
+        return True
+    if val in _FALSE:
+        return False
+    raise HTTPException(400, f"{name} must be 'true' or 'false'")
+
+
+def _form_json(name: str, raw: str | None) -> dict | None:
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        val = json.loads(raw)
+    except ValueError:
+        raise HTTPException(400, f"{name} is not valid JSON") from None
+    if not isinstance(val, dict):
+        raise HTTPException(400, f"{name} must be a JSON object")
+    return val
+
+
+def _form_niches(niche: list[str], niches: list[str]) -> list[str]:
+    """The niche tags of a harvest upload, one tag per item.
+
+    `niche` (repeatable, like /harvest/stats takes it) is one tag per field and
+    is NEVER split, so a tag containing a comma survives whole. `niches` is the
+    legacy encoding: one comma-separated field, split on commas; sent more than
+    once, each field is one tag. Both at once is ambiguous and refused.
+    """
+    one = [n for n in (niche or []) if str(n or "").strip()]
+    many = [n for n in (niches or []) if str(n or "").strip()]
+    if one and many:
+        raise HTTPException(400, "send niche (repeatable) or niches, not both")
+    if one:
+        return one
+    if len(many) == 1:
+        return many[0].split(",")
+    return many
+
+
+@router.post("/house-layouts/harvest")
+async def v1_house_layouts_harvest(
+    _: CuratorDep,
+    file: list[UploadFile] | None = File(None),
+    source_key: str = Form(""),
+    niches: list[str] = Form(default=[]),
+    niche: list[str] = Form(default=[]),
+    run_id: str = Form(""),
+    by: str = Form("harvest:nightly"),
+    source_url: str = Form(""),
+    title: str = Form(""),
+    source_media: str = Form("OTHER"),
+    approve: str = Form("false"),
+    dry_run: str = Form("false"),
+    policy: str = Form(""),
+    meta: str = Form(""),
+) -> dict[str, Any]:
+    """Read ONE harvested image and decide what the catalogue does with it.
+
+    200 with a verdict (approved | held | duplicate | rejected | retry) for every
+    image it could judge. 400 for a missing or invalid field, 413 over 15 MB,
+    415 for bytes that are not PNG, JPEG or WebP. Anything else is a fault the
+    caller should retry.
+    """
+    from . import house_harvest
+
+    files = [f for f in (file or []) if f is not None]
+    if len(files) != 1:
+        raise HTTPException(400, "exactly one file per request")
+    tags = _form_niches(niche, niches)
+    want_approve = _form_bool("approve", approve)
+    want_dry = _form_bool("dry_run", dry_run)
+    pol = _form_json("policy", policy)
+    info = _form_json("meta", meta)
+    # Read one byte past the ceiling, so an oversized upload is refused without
+    # holding all of it.
+    data = await files[0].read(house_harvest.MAX_BYTES + 1)
+    try:
+        return await house_harvest.harvest_ingest(
+            data, source_key=source_key.strip(), niches=tags,
+            run_id=run_id, by=by, source_url=source_url, title=title,
+            source_media=source_media, approve=want_approve, dry_run=want_dry,
+            meta=info, policy=pol)
+    except house_harvest.HarvestInputError as exc:
+        raise HTTPException(exc.status, str(exc)) from None
+
+
+@router.get("/house-layouts/harvest/stats")
+async def v1_house_layouts_harvest_stats(
+    _: CuratorDep, niche: list[str] = Query(default=[]),
+) -> dict[str, Any]:
+    """Approved / held / family / type coverage for each named niche tag."""
+    from . import house_harvest
+
+    return await house_harvest.harvest_stats(niche)
+
+
+class HarvestRevoke(BaseModel):
+    run_id: str
+    by: str = "harvest:manual"
+
+
+@router.post("/house-layouts/harvest/revoke")
+async def v1_house_layouts_harvest_revoke(
+    req: HarvestRevoke, _: CuratorDep,
+) -> dict[str, Any]:
+    """Reject every row one harvest run decided by itself. Idempotent; rows a
+    human has reviewed since are left alone and counted."""
+    from . import house_harvest
+
+    try:
+        return await house_harvest.harvest_revoke(req.run_id, req.by)
+    except house_harvest.HarvestInputError as exc:
+        raise HTTPException(exc.status, str(exc)) from None

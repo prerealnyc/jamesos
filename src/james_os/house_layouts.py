@@ -62,10 +62,96 @@ ADOPT_SOURCE_KIND = {"curated": "reference"}
 ADOPT_BATCH = 8
 
 # How many approved rows to consider before ranking. Ranking happens in Python
-# (the tags are free text, so `&&` on the arrays is useless), so the candidate
-# set has to be pulled first — wide enough that a brand's match is not cut off by
-# the pre-sort, small enough to stay one cheap query.
-CANDIDATE_POOL = 200
+# (the tags are free text, so `&&` on the arrays is only a coarse pre-sort), so
+# the candidate set has to be pulled first — wide enough that a brand's match is
+# not cut off by the pre-sort, small enough to stay one cheap query.
+#
+# 400, and the brand's exclusions applied IN SQL before the LIMIT, since the
+# nightly harvest (2026-10-07). With the exclusion done in Python after a LIMIT
+# of 200, a brand that had already taken the oldest 200 approved rows was offered
+# nothing at all, and anything approved after the 200th was invisible to every
+# brand — exactly the rows the harvest adds.
+CANDIDATE_POOL = 400
+
+# How many of the brand's most recently used layouts define "a family it has
+# just drawn". The picker prefers a different family, so a pool full of near
+# twins (3 of 9 measured harvest survivors shared one family) does not hand the
+# same arrangement out twice running.
+RECENT_FAMILIES = 6
+
+# The most niche tags one catalogue row carries. Shared by every writer.
+MAX_NICHES = 12
+
+# ON CONFLICT ... DO UPDATE fragment: the row's niches become the UNION of what
+# it had and what this write brought — lowercased, trimmed, distinct, first-seen
+# order, at most MAX_NICHES. Replacing them (the old behaviour) meant a second
+# niche finding the same shape silently took it away from the first.
+_NICHE_UNION_SQL = f"""ARRAY(
+                       SELECT d.t FROM (
+                           SELECT lower(btrim(u.t)) AS t, min(u.ord) AS ord
+                             FROM unnest(house_layouts.niches || EXCLUDED.niches)
+                                  WITH ORDINALITY AS u(t, ord)
+                            WHERE btrim(coalesce(u.t, '')) <> ''
+                         GROUP BY 1
+                       ) d
+                       ORDER BY d.ord
+                       LIMIT {MAX_NICHES})"""
+
+
+def clean_niches(values, *, limit: int = MAX_NICHES) -> list[str]:
+    """Niche tags as the catalogue stores them: trimmed, lowercased, at most 60
+    characters each, distinct in first-seen order, at most `limit` of them."""
+    out: list[str] = []
+    for v in values or []:
+        if v is None:
+            continue
+        t = str(v).strip().lower()[:60]
+        if t and t not in out:
+            out.append(t)
+    return out[:limit]
+
+
+MAX_BRAND_TAGS = 64
+
+
+def brand_tag_keys(niches) -> list[str]:
+    """Every spelling under which a catalogue writer may have stored one of the
+    brand's niches, for the picker's exact-overlap pre-sort (`niches && $tags`).
+
+    The writers disagree on commas. Curated/promoted rows keep a niche whole
+    (`clean_niches`); the harvest splits it on commas and stores the pieces
+    (BM2 `split_tags` -> BM1 `parse_niches`), each `canon_niche`-d. So the brand
+    niche 'tour packages, travel and holidays' is stored by the harvest as
+    'tour packages' and 'travel and holidays' — and an overlap that tested only
+    the whole string never matched the brand's own harvested rows, which then
+    fell out of the LIMIT by recency. Per niche: the whole string as
+    clean_niches keeps it, its canonical form (commas read as spaces), and each
+    comma-separated piece in canonical form. Distinct, first-seen order.
+    """
+    from .house_harvest import canon_niche
+
+    if isinstance(niches, str):
+        niches = [niches]
+    out: list[str] = []
+
+    def _add(t: str) -> None:
+        t = t[:60].strip()
+        if t and t not in out:
+            out.append(t)
+
+    for v in niches or []:
+        if v is None:
+            continue
+        raw = str(v)
+        canon = canon_niche(raw)
+        if not canon:          # only commas and blanks: no niche at all
+            continue
+        for whole in clean_niches([raw]):
+            _add(whole)
+        _add(canon)
+        for piece in raw.split(","):
+            _add(canon_niche(piece))
+    return out[:MAX_BRAND_TAGS]
 
 
 # Niche tags are FREE TEXT on both sides and nobody agreed a vocabulary: brands
@@ -261,7 +347,7 @@ async def ingest(
     named = classify(spec)
     fp = dt.fingerprint(spec)
     status = "approved" if approve else "candidate"
-    tags = [t.strip()[:60] for t in (niches or []) if t and t.strip()][:12]
+    tags = clean_niches(niches)
 
     async with acquire(None) as conn:
         row = await conn.fetchrow(
@@ -274,20 +360,23 @@ async def ingest(
                ON CONFLICT (fingerprint) WHERE fingerprint <> ''
                DO UPDATE SET
                    title       = COALESCE(NULLIF(EXCLUDED.title, ''), house_layouts.title),
-                   niches      = CASE WHEN cardinality(EXCLUDED.niches) > 0
-                                      THEN EXCLUDED.niches ELSE house_layouts.niches END,
+                   niches      = """ + _NICHE_UNION_SQL + """,
                    layout_type = EXCLUDED.layout_type,
                    label       = EXCLUDED.label,
                    updated_at  = now()
-               RETURNING id::text, (created_at = updated_at) AS fresh""",
+               RETURNING id::text, (created_at = updated_at) AS fresh, status""",
             str(spec.get("kind") or ""), json.dumps(spec), fp, family_key(spec),
             source_url[:500], image_uri[:500], named["type"], named["label"],
             title[:200], tags, by[:200], status, note[:500],
             by[:200] if approve else "")
+    # The STORED status, read back. A re-upload of an approved shape with
+    # approve=False leaves it approved (status is never touched on conflict), and
+    # reporting the requested 'candidate' would tell the curator something false.
+    stored = row.get("status") if hasattr(row, "get") else None
     return {
         "ok": True, "house_layout_id": row["id"], "duplicate": not row["fresh"],
         "layout_type": named["type"], "label": named["label"],
-        "status": status, "regions": named["regions"],
+        "status": str(stored or status), "regions": named["regions"],
     }
 
 
@@ -332,15 +421,35 @@ async def retype(*, limit: int = 1000) -> dict:
     return {"named": named}
 
 
+# What the curation screen reads per row. The harvest provenance columns come
+# from migration 071; _CATALOGUE_COLS_PRE_071 is what a database without it can
+# still answer, so the screen keeps working in the window between deploying this
+# code and applying the migration.
+_CATALOGUE_COLS_PRE_071 = """id::text, kind, spec, fingerprint, family_key, source_kind, source_url,
+                       source_image_uri, layout_type, label, title, niches, uploaded_by,
+                       status, review_note, reviewed_by, reviewed_at,
+                       adopted_count, approvals, rejections, qa_passes, qa_fails, created_at"""
+_CATALOGUE_COLS = _CATALOGUE_COLS_PRE_071 + ", harvest_run_id, source_key, harvest_meta"
+
+# A row came from the nightly harvest. Two signals, either is enough: the run id
+# is the durable one, the uploaded_by prefix covers a row whose run id was lost.
+_HARVESTED_SQL = "(harvest_run_id <> '' OR uploaded_by LIKE 'harvest:%')"
+
+
 async def catalogue(
     *, status: str = "", layout_type: str = "", niche: str = "",
     limit: int = 200, offset: int = 0,
+    harvested: bool | None = None, run_id: str = "",
 ) -> dict:
     """The catalogue, for the curation screen. No tenant: this is the platform's.
 
     Filters are AND-ed and each is optional. `by_status` and `by_type` always
     count the WHOLE pool, not the filtered page -- a curator narrowing to
-    'candidate' still needs to see how much is approved.
+    'candidate' still needs to see how much is approved. `matched` counts the
+    filtered set, so a screen showing one page of it can say "N of matched".
+
+    `harvested` True keeps only rows the nightly harvest wrote, False only the
+    rest; `run_id` keeps one harvest run's rows.
     """
     where, args = [], []
     if status:
@@ -350,38 +459,60 @@ async def catalogue(
     if niche:
         # && is "overlaps": the row is tagged with this niche.
         args.append([niche]); where.append(f"niches && ${len(args)}::text[]")
+    if harvested is True:
+        where.append(_HARVESTED_SQL)
+    elif harvested is False:
+        where.append(f"NOT {_HARVESTED_SQL}")
+    if run_id:
+        args.append(run_id)
+        where.append(f"harvest_run_id = ${len(args)}")
     clause = ("WHERE " + " AND ".join(where)) if where else ""
+    page = (f"LIMIT {max(1, min(int(limit), 500))} OFFSET {max(0, int(offset))}")
 
-    async with acquire(None) as conn:
-        rows = await conn.fetch(
-            f"""SELECT id::text, kind, spec, fingerprint, family_key, source_kind, source_url,
-                       source_image_uri, layout_type, label, title, niches, uploaded_by,
-                       status, review_note, reviewed_by, reviewed_at,
-                       adopted_count, approvals, rejections, qa_passes, qa_fails, created_at
-                  FROM house_layouts {clause}
-              ORDER BY status, created_at DESC
-                 LIMIT {max(1, min(int(limit), 500))} OFFSET {max(0, int(offset))}""", *args)
-        counts = await conn.fetch("SELECT status, count(*) n FROM house_layouts GROUP BY 1")
-        by_type = await conn.fetch(
-            "SELECT layout_type, count(*) n FROM house_layouts GROUP BY 1 ORDER BY n DESC")
-        niches = await conn.fetchval(
-            "SELECT coalesce(array_agg(DISTINCT n ORDER BY n), '{}') "
-            "  FROM house_layouts, unnest(niches) n")
+    async def _read(cols: str):
+        async with acquire(None) as conn:
+            rows = await conn.fetch(
+                f"""SELECT {cols}
+                      FROM house_layouts {clause}
+                  ORDER BY status, created_at DESC
+                     {page}""", *args)
+            matched = await conn.fetchval(
+                f"SELECT count(*) FROM house_layouts {clause}", *args)
+            counts = await conn.fetch("SELECT status, count(*) n FROM house_layouts GROUP BY 1")
+            by_type = await conn.fetch(
+                "SELECT layout_type, count(*) n FROM house_layouts GROUP BY 1 ORDER BY n DESC")
+            niches = await conn.fetchval(
+                "SELECT coalesce(array_agg(DISTINCT n ORDER BY n), '{}') "
+                "  FROM house_layouts, unnest(niches) n")
+        return rows, matched, counts, by_type, niches
+
+    try:
+        rows, matched, counts, by_type, niches = await _read(_CATALOGUE_COLS)
+    except Exception as exc:  # noqa: BLE001 — narrowed just below
+        # Only the one failure 071 explains, and only when nothing asked for the
+        # columns it adds: a harvest filter on a database without them is an error.
+        if (type(exc).__name__ != "UndefinedColumnError"
+                or harvested is not None or run_id):
+            raise
+        logger.warning("house_layouts has no harvest columns yet (migration 071)")
+        rows, matched, counts, by_type, niches = await _read(_CATALOGUE_COLS_PRE_071)
 
     out = []
     for r in rows:
         d = dict(r)
         # jsonb arrives as text unless a codec is registered; the screen needs an
         # object to draw a preview from, so parse it here rather than in every caller.
-        if isinstance(d.get("spec"), str):
-            try:
-                d["spec"] = json.loads(d["spec"])
-            except ValueError:
-                d["spec"] = {}
+        for key in ("spec", "harvest_meta"):
+            if isinstance(d.get(key), str):
+                try:
+                    d[key] = json.loads(d[key])
+                except ValueError:
+                    d[key] = {}
         out.append({k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in d.items()})
 
     return {
         "total": sum(int(c["n"]) for c in counts),
+        "matched": int(matched or 0),
         "by_status": {c["status"]: int(c["n"]) for c in counts},
         "by_type": {(t["layout_type"] or "(unnamed)"): int(t["n"]) for t in by_type},
         "niches": list(niches or []),
@@ -490,7 +621,9 @@ async def adopt(tenant_id: UUID | str | None, *, limit: int = ADOPT_BATCH,
 __all__ = ["SHAREABLE", "ADOPT_BATCH", "family_key", "promote", "ingest", "retag",
            "retype", "catalogue", "review", "adopt", "ADOPT_SOURCE_KIND",
            "niche_tokens", "niche_rank", "tenant_niches",
-           "type_profile", "fit_rank", "candidates", "adopt_one"]
+           "type_profile", "fit_rank", "candidates", "adopt_one",
+           "interleave_families", "clean_niches", "CANDIDATE_POOL", "MAX_NICHES",
+           "RECENT_FAMILIES"]
 
 
 # ───────────────────────────────── the pool as a source, not a top-up ──
@@ -552,13 +685,41 @@ def fit_rank(brand_niches, profile: dict, layout_niches, layout_type: str) -> tu
     return (niche_rank(brand_niches, layout_niches), 1 if seen else 0, seen)
 
 
+def interleave_families(rows: list[dict]) -> list[dict]:
+    """The same order, except that one family_key never appears twice in a row
+    while an alternative is left.
+
+    Greedy and stable: at each step the best remaining row is taken unless it is
+    of the family just placed, in which case the best remaining row of ANY other
+    family goes first. Rows with no family_key never conflict with anything.
+    """
+    out: list[dict] = []
+    rest = list(rows)
+    while rest:
+        last = str((out[-1].get("family_key") if out else "") or "")
+        idx = 0
+        if last:
+            for i, r in enumerate(rest):
+                if str(r.get("family_key") or "") != last:
+                    idx = i
+                    break
+        out.append(rest.pop(idx))
+    return out
+
+
 async def candidates(
     conn, tenant_id, *, niches=None, profile: dict | None = None, limit: int = 40,
+    recent_families=None,
 ) -> list[dict]:
     """Approved catalogue layouts this brand has NOT already taken, best fit first.
 
     `conn` must be the TENANT's connection: the "already taken" check reads
     design_templates, which is RLS-scoped.
+
+    `recent_families` are the family_keys of the brand's most recently used
+    layouts. Among rows of equal niche fit, a family the brand has NOT just drawn
+    sorts first, and the final order never repeats a family back to back while an
+    alternative exists.
     """
     if not tenant_id:
         return []
@@ -572,22 +733,44 @@ async def candidates(
         "SELECT house_layout_id::text h, fingerprint FROM design_templates")
     taken = {r["h"] for r in mine if r["h"]}
     held = {r["fingerprint"] for r in mine if r["fingerprint"]}
+    # Exact tag overlap is only a COARSE pre-sort (tags are free text); it decides
+    # which rows survive the LIMIT, and fit_rank's token match below decides the
+    # real order. The writers spell a niche differently (whole vs comma-split),
+    # so every stored spelling of each brand niche is offered — see brand_tag_keys.
+    brand_tags = brand_tag_keys(niches)
 
+    # The exclusion is IN SQL, before the LIMIT. Done in Python after it, a brand
+    # that had taken the first CANDIDATE_POOL rows was offered nothing at all.
     async with acquire(None) as pool_conn:
         rows = await pool_conn.fetch(
-            """SELECT id::text, kind, spec, fingerprint, source_kind, source_url,
-                      source_image_uri, niches, layout_type,
+            """SELECT id::text, kind, spec, fingerprint, family_key, source_kind,
+                      source_url, source_image_uri, niches, layout_type,
                       (approvals - rejections) AS score, adopted_count
                  FROM house_layouts
                 WHERE status = 'approved'
-             ORDER BY (approvals - rejections) DESC, adopted_count DESC, created_at
-                LIMIT $1""", CANDIDATE_POOL)
+                  AND NOT (id::text = ANY($1::text[]))
+                  AND NOT (fingerprint <> '' AND fingerprint = ANY($2::text[]))
+             ORDER BY (niches && $3::text[]) DESC,
+                      (approvals - rejections) DESC,
+                      adopted_count DESC,
+                      created_at DESC
+                LIMIT $4""",
+            sorted(taken), sorted(held), brand_tags, CANDIDATE_POOL)
 
+    # Belt and braces: the same exclusion again, so a row the SQL let through
+    # (or a stand-in connection that ignores the arguments) is still never offered.
     out = [dict(r) for r in rows
            if r["id"] not in taken and str(r["fingerprint"] or "") not in held]
-    out.sort(key=lambda r: fit_rank(niches, profile or {}, r["niches"], r["layout_type"]),
-             reverse=True)
-    return out[: max(1, int(limit))]
+    recent = {str(f) for f in (recent_families or []) if f}
+
+    def _rank(r: dict) -> tuple:
+        niche, *rest = fit_rank(niches, profile or {}, r.get("niches"), r.get("layout_type"))
+        fam = str(r.get("family_key") or "")
+        fresh = 0 if (fam and fam in recent) else 1
+        return (niche, fresh, *rest)
+
+    out.sort(key=_rank, reverse=True)
+    return interleave_families(out)[: max(1, int(limit))]
 
 
 async def adopt_one(conn, layout: dict) -> str | None:
