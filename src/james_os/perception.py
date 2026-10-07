@@ -28,6 +28,7 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
+from . import spend
 from .config import settings
 
 _DUR_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+\.?\d*)")
@@ -82,6 +83,9 @@ async def _transcribe(client: AsyncOpenAI, audio: Path) -> str:
             res = await client.audio.transcriptions.create(
                 model=_WHISPER_MODEL, file=fh
             )
+        # Whisper bills per minute and the duration is not known here, so the
+        # call is counted (priced=false) rather than priced by a guess.
+        await spend.record("openai", _WHISPER_MODEL, 1, "call", None, "perception.transcribe")
         return (getattr(res, "text", "") or "").strip()
     except Exception:  # noqa: BLE001 — a missing/odd audio track must not sink analysis
         return ""
@@ -172,6 +176,7 @@ async def detect_speaker_center_x(
                 max_tokens=120, temperature=0.0,
                 response_format={"type": "json_object"},
             )
+            await spend.record_tokens("openai", getattr(res, "model", "") or "gpt-4o", getattr(res, "usage", None), "perception.face_x")
             data = json.loads(res.choices[0].message.content or "{}")
             if not data.get("found"):
                 return None
@@ -221,6 +226,7 @@ async def detect_subject_center_x(
                 max_tokens=120, temperature=0.0,
                 response_format={"type": "json_object"},
             )
+            await spend.record_tokens("openai", getattr(res, "model", "") or "gpt-4o", getattr(res, "usage", None), "perception.subject_x")
             data = json.loads(res.choices[0].message.content or "{}")
             if not data.get("found"):
                 return None
@@ -328,6 +334,7 @@ async def detect_speaker_face_map(
                         max_tokens=120, temperature=0.0,
                         response_format={"type": "json_object"},
                     )
+                    await spend.record_tokens("openai", getattr(res, "model", "") or "gpt-4o", getattr(res, "usage", None), "perception.face_map")
                     data = json.loads(res.choices[0].message.content or "{}")
                     if data.get("found"):
                         x = float(data.get("center_x"))
@@ -433,6 +440,7 @@ async def detect_source_speakers(
                 response_format={"type": "json_object"},
                 temperature=0,
             )
+            await spend.record_tokens("openai", getattr(resp, "model", "") or "gpt-4o", getattr(resp, "usage", None), "perception.detect_speakers")
             data = json.loads(resp.choices[0].message.content or "{}")
             people = data.get("people") or []
             out: list[dict] = []
@@ -485,6 +493,7 @@ async def _describe(client: AsyncOpenAI, frames: list[Path], transcript: str) ->
             temperature=0.2,
             response_format={"type": "json_object"},
         )
+        await spend.record_tokens("openai", getattr(res, "model", "") or "gpt-4o-mini", getattr(res, "usage", None), "perception.describe")
         return json.loads(res.choices[0].message.content or "{}")
     except Exception as e:  # noqa: BLE001
         return {"error": f"vision analysis failed: {e}"}

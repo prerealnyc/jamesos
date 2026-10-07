@@ -25,6 +25,7 @@ import logging
 from datetime import UTC, date, datetime
 from uuid import UUID
 
+from . import spend
 from .content import generate_content
 from .db import acquire
 from .llm import get_llm
@@ -643,6 +644,17 @@ async def run_batch(
     platforms = cfg.get("platforms") or ["instagram"]
     fmt = cfg.get("format", "reel_script")
 
+    # The spend gate, before a single token is bought. Skip and say so, with no
+    # exception, so the scheduler tick that called this keeps ticking.
+    gate = await spend.cap_status(tenant_id)
+    if gate["blocked"]:
+        logging.getLogger("autopilot").warning(
+            "autopilot: %s batch skipped — %s", trigger, gate["reason"])
+        run_id = await _record_skipped_run(trigger, count, gate["reason"], tenant_id)
+        return {"status": "skipped", "id": run_id, "trigger": trigger,
+                "reason": gate["reason"],
+                "today_usd": gate["today_usd"], "cap_usd": gate["cap_usd"]}
+
     async with acquire(tenant_id) as conn:
         run_id = await conn.fetchval(
             "INSERT INTO autopilot_runs (status, trigger, requested, stage) "
@@ -650,6 +662,52 @@ async def run_batch(
             trigger, count,
         )
 
+    # Name the job AND the brand on every ledger row this batch writes: llm.py
+    # only knows it is "complete_json" and records with no tenant, so without
+    # the scope a brand's batch was billed to the default tenant. The context
+    # manager resets both so nothing leaks into the caller's task.
+    with spend.job_scope(f"autopilot:{trigger}", tenant_id=tenant_id):
+        return await _run_batch_body(run_id, cfg, count, platforms, fmt, tenant_id)
+
+
+async def _record_skipped_run(
+    trigger: str, count: int, reason: str, tenant_id: UUID | None
+):
+    """Leave a visible refusal in autopilot_runs (status 'failed' — the CHECK
+    knows no 'skipped' — stage 'skipped', error naming the gate).
+
+    POST /autopilot/run answers 202 "Batch running — watch /autopilot/runs"
+    before this runs as a background task; a skip that only logged left that
+    list silent and the user believing a batch was coming. The scheduled
+    trigger is retried every 30 minutes, so it gets at most one such row a day
+    instead of 48. Never raises: the refusal must not become a crash."""
+    try:
+        async with acquire(tenant_id) as conn:
+            if trigger == "scheduled":
+                existing = await conn.fetchval(
+                    # explicit tenant as well as RLS: a superuser connection
+                    # bypasses the policy and would find another brand's row
+                    "SELECT id FROM autopilot_runs WHERE trigger = 'scheduled' "
+                    "AND stage = 'skipped' "
+                    "AND tenant_id = current_setting('app.current_tenant', true)::uuid "
+                    "AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') "
+                    "AT TIME ZONE 'UTC' ORDER BY created_at DESC LIMIT 1"
+                )
+                if existing:
+                    return existing
+            return await conn.fetchval(
+                "INSERT INTO autopilot_runs (status, trigger, requested, stage, error, "
+                "completed_at) VALUES ('failed', $1, $2, 'skipped', $3, now()) RETURNING id",
+                trigger, count, f"skipped: {reason}"[:500],
+            )
+    except Exception:  # noqa: BLE001
+        logging.getLogger("autopilot").warning(
+            "autopilot: could not record the skipped %s run", trigger, exc_info=True)
+        return None
+
+
+async def _run_batch_body(run_id, cfg: dict, count: int, platforms: list, fmt: str,
+                          tenant_id: UUID | None) -> dict:
     try:
         # ── 1) Virality-first: research what's working BEFORE ideating ──
         await _stage(run_id, "researching trends", tenant_id)

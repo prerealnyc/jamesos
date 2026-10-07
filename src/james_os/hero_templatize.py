@@ -30,6 +30,7 @@ import logging
 import httpx
 from openai import AsyncOpenAI
 
+from . import spend
 from .config import settings
 from .db import acquire
 from .designed_render import PHOTO_FORMATS
@@ -210,6 +211,7 @@ async def inspect_photo_templatizability(image: bytes | str, *, mime: str = "ima
             temperature=0.0,
             response_format={"type": "json_object"},
         )
+        await spend.record_tokens("openai", getattr(resp, "model", "") or _MODEL, getattr(resp, "usage", None), "hero_templatize.judge")
         out = json.loads(resp.choices[0].message.content or "{}")
     except Exception as exc:  # noqa: BLE001 — reported, never faked
         return {"status": "failed", "rubric_version": TEMPLATIZE_RUBRIC_VERSION, "error": str(exc)[:200]}

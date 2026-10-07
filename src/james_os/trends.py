@@ -28,6 +28,8 @@ import statistics
 from datetime import UTC, datetime
 from uuid import UUID
 
+from . import apify as _apify
+from . import spend
 from .apify import TREND_CATEGORY, TrendItem, get_trend_provider
 from .db import acquire
 from .ingestion import ingest_many
@@ -189,6 +191,55 @@ async def discover_and_ingest(
     }
 
 
+async def _known_trend_keys(events: list[EventCreate], tenant_id: UUID | None) -> set[str] | None:
+    """The dedupe keys among `events` already in memory — what ingest_many
+    will hand back instead of inserting. None when the read fails (the ledger
+    row then says rows_new is unknown rather than guessing)."""
+    keys = [e.source.dedupe_key for e in events if e.source.dedupe_key]
+    if not keys:
+        return set()
+    try:
+        async with acquire(tenant_id) as conn:
+            rows = await conn.fetch(
+                "SELECT DISTINCT source ->> 'dedupe_key' AS k FROM events "
+                "WHERE source ->> 'dedupe_key' = ANY($1::text[])", keys)
+        return {r["k"] for r in rows}
+    except Exception:  # noqa: BLE001 — metering must not fail the scrape
+        return None
+
+
+async def _meter_watchlist(
+    handles: dict[str, list[str]], items: list[TrendItem],
+    events: list[EventCreate], known: set[str] | None, tenant_id: UUID | None,
+) -> None:
+    """One ledger row per Apify actor run — scrape_handles runs one per
+    platform that has handles. The watchlist re-scrapes the same creators
+    every week and ingest dedupes AFTER the money is spent, so rows_new next
+    to items_fetched is the number that shows what re-scraping bought.
+
+    items_fetched is counted after the provider's normalisation (a result
+    with no URL is dropped there), so it can undercount the billed results;
+    a platform whose actor raised is swallowed by the provider and shows 0."""
+    for platform, hs in (handles or {}).items():
+        actor = _apify._ACTORS.get(platform)
+        if not actor or not hs:
+            continue
+        n = sum(1 for it in items if it.platform == platform)
+        if known is None:
+            new: int | None = None
+        else:
+            new = sum(1 for e in events
+                      if f"platform:{platform}" in (e.entities or [])
+                      and e.source.dedupe_key and e.source.dedupe_key not in known)
+        await spend.record(
+            "apify", actor, n, "results", spend.estimate_results_usd(actor, n),
+            "trends.refresh_watchlist",
+            {"items_fetched": n, "rows_new": new, "platform": platform,
+             "handles": len(hs), "counted_after_normalise": True,
+             "price_basis": "per_result_estimate"},
+            tenant_id=tenant_id)
+
+
 async def refresh_watchlist(
     handles: dict[str, list[str]], limit: int, tenant_id: UUID | None = None
 ) -> dict:
@@ -196,7 +247,11 @@ async def refresh_watchlist(
     items = await provider.scrape_handles(handles, limit)
     scored = score_items(items)
     events = trend_items_to_events(scored)
+    paid = provider.name == "apify"
+    known = await _known_trend_keys(events, tenant_id) if paid else set()
     stored = await ingest_many(events, tenant_id) if events else []
+    if paid:
+        await _meter_watchlist(handles, items, events, known, tenant_id)
     return {
         "provider": provider.name,
         "found": len(items),

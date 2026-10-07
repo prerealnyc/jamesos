@@ -25,6 +25,7 @@ import logging
 
 from openai import AsyncOpenAI
 
+from . import spend
 from .config import settings
 
 logger = logging.getLogger("render_reviewer")
@@ -141,6 +142,7 @@ async def review_post(image: bytes | str, *, exemplars: list[bytes] | None = Non
             messages=[{"role": "system", "content": _SYSTEM},
                       {"role": "user", "content": content}],
             max_tokens=700, temperature=0.0, response_format={"type": "json_object"})
+        await spend.record_tokens("openai", getattr(resp, "model", "") or _MODEL, getattr(resp, "usage", None), "render_reviewer.review_post")
         out = json.loads(resp.choices[0].message.content or "{}")
     except Exception as exc:  # noqa: BLE001 — reported, never faked
         return {"status": "failed", "rubric_version": REVIEW_RUBRIC_VERSION, "error": str(exc)[:200]}

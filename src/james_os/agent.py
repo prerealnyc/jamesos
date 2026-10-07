@@ -45,6 +45,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 from uuid import UUID
 
+from . import spend
 from .config import settings
 from .db import acquire
 
@@ -1390,6 +1391,10 @@ async def _run_loop_anthropic(
             await _finish(run_id, status="failed", error=f"agent LLM call failed: {msg}", tenant_id=tenant_id)
             return
 
+        await spend.record_tokens(
+            "anthropic", getattr(resp, "model", "") or model, getattr(resp, "usage", None),
+            "agent.run", tenant_id=tenant_id,
+        )
         # Collect any tool_use blocks; capture text too in case the
         # model ends here.
         tool_uses = [b for b in resp.content if b.type == "tool_use"]
@@ -1583,6 +1588,7 @@ async def _run_loop_openai(
             await _finish(run_id, status="failed", error=f"agent LLM call failed: {msg}", tenant_id=tenant_id)
             return
 
+        await spend.record_tokens("openai", getattr(resp, "model", "") or model, getattr(resp, "usage", None), "agent.run", tenant_id=tenant_id)
         m = resp.choices[0].message
         tool_calls = m.tool_calls or []
         text = (m.content or "").strip()

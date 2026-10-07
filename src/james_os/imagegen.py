@@ -18,6 +18,7 @@ import re
 
 from openai import AsyncOpenAI
 
+from . import spend
 from .config import settings
 
 # gpt-image-1 sizes: 1024x1024 | 1024x1536 (portrait) | 1536x1024 (landscape)
@@ -146,6 +147,7 @@ async def generate_seed_image(prompt: str, aspect: str = "9:16") -> tuple[str | 
         )
     except Exception as e:  # noqa: BLE001
         return None, f"image generation failed: {e}"
+    await spend.record_images(settings.image_model, len(res.data or []) or 1, "imagegen.generate_seed_image", size=size, usage=getattr(res, "usage", None))
     item = res.data[0] if res.data else None
     b64 = getattr(item, "b64_json", None) if item else None
     if not b64:
@@ -847,6 +849,7 @@ async def generate_post_image(
         )
     except Exception as e:  # noqa: BLE001
         return None, {}, f"image generation failed: {e}"
+    await spend.record_images(settings.image_model, len(res.data or []) or 1, "imagegen.generate_post_image", size=size, usage=getattr(res, "usage", None), tenant_id=tenant_id)
     item = res.data[0] if res.data else None
     b64 = getattr(item, "b64_json", None) if item else None
     if not b64:
@@ -948,6 +951,7 @@ async def generate_post_image_with_refs(
         )
     except Exception as e:  # noqa: BLE001
         return None, {}, f"image edit failed: {e}"
+    await spend.record_images(settings.image_model, len(res.data or []) or 1, "imagegen.generate_post_image_with_refs", size=size, usage=getattr(res, "usage", None), tenant_id=tenant_id)
     item = res.data[0] if res.data else None
     b64 = getattr(item, "b64_json", None) if item else None
     if not b64:
@@ -1049,6 +1053,7 @@ async def edit_hero_photo(
                 res = await client.images.edit(**kwargs)
     except Exception as e:  # noqa: BLE001
         return None, {}, f"image edit failed: {e}"
+    await spend.record_images(settings.image_model, len(res.data or []) or 1, "imagegen.edit_hero_photo", size=size, usage=getattr(res, "usage", None), tenant_id=tenant_id)
     item = res.data[0] if res.data else None
     b64 = getattr(item, "b64_json", None) if item else None
     if not b64:

@@ -1,4 +1,6 @@
-# DEPLOY JAMES OS TO RAILWAY — THE FALLBACK, NOT THE DEPLOY. Run it from the Actions tab.
+# DEPLOY JAMES OS TO RAILWAY. Runs on every push to main, and by hand from the Actions tab.
+# (Until 7 Oct 2026 the first line here read "THE FALLBACK, NOT THE DEPLOY" — the push:
+# trigger and the paragraph about it below say what changed and why.)
 #
 # Two services in the `bountiful-prosperity` Railway project, both named by their own
 # Dockerfile rather than guessed here:
@@ -7,7 +9,7 @@
 #                      the root COPYs pyproject.toml and src/ from there).
 #   james-os-frontend  Next.js. Build context is web/, which has its own Dockerfile.
 #
-# WHY THERE IS NO `push:` TRIGGER, and why that is deliberate rather than unfinished.
+# THE `push:` TRIGGER — why it shipped off, and why it is on.
 #
 # If Railway's own GitHub connection is attached to this project, merging to main already
 # builds and ships. Adding a push trigger on top of that gives two builds per merge,
@@ -17,13 +19,21 @@
 # could not say which commit was live. See .github/workflows/deploy.yml in that repo for
 # the whole story and the same conclusion.
 #
-# So this is the button for when the connection goes quiet, which is the other half of
-# that story — prereal sat three days and ~185 commits behind main with two merged PRs
-# that reached nobody, and a workflow exactly like this one is what got it out.
+# So this file was written as the button for when the connection goes quiet, which is the
+# other half of that story — prereal sat three days and ~185 commits behind main with two
+# merged PRs that reached nobody, and a workflow exactly like this one is what got it out.
 #
-# IF THIS PROJECT HAS NO RAILWAY↔GITHUB CONNECTION, and you want merges to ship by
-# themselves, uncomment the `push:` block below. Do it only after checking the Railway
-# project, because turning it on against a live connection is the race described above.
+# On 7 Oct 2026 the Railway project was checked and has NO GitHub connection (the evidence
+# is at the trigger below), so `push:` is ON and this workflow is the deploy, not the
+# fallback. The race above is the reason to turn it back off THE SAME DAY a connection is
+# ever attached — not a reason to leave it off while there is none, because what this repo
+# had instead was worse: shipping only when somebody remembered to run `railway up` from a
+# laptop, which uploads that laptop's working tree rather than what was merged.
+#
+# TESTS FIRST. The `deploy` job needs the `test` job, which is ci.yml called as a reusable
+# workflow: the pure-logic suite, the whole suite against a fresh pgvector container with
+# migrations applied, and the web typecheck — the same jobs a pull request runs. Before
+# this, nothing ran a single one of the 1,243 tests between a merge and production.
 #
 # WHAT TO WATCH FOR either way: /health answering from an older build than main. This
 # repo has no equivalent of prereal's /api/version, so there is no commit to compare —
@@ -76,7 +86,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # One definition of "the tests" (ci.yml) so the merge gate and the deploy gate cannot
+  # drift apart. ci.yml skips its own push trigger on main for the same reason: this
+  # call is the one run a push to main gets.
+  test:
+    uses: ./.github/workflows/ci.yml
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     environment: production
     env:

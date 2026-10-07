@@ -203,6 +203,8 @@ class SyncRequest(BaseModel):
     limit: int = 24
     days: int = 90
     video_cap: int = 3
+    # Re-pull competitors synced within competitor_sync.SYNC_FRESH_DAYS.
+    force: bool = False
 
 
 @router.post("/competitors/sync", status_code=202)
@@ -218,7 +220,20 @@ async def competitors_sync(req: SyncRequest, background: BackgroundTasks) -> dic
     async def _run() -> None:
         try:
             res = await competitor_sync.sync_all(
-                limit=limit, days=days, video_cap=cap, tenant_id=tid)
+                limit=limit, days=days, video_cap=cap, tenant_id=tid,
+                force=req.force)
+            # This is the operator's "Pull their posts" button, and a run that
+            # skipped everyone pulled within SYNC_FRESH_DAYS reads as "Posts
+            # pulled." in both UIs. Say who was skipped and how to override,
+            # so the button is never a silent no-op.
+            skipped = [r.get("handle") for r in res.get("results") or []
+                       if r.get("skipped")]
+            if skipped:
+                res = {**res, "note": (
+                    f"{len(skipped)} pulled within {competitor_sync.SYNC_FRESH_DAYS} "
+                    "days, skipped: " + ", ".join(f"@{h}" for h in skipped[:10])
+                    + ("…" if len(skipped) > 10 else "")
+                    + " — send force=true to pull them again")}
             _SYNC_JOBS[job_id] = {"status": "done", **res}
         except Exception as e:  # noqa: BLE001
             _SYNC_JOBS[job_id] = {"status": "failed", "error": str(e)[:300]}
@@ -455,6 +470,10 @@ async def competitors_post_replicate(req: ReplicateRequest) -> dict:
 class MediaFetchRequest(BaseModel):
     competitor_id: str = ""
     limit: int = 30
+    # Reset the posts the fetcher gave up on (competitor_media
+    # .MAX_MEDIA_FETCH_ATTEMPTS) and ask for them again: the operator's way
+    # back once a login wall or a rate limit has cleared.
+    force: bool = False
 
 
 @router.post("/competitors/media/fetch", status_code=202)
@@ -482,10 +501,10 @@ async def competitors_media_fetch(
                                            "error": "competitor not found"}
                     return
                 res = await competitor_media.fetch_media_for_competitor(
-                    comp, limit=lim, tenant_id=tid)
+                    comp, limit=lim, tenant_id=tid, force=req.force)
             else:
                 res = await competitor_media.fetch_all_missing_media(
-                    limit=lim, tenant_id=tid)
+                    limit=lim, tenant_id=tid, force=req.force)
             _MEDIA_JOBS[job_id] = {"status": "done", **res}
         except Exception as e:  # noqa: BLE001
             _MEDIA_JOBS[job_id] = {"status": "failed", "error": str(e)[:300]}
@@ -513,12 +532,50 @@ async def competitors_status() -> dict:
 
 
 @router.post("/competitors/refresh", status_code=202)
-async def competitors_refresh(background: BackgroundTasks, limit: int = 30) -> dict:
+async def competitors_refresh(
+    background: BackgroundTasks, limit: int = 30, force: bool = False,
+) -> dict:
     """Pull → download → analyse → profile, in one job. Poll
     GET /competitors/status for progress; it reads the database, so it stays
-    correct across restarts and workers."""
+    correct across restarts and workers.
+
+    One chain per tenant at a time, and one per competitor_sync
+    .REFRESH_COOLDOWN — the clock is competitor_sync's, shared with the
+    scheduler's tick, so a second call from any of the three callers gets the
+    run already covering this tenant back, with `reused` saying whether it is
+    in flight or just finished. A reused job_id the scheduler minted is not in
+    this process's job store; GET /competitors/refresh/{job_id} answers with
+    the data in that case, as designed. `force` overrides the cooldown,
+    re-pulls competitors synced within SYNC_FRESH_DAYS and retries the media
+    the fetcher gave up on; it never overrides a chain in flight. A tracked
+    competitor that has never been synced (a peer approved after the last
+    chain) is never turned away by the cooldown — the run it gets is for the
+    never-synced competitors only — and one approved while a chain is in
+    flight is pulled by that chain before it finishes: BM2 takes any 202 as
+    "refreshed" and does not call again. A chain that pulled nothing does not
+    start the cooldown.
+    """
     tid = _tenant()
+    # Refused up front when spend says no (PAUSE_SPEND, or the brand's daily
+    # cap reached). full_refresh asks too, but by then this route had already
+    # answered "running", and a 202 is what BM2 records as "refreshed": the
+    # refusal has to be in the reply itself. Asked before the claim, so a
+    # refusal holds no slot and starts no cooldown.
+    gate = await competitor_media.spend_blocked(tid, "competitor refresh")
+    if gate:
+        reason = gate.get("reason") or "spend blocked"
+        return {"job_id": None, "status": "skipped", "skipped": "spend",
+                "reason": reason, "note": f"not run: {reason}"}
     job_id = str(uuid4())
+    # Claimed HERE, before answering, not when the background task starts:
+    # two clicks a second apart must get one job_id back. full_refresh
+    # re-enters the same claim and releases it when the chain ends.
+    reused = await competitor_sync.try_claim_refresh(tid, job_id, force=force)
+    if reused:
+        job = _REFRESH_JOBS.get(reused["job_id"]) or {}
+        status = job.get("status") or (
+            "running" if reused["reused"] == "in_flight" else "unknown")
+        return {**reused, "status": status}
     _REFRESH_JOBS[job_id] = {"status": "running", "stage": "starting"}
     _prune(_REFRESH_JOBS)
     lim = max(1, min(limit, 60))
@@ -531,10 +588,22 @@ async def competitors_refresh(background: BackgroundTasks, limit: int = 30) -> d
     async def _run() -> None:
         try:
             res = await competitor_sync.full_refresh(
-                tenant_id=tid, limit=lim, progress=_progress)
-            _REFRESH_JOBS[job_id] = {"status": "done", **res}
+                tenant_id=tid, limit=lim, progress=_progress, force=force,
+                job_id=job_id)
+            # full_refresh's own `status` key is the studio counts; spread
+            # after "done" it overwrote the job's status with a dict, so the
+            # poll could never say the job had finished. Counts live under
+            # `shelf`, the word stays the word.
+            res = dict(res)
+            shelf = res.pop("status", None)
+            _REFRESH_JOBS[job_id] = {**res, "shelf": shelf, "status": "done"}
         except Exception as e:  # noqa: BLE001
             _REFRESH_JOBS[job_id] = {"status": "failed", "error": str(e)[:300]}
+        finally:
+            # full_refresh releases its own claim; this covers the one case
+            # it cannot — the task failing before it was entered, which
+            # pulled nothing and so must not start the cooldown.
+            competitor_sync.release_refresh(tid, job_id, pulled=False)
 
     background.add_task(_run)
     return {"job_id": job_id, "status": "running"}

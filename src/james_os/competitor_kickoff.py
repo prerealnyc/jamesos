@@ -19,7 +19,9 @@ Nothing here copies. Every draft goes through the same content engine and
 voice-QA gate as any other, and a verbatim rip fails that gate.
 
 A generated post is marked 'queued' so a second run does not redraft it —
-which also makes this safe to call again as the brand picks more.
+which also makes this safe to call again as the brand picks more. A pick the
+engine REFUSED (status 'not_generated' — no voice in the tenant yet) keeps its
+verdict, so a run that fires before the voice has landed costs nothing but time.
 """
 
 from __future__ import annotations
@@ -219,6 +221,16 @@ async def generate_first_posts(
             draft = await generate_content(brief)
         except Exception as e:  # noqa: BLE001 — one bad draft ≠ the batch
             failed.append({"post_id": p["id"], "error": str(e)[:160]})
+            continue
+        if getattr(draft, "status", "") == "not_generated":
+            # The engine REFUSED (no voice corpus / thesis in this tenant) and
+            # said so as a draft rather than raising. This used to fall
+            # through to the 'queued' mark below, and picked_posts excludes
+            # 'queued' — so one voiceless run consumed every pick the owner
+            # had made, for a batch that produced nothing. Leave the verdict
+            # standing so the next run, once voice has landed, re-reads it.
+            failed.append({"post_id": p["id"],
+                           "error": (getattr(draft, "note", "") or "not generated")[:160]})
             continue
         # ---- the image ----
         # A caption with no picture is not a post. The layout comes from what

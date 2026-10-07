@@ -31,6 +31,7 @@ import tempfile
 from pathlib import Path
 from uuid import UUID
 
+from . import spend
 from .config import settings
 
 # Marks a description this module wrote, so a re-run can refresh its own work
@@ -140,6 +141,7 @@ async def describe_file(path: Path, kind: str = "video") -> dict:
         except Exception as e:  # noqa: BLE001
             raise VisionError(f"vision call failed: {type(e).__name__}: {e}") from e
 
+        await spend.record_tokens("openai", getattr(res, "model", "") or "gpt-4o", getattr(res, "usage", None), "reel_vision.describe_file")
         raw = (res.choices[0].message.content or "").strip()
         try:
             out = json.loads(raw)

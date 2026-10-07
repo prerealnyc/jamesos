@@ -31,6 +31,7 @@ import base64
 
 from openai import AsyncOpenAI
 
+from . import spend
 from .config import settings
 
 RUBRIC_VERSION = "v1"
@@ -165,6 +166,7 @@ async def inspect_image(
             temperature=0.0,
             response_format={"type": "json_object"},
         )
+        await spend.record_tokens("openai", getattr(resp, "model", "") or _MODEL, getattr(resp, "usage", None), "design_eye.grade")
         raw = resp.choices[0].message.content or "{}"
         out = _json.loads(raw)
     except Exception as exc:  # noqa: BLE001 — a vision/parse failure is reported, never faked

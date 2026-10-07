@@ -1,0 +1,157 @@
+name: CI
+
+# The test gate. 1,243 tests across 65 files collected on 7 Oct 2026 and nothing
+# ran them except a developer remembering to; the deploy workflow's only check
+# was "is RAILWAY_TOKEN set", and since it was not, every deploy was a laptop's
+# working tree uploaded by hand. This file runs the suite on every pull request
+# and on every push to a non-main branch, and deploy.yml CALLS it
+# (workflow_call) as the `test` job its `deploy` job needs — so a push to main
+# runs it exactly once, through the deploy, and the tests that gate a merge
+# and the tests that gate a deploy are one definition that cannot drift apart.
+#
+# Three jobs, because they fail for different reasons and should say so:
+#
+#   nodb   `pytest -m nodb` — pure-logic tests that tests/conftest.py exempts
+#          from the Postgres fixture. No service container, so a broken rule
+#          is visible even on a run where Postgres itself did not come up.
+#   db     the whole suite against a pgvector/pgvector:pg16 service container
+#          (the same image docker-compose.yml uses locally) with migrations/
+#          applied by migrate.py first. conftest.py pins the connection from
+#          TEST_DATABASE_URL and TRUNCATEs tables between tests, which is why
+#          it refuses anything that looks like Supabase — this DB is born and
+#          dies inside the job.
+#   web    `tsc --noEmit` in web/. Not `next build`: the build bakes
+#          BACKEND_ORIGIN into the rewrites manifest and the only build that
+#          matters is Railway's, with the real value.
+#
+# A red run blocks a merge only once branch protection on `main` lists these
+# jobs as required status checks (Settings → Branches → main → Require status
+# checks: "CI / nodb", "CI / db", "CI / web"). Without that the PR shows red
+# and GitHub still lets the merge button through.
+#
+# No secrets. conftest.py forces every provider to its stub before the first
+# test, and the DB credentials below are the throwaway container's own.
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+  workflow_call: {}
+
+jobs:
+  nodb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install the package with dev extras
+        run: pip install -e '.[dev]'
+
+      - name: Pure-logic tests
+        run: python -m pytest -m nodb -q -p no:cacheprovider
+
+  db:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: james_os
+          POSTGRES_PASSWORD: james_os
+          POSTGRES_DB: james_os
+        ports:
+          - 5432:5432
+        # The job's first step otherwise races the container's init and the
+        # migration step fails on "connection refused" with nothing to fix.
+        options: >-
+          --health-cmd "pg_isready -U james_os"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # migrate.py reads DATABASE_URL through james_os.config; conftest.py reads
+      # TEST_DATABASE_URL. Same database, named twice because the two readers
+      # were written to be unable to share a name on purpose: a .env that points
+      # DATABASE_URL at Supabase must never be what the suite truncates.
+      DATABASE_URL: postgresql://james_os:james_os@localhost:5432/james_os
+      TEST_DATABASE_URL: postgresql://james_os:james_os@localhost:5432/james_os
+      DB_SSL: disable
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install the package with dev extras
+        run: pip install -e '.[dev]'
+
+      # The application's restricted role. Migrations 039 and 040 write
+      # `CREATE POLICY ... TO james_app` unguarded, so on a database that has
+      # never had the role they stop at 039 with `role "james_app" does not
+      # exist` — found the first time migrate.py met a fresh pgvector
+      # container. Production and the local docker DB both carry the role
+      # from an out-of-band CREATE ROLE that no migration records; this is
+      # that step, written down. The later migrations (035, 053, 060, 069)
+      # guard their grants on the role existing, so they are no-ops without
+      # this and real with it — which is also the shape production has.
+      - name: Create the james_app role the policies refer to
+        run: |
+          python - <<'PY'
+          import asyncio, os
+          import asyncpg
+
+          async def main():
+              conn = await asyncpg.connect(os.environ["DATABASE_URL"])
+              try:
+                  await conn.execute(
+                      "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'james_app') "
+                      "THEN CREATE ROLE james_app NOLOGIN; END IF; END $$"
+                  )
+              finally:
+                  await conn.close()
+
+          asyncio.run(main())
+          PY
+
+      # Every migrations/*.sql in order, the same way deploy.yml applies them
+      # to production. The suite's TRUNCATE list in conftest.py names tables
+      # that only exist after these run.
+      - name: Apply migrations
+        run: PYTHONPATH=src python migrate.py
+
+      - name: Full suite against the job's Postgres
+        run: python -m pytest tests -q -p no:cacheprovider
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        run: npm ci
+
+      # next-env.d.ts is gitignored in web/, so a fresh checkout has none;
+      # checked 7 Oct 2026 that tsc passes without it (the Next types resolve
+      # through tsconfig's "next" plugin and the package itself).
+      - name: Web typecheck
+        run: npx tsc --noEmit

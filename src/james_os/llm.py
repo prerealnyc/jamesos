@@ -8,6 +8,7 @@ can be tested without API keys.
 """
 
 import json
+import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -20,7 +21,10 @@ from tenacity import (
     wait_exponential,
 )
 
+from . import spend
 from .config import settings
+
+logger = logging.getLogger("llm")
 
 
 class LLMParseError(ValueError):
@@ -97,6 +101,11 @@ class AnthropicLLM(LLM):
             max_tokens=max_tokens,
             temperature=temperature,
         )
+        # Recorded BEFORE the parse: a truncated/unparseable answer was still
+        # billed, and the ledger exists to see exactly that kind of waste.
+        await spend.record_tokens(
+            "anthropic", self.model_name, getattr(result, "usage", None), "llm.complete_json",
+        )
         text = "".join(block.text for block in result.content if hasattr(block, "text"))
         truncated = getattr(result, "stop_reason", None) == "max_tokens"
         return _extract_json(text, truncated=truncated)
@@ -128,6 +137,9 @@ class OpenAILLM(LLM):
             max_tokens=max_tokens,
             temperature=temperature,
             response_format={"type": "json_object"},
+        )
+        await spend.record_tokens(
+            "openai", self.model_name, getattr(result, "usage", None), "llm.complete_json",
         )
         choice = result.choices[0]
         text = choice.message.content or ""
@@ -184,6 +196,17 @@ class FallbackLLM(LLM):
             if not _is_balance_error(e):
                 raise
             # Primary is out of credits → switch to the fallback provider.
+            # LOUDLY. This crossing used to be silent, which meant the one
+            # natural ceiling on spend (running out of money) was bypassed
+            # without a trace; now it is a WARNING and a ledger row.
+            logger.warning(
+                "LLM fallback: %s failed with a balance/quota error, crossing to %s "
+                "(reason: %s)", self.primary.model_name, self.fallback.model_name,
+                str(e)[:200],
+            )
+            await spend.record_fallback(
+                self.primary.model_name, self.fallback.model_name, str(e),
+            )
             self.model_name = self.fallback.model_name
             return await self.fallback.complete_json(
                 system, messages, max_tokens, temperature

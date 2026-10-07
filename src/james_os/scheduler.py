@@ -15,13 +15,15 @@ contextvar — there is no request here).
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+from . import spend
 from .db import acquire
 
 _TICK_SECONDS = 300          # check for due work every 5 minutes
 _MAX_CONCURRENT = 3          # recurring jobs are background work, not a race
+_PAUSE_RETRY_SECONDS = 3600  # a spend-blocked job comes back this soon, not a cadence later
 
 
 async def _registry() -> dict:
@@ -81,10 +83,49 @@ async def _mark(job_id: UUID, status: str, error: str | None = None) -> None:
         )
 
 
+async def _mark_skipped(job_id: UUID, reason: str, retry_in_seconds: float) -> None:
+    """Stamp a spend-blocked job so it comes due again in `retry_in_seconds`
+    (never later than its own cadence would have).
+
+    The first version reused _mark(), whose last_run_at=now() deferred the job
+    by its WHOLE cadence: a weekly_prescription that met the cap waited a week,
+    and one 5-minute PAUSE_SPEND tick pushed every brand's jobs back a full
+    cycle with nothing to re-queue them. Backdating by the cadence still moves
+    the job off the head of the due queue for this tick, so a blocked tenant
+    cannot starve the others out of the LIMIT 10."""
+    async with acquire() as conn:
+        await conn.execute(
+            """UPDATE scheduled_jobs
+                  SET last_run_at = now() - make_interval(hours => cadence_hours)
+                                  + LEAST(make_interval(secs => $3::float8),
+                                          make_interval(hours => cadence_hours)),
+                      last_status = 'skipped', last_error = $2
+                WHERE id = $1""",
+            job_id, (reason or "")[:500] or None, float(max(60.0, retry_in_seconds)),
+        )
+
+
+def _seconds_until_utc_midnight(now: datetime | None = None) -> float:
+    now = now or datetime.now(UTC)
+    nxt = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return (nxt - now).total_seconds() + 300   # a few minutes past the reset
+
+
 async def _run_one(job: dict, registry: dict) -> None:
     handler = registry.get(job["kind"])
     if handler is None:
         await _mark(job["id"], "failed", f"unknown job kind: {job['kind']}")
+        return
+    # The spend gate: PAUSE_SPEND or the brand's daily cap. Checked here, at the
+    # one door every recurring job walks through, so no handler has to remember.
+    # Marked 'skipped' and re-due soon: after the pause is likely lifted (an
+    # hour) or just past the UTC midnight the cap resets at — not left due
+    # (it would hog the LIMIT 10 every tick) and not deferred a whole cadence.
+    gate = await spend.cap_status(job["tenant_id"])
+    if gate["blocked"]:
+        print(f"[scheduler] {job['kind']} for {job['tenant_id']}: skipped — {gate['reason']}")
+        retry = _PAUSE_RETRY_SECONDS if gate["paused"] else _seconds_until_utc_midnight()
+        await _mark_skipped(job["id"], gate["reason"], retry)
         return
     # Claim BEFORE running so a slow job isn't re-picked by the next tick.
     await _mark(job["id"], "running")
@@ -93,7 +134,11 @@ async def _run_one(job: dict, registry: dict) -> None:
     if isinstance(cfg, str):
         cfg = json.loads(cfg)
     try:
-        await handler(tenant_id=job["tenant_id"], config=cfg or {})
+        # The scope carries the job's TENANT as well as its name: llm.py and the
+        # vision call sites record with no tenant_id, and without this every
+        # brand's scheduled spend landed on the default tenant's ledger.
+        with spend.job_scope(job["kind"], tenant_id=job["tenant_id"]):
+            await handler(tenant_id=job["tenant_id"], config=cfg or {})
         await _mark(job["id"], "ok")
         # Log successes too, not only failures — else a healthy scheduler leaves no
         # evidence in the logs that it ran.
@@ -101,6 +146,21 @@ async def _run_one(job: dict, registry: dict) -> None:
     except Exception as e:  # noqa: BLE001 — one tenant's failure never stops the loop
         print(f"[scheduler] {job['kind']} for {job['tenant_id']}: {e}")
         await _mark(job["id"], "failed", str(e))
+
+
+async def weekly_roster_refresh(tenant_id: UUID | None = None) -> dict:
+    """The autopilot loop's weekly research-roster refresh, behind the spend
+    gate. It ends in a paid Apify scrape (trends.refresh_watchlist), and it was
+    the one recurring entry point PAUSE_SPEND did not stop. Skips (logged,
+    never raised) when paused or over the cap."""
+    from .research_roster import maybe_weekly_refresh
+
+    gate = await spend.cap_status(tenant_id)
+    if gate["blocked"]:
+        print(f"[scheduler] weekly roster refresh: skipped — {gate['reason']}")
+        return {"skipped": True, "reason": gate["reason"]}
+    with spend.job_scope("research_roster.weekly_refresh", tenant_id=tenant_id):
+        return await maybe_weekly_refresh(tenant_id)
 
 
 async def scheduler_loop() -> None:

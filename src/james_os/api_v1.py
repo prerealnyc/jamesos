@@ -315,6 +315,33 @@ async def v1_ping(tenant_id: TenantDep) -> dict[str, Any]:
     return {"ok": True, "tenant_id": str(tenant_id)}
 
 
+@router.get("/spend")
+async def v1_spend(tenant_id: TenantDep, days: int = 7) -> dict[str, Any]:
+    """What this brand has cost: provider x model x day totals for the last
+    `days` days (1-90), today's total, and the daily cap. Every figure is an
+    ESTIMATE from spend.py's price table (`estimate: true`), never an invoice —
+    it exists so the answer to "what did brand X cost this week" is a query
+    instead of a card statement."""
+    from . import spend
+    return await spend.report(tenant_id, days=days)
+
+
+class _SpendCap(BaseModel):
+    # None clears the brand's own cap back to the deployment default; 0 = no cap.
+    cap_usd: float | None = Field(default=None, ge=0, le=10_000)
+
+
+@router.put("/spend/cap")
+async def v1_spend_cap(body: _SpendCap, tenant_id: TenantDep) -> dict[str, Any]:
+    """Set the bound brand's daily cap on the engine's own ledger. BM2's admin
+    spend-cap route forwards here, so one control sets a brand's cap on both
+    sides; tenant-bound like every /v1 route, so a key can only cap its own
+    brand."""
+    from . import spend
+    cap = await spend.set_daily_cap(tenant_id, body.cap_usd)
+    return {"tenant_id": str(tenant_id), "cap_usd": cap, "default": body.cap_usd is None}
+
+
 @router.get("/house-knowledge/status")
 async def v1_house_knowledge_status(tenant_id: TenantDep) -> dict[str, Any]:
     """How much shared marketing canon is loaded (chunks by layer). The canon is
