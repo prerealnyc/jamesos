@@ -17,6 +17,23 @@ call per image), so everything that can refuse an image for free runs first:
 the inputs, then whether the catalogue already holds this exact image
 (source_key). An image already known is never paid for twice.
 
+SOURCES. The harvest reads more than one place (SPEC2, 2026-10-07): each image
+arrives keyed by the source that found it — `onc` Onclusive social listening,
+`igh` Instagram hashtag posts (Apify), `ggl` Google images (Serper), `bnb` the
+owner's own Bannerbear project templates. The prefix is stored as
+harvest_meta.source. Two per-request options exist for those sources:
+  * store_image=false — keep the structural spec and the source link but NOT a
+    copy of the picture (BM2 sends it for a third party's web page image);
+  * spec_hint — layer geometry the source already knows (Bannerbear's
+    config.objects). Stored for a human reading the row and NEVER trusted for a
+    gate: the vision read stays the source of truth. Sized like BM2 sizes it
+    (compact UTF-8 JSON, at most 16 KB); one over that is DROPPED
+    (harvest_meta.spec_hint_dropped='oversize'), never a reason to refuse the
+    image.
+The written design rubric BM2 screens against lives in BM2; what it sends here
+(e.g. meta.rubric_version) is provenance only and is stored with the rest of
+meta, never read by a gate.
+
 TENANT-FREE, like the rest of the catalogue. Every connection is acquire(None);
 nothing here reads a brand's library, takes a tenant id, or writes a brand's
 name. Only niche tag TEXT crosses in.
@@ -47,14 +64,24 @@ logger = logging.getLogger(__name__)
 
 # ── inputs ──────────────────────────────────────────────────────────────────
 
-SOURCE_KEY_RE = re.compile(r"^onc:[0-9a-f]{40}$")
+# One 3-letter prefix per SOURCE (not per vendor: fetch hosts, budgets and retry
+# routing differ by source), then ':' + the sha1 hex of the image URL.
+#   onc  Onclusive social listening        igh  Apify Instagram hashtag posts
+#   ggl  Google images via Serper          bnb  the owner's Bannerbear templates
+# Reserved for sources not built yet, and REFUSED until they are added here:
+#   pin  Pinterest   fba  Facebook Ad Library   cva  Canva (owner's own designs)
+SOURCE_PREFIXES: tuple[str, ...] = ("onc", "igh", "ggl", "bnb")
+SOURCE_KEY_RE = re.compile(r"^(" + "|".join(SOURCE_PREFIXES) + r"):[0-9a-f]{40}$")
 MAX_BYTES = 15 * 1024 * 1024
 MAX_NICHES = 4
 MAX_NICHE_LEN = 60
 MAX_RUN_ID = 64
 MAX_BY = 200
 MAX_META_BYTES = 4096
-MEDIA = ("FACEBOOK", "INSTAGRAM", "LINKEDIN", "TIKTOK", "OTHER")
+MAX_SPEC_HINT_BYTES = 16 * 1024
+# WEB: an image found on an ordinary web page (ggl). TEMPLATE: a designed
+# template from the owner's own template tool (bnb). Anything else is OTHER.
+MEDIA = ("FACEBOOK", "INSTAGRAM", "LINKEDIN", "TIKTOK", "WEB", "TEMPLATE", "OTHER")
 BY_PREFIX = "harvest:"
 AUTO_REVIEWER = "harvest:auto"
 HELD_PREFIX = "auto-capped:"
@@ -168,10 +195,50 @@ def resolve_policy(policy: dict | None) -> dict:
     return out
 
 
+def source_of(source_key: str) -> str:
+    """The source prefix of a VALID source_key ('onc', 'igh', 'ggl', 'bnb')."""
+    return source_key.split(":", 1)[0]
+
+
+def spec_hint_size(spec_hint) -> int:
+    """The hint's size in bytes, measured EXACTLY as BM2 sizes it before sending:
+    compact separators, UTF-8 (non-ASCII kept, not \\u-escaped). json.dumps'
+    defaults add a space after every ',' and ':' and escape non-ASCII, which
+    inflates the same hint by roughly 9-15% — so a hint BM2 had trimmed to fit
+    would read as oversize here."""
+    return len(json.dumps(spec_hint, ensure_ascii=False, separators=(",", ":"),
+                          default=str).encode())
+
+
+def _validate_spec_hint(spec_hint) -> tuple[Any, str | None]:
+    """(hint, dropped): the hint to store, and why it was dropped, if it was.
+
+    A hint of the wrong TYPE is a malformed request (400). An OVERSIZE hint is
+    not: the hint is never trusted for anything, so losing it costs nothing,
+    while refusing the image would cost the image for good (BM2 records a 400
+    as the final verdict rejected_input). It is dropped with a warning and the
+    row records harvest_meta.spec_hint_dropped = 'oversize'."""
+    if spec_hint is None:
+        return None, None
+    if not isinstance(spec_hint, (dict, list)):
+        raise HarvestInputError("spec_hint must be a JSON object or array")
+    try:
+        size = spec_hint_size(spec_hint)
+    except (TypeError, ValueError):
+        raise HarvestInputError("spec_hint is not JSON-serialisable") from None
+    if size > MAX_SPEC_HINT_BYTES:
+        logger.warning("harvest: spec_hint dropped, %d bytes > %d (the image is still read)",
+                       size, MAX_SPEC_HINT_BYTES)
+        return None, "oversize"
+    return spec_hint, None
+
+
 def _validate(image, *, source_key, niches, run_id, by, source_url, title,
-              source_media, meta) -> dict:
+              source_media, meta, spec_hint=None) -> dict:
     if not isinstance(source_key, str) or not SOURCE_KEY_RE.match(source_key):
-        raise HarvestInputError("source_key must be 'onc:' + 40 lowercase hex")
+        raise HarvestInputError(
+            "source_key must be one of " + ", ".join(f"'{p}:'" for p in SOURCE_PREFIXES)
+            + " + 40 lowercase hex")
     tags = parse_niches(niches)
     run_id = str(run_id or "").strip()
     if not 1 <= len(run_id) <= MAX_RUN_ID:
@@ -193,6 +260,7 @@ def _validate(image, *, source_key, niches, run_id, by, source_url, title,
         if isinstance(exc, HarvestInputError):
             raise
         raise HarvestInputError("meta is not JSON-serialisable") from None
+    spec_hint, hint_dropped = _validate_spec_hint(spec_hint)
     if not isinstance(image, (bytes, bytearray)) or not image:
         raise HarvestInputError("no image")
     if len(image) > MAX_BYTES:
@@ -201,7 +269,8 @@ def _validate(image, *, source_key, niches, run_id, by, source_url, title,
     if not mime:
         raise HarvestUnsupportedType("not a PNG, JPEG or WebP image")
     return {"tags": tags, "run_id": run_id, "by": by, "media": media,
-            "meta": meta, "mime": mime,
+            "meta": meta, "mime": mime, "source": source_of(source_key),
+            "spec_hint": spec_hint, "spec_hint_dropped": hint_dropped,
             "source_url": str(source_url or "")[:500], "title": str(title or "")[:200]}
 
 
@@ -330,7 +399,7 @@ async def harvest_ingest(
     image: bytes, *, source_key: str, niches: list[str], run_id: str, by: str,
     source_url: str = "", title: str = "", source_media: str = "OTHER",
     approve: bool = False, dry_run: bool = False, meta: dict | None = None,
-    policy: dict | None = None,
+    policy: dict | None = None, store_image: bool = True, spec_hint=None,
 ) -> dict:
     """Read ONE harvested image and decide what the catalogue does with it.
 
@@ -341,6 +410,10 @@ async def harvest_ingest(
 
     dry_run runs every step up to the decision — the vision read IS paid — and
     writes nothing: no row, no stored image.
+
+    store_image=False writes the row (spec, source link, provenance) but keeps
+    no copy of the picture: stored_image_uri is ''. spec_hint is stored in
+    harvest_meta and read by nothing here — every gate runs on the vision read.
     """
     from . import design_cloner
     from . import design_templates as dt
@@ -351,7 +424,7 @@ async def harvest_ingest(
     # 1. the request itself
     v = _validate(image, source_key=source_key, niches=niches, run_id=run_id, by=by,
                   source_url=source_url, title=title, source_media=source_media,
-                  meta=meta)
+                  meta=meta, spec_hint=spec_hint)
     pol = resolve_policy(policy)
     tags, primary = v["tags"], v["tags"][0]
 
@@ -408,8 +481,16 @@ async def harvest_ingest(
     shape.update(layout_type=ltype, label=str(named.get("label") or ""),
                  fingerprint=fp, family_key=fam)
 
+    # Derived provenance wins over anything the caller put under the same key.
     stored_meta = {**v["meta"], "sha256": hashlib.sha256(bytes(image)).hexdigest(),
-                   "source_media": v["media"]}
+                   "source_media": v["media"], "source": v["source"],
+                   "image_stored": bool(store_image)}
+    stored_meta.pop("spec_hint", None)
+    stored_meta.pop("spec_hint_dropped", None)
+    if v["spec_hint"] is not None:
+        stored_meta["spec_hint"] = v["spec_hint"]
+    if v["spec_hint_dropped"]:
+        stored_meta["spec_hint_dropped"] = v["spec_hint_dropped"]
 
     # 7. the decision and 8. the write, in ONE transaction under a lock on the
     # exact primary niche tag: two requests for one niche cannot both read
@@ -476,8 +557,11 @@ async def harvest_ingest(
                        stored_status=row["status"] if row else None,
                        niches=stored_niches, **shape)
 
-    # 9. a NEW row — only now is the picture kept.
-    uri = await _store_image(row["id"], image, source_key=source_key, mime=v["mime"])
+    # 9. a NEW row — only now is the picture kept, and only if the caller may
+    # keep a copy of it (store_image=False: a third party's web image).
+    uri = ""
+    if store_image:
+        uri = await _store_image(row["id"], image, source_key=source_key, mime=v["mime"])
     if verdict == "approved":
         logger.info("harvest: approved %s (%s) into %s", row["id"], ltype, primary)
     return _result(verdict, reason, started=started, dry_run=False, vision_called=True,
@@ -594,4 +678,5 @@ async def harvest_revoke(run_id: str, by: str) -> dict:
 __all__ = ["harvest_ingest", "harvest_stats", "harvest_revoke", "decide",
            "resolve_policy", "parse_niches", "canon_niche", "sniff", "DEFAULT_POLICY",
            "HarvestInputError", "HarvestTooLarge", "HarvestUnsupportedType",
-           "SOURCE_KEY_RE", "MAX_BYTES"]
+           "SOURCE_KEY_RE", "SOURCE_PREFIXES", "MEDIA", "MAX_BYTES",
+           "MAX_SPEC_HINT_BYTES", "source_of", "spec_hint_size"]

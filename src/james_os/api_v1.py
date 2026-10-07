@@ -3180,6 +3180,19 @@ def _form_json(name: str, raw: str | None) -> dict | None:
     return val
 
 
+def _form_json_any(name: str, raw: str | None) -> dict | list | None:
+    """An optional JSON object OR array (blank = absent)."""
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        val = json.loads(raw)
+    except ValueError:
+        raise HTTPException(400, f"{name} is not valid JSON") from None
+    if not isinstance(val, (dict, list)):
+        raise HTTPException(400, f"{name} must be a JSON object or array")
+    return val
+
+
 def _form_niches(niche: list[str], niches: list[str]) -> list[str]:
     """The niche tags of a harvest upload, one tag per item.
 
@@ -3215,6 +3228,8 @@ async def v1_house_layouts_harvest(
     dry_run: str = Form("false"),
     policy: str = Form(""),
     meta: str = Form(""),
+    store_image: str = Form("true"),
+    spec_hint: str = Form(""),
 ) -> dict[str, Any]:
     """Read ONE harvested image and decide what the catalogue does with it.
 
@@ -3222,6 +3237,13 @@ async def v1_house_layouts_harvest(
     image it could judge. 400 for a missing or invalid field, 413 over 15 MB,
     415 for bytes that are not PNG, JPEG or WebP. Anything else is a fault the
     caller should retry.
+
+    store_image (default true; blank = default): false keeps the row's spec and
+    source link but no copy of the picture. spec_hint: optional JSON (object or
+    array) the source already knows about the layout — stored in harvest_meta,
+    never trusted for a gate. Over 16 KB of compact UTF-8 JSON it is dropped
+    (harvest_meta.spec_hint_dropped='oversize') and the image is still judged;
+    only a hint that is not a JSON object/array is a 400.
     """
     from . import house_harvest
 
@@ -3233,6 +3255,9 @@ async def v1_house_layouts_harvest(
     want_dry = _form_bool("dry_run", dry_run)
     pol = _form_json("policy", policy)
     info = _form_json("meta", meta)
+    want_store = (True if not str(store_image or "").strip()
+                  else _form_bool("store_image", store_image))
+    hint = _form_json_any("spec_hint", spec_hint)
     # Read one byte past the ceiling, so an oversized upload is refused without
     # holding all of it.
     data = await files[0].read(house_harvest.MAX_BYTES + 1)
@@ -3241,7 +3266,7 @@ async def v1_house_layouts_harvest(
             data, source_key=source_key.strip(), niches=tags,
             run_id=run_id, by=by, source_url=source_url, title=title,
             source_media=source_media, approve=want_approve, dry_run=want_dry,
-            meta=info, policy=pol)
+            meta=info, policy=pol, store_image=want_store, spec_hint=hint)
     except house_harvest.HarvestInputError as exc:
         raise HTTPException(exc.status, str(exc)) from None
 

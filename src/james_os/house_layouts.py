@@ -429,7 +429,10 @@ _CATALOGUE_COLS_PRE_071 = """id::text, kind, spec, fingerprint, family_key, sour
                        source_image_uri, layout_type, label, title, niches, uploaded_by,
                        status, review_note, reviewed_by, reviewed_at,
                        adopted_count, approvals, rejections, qa_passes, qa_fails, created_at"""
-_CATALOGUE_COLS = _CATALOGUE_COLS_PRE_071 + ", harvest_run_id, source_key, harvest_meta"
+# harvest_meta minus spec_hint: a source's layer geometry (up to 16 KB a row) is
+# stored for the record, but a screen listing hundreds of rows does not need it.
+_CATALOGUE_COLS = (_CATALOGUE_COLS_PRE_071
+                   + ", harvest_run_id, source_key, (harvest_meta - 'spec_hint') AS harvest_meta")
 
 # A row came from the nightly harvest. Two signals, either is enough: the run id
 # is the durable one, the uploaded_by prefix covers a row whose run id was lost.
