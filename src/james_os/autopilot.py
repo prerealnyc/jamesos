@@ -49,6 +49,18 @@ DEFAULT_CONFIG = {
     # (the default, normal sentence captions); 'bold_pop' = big bold white with a
     # black outline; 'cinematic_scatter' = kinetic editorial words to the sides.
     "default_caption_style": "clean_white",
+    # Where captions sit on the frame, as a percentage from the top (the block's
+    # CENTRE). "" = the automatic lower-third placement (78%), which keeps them
+    # off a speaker's face. A brand that wants them lower, higher or dead centre
+    # sets it once here and every reel follows. Clamped to the readable band
+    # (18-80%) at render time — outside it the platform's own UI covers them.
+    "default_caption_y": "",
+    # Burn no captions at all. Distinct from an empty caption style, which means
+    # "pick one for me" rather than "draw none".
+    "default_captions_off": False,
+    # Where the big boxed HEADLINE sits, same units as default_caption_y.
+    # "" = the automatic placement (57%), below the face.
+    "default_hook_y": "",
     # How batch reels choose their caption style:
     #   "rotate" — each video gets the next style in the showcase rotation
     #              (compare looks on real renders, finalise favourites);

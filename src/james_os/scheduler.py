@@ -95,6 +95,9 @@ async def _run_one(job: dict, registry: dict) -> None:
     try:
         await handler(tenant_id=job["tenant_id"], config=cfg or {})
         await _mark(job["id"], "ok")
+        # Log successes too, not only failures — else a healthy scheduler leaves no
+        # evidence in the logs that it ran.
+        print(f"[scheduler] {job['kind']} for {job['tenant_id']}: ok")
     except Exception as e:  # noqa: BLE001 — one tenant's failure never stops the loop
         print(f"[scheduler] {job['kind']} for {job['tenant_id']}: {e}")
         await _mark(job["id"], "failed", str(e))
@@ -115,6 +118,7 @@ async def scheduler_loop() -> None:
 
             if jobs:
                 await asyncio.gather(*(_guarded(j) for j in jobs))
+                print(f"[scheduler] tick ran {len(jobs)} job(s)")
         except asyncio.CancelledError:
             print("[scheduler] loop stopped")
             raise

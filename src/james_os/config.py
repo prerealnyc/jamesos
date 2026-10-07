@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     # for live status). Never logged, never returned by any endpoint —
     # only their presence (bool) is ever exposed.
     openai_api_key: str = ""       # Whisper transcription, GPT, Sora
+    unsplash_access_key: str = ""  # UNSPLASH_ACCESS_KEY — real stock photo when a brand's hero library is empty (before AI draw)
     # When set, long-form transcription uses AssemblyAI (speaker diarization +
     # word timestamps) instead of Whisper — lets the reel cutter avoid crossing
     # into the next speaker's turn. Empty = fall back to Whisper (no speakers).

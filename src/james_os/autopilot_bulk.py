@@ -242,6 +242,22 @@ async def _make_text_post(
                     "hero photo: %s", force_format, _exc,
                 )
                 image_url, fmt = None, None
+        elif image_kind == "scene":
+            # The generative "imagine this" door: a fresh brand-relevant image drawn
+            # from the description (gpt-image-1 + the brand's visual guidelines), no
+            # card composited on top. Any failure falls through to a real hero photo
+            # below, so the post is never left imageless.
+            try:
+                from .main import _generate_scene_post_image
+                image_url, fmt = await _generate_scene_post_image(
+                    draft.action_id, idea.get("topic", ""),
+                    draft.draft or idea.get("topic", ""), tenant_id, feedback=feedback,
+                )
+            except Exception as _exc:  # noqa: BLE001 — scene failed → hero photo below
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "scene image failed — falling back to a hero photo: %s", _exc)
+                image_url, fmt = None, None
         if not image_url:
             image_url = await _attach_image_to_action(
                 draft.action_id, idea, platform, draft.draft, tenant_id

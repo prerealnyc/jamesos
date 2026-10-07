@@ -964,7 +964,98 @@ async def generate_post_image_with_refs(
     return png, meta, ""
 
 
+async def edit_hero_photo(
+    photo_bytes: bytes,
+    instruction: str,
+    *,
+    size: str = "1024x1024",
+    strong: bool = False,
+    tenant_id=None,
+) -> tuple[bytes | None, dict, str]:
+    """Image-to-image edit of ONE existing photo — the ChatGPT/Gemini "here is the
+    image, apply this change" behaviour behind the copilot's "Change the image" box.
+
+    Two modes:
+      • DEFAULT (strong=False): a faithful tweak — feeds the photo into gpt-image-1's
+        edit endpoint with input_fidelity="high", so the shot is PRESERVED and only the
+        owner's change is applied ("brighter", "warmer light", "make the sky orange").
+      • strong=True: a VARIATION — reimagine the photo as a visibly different image on
+        the same theme (no input_fidelity pin), for "change/swap the photo" on a brand
+        with no other library photo to swap in, so the owner still gets a genuinely
+        different picture instead of a look-alike.
+
+    Either way the caller re-composites the brand's SAME text/layout on top with Pillow
+    — the on-card text is NEVER sent to the model, so it can't be mangled.
+
+    Returns (png, meta, err); err is a human line on any miss so the caller can fall
+    back honestly (e.g. a text-only card has no photo to relight)."""
+    client = _client()
+    if client is None:
+        return None, {}, "No OpenAI key — add OPENAI_API_KEY in Settings to edit images."
+    instr = (instruction or "").strip()
+    if not instr:
+        return None, {}, "instruction is required"
+    if not photo_bytes:
+        return None, {}, "no photo to edit"
+    from io import BytesIO
+
+    # Match the model's output size to the photo's aspect so the edit doesn't crop
+    # the shot (gpt-image only takes fixed sizes). Best-effort — keep `size` on miss.
+    try:
+        from PIL import Image as _Img
+        with _Img.open(BytesIO(photo_bytes)) as _im:
+            _w, _h = _im.size
+        _ar = (_w / _h) if _h else 1.0
+        size = "1536x1024" if _ar >= 1.2 else "1024x1536" if _ar <= 0.83 else "1024x1024"
+    except Exception:  # noqa: BLE001 — a readable size default already stands
+        pass
+
+    image_files = [("current.png", BytesIO(photo_bytes), "image/png")]
+    if strong:
+        # VARIATION: produce a visibly DIFFERENT image on the same theme (used when a
+        # swap has no other real photo to offer). Change composition/angle/setting so it
+        # reads as a new photo — no input_fidelity pin, so it actually changes.
+        edit_prompt = (
+            "Reimagine this photograph as a visibly DIFFERENT, fresh image on the same "
+            f"theme: {instr}. Change the composition, angle and setting so it clearly "
+            "reads as a new photo, keeping it realistic and on-brand. Do not add any "
+            "text, captions, logos or watermarks."
+        )[:1000]
+    else:
+        # Change only what they asked; keep the rest of the photo as-is. No brand
+        # directive and no text — the compositor re-applies the brand text/layout after.
+        edit_prompt = (
+            "Edit this photograph. Apply ONLY this change, keeping the same subject, "
+            "composition and framing and everything the change does not mention: "
+            f"{instr}. Do not add any text, captions, logos or watermarks."
+        )[:1000]
+    kwargs = dict(model=settings.image_model, image=image_files, prompt=edit_prompt, size=size, n=1)
+    try:
+        if strong:
+            # No input_fidelity pin — a variation SHOULD depart from the input.
+            res = await client.images.edit(**kwargs)
+        else:
+            try:
+                # input_fidelity="high" is what makes this an EDIT (preserve the input)
+                # rather than a fresh generation. It postdates older SDKs, so fall back
+                # cleanly if the installed openai doesn't accept the kwarg.
+                res = await client.images.edit(**kwargs, input_fidelity="high")
+            except TypeError:
+                res = await client.images.edit(**kwargs)
+    except Exception as e:  # noqa: BLE001
+        return None, {}, f"image edit failed: {e}"
+    item = res.data[0] if res.data else None
+    b64 = getattr(item, "b64_json", None) if item else None
+    if not b64:
+        return None, {}, "image model returned no edited bytes"
+    try:
+        png = base64.b64decode(b64)
+    except Exception as e:  # noqa: BLE001
+        return None, {}, f"could not decode edited image: {e}"
+    return png, {"size": size, "model": settings.image_model, "instruction": instr}, ""
+
+
 __all__ = [
     "generate_seed_image", "generate_post_image",
-    "generate_post_image_with_refs", "POST_STYLES",
+    "generate_post_image_with_refs", "edit_hero_photo", "POST_STYLES",
 ]

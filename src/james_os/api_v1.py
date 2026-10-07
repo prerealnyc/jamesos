@@ -46,6 +46,7 @@ from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from . import caption_backfill, caption_burn
 from .config import settings
 from .db import acquire
 
@@ -154,6 +155,18 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _new_job(job_type: str, tenant_id: Any) -> dict[str, Any]:
+    """A job in the shape `GET /v1/jobs/{id}` reads back.
+
+    That poller dereferences "tenant_id" (to refuse another tenant's job) and
+    "type" directly, so a job missing either is a 500 on every poll rather than
+    a job that merely looks odd. Build them here so the shape stays one thing.
+    """
+    return {"id": uuid.uuid4().hex, "type": job_type, "tenant_id": str(tenant_id),
+            "status": "running", "result": None, "error": None,
+            "created_at": _now(), "updated_at": _now()}
+
+
 def _put_job(job: dict[str, Any]) -> None:
     # Bound memory, but ONLY evict jobs that have finished — never drop a job whose
     # background task is still running (its result would become unpollable).
@@ -224,7 +237,7 @@ class GenerateRequest(BaseModel):
     brief: str = Field(..., min_length=1, description="topic (post) or topic/script (video)")
     platform: str = "instagram"
     title: str | None = None
-    image_kind: Literal["james", "designed"] = "james"   # post only
+    image_kind: Literal["james", "designed", "scene"] = "james"   # post only; scene = a fresh gpt-image-1 draw from the brief
     # post/designed only: pin the layout for an explicit build (e.g. 'carousel').
     # An explicit force is honored even when the design switch is off.
     force_format: str = ""
@@ -606,14 +619,20 @@ async def v1_queue(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
             "payload->>'regen_of' AS regen_of, payload->>'version' AS version, "
             "payload->>'regen_feedback' AS regen_feedback, "
             "created_at FROM actions "
-            "WHERE action_type='content' AND status='pending' "
-            "ORDER BY created_at DESC LIMIT $1", lim)
+            # EXPLICIT tenant filter, not RLS alone: if the connecting role isn't
+            # FORCE-bound by RLS (or a read runs under a default tenant), an unscoped
+            # SELECT leaks every brand's pending posts into this queue — the
+            # Turtleback/Spaceport-in-James's-queue cross-brand leak.
+            "WHERE action_type='content' AND status='pending' AND tenant_id = $2 "
+            "ORDER BY created_at DESC LIMIT $1", lim, tenant_id)
         # Only SUCCEEDED renders are approvable; queued/rendering/failed are not.
         vids = await conn.fetch(
             "SELECT id, status, review_status, title, platform, final_url, "
             "created_at FROM video_productions "
-            "WHERE review_status IS NULL AND status='succeeded' "
-            "ORDER BY created_at DESC LIMIT $1", lim)
+            # Same explicit tenant scoping — an unscoped read put foreign brands'
+            # finished videos into this brand's approval queue.
+            "WHERE review_status IS NULL AND status='succeeded' AND tenant_id = $2 "
+            "ORDER BY created_at DESC LIMIT $1", lim, tenant_id)
     def _arr(v):
         # payload->'media_urls' comes back as jsonb text under asyncpg — parse it
         # so a carousel surfaces its full ordered slide list to the adopter.
@@ -704,7 +723,8 @@ async def v1_queue_find_by_image(url: str, tenant_id: TenantDep) -> dict[str, An
         row = await conn.fetchrow(
             "SELECT id, status FROM actions WHERE action_type='content' "
             "AND (payload->>'image_url' = $1 OR payload->>'media_url' = $1) "
-            "ORDER BY created_at DESC LIMIT 1", u)
+            "AND tenant_id = $2 "
+            "ORDER BY created_at DESC LIMIT 1", u, tenant_id)
     if row is None:
         raise HTTPException(404, "no draft has that picture")
     return {"id": str(row["id"]), "status": row["status"]}
@@ -730,7 +750,8 @@ async def v1_queue_rejected(tenant_id: TenantDep, limit: int = 50) -> dict[str, 
             "payload->>'image_url' AS image_url, "
             "rejection_reason_code AS reason, created_at, decided_at "
             "FROM actions WHERE action_type='content' AND status='rejected' "
-            "ORDER BY decided_at DESC NULLS LAST, created_at DESC LIMIT $1", lim)
+            "AND tenant_id = $2 "
+            "ORDER BY decided_at DESC NULLS LAST, created_at DESC LIMIT $1", lim, tenant_id)
         ids = [str(r["id"]) for r in rows]
         # Regenerations pointing back at any of them. Deliberately NOT limited to
         # pending: a redo that was itself approved or rejected still belongs in
@@ -806,6 +827,11 @@ class RegenerateBody(BaseModel):
     scene_prompt: str = ""
     # The owner is editing by hand (not the automatic reject-and-rebuild loop).
     by_owner: bool = False
+    # The owner asked to change how the PHOTO looks ("brighter", "make the sky
+    # orange") — edit the picture pixels in place and keep the same layout + text,
+    # instead of re-authoring the card. When unset, the feedback text is classified
+    # (see _wants_photo_edit) so any caller still gets the in-place behaviour.
+    edit_photo: bool = False
 
 
 # Colours a "make the text <colour>" instruction can request. White/black lead so
@@ -910,6 +936,41 @@ _KEEP_PHOTO = (
     "picture same", "keep the image", "keep the photo", "keep the picture",
     "keep image", "keep photo",
 )
+
+# Tone/light/colour/mood/scene changes to the PHOTO itself — the ChatGPT/Gemini
+# "here is the image, apply this change" edits. These edit the picture pixels in
+# place (imagegen.edit_hero_photo) and keep the SAME layout + on-card text.
+_PHOTO_EDIT = (
+    "brighter", "brighten", "darker", "darken", "lighter", "less bright",
+    "warmer", "cooler", "warm light", "cooler light", "warmer light", "golden hour",
+    "more dramatic", "dramatic", "moodier", "moody", "cinematic",
+    "more contrast", "contrast", "more vibrant", "vibrant", "saturated",
+    "desaturate", "desaturated", "muted", "faded", "vintage", "sepia",
+    "black and white", "b&w", "grayscale", "greyscale", "monochrome",
+    "sharper", "softer", "soften", "blur the background", "blurred background",
+    "sunset", "sunrise", "orange sky", "make the sky", "change the sky", "relight",
+    "re-light", "washed out", "punchier",
+)
+
+
+def _wants_photo_edit(feedback: str) -> bool:
+    """True for a change to how the PHOTO looks (light/colour/tone/mood/scene) that
+    should be applied to the picture pixels IN PLACE — "brighter", "warmer light",
+    "make the sky orange", "more dramatic" — as opposed to swapping the photo,
+    changing the layout, or editing the on-card TEXT. Deliberately conservative: any
+    mention of text/copy/font is a text edit, and a swap phrase is a new photo, so
+    both defer to their own paths."""
+    f = (feedback or "").lower()
+    if not f:
+        return False
+    if any(t in f for t in (
+        "text", "caption", "headline", "title", "font", "word", "copy", "wording",
+        "less text", "more text", "smaller", "bigger",
+    )):
+        return False
+    if _wants_new_photo(feedback):
+        return False
+    return any(p in f for p in _PHOTO_EDIT)
 
 
 # The layout names imagegen._FORMAT_MAP can actually resolve. Anything else in
@@ -1054,7 +1115,7 @@ async def _rebuild_cloned_action(
 async def _run_regenerate(
     job_id: str, tenant_id: UUID, parent_id: UUID, feedback: str, force_format: str,
     *, canvas: tuple[int, int] | None = None, extra_sizes: tuple[tuple[int, int], ...] = (),
-    scene_prompt: str = "", by_owner: bool = False,
+    scene_prompt: str = "", by_owner: bool = False, edit_photo: bool = False,
 ) -> None:
     """Rebuild the IMAGE for a rejected post, keeping its words.
 
@@ -1150,6 +1211,14 @@ async def _run_regenerate(
         layout = _layout_intent(reason)
         want_photo = _wants_photo_present(reason)
         new_photo = _wants_new_photo(reason) or (want_photo and not _keeps_photo(reason))
+        # A PHOTO EDIT ("brighter", "make the sky orange") edits the CURRENT photo's
+        # pixels in place and keeps the same layout + on-card text — the ChatGPT-style
+        # behaviour. Only when there is a photo to edit, they didn't ask for a new
+        # one or a new layout, and no explicit format was pinned.
+        photo_edit = (
+            (edit_photo or _wants_photo_edit(reason))
+            and not new_photo and not want_photo and not force_format and bool(prev_photo)
+        )
 
         if new_photo:
             eff_force_photo = ""
@@ -1232,6 +1301,9 @@ async def _run_regenerate(
                     force_photo=eff_force_photo,
                     base_spec=base if keep_the_card else None,
                     extra_sizes=extra_sizes,
+                    # In-place photo edit: keep the spec (same layout + text), edit the
+                    # CURRENT photo's pixels. reason is the owner's change ("brighter").
+                    edit_photo_instruction=(reason if photo_edit else ""),
                 )
         job["result"] = {
             "action_id": str(new_id), "regen_of": str(parent_id),
@@ -1292,7 +1364,7 @@ async def v1_post_regenerate(
             (int(p[0]), int(p[1])) for p in body.sizes
             if isinstance(p, (list, tuple)) and len(p) == 2
             and int(p[0]) > 0 and int(p[1]) > 0 and (int(p[0]), int(p[1])) != (_w, _h)),
-        scene_prompt=body.scene_prompt, by_owner=body.by_owner))
+        scene_prompt=body.scene_prompt, by_owner=body.by_owner, edit_photo=body.edit_photo))
     return {"job_id": job["id"], "status": "queued"}
 
 
@@ -2207,6 +2279,20 @@ _LEARN_RUNNING: set[str] = set()
 class DesignReferenceRequest(BaseModel):
     image_url: str = Field(..., min_length=8, description="The post to learn a layout from")
     source_url: str = ""
+    # Whose layout this is. 'own' means the BRAND'S OWN post, read back so it
+    # keeps making the kind of thing it already makes — and it must be labelled
+    # as such, because house_layouts shares by a whitelist of source kinds and
+    # 'reference' is on it. Mislabelling a brand's own design would publish it
+    # into the cross-brand catalogue. learn_from_reference has always taken this
+    # argument; only the route forgot to pass it, so everything minted here
+    # landed as 'reference' whatever it really was.
+    source_kind: str = "reference"
+
+
+# What this route may mint. An allowlist rather than a pass-through, because the
+# value reaches a CHECK constraint and a sharing whitelist: a typo would be a 500
+# at best and a cross-brand leak at worst.
+_REFERENCE_KINDS = frozenset({"reference", "own"})
 
 
 class DesignVerdictRequest(BaseModel):
@@ -2307,10 +2393,12 @@ async def v1_design_templates_reference(
             img = r.content
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(422, f"could not fetch that image: {str(exc)[:120]}") from exc
+    kind = body.source_kind if body.source_kind in _REFERENCE_KINDS else "reference"
     uri, _ = await asyncio.to_thread(
-        media_storage().save, str(tenant_id), img, "reference.png")
+        media_storage().save, str(tenant_id), img, f"{kind}.png")
     tid = await design_templates.learn_from_reference(
-        tenant_id, img, source_url=body.source_url or body.image_url, image_uri=uri)
+        tenant_id, img, source_url=body.source_url or body.image_url, image_uri=uri,
+        source_kind=kind)
     if not tid:
         raise HTTPException(422, "no usable layout could be read from that image")
     return {"template_id": tid, "stored_image_uri": uri}
@@ -2347,6 +2435,513 @@ async def v1_design_template_verdict(
 
     await design_templates.mark_verdict(tenant_id, str(template_id), body.approved)
     return {"ok": True}
+
+
+# ── the video editor ─────────────────────────────────────────────────────────
+#
+# A rendered reel that is 90% right used to have one lever: regenerate — another
+# credit, another wait, and a DIFFERENT video, so the 90% that was fine went with
+# the 10% that wasn't. Seven of the last eight renders on this tenant were
+# rejected. These endpoints edit the FILE instead: trim the dead air, fix the
+# words on screen, put the logo on, reframe it for the network, pick the cover.
+# One ffmpeg pass (see video_edit.py), saved to durable storage, so what is saved
+# is exactly what plays.
+
+_VIDEO_MAX_BYTES = 400 * 1024 * 1024
+
+
+async def _fetchable(url: str) -> bool:
+    """Only https, and only a host that resolves to a public address — the same
+    bar the job callbacks clear. The editor hands us a URL from the owner's own
+    library, but an unguarded fetcher is an SSRF hole whatever it is fed."""
+    try:
+        u = urlparse(url)
+    except ValueError:
+        return False
+    if u.scheme != "https" or not u.hostname:
+        return False
+    try:
+        loop = asyncio.get_running_loop()
+        infos = await loop.getaddrinfo(u.hostname, u.port or 443, type=socket.SOCK_STREAM)
+    except (OSError, ValueError):
+        return False
+    for info in infos or []:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return False
+    return bool(infos)
+
+
+async def _download_capped(url: str, dst: str, cap: int = _VIDEO_MAX_BYTES) -> int:
+    """Stream to disk, stopping at the cap. A 60s reel is ~60 MB; loading one into
+    memory to edit it is how a container dies on the third concurrent edit."""
+    import httpx
+
+    total = 0
+    with open(dst, "wb") as fh:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as c:
+            async with c.stream("GET", url, follow_redirects=True) as r:
+                r.raise_for_status()
+                async for chunk in r.aiter_bytes(1 << 20):
+                    total += len(chunk)
+                    if total > cap:
+                        raise ValueError("that video is too large to edit (400 MB cap)")
+                    fh.write(chunk)
+    return total
+
+
+async def _brand_video_bits(tenant_id) -> dict:
+    """The brand's own palette, typeface, logo and handle — what the editor offers
+    as ready-made choices, so a caption added to a reel is in the brand's type and
+    colours rather than whatever the browser defaults to. Four independent reads;
+    one missing piece must not cost the other three."""
+    from .brand_identity import ensure_brand_palette, get_brand_font
+    from .brand_kit import get_brand_kit
+    from .media import list_media
+
+    raw_palette, raw_font, raw_kit, raw_logos = await asyncio.gather(
+        ensure_brand_palette(tenant_id), get_brand_font(tenant_id),
+        get_brand_kit(tenant_id), list_media(role="brand_logo", tenant_id=tenant_id),
+        return_exceptions=True,
+    )
+
+    def _ok(v):
+        return None if isinstance(v, BaseException) else v
+
+    kit = _ok(raw_kit) or {}
+    logos = _ok(raw_logos) or []
+    return {
+        "palette": _palette_roles(_ok(raw_palette) or {}),
+        "font_theme": str(_ok(raw_font) or "bold"),
+        "logo_url": str((logos[0] if logos else {}).get("uri") or ""),
+        "handle": str(kit.get("handle") or ""),
+        "display_name": str(kit.get("display_name") or ""),
+    }
+
+
+class VideoLayers(BaseModel):
+    video_url: str
+
+
+@router.post("/video/edit/layers")
+async def v1_video_layers(body: VideoLayers, tenant_id: TenantDep) -> dict[str, Any]:
+    """What the editor needs to open a video: how long it is, what shape it is,
+    whether it carries sound, and the brand's own palette, typeface, logo and
+    handle. ffprobe reads the header over the network — the file itself is only
+    downloaded when an edit is actually rendered."""
+    from . import video_edit
+
+    url = (body.video_url or "").strip()
+    if not await _fetchable(url):
+        raise HTTPException(422, "video_url must be an https URL on a public host")
+    info = await video_edit.probe(url)
+    if not info.get("width"):
+        raise HTTPException(422, "could not read that video")
+    return {**info, **await _brand_video_bits(tenant_id)}
+
+
+class VideoEditRequest(BaseModel):
+    video_url: str
+    doc: dict = Field(default_factory=dict)
+    # A cover is only made when the doc asks for one; the poster a network shows
+    # is otherwise whatever frame it picks itself.
+    callback_url: str | None = None
+
+
+async def _run_video_edit(job_id: str, tenant_id, req: VideoEditRequest) -> None:
+    import tempfile
+
+    from . import font_themes, video_edit
+    from .image_compose import _ANTON, _ARCHIVO
+    from .media import storage as media_storage
+
+    job = _JOBS.get(job_id)
+    if job is None:
+        return
+    try:
+        doc = video_edit.normalize(req.doc)
+        bits = await _brand_video_bits(tenant_id)
+        theme = font_themes.resolve(bits.get("font_theme")) or {}
+        fonts = {"display": theme.get("display") or _ANTON,
+                 "body": theme.get("body") or _ARCHIVO}
+        with tempfile.TemporaryDirectory() as td:
+            src = f"{td}/source.mp4"
+            await _download_capped(req.video_url, src)
+
+            logo_path = None
+            if doc.get("logo") and bits.get("logo_url"):
+                try:
+                    logo_path = f"{td}/logo.png"
+                    await _download_capped(bits["logo_url"], logo_path, cap=20 * 1024 * 1024)
+                except Exception:  # noqa: BLE001 — a missing logo must not cost the edit
+                    _log.warning("video edit: could not fetch the brand logo", exc_info=True)
+                    logo_path = None
+
+            out = await video_edit.render(src, doc, fonts=fonts, logo_path=logo_path,
+                                          work_dir=td)
+            if not out.get("ok"):
+                job.update(status="failed", error=str(out.get("reason") or "render failed"),
+                           updated_at=_now())
+                return
+
+            tenant = str(tenant_id or settings.default_tenant_id)
+            url, _ = await asyncio.to_thread(
+                media_storage().save_from_path, tenant, out["path"], "edited-video.mp4")
+            cover_url = ""
+            if out.get("cover_path"):
+                try:
+                    cover_url, _ = await asyncio.to_thread(
+                        media_storage().save_from_path, tenant, out["cover_path"],
+                        "edited-cover.jpg")
+                except Exception:  # noqa: BLE001 — the video is the point; the still is a bonus
+                    _log.warning("video edit: could not store the cover frame", exc_info=True)
+        job.update(status="done", updated_at=_now(), result={
+            "video_url": url, "cover_url": cover_url, "duration": out["duration"],
+            "width": out["width"], "height": out["height"],
+        })
+    except Exception as exc:  # noqa: BLE001 — a failed edit is reported, never silent
+        _log.exception("video edit job %s failed", job_id)
+        job.update(status="failed", error=f"{type(exc).__name__}: {exc}"[:400], updated_at=_now())
+    finally:
+        if req.callback_url and job:
+            await _fire_callback(req.callback_url, job)
+
+
+@router.post("/video/edit", status_code=202)
+async def v1_video_edit(body: VideoEditRequest, tenant_id: TenantDep) -> dict[str, Any]:
+    """Apply an edit to a finished video. Returns a job_id at once — a 60-second
+    reel is a real re-encode, far longer than a request should be held open — then
+    poll /v1/jobs/{id} for {video_url, cover_url, duration, width, height}."""
+    from . import video_edit
+
+    url = (body.video_url or "").strip()
+    if not await _fetchable(url):
+        raise HTTPException(422, "video_url must be an https URL on a public host")
+    if video_edit.is_noop(body.doc):
+        raise HTTPException(422, "nothing to change — a re-encode that changes nothing "
+                                 "costs quality and minutes")
+    job = _new_job("video_edit", tenant_id)
+    _put_job(job)
+    _spawn(_run_video_edit(job["id"], tenant_id, body))
+    return {"job_id": job["id"], "status": job["status"]}
+
+
+# --- moving the captions on a reel that is already made ----------------------
+#
+# The video editor draws ON TOP of a finished file, which is the wrong tool for
+# captions: they are already baked into the pixels, so an overlay can cover them
+# but never move them. Moving them means drawing them again on a cut without
+# them — which is why the pipeline now keeps both (migration 062).
+
+# A headline is two short lines on a phone screen; the assembler caps it at the
+# same place. Longer is not a headline, it is a caption in the wrong font.
+_HOOK_TEXT_MAX = 80
+# Cues handed to the editor for the live preview. A reel runs 30-40; this is a
+# cap, not a budget.
+_PREVIEW_CUES = 200
+
+
+class RecaptionRequest(BaseModel):
+    production_id: str
+    # Percent from the top of the frame; the caption block's CENTRE, the same
+    # number the assembler uses. Omitted = leave it where it is.
+    caption_y: str | float | None = None
+    caption_style: str | None = None     # None = keep the reel's own style
+    captions_off: bool = False
+    # The big boxed HEADLINE over the first few seconds is a separate element
+    # with its own position, so it gets its own controls.
+    hook_y: str | float | None = None
+    hook_off: bool = False
+    # The headline's WORDS. The original was written at render time and never
+    # stored, so on a rebuilt reel it is a paraphrase — the owner gets the last
+    # word on what their own video says. "" means "leave it as it is"; a reel
+    # with no headline gets one.
+    hook_text: str | None = None
+    callback_url: str | None = None
+
+
+async def _recaption_row(tenant_id, production_id: str) -> dict[str, Any]:
+    """The production, or a 404/422 explaining why it can't be re-captioned."""
+    try:
+        pid = UUID(str(production_id))
+    except (TypeError, ValueError) as e:
+        raise HTTPException(422, "production_id must be a uuid") from e
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            "SELECT id, mode, status, scenes, clean_cut_url, caption_cues, "
+            "caption_hook, caption_style, final_url, caption_rebuild_error "
+            "FROM video_productions "
+            "WHERE id=$1", pid)
+    if row is None:
+        raise HTTPException(404, "no such reel")
+    return dict(row)
+
+
+def _broll_inserts(row: dict[str, Any]) -> int:
+    """How many B-roll cutaways this reel has composited over it.
+
+    They live in `scenes` alongside the source window — a window entry carries
+    source_url/start_s/end_s, an INSERT carries image_url/video_url with its own
+    start/end. Creatomate composites them on track 2 over the cut, so they are
+    NOT in the captionless cut we stash: redrawing captions on that cut alone
+    would hand the owner their reel with every cutaway gone. 33 of James's 43
+    reels have them.
+    """
+    scenes = row.get("scenes")
+    if isinstance(scenes, str):
+        try:
+            scenes = json.loads(scenes)
+        except (TypeError, ValueError):
+            return 0
+    if not isinstance(scenes, list):
+        return 0
+    return sum(1 for x in scenes
+               if isinstance(x, dict)
+               and (str(x.get("image_url") or "").startswith("http")
+                    or str(x.get("video_url") or "").startswith("http")))
+
+
+def _recaption_readiness(row: dict[str, Any]) -> dict[str, Any]:
+    """Whether this reel's captions can be moved cheaply, and if not, why.
+
+    Every reel rendered before the cut and cues were kept lands in the "no"
+    branch. That is worth saying plainly rather than failing later: the owner's
+    only route for those is a full re-render, which costs money and comes back a
+    slightly different video."""
+    cues = row.get("caption_cues")
+    if isinstance(cues, str):
+        try:
+            cues = json.loads(cues)
+        except (TypeError, ValueError):
+            cues = []
+    cues = caption_burn.normalize_cues(cues)
+    hook = row.get("caption_hook")
+    if isinstance(hook, str):
+        try:
+            hook = json.loads(hook)
+        except (TypeError, ValueError):
+            hook = {}
+    hook = hook if isinstance(hook, dict) else {}
+    has_hook = bool(str(hook.get("text") or "").strip())
+    inserts = _broll_inserts(row)
+    if inserts:
+        # Refusing beats returning the reel without its cutaways. Until the
+        # re-draw composites them back in, this is the honest answer.
+        return {"can_recaption": False, "cue_count": len(cues), "has_hook": has_hook,
+                "hook_text": "", "needs_rebuild": False, "broll_inserts": inserts,
+                "reason": f"this reel has {inserts} B-roll cutaway"
+                          f"{'' if inserts == 1 else 's'} laid over it, and redrawing "
+                          f"its captions would drop them — moving these still needs a "
+                          f"full re-render"}
+
+    cut = str(row.get("clean_cut_url") or "").strip()
+    if not cut:
+        # Made before the cut was kept — but for a reel cut from the brand's own
+        # footage everything that went into it was persisted anyway, so the cut
+        # can be rebuilt on the first change instead of refusing.
+        # A rebuild we already TRIED and refused must not be offered again —
+        # the owner would click, wait a minute, and get the same failure.
+        failed = str(row.get("caption_rebuild_error") or "").strip()
+        if failed:
+            return {"can_recaption": False, "cue_count": 0, "has_hook": False,
+                    "hook_text": "", "needs_rebuild": False,
+                    "reason": f"this reel was made before the captionless cut was kept, "
+                              f"and it can't be rebuilt: {failed}"}
+        rebuildable, why = caption_backfill.can_rebuild(row)
+        if rebuildable:
+            return {"can_recaption": True, "cue_count": 0, "has_hook": False,
+                    "hook_text": "", "needs_rebuild": True, "reason": ""}
+        return {"can_recaption": False, "cue_count": len(cues), "has_hook": has_hook,
+                "hook_text": "", "needs_rebuild": False,
+                "reason": f"this reel was made before the captionless cut was kept, and "
+                          f"{why} — so its captions can only be moved by rendering it again"}
+    if not cues and not has_hook:
+        return {"can_recaption": False, "cue_count": 0, "has_hook": False,
+                "hook_text": "", "needs_rebuild": False,
+                "reason": "this reel has no stored captions to move"}
+    return {"can_recaption": True, "cue_count": len(cues), "has_hook": has_hook,
+            "hook_text": str(hook.get("text") or ""), "needs_rebuild": False,
+            "reason": "",
+            # The words themselves, so the editor can show them where the owner
+            # is putting them instead of a band labelled CAPTIONS HERE. The
+            # burned-in ones are pixels until the re-draw runs, so a guide that
+            # only says "here" leaves them dragging a label and seeing nothing
+            # move.
+            "cues": [{"start": c["start"], "end": c["end"],
+                      "text": c.get("raw_text") or c.get("text") or ""}
+                     for c in cues[:_PREVIEW_CUES]],
+            "hook_hold": float(hook.get("hold") or 0.0)}
+
+
+@router.get("/video/recaption/{production_id}")
+async def v1_recaption_layers(production_id: str, tenant_id: TenantDep) -> dict[str, Any]:
+    """What the caption editor needs to open: whether this reel's captions can be
+    moved at all, how many there are, where they currently sit, and the looks
+    available."""
+    from .caption_styles import (
+        CAPTION_Y_MAX, CAPTION_Y_MIN, HOOK_DEFAULT_Y, list_presets,
+    )
+
+    row = await _recaption_row(tenant_id, production_id)
+    ready = _recaption_readiness(row)
+    opts = {}
+    async with acquire(tenant_id) as conn:
+        raw = await conn.fetchval(
+            "SELECT options FROM video_productions WHERE id=$1", UUID(str(production_id)))
+    try:
+        opts = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except (TypeError, ValueError):
+        opts = {}
+    return {
+        **ready,
+        "caption_y": str(opts.get("caption_y") or "") or "78%",
+        "captions_off": bool(opts.get("captions_off") or False),
+        "hook_y": str(opts.get("hook_y") or "") or HOOK_DEFAULT_Y,
+        "hook_off": bool(opts.get("hook_off") or False),
+        "caption_style": row.get("caption_style") or "",
+        "y_min": CAPTION_Y_MIN, "y_max": CAPTION_Y_MAX,
+        "styles": list_presets(),
+    }
+
+
+async def _run_recaption(job_id: str, tenant_id, req: RecaptionRequest) -> None:
+    import tempfile
+
+    from .media import storage as media_storage
+
+    job = _JOBS.get(job_id)
+    if job is None:
+        return
+    try:
+        row = await _recaption_row(tenant_id, req.production_id)
+        ready = _recaption_readiness(row)
+        if not (ready["can_recaption"] or req.captions_off):
+            job.update(status="failed", error=ready["reason"], updated_at=_now())
+            return
+        if ready.get("needs_rebuild"):
+            # Reconstruct the captionless cut from the footage and transcript this
+            # reel was made from, then carry on as if it had been kept all along.
+            # Takes the time of one re-cut; it happens once per reel.
+            job.update(status="running", updated_at=_now(),
+                       result={"kind": "recaption", "stage": "rebuilding"})
+            built = await caption_backfill.rebuild(req.production_id, tenant_id)
+            if not built.get("ok"):
+                job.update(status="failed", updated_at=_now(),
+                           error=str(built.get("reason") or "could not rebuild this reel"))
+                return
+            row = await _recaption_row(tenant_id, req.production_id)
+
+        cues = row.get("caption_cues")
+        if isinstance(cues, str):
+            cues = json.loads(cues or "[]")
+        with tempfile.TemporaryDirectory() as td:
+            cut = f"{td}/cut.mp4"
+            await _download_capped(str(row.get("clean_cut_url") or ""), cut)
+            hook = row.get("caption_hook")
+            if isinstance(hook, str):
+                hook = json.loads(hook or "{}")
+            hook = hook if isinstance(hook, dict) else {}
+            typed = (req.hook_text or "").strip()[:_HOOK_TEXT_MAX]
+            if typed:
+                from .caption_styles import hook_hold_seconds
+
+                # A reel that never had a headline can be given one: the hold is
+                # the same few seconds the assembler uses, so the captions still
+                # wait for it to clear.
+                # No stored hold means this reel never had a headline. Take the
+                # length from the last caption flash — there is no duration
+                # column on the row, and the cues are the timeline we have.
+                last = 0.0
+                for c in (cues if isinstance(cues, list) else []):
+                    try:
+                        last = max(last, float((c or {}).get("end") or 0.0))
+                    except (TypeError, ValueError, AttributeError):
+                        continue
+                hook = {**hook, "text": typed,
+                        "hold": float(hook.get("hold") or 0.0)
+                                or hook_hold_seconds(last or 12.0),
+                        "owner_wrote": True}
+            # The frame the owner already has. The stored cut is the footage as
+            # it was cut from the source (360x640 on one brand); the assembly
+            # upscaled its output to 1080x1920. Re-captioning onto the cut and
+            # stopping there returned a third of the resolution.
+            target = None
+            try:
+                _d, _w, _h = await caption_backfill._probe(
+                    str(row.get("final_url") or ""))
+                if _w > 0 and _h > 0:
+                    target = (_w, _h)
+            except Exception:  # noqa: BLE001 — a missing probe just means no scale
+                target = None
+            out = await caption_burn.render(
+                cut, cues, target_size=target,
+                y_pct=req.caption_y,
+                style=req.caption_style or row.get("caption_style") or "",
+                off=bool(req.captions_off),
+                hook=hook or None,
+                hook_y=req.hook_y,
+                hook_off=bool(req.hook_off),
+                work_dir=td,
+            )
+            if not out.get("ok"):
+                job.update(status="failed", error=str(out.get("reason") or "recaption failed"),
+                           updated_at=_now())
+                return
+            tenant = str(tenant_id or settings.default_tenant_id)
+            url, _ = await asyncio.to_thread(
+                media_storage().save_from_path, tenant, out["path"], "recaptioned.mp4")
+        if typed:
+            # So the editor opens on what the owner wrote, not on the paraphrase
+            # it replaced.
+            async with acquire(tenant_id) as conn:
+                await conn.execute(
+                    "UPDATE video_productions SET caption_hook=$2, updated_at=now() "
+                    "WHERE id=$1", UUID(str(req.production_id)), json.dumps(hook))
+        job.update(status="done", updated_at=_now(), result={
+            "kind": "recaption", "video_url": url, "duration": out["duration"],
+            "width": out["width"], "height": out["height"],
+            "caption_y": str(req.caption_y or "") or "78%",
+            "captions_off": bool(req.captions_off),
+            "hook_y": str(req.hook_y or ""),
+            "hook_off": bool(req.hook_off),
+            "hook_text": str(hook.get("text") or ""),
+        })
+    except HTTPException as e:
+        job.update(status="failed", error=str(e.detail), updated_at=_now())
+    except Exception as e:  # noqa: BLE001
+        _log.exception("recaption failed")
+        job.update(status="failed", error=f"{type(e).__name__}: {e}", updated_at=_now())
+    finally:
+        if req.callback_url and job:
+            await _fire_callback(req.callback_url, job)
+
+
+@router.post("/video/recaption", status_code=202)
+async def v1_video_recaption(body: RecaptionRequest, tenant_id: TenantDep) -> dict[str, Any]:
+    """Re-draw a finished reel's captions somewhere else — or not at all.
+
+    This is a local ffmpeg pass over the cut we already have, not another trip
+    through the pipeline: no transcription, no B-roll, no assembly spend, and
+    the footage is the same pixels the owner approved. Returns a job_id; poll
+    /v1/jobs/{id}."""
+    row = await _recaption_row(tenant_id, body.production_id)
+    ready = _recaption_readiness(row)
+    if not ready["can_recaption"]:
+        raise HTTPException(409, ready["reason"])
+    if (body.caption_y is None and not body.captions_off and not body.caption_style
+            and body.hook_y is None and not body.hook_off
+            and not (body.hook_text or "").strip()):
+        raise HTTPException(422, "nothing to change — say where the captions or the "
+                                 "headline should go, which look they take, or that "
+                                 "you want none")
+    job = _new_job("recaption", tenant_id)
+    _put_job(job)
+    _spawn(_run_recaption(job["id"], tenant_id, body))
+    return {"job_id": job["id"], "status": job["status"]}
 
 
 # ───────────────────────────────────────────── the house catalogue ──

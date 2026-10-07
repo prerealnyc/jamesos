@@ -370,6 +370,10 @@ SAFE_BOTTOM_PCT = 86.0
 # can't go beyond the safe space — 20% from each margin left and right."
 CAPTION_MAX_WIDTH = "60%"
 HOOK_BLOCK_CENTER = 22.0    # hook/title block centre (top of safe zone)
+# Where the big boxed headline sits when nobody says otherwise. Below the
+# face, above the caption band — the two are held apart in time as well, so
+# moving this does not make them collide, it only changes where it reads.
+HOOK_DEFAULT_Y = "57%"
 SUBTITLE_Y = "78%"          # lower third — well below the face (manager: "30% below, not on the face")
 
 
@@ -403,12 +407,49 @@ SAFE_ZONES: dict[str, list[tuple[str, float]]] = {
 }
 
 
-def caption_y_for_role(preset: dict, role: str) -> str:
-    """Captions ALWAYS sit in the lower third, off the speaker's face — for
-    EVERY role and EVERY preset. The preset's own y_position is intentionally
-    ignored for body captions so a high/centre preset can never ride the face
+# The owner may place captions anywhere inside the readable band. The limits are
+# not taste, they are the platform UI: above CAPTION_Y_MIN the caption collides
+# with the top chrome, below CAPTION_Y_MAX it lands in the bottom no-zone and
+# gets covered or cut. y is the block's CENTRE (caption_element sets
+# y_anchor=50%), so each limit already allows for half a caption block.
+CAPTION_Y_MIN = 18.0
+CAPTION_Y_MAX = 80.0
+
+
+def clamp_caption_y(y: str | float | None) -> str | None:
+    """Normalise an owner-chosen caption position to a Creatomate percentage,
+    clamped to the band where a caption is actually readable.
+
+    Accepts "62%", "62", 62, 62.0. Returns None for anything unusable so the
+    caller falls back to the automatic safe-zone placement rather than
+    rendering a caption off-frame."""
+    if y is None:
+        return None
+    try:
+        v = float(str(y).strip().rstrip("%"))
+    except (TypeError, ValueError):
+        return None
+    if v != v or v in (float("inf"), float("-inf")):  # NaN / inf
+        return None
+    v = min(CAPTION_Y_MAX, max(CAPTION_Y_MIN, v))
+    return f"{round(v, 1)}%"
+
+
+def caption_y_for_role(preset: dict, role: str, *, y_override: str | float | None = None) -> str:
+    """Where a body caption sits vertically.
+
+    With no override, captions sit in the lower third, off the speaker's face,
+    for EVERY role and EVERY preset: the preset's own y_position is
+    intentionally ignored so a high/centre preset can never ride the face
     (this was the recurring 'captions on his face' bug). Manager direction:
-    '30% below, not in the author's face'."""
+    '30% below, not in the author's face'.
+
+    `y_override` is the OWNER saying where they want them — the one voice that
+    outranks the automatic placement. It is still clamped to the readable band,
+    because a caption the platform covers helps nobody."""
+    chosen = clamp_caption_y(y_override)
+    if chosen is not None:
+        return chosen
     bands = SAFE_ZONES.get(role) or SAFE_ZONES["default"]
     return bands[0][0]
 
@@ -447,6 +488,7 @@ def _fit_caption_vh(text: str, base_vh: float, font_family: str = "") -> float:
 def caption_element(
     *, text: str, start: float, end: float, preset: dict, track: int = 3,
     role: str = "default", raw_text: str = "",
+    y_override: str | float | None = None,
 ) -> dict:
     """Build a single Creatomate text element from a preset.
 
@@ -476,7 +518,7 @@ def caption_element(
         "time": start,
         "duration": max(0.2, end - start),
         "width": CAPTION_MAX_WIDTH,
-        "y": caption_y_for_role(preset, role),
+        "y": caption_y_for_role(preset, role, y_override=y_override),
         # Anchor the block on its VERTICAL CENTER so the y band is where the
         # text actually sits (Creatomate default top-anchors, which pushed
         # captions lower than the stated % and off the bottom for tall fonts).
@@ -627,7 +669,8 @@ def hook_hold_seconds(total: float) -> float:
     return round(min(float(total), _HOOK_TITLE_HOLD_S), 2)
 
 
-def hook_title_elements(text: str, total: float) -> list[dict]:
+def hook_title_elements(text: str, total: float,
+                        *, y_override: str | float | None = None) -> list[dict]:
     """A BIG BOXED hook/title BELOW the speaker's face for the first few seconds
     — tells the viewer what the reel is about, then CLEARS so the live captions
     own the lower third (they're held until it's gone; see hook_hold_seconds).
@@ -700,8 +743,10 @@ def hook_title_elements(text: str, total: float) -> list[dict]:
         "width": "82%",
         "x": "50%", "x_anchor": "50%", "x_alignment": "50%",
         # Below the face (face ≈ 25-50% from top). Captions own the 78% band
-        # only AFTER this clears, so the two never overlap.
-        "y": "57%", "y_anchor": "50%",
+        # only AFTER this clears, so the two never overlap. The owner may move
+        # it — same clamp as the captions, so it can never land under the
+        # platform's own chrome.
+        "y": clamp_caption_y(y_override) or HOOK_DEFAULT_Y, "y_anchor": "50%",
         "line_height": "112%",
         "font_family": "Archivo Black",
         "font_weight": "900",
@@ -1171,6 +1216,7 @@ __all__ = [
     "CAPTION_PRESETS", "DEFAULT_CAPTION_STYLE", "AUTO_PICK_KEY",
     "SAFE_ZONES",
     "get_preset", "list_presets", "caption_element", "caption_y_for_role",
+    "clamp_caption_y", "CAPTION_Y_MIN", "CAPTION_Y_MAX", "HOOK_DEFAULT_Y",
     "hook_title_elements", "hook_hold_seconds",
     "viral_hook_elements", "magenta_blocks_elements",
     "editorial_serif_elements", "gradient_mint_elements",
