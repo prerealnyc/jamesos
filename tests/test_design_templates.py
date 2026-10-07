@@ -620,7 +620,7 @@ def _wire(monkeypatch, own_rows, house_rows, *, brand_niche="golf resort"):
             if "FROM competitors" in sql:
                 return [{"niche": brand_niche}] if brand_niche else []
             if "house_layout_id::text" in sql:
-                return []                      # this brand has taken none yet
+                return []                      # taken nothing, holds no shape
             if "FROM house_layouts" in sql:
                 seen["catalogue_reads"] += 1
                 return house_rows
@@ -678,9 +678,12 @@ def test_the_pick_is_decided_by_FIT_not_by_order(monkeypatch):
     house = [_house_row(1, tags=["knitting"], ltype="testimonial", roles=("byline", "headline")),
              _house_row(2, tags=[], ltype="testimonial", roles=("byline", "headline")),
              _house_row(3, tags=["golf"], ltype="offer_card")]
-    _wire(monkeypatch, own, house)
+    seen = _wire(monkeypatch, own, house)
     got = asyncio.run(dt.pick("t"))
-    assert got["id"] == "h3", f"fit must beat position, got {got['id']}"
+    # The returned id is the BRAND'S row, so the choice is read from what was
+    # adopted — which is also the fact worth asserting.
+    assert seen["adopted"] == ["h3"], f"fit must beat position, took {seen['adopted']}"
+    assert got is not None
 
 
 def test_an_off_niche_layout_loses_to_an_untagged_one(monkeypatch):
@@ -691,8 +694,9 @@ def test_an_off_niche_layout_loses_to_an_untagged_one(monkeypatch):
     house = [_house_row(1, tags=["political candidates"]),
              _house_row(2, tags=[]),
              _house_row(3, tags=["knitting"])]
-    _wire(monkeypatch, [], house)
-    assert asyncio.run(dt.pick("t"))["id"] == "h2", "untagged beats tagged-for-someone-else"
+    seen = _wire(monkeypatch, [], house)
+    assert asyncio.run(dt.pick("t")) is not None
+    assert seen["adopted"] == ["h2"], "untagged beats tagged-for-someone-else"
 
 
 def test_the_catalogue_cannot_take_over_a_brand_that_has_its_own(monkeypatch):
@@ -718,8 +722,8 @@ def test_what_it_draws_it_owns(monkeypatch):
     seen = _wire(monkeypatch, [], [_house_row(7, tags=["golf"]),
                                    _house_row(8, tags=[]), _house_row(9, tags=[])])
     got = asyncio.run(dt.pick("t"))
-    assert got["id"] == "h7", "the best-fitting one is the one drawn"
-    assert seen["adopted"] == ["h7"], "and ONLY that row is copied in — not a batch"
+    assert got is not None
+    assert seen["adopted"] == ["h7"], "the best-fitting one is drawn, and ONLY it is copied in"
 
 
 def test_a_catalogue_that_raises_never_costs_a_brand_its_pick(monkeypatch):
@@ -768,3 +772,93 @@ def test_the_floor_counts_the_catalogue_too(monkeypatch):
     _wire(monkeypatch, _lane_rows(n_other=1, n_niche=0),
           [_house_row(i, tags=["golf"]) for i in range(3)])
     assert asyncio.run(dt.pick("t")) is not None
+
+
+def test_a_shape_the_brand_already_has_is_not_offered_again(monkeypatch):
+    """design_templates_fingerprint_uniq is on (tenant_id, fingerprint), so a
+    catalogue layout whose SHAPE the brand already learned for itself cannot be
+    inserted. Measured on trouvaillertours 2026-10-07: 12 of the pool's
+    fingerprints were already in its own library. Offering those back wastes the
+    pick and the insert silently does nothing."""
+    import asyncio
+    import contextlib
+
+    own = _lane_rows(n_other=4, n_niche=0)
+    own[0]["fingerprint"] = "hf1"          # the brand already holds h1's shape
+    house = [_house_row(1, tags=["golf"]), _house_row(2, tags=["golf"]),
+             _house_row(3, tags=["golf"])]
+    seen = {"adopted": []}
+
+    class _C:
+        async def fetch(self, sql, *a):
+            if "FROM competitors" in sql:
+                return [{"niche": "golf resort"}]
+            if "house_layout_id::text" in sql:
+                return [{"h": None, "fingerprint": "hf1"}]
+            if "FROM house_layouts" in sql:
+                return house
+            return own
+        async def fetchval(self, sql, *a):
+            if "INSERT INTO design_templates" in sql:
+                seen["adopted"].append(a[-1]); return "own-row"
+            return None
+        async def execute(self, sql, *a):
+            return None
+
+    @contextlib.asynccontextmanager
+    async def _acq(tenant_id=None):
+        yield _C()
+
+    monkeypatch.setattr(dt, "acquire", _acq)
+    from james_os import house_layouts as hl
+    monkeypatch.setattr(hl, "acquire", _acq)
+    got = asyncio.run(dt.pick("t"))
+    assert got["id"] != "h1", "a shape the brand already has must not be drawn from the pool"
+    assert "h1" not in seen["adopted"]
+
+
+def test_the_id_handed_back_is_the_BRANDS_row_not_the_catalogues(monkeypatch):
+    """THE silent-failure guard. The caller marks the returned id as used, and
+    design_templates and house_layouts are different tables — a catalogue id
+    would update ZERO rows and say nothing, freezing the counters and offering
+    the same layout on every pick forever."""
+    import asyncio
+
+    seen = _wire(monkeypatch, [], [_house_row(i, tags=["golf"]) for i in (1, 2, 3)])
+    got = asyncio.run(dt.pick("t"))
+    assert got["id"] == "new-row", f"expected the brand's row id, got {got['id']!r}"
+    assert got["id"] not in {"h1", "h2", "h3"}, "that is a catalogue id"
+
+
+def test_a_pick_that_cannot_be_owned_falls_back_to_the_brands_own(monkeypatch):
+    """If the brand cannot be given a row to own, returning the catalogue id
+    anyway would hand the caller something nothing can record against."""
+    import asyncio
+    import contextlib
+
+    own = _lane_rows(n_other=5, n_niche=0)
+
+    class _C:
+        async def fetch(self, sql, *a):
+            if "FROM competitors" in sql:
+                return [{"niche": "golf resort"}]
+            if "house_layout_id::text" in sql:
+                return []
+            if "FROM house_layouts" in sql:
+                return [_house_row(1, tags=["golf"])]
+            return own
+        async def fetchval(self, sql, *a):
+            return None          # neither the insert nor the lookup yields a row
+        async def execute(self, sql, *a):
+            return None
+
+    @contextlib.asynccontextmanager
+    async def _acq(tenant_id=None):
+        yield _C()
+
+    monkeypatch.setattr(dt, "acquire", _acq)
+    from james_os import house_layouts as hl
+    monkeypatch.setattr(hl, "acquire", _acq)
+    got = asyncio.run(dt.pick("t"))
+    assert got is not None
+    assert got["source_platform"] != "house", "must fall back to the brand's own library"

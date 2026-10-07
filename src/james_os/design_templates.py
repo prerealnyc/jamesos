@@ -429,17 +429,26 @@ async def _pick_once(tenant_id: UUID | str | None) -> tuple[dict | None, int]:
             if isinstance(spec, str):
                 spec = json.loads(spec)
             if drawable(spec):
+                # The id returned MUST be the brand's own row: the caller marks it
+                # used, and a catalogue id would update zero rows silently, leaving
+                # the counters frozen and this layout offered on every pick.
+                own_id = None
                 try:
                     async with acquire(tenant_id) as conn:
-                        await _hl.adopt_one(conn, best)
-                except Exception:  # noqa: BLE001 — drawing it matters, owning it can wait
+                        own_id = await _hl.adopt_one(conn, best)
+                except Exception:  # noqa: BLE001
                     logger.warning("could not adopt %s on pick", best.get("id"), exc_info=True)
-                return {
-                    "id": str(best["id"]), "spec": spec, "kind": best["kind"],
-                    "source_handle": "", "source_url": str(best["source_url"] or ""),
-                    "source_platform": "house",
-                    "source_kind": _hl._adopt_kind(best["source_kind"]),
-                }, n_drawable
+                if not own_id:
+                    # Could not give the brand a row to own, so fall through to its
+                    # own library rather than hand back an id nothing can record.
+                    house = []
+                else:
+                    return {
+                        "id": own_id, "spec": spec, "kind": best["kind"],
+                        "source_handle": "", "source_url": str(best["source_url"] or ""),
+                        "source_platform": "house",
+                        "source_kind": _hl._adopt_kind(best["source_kind"]),
+                    }, n_drawable
 
     lanes: dict[str, list] = {}
     for g in good:

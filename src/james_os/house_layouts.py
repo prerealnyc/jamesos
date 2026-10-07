@@ -562,10 +562,16 @@ async def candidates(
     """
     if not tenant_id:
         return []
+    # "Already taken" is BOTH: a row forked from this catalogue entry, and a
+    # layout of the same SHAPE the brand learned for itself. Checking only
+    # house_layout_id offers back shapes it already has — measured on
+    # trouvaillertours 2026-10-07, 12 of the pool's fingerprints were already in
+    # its own library — and `design_templates_fingerprint_uniq` then refuses the
+    # insert, so the pick could never be recorded against anything.
     mine = await conn.fetch(
-        "SELECT house_layout_id::text h FROM design_templates "
-        "WHERE house_layout_id IS NOT NULL")
-    taken = {r["h"] for r in mine}
+        "SELECT house_layout_id::text h, fingerprint FROM design_templates")
+    taken = {r["h"] for r in mine if r["h"]}
+    held = {r["fingerprint"] for r in mine if r["fingerprint"]}
 
     async with acquire(None) as pool_conn:
         rows = await pool_conn.fetch(
@@ -577,7 +583,8 @@ async def candidates(
              ORDER BY (approvals - rejections) DESC, adopted_count DESC, created_at
                 LIMIT $1""", CANDIDATE_POOL)
 
-    out = [dict(r) for r in rows if r["id"] not in taken]
+    out = [dict(r) for r in rows
+           if r["id"] not in taken and str(r["fingerprint"] or "") not in held]
     out.sort(key=lambda r: fit_rank(niches, profile or {}, r["niches"], r["layout_type"]),
              reverse=True)
     return out[: max(1, int(limit))]
@@ -586,13 +593,21 @@ async def candidates(
 async def adopt_one(conn, layout: dict) -> str | None:
     """Copy ONE catalogue row into the brand, at the moment it is picked.
 
-    `conn` must be the tenant's. Idempotent via design_templates_house_uniq, so a
-    race between two renders costs nothing.
+    Returns the id of the BRAND'S row — the one the caller will mark as used —
+    never the catalogue's. Those are different tables, and `mark_used` on a
+    catalogue id updates ZERO rows and says nothing, so the layout's counters
+    would never move and the picker would offer it forever.
+
+    `conn` must be the tenant's. Idempotent two ways: on
+    design_templates_house_uniq for a second adoption of the same catalogue row,
+    and on design_templates_fingerprint_uniq when the brand already learned that
+    shape itself. Either conflict means the brand HAS the layout, so the existing
+    row is found and returned rather than treated as a failure.
     """
     spec = layout["spec"]
     if isinstance(spec, str):
         spec = json.loads(spec)
-    return await conn.fetchval(
+    new_id = await conn.fetchval(
         """INSERT INTO design_templates
                (kind, spec, fingerprint, source_kind, source_url,
                 source_image_uri, status, house_layout_id)
@@ -602,5 +617,13 @@ async def adopt_one(conn, layout: dict) -> str | None:
         str(layout["kind"] or ""), json.dumps(spec), str(layout["fingerprint"] or ""),
         _adopt_kind(layout["source_kind"]), str(layout["source_url"] or ""),
         str(layout["source_image_uri"] or ""), layout["id"])
+    if new_id:
+        return new_id
+    # Conflicted: this brand already holds it, by provenance or by shape.
+    return await conn.fetchval(
+        "SELECT id::text FROM design_templates "
+        "WHERE house_layout_id = $1::uuid "
+        "   OR ($2 <> '' AND fingerprint = $2) LIMIT 1",
+        layout["id"], str(layout["fingerprint"] or ""))
 
 
