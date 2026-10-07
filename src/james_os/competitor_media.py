@@ -28,6 +28,7 @@ alternative through _ACTOR_OVERRIDE if that matters later.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from uuid import UUID
 
@@ -35,6 +36,8 @@ import httpx
 
 from .config import settings
 from .db import acquire
+
+logger = logging.getLogger(__name__)
 
 _BASE = "https://api.apify.com/v2"
 _ACTORS = {
@@ -46,6 +49,26 @@ _ACTORS = {
 _RUN_TIMEOUT = httpx.Timeout(600.0, connect=15.0)
 _POLL_SECONDS = 6
 _MAX_POLLS = 60
+
+# A post whose media did not store is not a verdict on the post — but each
+# attempt is a paid actor run, and a row that stays '' bought another one on
+# every refresh, forever: 72 of skelon's 100 posts had no picture and each
+# daily refresh re-scraped the profile for them. After this many runs that
+# tried and failed (the download 403'd, was over the cap, or the actor did not
+# return the post at all) the row is left alone. Same rule as
+# design_templates.MAX_READ_ATTEMPTS.
+#
+# What does NOT count as an attempt: a run that returned nothing usable. A
+# login wall, a rate limit or a profile gone private all come back SUCCEEDED
+# with [] or with error items that carry no shortCode — the actor ran, but it
+# never saw the profile. Charging the posts for that would abandon every one
+# of them after three such weeks; so a run with no usable post is an outage,
+# same as an actor that failed to start. Only once the actor has shown it can
+# read the profile (at least one real post came back) is a post it did not
+# return, or a download that failed, counted. `force` resets the counter —
+# nothing else does, sync's upsert never touches it — which is the operator's
+# way back after a block clears.
+MAX_MEDIA_FETCH_ATTEMPTS = 3
 
 
 def shortcode(url: str) -> str:
@@ -127,12 +150,33 @@ def _media_urls(platform: str, item: dict) -> tuple[str, str, str]:
         (video.get("coverUrl") or "")
 
 
+async def reset_media_attempts(competitor_id: str, tenant_id: UUID | None = None) -> int:
+    """Give the posts this competitor's runs gave up on another
+    MAX_MEDIA_FETCH_ATTEMPTS tries. Returns how many rows that was.
+
+    The counter has no other way back to zero: a competitor whose profile
+    was behind a login wall for three refreshes would otherwise stay
+    abandoned after the wall came down."""
+    async with acquire(tenant_id) as conn:
+        tag = await conn.execute(
+            "UPDATE competitor_posts SET media_fetch_attempts = 0 "
+            "WHERE competitor_id = $1::uuid AND stored_media_url = '' "
+            "  AND media_fetch_attempts > 0", competitor_id)
+    return int(tag.rsplit(" ", 1)[-1] or 0)
+
+
 async def fetch_media_for_competitor(
-    competitor: dict, limit: int = 30, tenant_id: UUID | None = None
+    competitor: dict, limit: int = 30, tenant_id: UUID | None = None,
+    force: bool = False,
 ) -> dict:
     """Re-scrape one competitor through Apify and store the media we are
-    missing. Only touches rows whose `stored_media_url` is still empty, so
-    re-running is cheap and never re-downloads what we already hold.
+    missing. Only touches rows whose `stored_media_url` is still empty AND
+    that fewer than MAX_MEDIA_FETCH_ATTEMPTS runs have failed to fill, so
+    re-running is cheap, never re-downloads what we already hold, and stops
+    paying for the posts it cannot get. `force` resets that counter first.
+
+    Returns `items_fetched` (what the actor returned, i.e. what was paid for)
+    and `rows_new` (how many of our rows that filled) for the spend ledger.
     """
     platform = (competitor.get("platform") or "").lower()
     handle = (competitor.get("handle") or "").lstrip("@")
@@ -143,15 +187,20 @@ async def fetch_media_for_competitor(
     if not configured():
         return {"handle": handle, "error": "Apify is not configured", "stored": 0}
 
+    reset = 0
+    if force:
+        reset = await reset_media_attempts(str(competitor["id"]), tenant_id)
     async with acquire(tenant_id) as conn:
         rows = await conn.fetch(
             """SELECT id, url, media_type FROM competitor_posts
                 WHERE competitor_id = $1::uuid AND stored_media_url = ''
+                  AND media_fetch_attempts < $3
              ORDER BY posted_at DESC NULLS LAST LIMIT $2""",
-            competitor["id"], max(1, limit))
+            competitor["id"], max(1, limit), MAX_MEDIA_FETCH_ATTEMPTS)
     missing = {shortcode(r["url"]): r for r in rows if shortcode(r["url"])}
     if not missing:
-        return {"handle": handle, "stored": 0, "note": "nothing missing media"}
+        return {"handle": handle, "stored": 0, "items_fetched": 0, "rows_new": 0,
+                "note": "nothing missing media"}
 
     if platform == "instagram":
         run_input = {"directUrls": [f"https://www.instagram.com/{handle}/"],
@@ -163,16 +212,42 @@ async def fetch_media_for_competitor(
 
     items, err = await _run_actor(actor, run_input)
     if err:
-        return {"handle": handle, "error": err, "stored": 0}
+        # An actor that did not run is an outage, not an attempt: nothing is
+        # counted against the posts, they are asked for again next time.
+        return {"handle": handle, "error": err, "stored": 0,
+                "items_fetched": 0, "rows_new": 0}
+
+    # A usable item is a real post: it names itself and has a file to fetch.
+    # Error items (login wall, rate limit, private profile) have neither.
+    usable = [(code, media_url, cover_url)
+              for code, media_url, cover_url in (_media_urls(platform, i) for i in items)
+              if code and media_url]
+    if not usable:
+        # The actor ran but never saw the profile: an outage, not an attempt,
+        # exactly like the `err` branch — nothing is counted against the
+        # posts, and they are asked for again next time.
+        logger.info("[competitor_media] %s/%s items_fetched=%d usable=0 — outage, "
+                    "attempts untouched", platform, handle, len(items))
+        return {"handle": handle, "stored": 0, "failed": 0,
+                "was_missing": len(missing), "scraped": len(items),
+                "items_fetched": len(items), "rows_new": 0, "reset": reset,
+                "errors": [], "error": "actor returned no usable posts "
+                "(login wall, rate limit or private profile)"}
 
     from .competitor_sync import _store_media
     tenant = str(tenant_id or "")
     stored = failed = 0
     errors: list[str] = []
-    for item in items:
-        code, media_url, cover_url = _media_urls(platform, item)
+    # The actor read the profile, so every row this run was asked for and did
+    # not fill gets an attempt — a failed download AND a post the actor never
+    # returned alike. It was asked for at least len(missing) recent posts, so
+    # one it did not return is older than a profile scrape reaches and no
+    # later run will find it either; without counting those, the rows that
+    # can never fill kept buying runs.
+    unfilled: set = {str(r["id"]) for r in missing.values()}
+    for code, media_url, cover_url in usable:
         row = missing.get(code)
-        if not row or not media_url:
+        if not row:
             continue
         kind = "video" if (row["media_type"] or "") == "video" else "image"
         # Download NOW — these URLs are fresh but go stale within hours.
@@ -182,6 +257,7 @@ async def fetch_media_for_competitor(
             if e and len(errors) < 5:
                 errors.append(f"{code}: {e}")
             continue
+        unfilled.discard(str(row["id"]))
         # For a reel, keep the cover too: the grid needs a thumbnail, and the
         # design eye can still read a cover when the video is unplayable.
         thumb = ""
@@ -195,18 +271,29 @@ async def fetch_media_for_competitor(
                 "WHERE id = $1", row["id"], durable, thumb)
         stored += 1
 
+    if unfilled:
+        async with acquire(tenant_id) as conn:
+            await conn.execute(
+                "UPDATE competitor_posts SET media_fetch_attempts = media_fetch_attempts + 1 "
+                "WHERE id = ANY($1::uuid[])", list(unfilled))
+    logger.info("[competitor_media] %s/%s items_fetched=%d rows_new=%d unfilled=%d",
+                platform, handle, len(items), stored, len(unfilled))
+
     return {"handle": handle, "stored": stored, "failed": failed,
             "was_missing": len(missing), "scraped": len(items),
+            "items_fetched": len(items), "rows_new": stored, "reset": reset,
             "errors": errors, "error": None}
 
 
 async def fetch_all_missing_media(
-    limit: int = 30, concurrency: int = 2, tenant_id: UUID | None = None
+    limit: int = 30, concurrency: int = 2, tenant_id: UUID | None = None,
+    force: bool = False,
 ) -> dict:
     """Fill in missing media across every tracked competitor.
 
     Concurrency is low on purpose: each call is a paid actor run, and a
-    burst of them is the easy way to turn a bug into a bill.
+    burst of them is the easy way to turn a bug into a bill. `force` gives
+    every competitor's given-up posts another go first.
     """
     from .competitors import list_competitors
     tracked = await list_competitors(status="tracked", tenant_id=tenant_id)
@@ -218,7 +305,7 @@ async def fetch_all_missing_media(
     async def _one(c: dict) -> dict:
         async with sem:
             try:
-                return await fetch_media_for_competitor(c, limit, tenant_id)
+                return await fetch_media_for_competitor(c, limit, tenant_id, force=force)
             except Exception as e:  # noqa: BLE001 — one competitor ≠ the batch
                 return {"handle": c.get("handle"), "stored": 0,
                         "error": f"{type(e).__name__}: {e}"[:160]}
@@ -227,6 +314,9 @@ async def fetch_all_missing_media(
     return {
         "stored": sum(r.get("stored", 0) for r in results),
         "failed": sum(r.get("failed", 0) for r in results),
+        "items_fetched": sum(r.get("items_fetched", 0) for r in results),
+        "rows_new": sum(r.get("rows_new", 0) for r in results),
+        "reset": sum(r.get("reset", 0) for r in results),
         "results": list(results),
     }
 
@@ -235,10 +325,11 @@ async def run_competitor_media(tenant_id: UUID, config: dict | None = None) -> N
     """Scheduler entry point. Tenant-bound and explicit."""
     cfg = config or {}
     await fetch_all_missing_media(
-        limit=int(cfg.get("limit") or 30), tenant_id=tenant_id)
+        limit=int(cfg.get("limit") or 30), tenant_id=tenant_id,
+        force=bool(cfg.get("force")))
 
 
 __all__ = [
-    "shortcode", "configured", "fetch_media_for_competitor",
-    "fetch_all_missing_media", "run_competitor_media",
+    "shortcode", "configured", "fetch_media_for_competitor", "reset_media_attempts",
+    "fetch_all_missing_media", "run_competitor_media", "MAX_MEDIA_FETCH_ATTEMPTS",
 ]

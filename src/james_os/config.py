@@ -257,6 +257,15 @@ class Settings(BaseSettings):
     # invite_code. Leaving this empty keeps the install single-tenant.
     signup_invite_code: str = ""
 
+    # ─── Provider spend ledger (spend.py, migration 069) ───
+    # PAUSE_SPEND=true is the kill switch: every scheduler job and autopilot
+    # batch skips (logged, not raised) until it is unset. Exists because before
+    # the ledger the only way to stop a runaway loop was to notice it by hand
+    # and redeploy. Per-brand caps live in tenants.config->'spend'->
+    # 'daily_cap_usd'; this is the default when a brand has not set one.
+    pause_spend: bool = False
+    spend_daily_cap_usd: float = 5.00
+
     log_level: str = "INFO"
 
     # Retrieval tuning

@@ -28,6 +28,7 @@ import logging
 
 from openai import AsyncOpenAI
 
+from . import spend
 from .config import settings
 
 logger = logging.getLogger("design_cloner")
@@ -279,6 +280,7 @@ async def read_card_copy(image: bytes | str, roles: list[str], *,
             max_tokens=600,
             temperature=0.0,
         )
+        await spend.record_tokens("openai", getattr(res, "model", "") or _MODEL, getattr(res, "usage", None), "design_cloner.read_copy")
         out = json.loads(res.choices[0].message.content or "{}")
     except Exception:  # noqa: BLE001 — a failed read is "nothing recovered"
         logger.warning("could not read the card copy back", exc_info=True)
@@ -313,6 +315,7 @@ async def extract_template_spec(image: bytes | str, *, mime: str = "image/jpeg")
             temperature=0.0,
             response_format={"type": "json_object"},
         )
+        await spend.record_tokens("openai", getattr(resp, "model", "") or _MODEL, getattr(resp, "usage", None), "design_cloner.extract_template_spec")
         out = json.loads(resp.choices[0].message.content or "{}")
     except Exception as exc:  # noqa: BLE001 — reported, never faked
         return {"status": "failed", "rubric_version": CLONE_RUBRIC_VERSION, "error": str(exc)[:200]}

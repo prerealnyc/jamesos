@@ -21,6 +21,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from . import spend
 from .models import EventCreate, EventSource
 
 CHUNK_TARGET = 800
@@ -204,6 +205,7 @@ async def describe_image(data: bytes, filename: str, mime: str) -> ExtractResult
                 ],
             }],
         )
+        await spend.record_tokens("openai", getattr(resp, "model", "") or "gpt-4o-mini", getattr(resp, "usage", None), "documents.ocr_image")
         text = (resp.choices[0].message.content or "").strip() if resp.choices else ""
         return ExtractResult(text)
     except Exception as e:  # noqa: BLE001 — OCR failure must not kill an ingest

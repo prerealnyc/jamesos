@@ -289,6 +289,17 @@ async def v1_ping(tenant_id: TenantDep) -> dict[str, Any]:
     return {"ok": True, "tenant_id": str(tenant_id)}
 
 
+@router.get("/spend")
+async def v1_spend(tenant_id: TenantDep, days: int = 7) -> dict[str, Any]:
+    """What this brand has cost: provider x model x day totals for the last
+    `days` days (1-90), today's total, and the daily cap. Every figure is an
+    ESTIMATE from spend.py's price table (`estimate: true`), never an invoice —
+    it exists so the answer to "what did brand X cost this week" is a query
+    instead of a card statement."""
+    from . import spend
+    return await spend.report(tenant_id, days=days)
+
+
 @router.get("/house-knowledge/status")
 async def v1_house_knowledge_status(tenant_id: TenantDep) -> dict[str, Any]:
     """How much shared marketing canon is loaded (chunks by layer). The canon is
