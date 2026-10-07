@@ -27,7 +27,9 @@ cannot sink a sync — the same contract as the Xpoz path.
 
 from __future__ import annotations
 
+import contextvars
 import logging
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -89,11 +91,44 @@ def _when(v: Any) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+# The actor runs made inside a collect_runs() block. Every run here is paid
+# per result, and none of it reached the spend ledger: the only trace of a
+# LinkedIn sync that ran two actors was the posts it stored. The caller
+# (competitor_sync) is the one that knows how many of those posts were NEW, so
+# the runs are handed back to it to record rather than recorded here.
+_RUNS: contextvars.ContextVar[list[dict] | None] = contextvars.ContextVar(
+    "competitor_apify_runs", default=None)
+
+
+@contextmanager
+def collect_runs():
+    """Yield a list that fills with {actor, items, error} — one entry per
+    actor run attempted inside the block (fetch_posts may run two)."""
+    runs: list[dict] = []
+    token = _RUNS.set(runs)
+    try:
+        yield runs
+    finally:
+        _RUNS.reset(token)
+
+
+def _note_run(actor: str, items: int, error: str) -> None:
+    runs = _RUNS.get()
+    if runs is not None:
+        runs.append({"actor": actor, "items": int(items), "error": error or ""})
+
+
 async def _run(actor: str, payload: dict) -> tuple[list[dict], str]:
     """Run one actor to completion and return its dataset items."""
     key = (settings.apify_api_key or "").strip()
     if not key:
         return [], "no Apify token configured"
+    items, err = await _run_call(actor, key, payload)
+    _note_run(actor, len(items), err)
+    return items, err
+
+
+async def _run_call(actor: str, key: str, payload: dict) -> tuple[list[dict], str]:
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
             r = await c.post(f"{_BASE}/acts/{actor}/run-sync-get-dataset-items",
@@ -248,4 +283,5 @@ async def fetch_posts(platform: str, handle: str, limit: int = 24,
     return _window(rows, days)
 
 
-__all__ = ["PLATFORMS", "configured", "fetch_posts", "youtube_url", "linkedin_urls"]
+__all__ = ["PLATFORMS", "configured", "fetch_posts", "youtube_url", "linkedin_urls",
+           "collect_runs"]

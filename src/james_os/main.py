@@ -113,7 +113,8 @@ async def _autopilot_scheduler() -> None:
     import logging
 
     from .autopilot import get_config, run_batch, should_run_today
-    from .research_roster import maybe_weekly_refresh
+    # Gated on PAUSE_SPEND / the daily cap (it ends in a paid Apify scrape).
+    from .scheduler import weekly_roster_refresh as maybe_weekly_refresh
 
     # Log successes, not just failures, and never swallow errors silently — otherwise
     # there is no way to tell from the logs whether autopilot runs at all.
