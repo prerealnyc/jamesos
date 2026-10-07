@@ -25,16 +25,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
+import asyncpg
 import httpx
 
-from . import competitor_apify
+from . import competitor_apify, spend
 from .competitors import PLATFORMS, _g, _int, configured
 from .config import settings
 from .db import acquire
+
+logger = logging.getLogger(__name__)
 
 # Per-platform post fields — everything the vision pass and the rollup need.
 # Deliberately richer than xpoz_intel._FIELDS, which never asked Instagram
@@ -330,7 +334,7 @@ async def _upsert_post(conn, competitor_id: str, platform: str,
                   OR EXCLUDED.views    IS DISTINCT FROM competitor_posts.views
                 THEN (competitor_posts.metrics_history || EXCLUDED.metrics_history)
                 ELSE competitor_posts.metrics_history END
-        RETURNING *
+        RETURNING *, (xmax = 0) AS is_new
         """,
         competitor_id, platform, post["post_id"], post["url"], post["caption"],
         post["media_type"], post["media_url"], post["thumbnail_url"],
@@ -339,6 +343,45 @@ async def _upsert_post(conn, competitor_id: str, platform: str,
     )
     return _row(row)
 
+
+
+# ── the spend ledger ─────────────────────────────────────────────────
+#
+# Every sync is paid — Xpoz credits for Instagram/TikTok/X, a pay-per-result
+# Apify run for YouTube/LinkedIn — and none of it was recorded, so "what did
+# the competitor shelf cost this week" had no answer and a brand over its cap
+# kept buying. One row per provider call, written here because only here is
+# it known how many of the posts fetched were new (rows_new): the ratio of
+# items_fetched to rows_new is what re-pulling an unchanged shelf costs.
+
+async def _meter_xpoz(model: str, platform: str, handle: str,
+                      tenant_id: UUID | None, site: str, **meta) -> None:
+    """One Xpoz call. The SDK reports no per-call credit cost (only the
+    account's remaining balance), so the unit is the request and the row is
+    unpriced (meta.priced=false) rather than priced by a guess."""
+    await spend.record("xpoz", model, 1, "requests", None, site,
+                       {"platform": platform, "handle": handle,
+                        "credits_reported": False, **meta},
+                       tenant_id=tenant_id)
+
+
+async def _meter_apify_runs(runs: list[dict], platform: str, handle: str,
+                            competitor_id: str, rows_new: int,
+                            tenant_id: UUID | None) -> None:
+    """One row per Apify actor run a sync made. LinkedIn may run two (company,
+    then profile); the posts came from the last one that returned any, so the
+    new rows are booked against that run and the others show 0."""
+    producer = max((i for i, r in enumerate(runs) if r.get("items")), default=-1)
+    for i, r in enumerate(runs):
+        n = int(r.get("items") or 0)
+        meta = {"items_fetched": n, "rows_new": rows_new if i == producer else 0,
+                "platform": platform, "handle": handle, "competitor_id": competitor_id,
+                "price_basis": "per_result_estimate"}
+        if r.get("error"):
+            meta["error"] = str(r["error"])[:200]
+        await spend.record("apify", r.get("actor") or "", n, "results",
+                           spend.estimate_results_usd(r.get("actor") or "", n),
+                           "competitor_sync.sync", meta, tenant_id=tenant_id)
 
 
 async def refresh_profile(competitor: dict, tenant_id: UUID | None = None) -> dict:
@@ -360,6 +403,11 @@ async def refresh_profile(competitor: dict, tenant_id: UUID | None = None) -> di
     if platform not in PLATFORMS or not handle:
         return competitor
     found, _ = await verify_handles([{"platform": platform, "handle": handle}])
+    if configured():
+        # One Xpoz get_user per sync, before the posts are even asked for; it
+        # was the half of every sync's Xpoz spend nobody counted.
+        await _meter_xpoz(f"{platform}.get_user", platform, handle, tenant_id,
+                          "competitor_sync.refresh_profile", found=bool(found))
     if not found:
         return competitor
     fresh = found[0]
@@ -412,20 +460,53 @@ def effective_video_cap(video_cap: int) -> int:
     return 0 if VIDEO_SCRAPING_PAUSED else video_cap
 
 
+# A competitor synced inside this window is not synced again unless the caller
+# says `force`. Every sync is paid — Xpoz credits for Instagram/TikTok/X, a
+# pay-per-result Apify run for YouTube/LinkedIn, and the profile re-read before
+# it — and the scheduler, BM2's Monday refresh and the operator's button all
+# reach the same function, so without this the three clocks stacked into a
+# daily (or more) re-pull of posts already on the shelf. Six days, not seven,
+# so a weekly caller never lands a few minutes short of the window and skips
+# the whole week; mirrors BM2's peer_snapshot_cache_days.
+SYNC_FRESH_DAYS = 6
+
+
+def is_fresh(last_synced_at: Any, days: int = SYNC_FRESH_DAYS,
+             now: datetime | None = None) -> bool:
+    """True when `last_synced_at` (datetime or the ISO string competitors._row
+    emits, or None) is within `days` of now. Anything unparseable is NOT fresh
+    — a competitor we cannot date must be synced, never silently skipped."""
+    if not last_synced_at:
+        return False
+    at = last_synced_at if isinstance(last_synced_at, datetime) else _parse_dt(last_synced_at)
+    if at is None:
+        return False
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+    return (now or datetime.now(UTC)) - at < timedelta(days=max(0, days))
+
+
 async def sync_competitor(
     competitor: dict, limit: int = 24, days: int = 90,
     video_cap: int = 3, store_media: bool = True,
-    tenant_id: UUID | None = None,
+    tenant_id: UUID | None = None, force: bool = False,
 ) -> dict:
     """Pull one competitor's recent posts, persist them, and copy their media.
 
     Returns {handle, platform, fetched, stored, media_stored, media_skipped,
     error}. Never raises — a broken handle reports and the batch continues.
+
+    A competitor synced within SYNC_FRESH_DAYS is skipped (`skipped` says
+    why, `error` is None) unless `force` — see the constant for the bill that
+    paid for. `items_fetched` / `rows_new` are what the provider returned and
+    how many of those were posts we did not already hold; the spend ledger
+    reads them to show the waste ratio.
     """
     platform = (competitor.get("platform") or "").lower()
     handle = (competitor.get("handle") or "").lstrip("@")
     base = {"competitor_id": competitor.get("id"), "handle": handle,
             "platform": platform, "fetched": 0, "stored": 0,
+            "items_fetched": 0, "rows_new": 0,
             "media_stored": 0, "media_skipped": []}
     if not handle:
         return {**base, "error": "no handle"}
@@ -435,6 +516,10 @@ async def sync_competitor(
     via_apify = platform in competitor_apify.PLATFORMS
     if not via_apify and platform not in PLATFORMS:
         return {**base, "error": f"unsupported platform '{platform}'"}
+    # Before any provider is touched: the profile re-read below costs credits too.
+    if not force and is_fresh(competitor.get("last_synced_at")):
+        return {**base, "error": None,
+                "skipped": f"synced within {SYNC_FRESH_DAYS} days"}
     if via_apify and not competitor_apify.configured():
         return {**base, "error": "No Apify token configured (APIFY_API_KEY)."}
     if not via_apify:
@@ -449,9 +534,14 @@ async def sync_competitor(
     # (A no-op on the Apify platforms: there is no profile search to read.)
     competitor = await refresh_profile(competitor, tenant_id=tenant_id)
 
+    cid = str(competitor.get("id") or "")
+    runs: list[dict] = []
+    xpoz_model = f"{platform}.get_posts_by_{'author' if platform == 'twitter' else 'user'}"
     if via_apify:
-        posts, err = await competitor_apify.fetch_posts(platform, handle, limit, days)
+        with competitor_apify.collect_runs() as runs:
+            posts, err = await competitor_apify.fetch_posts(platform, handle, limit, days)
         if err and not posts:
+            await _meter_apify_runs(runs, platform, handle, cid, 0, tenant_id)
             return {**base, "error": err}
     else:
         try:
@@ -460,19 +550,47 @@ async def sync_competitor(
             ) as c:
                 posts = await _fetch_posts(c, platform, handle, limit, days)
         except TimeoutError:
+            # The request went out; whether it was charged is Xpoz's call, so
+            # it is recorded rather than assumed free.
+            await _meter_xpoz(xpoz_model, platform, handle, tenant_id,
+                              "competitor_sync.sync", items_fetched=0, rows_new=0,
+                              competitor_id=cid, error="timed out")
             return {**base, "error": "timed out"}
         except Exception as e:  # noqa: BLE001
+            await _meter_xpoz(xpoz_model, platform, handle, tenant_id,
+                              "competitor_sync.sync", items_fetched=0, rows_new=0,
+                              competitor_id=cid, error=f"{type(e).__name__}"[:200])
             return {**base, "error": f"{type(e).__name__}: {e}"}
 
     followers = _int(competitor.get("followers"))
     stored: list[dict] = []
+    rows_new = 0
     async with acquire(tenant_id) as conn:
         for p in posts:
             try:
-                stored.append(await _upsert_post(conn, str(competitor["id"]),
-                                                 platform, p, followers))
+                row = await _upsert_post(conn, str(competitor["id"]),
+                                         platform, p, followers)
             except Exception as e:  # noqa: BLE001 — one bad row ≠ no sync
                 print(f"[competitor_sync] {handle} post {p.get('post_id')}: {e}")
+                continue
+            # (xmax = 0) is true only for a row this statement INSERTED; an
+            # upsert that merely refreshed metrics is a post we already paid
+            # for once. The spend ledger records this split per run.
+            if row.pop("is_new", False):
+                rows_new += 1
+            stored.append(row)
+    logger.info("[competitor_sync] %s/%s items_fetched=%d rows_new=%d",
+                platform, handle, len(posts), rows_new)
+    if via_apify:
+        await _meter_apify_runs(runs, platform, handle, cid, rows_new, tenant_id)
+    else:
+        await _meter_xpoz(xpoz_model, platform, handle, tenant_id, "competitor_sync.sync",
+                          items_fetched=len(posts), rows_new=rows_new, competitor_id=cid)
+    if rows_new and int(competitor.get("media_outage_runs") or 0) > 0:
+        # New posts: the profile is readable again, so the media fetcher that
+        # gave up on it after MAX_MEDIA_OUTAGE_RUNS empty runs may try again.
+        from .competitor_media import clear_media_outages
+        await clear_media_outages(str(competitor["id"]), tenant_id)
 
     media_stored, skipped = 0, []
     if store_media and stored:
@@ -518,6 +636,7 @@ async def sync_competitor(
                 str(competitor["id"]), followers)
 
     return {**base, "fetched": len(posts), "stored": len(stored),
+            "items_fetched": len(posts), "rows_new": rows_new,
             "media_stored": media_stored, "media_skipped": skipped[:10],
             "error": None}
 
@@ -525,9 +644,23 @@ async def sync_competitor(
 async def sync_all(
     limit: int = 24, days: int = 90, video_cap: int = 3,
     concurrency: int = 3, tenant_id: UUID | None = None,
+    force: bool = False,
 ) -> dict:
     """Sync every TRACKED competitor. Bounded concurrency keeps Xpoz credit
-    burn and memory predictable when a tenant tracks dozens of accounts."""
+    burn and memory predictable when a tenant tracks dozens of accounts.
+
+    `force` re-pulls competitors synced within SYNC_FRESH_DAYS; by default
+    they are reported under `skipped` and cost nothing.
+
+    Skipped — logged, never raised — when spend says the brand is over its
+    daily cap or PAUSE_SPEND is on; `spend_blocked` carries the reason."""
+    from .competitor_media import spend_blocked
+    gate = await spend_blocked(tenant_id, "competitor sync")
+    if gate:
+        return {"synced": 0, "skipped": 0, "posts_stored": 0, "items_fetched": 0,
+                "rows_new": 0, "media_stored": 0, "ranked": [], "results": [],
+                "spend_blocked": gate.get("reason") or "blocked",
+                "note": f"skipped: {gate.get('reason') or 'spend blocked'}"}
     from .competitors import list_competitors
     tracked = await list_competitors(status="tracked", tenant_id=tenant_id)
     if not tracked:
@@ -540,7 +673,7 @@ async def sync_all(
         async with sem:
             return await sync_competitor(
                 c, limit=limit, days=days, video_cap=video_cap,
-                tenant_id=tenant_id)
+                tenant_id=tenant_id, force=force)
 
     results = await asyncio.gather(*[_one(c) for c in tracked],
                                    return_exceptions=True)
@@ -561,8 +694,13 @@ async def sync_all(
         print(f"[competitor_sync] rank recompute failed: {e}")
 
     return {
-        "synced": sum(1 for r in clean if not r.get("error")),
+        # A skipped competitor is neither synced nor failed: counting it as
+        # synced would make "synced 12" true of a run that touched nobody.
+        "synced": sum(1 for r in clean if not r.get("error") and not r.get("skipped")),
+        "skipped": sum(1 for r in clean if r.get("skipped")),
         "posts_stored": sum(r.get("stored", 0) for r in clean),
+        "items_fetched": sum(r.get("items_fetched", 0) for r in clean),
+        "rows_new": sum(r.get("rows_new", 0) for r in clean),
         "media_stored": sum(r.get("media_stored", 0) for r in clean),
         "ranked": [r for r in ranked if r.get("measured_posts")],
         "results": clean,
@@ -755,14 +893,44 @@ async def studio_status(tenant_id: UUID | None = None) -> dict:
 
     The database always knows. This is the number the UI should trust.
     """
+    from .competitor_media import MAX_MEDIA_FETCH_ATTEMPTS
+    try:
+        row = await _status_row(tenant_id, _GIVEN_UP_SQL, MAX_MEDIA_FETCH_ATTEMPTS)
+    except asyncpg.exceptions.UndefinedColumnError:
+        # Migration 070 is applied by hand (migrate.py), not by the deploy. Code
+        # that lands before it would 42703 every status poll BM2 makes; until the
+        # column exists nothing has been given up on, so 0 is the truth.
+        logger.warning("[competitor_sync] competitor_posts.media_fetch_attempts "
+                       "missing — apply migration 070")
+        row = await _status_row(tenant_id, "0::bigint")
+    d = dict(row)
+    for k in ("last_sync", "last_analysis"):
+        if d.get(k) is not None:
+            d[k] = d[k].isoformat()
+    # What is left to do, so the UI can say "12 still to analyse" rather than
+    # spinning with no idea whether anything is happening. A post the media
+    # fetcher has given up on is not pending — it would read as "12 still to
+    # fetch" on every visit, forever, for files no run will ask for again.
+    d["media_pending"] = max(0, d["posts"] - d["with_media"] - d["media_given_up"])
+    d["analysis_pending"] = max(0, d["with_media"] - d["analysed"])
+    return d
+
+
+_GIVEN_UP_SQL = """(SELECT count(*) FROM competitor_posts
+                   WHERE stored_media_url = ''
+                     AND media_fetch_attempts >= $1)"""
+
+
+async def _status_row(tenant_id: UUID | None, given_up_sql: str, *args):
     async with acquire(tenant_id) as conn:
-        row = await conn.fetchrow(
-            """SELECT
+        return await conn.fetchrow(
+            f"""SELECT
                  (SELECT count(*) FROM competitors
                    WHERE status = 'tracked')                        AS competitors,
                  (SELECT count(*) FROM competitor_posts)            AS posts,
                  (SELECT count(*) FROM competitor_posts
                    WHERE stored_media_url <> '')                    AS with_media,
+                 {given_up_sql}                                     AS media_given_up,
                  (SELECT count(*) FROM competitor_post_analysis a
                     JOIN competitor_posts p ON p.id = a.post_id)     AS analysed,
                  (SELECT count(*) FROM competitor_post_analysis a
@@ -773,100 +941,453 @@ async def studio_status(tenant_id: UUID | None = None) -> dict:
                  (SELECT max(last_synced_at) FROM competitor_posts) AS last_sync,
                  (SELECT max(a.analyzed_at) FROM competitor_post_analysis a
                     JOIN competitor_posts p ON p.id = a.post_id)     AS last_analysis
-            """)
-    d = dict(row)
-    for k in ("last_sync", "last_analysis"):
-        if d.get(k) is not None:
-            d[k] = d[k].isoformat()
-    # What is left to do, so the UI can say "12 still to analyse" rather than
-    # spinning with no idea whether anything is happening.
-    d["media_pending"] = max(0, d["posts"] - d["with_media"])
-    d["analysis_pending"] = max(0, d["with_media"] - d["analysed"])
-    return d
+            """, *args)
+
+
+# ── the refresh clock ───────────────────────────────────────────────
+# One full refresh per tenant at a time, and one per REFRESH_COOLDOWN. The
+# chain is paid at every stage — a pull of every tracked competitor, an Apify
+# re-scrape per competitor with missing media, a batch of vision calls, an LLM
+# rollup — and three callers reach it on three clocks: the scheduler's
+# competitor_refresh tick, BM2's Monday refresh_shelves (POST
+# /competitors/refresh) and the operator's button. The first cut of this gate
+# lived in the HTTP route, which the scheduler never passes through, so a tick
+# and a Monday call in the same half hour still ran two chains for one tenant.
+# It lives here, at full_refresh itself, so every caller reads one clock. Same
+# rule and window as BM2's competitor_chain.COOLDOWN_MINUTES. Held in memory
+# like the route's job stores: a restart forgets it and costs one extra run,
+# not a stacked chain.
+REFRESH_COOLDOWN = timedelta(minutes=30)
+# A claim nobody released — a worker killed mid-chain — must not hold the
+# tenant's slot forever. Measured from the chain's last sign of life (every
+# stage boundary touches it), not from its start: a real chain over twenty
+# peers, with Apify polling up to six minutes an actor, can run past two hours
+# and must not have a second chain stacked on it for being slow.
+REFRESH_MAX_RUNTIME = timedelta(hours=2)
+_REFRESH_STATE: dict[str, dict] = {}
+# tenant → {job_id, started_at, last_progress_at, finished_at, scope, prev, rerun}
+#
+# The cooldown exists to stop a second chain re-buying what the first just
+# bought; it must never turn away work nobody has bought yet. Weekly cadence
+# made that matter: onboarding's first tick runs with nothing tracked and
+# started the cooldown, BM2's chain then auto-tracked five peers and called
+# refresh inside the window, got reused="cooldown" (which it records as
+# "refreshed"), and the peers waited a week for the next tick. So:
+#   * a chain that pulled nothing — no competitor synced, no file stored, no
+#     post analysed — does not START the cooldown (one already running from an
+#     earlier chain that did pull is left exactly as it was);
+#   * a tracked competitor that has never been synced always gets past the
+#     cooldown, but as a NARROW run (scope "unsynced"): the chain for those
+#     competitors only. The rest of the roster was just bought, and a handle
+#     that always errors then costs one failed pull per call, not a roster;
+#   * a call that lands while a chain is in flight sets `rerun`; the holder
+#     pulls whoever was tracked after its own sync listed the roster, because
+#     the caller took the in_flight reply as done and will not call again.
+
+
+def _tenant_key(tenant_id: UUID | None) -> str:
+    # The same resolution as acquire(): explicit → the request's tenant → the
+    # default. Keyed on a raw None, the route in single-tenant mode (no tenant
+    # on the request) and the scheduler (the default tenant's uuid from
+    # scheduled_jobs) read two different slots for one shelf, and the gate
+    # never saw the one from the other.
+    from .db import _request_tenant
+    return str(tenant_id or _request_tenant.get() or settings.default_tenant_id)
+
+
+def refresh_state(tenant_id: UUID | None) -> dict | None:
+    """What the clock holds for this tenant (a copy), or None."""
+    st = _REFRESH_STATE.get(_tenant_key(tenant_id))
+    return dict(st) if st else None
+
+
+def _running(st: dict, now: datetime) -> bool:
+    alive = st.get("last_progress_at") or st["started_at"]
+    return st.get("finished_at") is None and now - alive < REFRESH_MAX_RUNTIME
+
+
+def claim_refresh(
+    tenant_id: UUID | None, job_id: str, force: bool = False,
+    now: datetime | None = None, unsynced: set[str] | None = None,
+) -> dict | None:
+    """Take the tenant's refresh slot for `job_id`.
+
+    None means the slot is yours: run the chain and call release_refresh.
+    Otherwise it is the reply to hand back INSTEAD of running —
+    {job_id, reused: "in_flight" | "cooldown", note} — naming the run that
+    already covers this tenant.
+
+    A running claim is never overridden, `force` included: it cannot stack a
+    second chain on a first. A claim that finished inside REFRESH_COOLDOWN is
+    reused unless `force`, which is the operator saying "I know, do it again".
+    Claiming again with the SAME job_id is a no-op for the holder, so the route
+    can claim before it answers (two clicks a second apart get one job_id
+    back) and full_refresh re-enters that claim when the background task
+    starts. There is no await in here: inside one process the check and the
+    stamp are one step, which is what makes the gate a gate.
+
+    `unsynced` is the tenant's tracked-but-never-synced competitor ids (see
+    try_claim_refresh, which reads them): when there are any, the cooldown
+    lets the claim through with scope "unsynced" — full_refresh then runs
+    the chain for those competitors only. An in_flight reply marks the
+    holder `rerun`.
+    """
+    key = _tenant_key(tenant_id)
+    now = now or datetime.now(UTC)
+    st = _REFRESH_STATE.get(key)
+    scope, prev = "full", None
+    if st:
+        if _running(st, now):
+            if st.get("job_id") == job_id:
+                return None
+            st["rerun"] = True
+            return {"job_id": st["job_id"], "reused": "in_flight",
+                    "note": "a refresh is already running for this tenant; "
+                            "competitors tracked since it began are pulled "
+                            "when it finishes"}
+        at = st.get("finished_at")
+        if at:
+            # Kept so a run that pulls nothing can put this cooldown back.
+            prev = {"job_id": st["job_id"], "finished_at": at}
+            if not force and now - at < REFRESH_COOLDOWN:
+                if not unsynced:
+                    mins = int(REFRESH_COOLDOWN.total_seconds() // 60)
+                    return {"job_id": st["job_id"], "reused": "cooldown",
+                            "note": f"a refresh finished within {mins}m; "
+                                    "pass force=true to run another"}
+                scope = "unsynced"
+    _REFRESH_STATE[key] = {"job_id": job_id, "started_at": now,
+                           "last_progress_at": now, "finished_at": None,
+                           "scope": scope, "prev": prev}
+    return None
+
+
+def touch_refresh(tenant_id: UUID | None, job_id: str,
+                  now: datetime | None = None) -> None:
+    """The holder's sign of life; REFRESH_MAX_RUNTIME counts from here."""
+    st = _REFRESH_STATE.get(_tenant_key(tenant_id))
+    if st and st.get("job_id") == job_id and st.get("finished_at") is None:
+        st["last_progress_at"] = now or datetime.now(UTC)
+
+
+def release_refresh(tenant_id: UUID | None, job_id: str,
+                    now: datetime | None = None, pulled: bool = True) -> None:
+    """End the holder's claim — on failure too, which is why full_refresh
+    calls this from a finally. Only the holder may release: a late release
+    from a job that lost its slot to a newer one is ignored.
+
+    `pulled` says whether the chain got anything (see _chain_pulled). If it
+    did, the cooldown starts now. If it did not, nothing was bought for a
+    cooldown to protect: the cooldown an earlier chain started is put back
+    as it was, or the slot is simply freed."""
+    key = _tenant_key(tenant_id)
+    st = _REFRESH_STATE.get(key)
+    if not (st and st.get("job_id") == job_id and st.get("finished_at") is None):
+        return
+    now = now or datetime.now(UTC)
+    if pulled:
+        _REFRESH_STATE[key] = {"job_id": job_id, "started_at": st["started_at"],
+                               "finished_at": now}
+        return
+    prev = st.get("prev")
+    if prev:
+        _REFRESH_STATE[key] = {"job_id": prev["job_id"],
+                               "started_at": prev["finished_at"],
+                               "finished_at": prev["finished_at"]}
+    else:
+        _REFRESH_STATE.pop(key, None)
+
+
+async def unsynced_tracked_ids(tenant_id: UUID | None) -> set[str]:
+    """Tracked competitors that have never been synced — work no chain has
+    bought yet. last_synced_at is stamped only by a sync that reached the
+    provider, so a handle that errored stays in here."""
+    # The tenant predicate is explicit, not left to RLS: a superuser or
+    # BYPASSRLS role (the docker test DB's is one) skips policies, and then
+    # another tenant's never-synced peer would reopen THIS tenant's cooldown
+    # and buy a run for a roster that has nothing new.
+    async with acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            "SELECT id FROM competitors "
+            "WHERE status = 'tracked' AND last_synced_at IS NULL "
+            "AND tenant_id = current_setting('app.current_tenant', true)::uuid")
+    return {str(r["id"]) for r in rows}
+
+
+async def _unsynced_or_empty(tenant_id: UUID | None) -> set[str]:
+    # Best-effort: the gate falls back to the plain cooldown rather than
+    # failing a refresh because this read did.
+    try:
+        return await unsynced_tracked_ids(tenant_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[competitor_sync] unsynced read failed: %s", e)
+        return set()
+
+
+async def try_claim_refresh(
+    tenant_id: UUID | None, job_id: str, force: bool = False,
+) -> dict | None:
+    """claim_refresh, plus the one fact it cannot read itself: whether a
+    tracked competitor is still waiting for its first pull. Read only when the
+    cooldown is what is refusing, so the ordinary claim costs no query. The
+    await sits between two claims, not inside one, so the gate stays a gate:
+    a rival that claims in between is simply in flight to the second claim."""
+    reused = claim_refresh(tenant_id, job_id, force=force)
+    if not reused or reused["reused"] != "cooldown":
+        return reused
+    unsynced = await _unsynced_or_empty(tenant_id)
+    if not unsynced:
+        return reused
+    return claim_refresh(tenant_id, job_id, force=force, unsynced=unsynced)
+
+
+async def _catch_up(
+    ids: set[str], tenant_id: UUID | None, limit: int, touch=None,
+) -> dict:
+    """The chain for these competitors only: pull, fill missing media, look,
+    write up. Used for the never-synced competitors a cooldown let through,
+    and for the ones tracked while a chain ran. The rest of the roster was
+    just done; re-running the whole chain would re-buy it."""
+    from . import competitor_media, competitor_profile, competitor_vision
+    from .competitors import list_competitors
+    tracked = [c for c in await list_competitors(status="tracked", tenant_id=tenant_id)
+               if str(c.get("id")) in ids]
+    results: list[dict] = []
+    for c in tracked:
+        if touch:
+            touch()
+        r = await sync_competitor(c, limit=limit, days=365, video_cap=10,
+                                  tenant_id=tenant_id)
+        results.append(r)
+        if r.get("error") or r.get("skipped"):
+            continue
+        for stage, call in (
+            ("media", lambda c=c: competitor_media.fetch_media_for_competitor(
+                c, max(limit, 30), tenant_id)),
+            ("vision", lambda c=c: competitor_vision.analyze_competitor(
+                str(c["id"]), post_cap=14, video_cap=5, tenant_id=tenant_id)),
+            ("profile", lambda c=c: competitor_profile.build_profile(
+                str(c["id"]), tenant_id=tenant_id)),
+        ):
+            try:
+                await call()
+            except Exception as e:  # noqa: BLE001 — best-effort, like the chain
+                r.setdefault("catch_up_errors", {})[stage] = str(e)[:200]
+    return {
+        "competitors": len(tracked),
+        "synced": sum(1 for r in results if not r.get("error") and not r.get("skipped")),
+        "items_fetched": sum(r.get("items_fetched", 0) for r in results),
+        "rows_new": sum(r.get("rows_new", 0) for r in results),
+        "results": results,
+    }
+
+
+def _chain_pulled(out: dict) -> bool:
+    """Whether a finished chain got anything: a competitor synced, a file
+    stored, a post analysed. That is what the cooldown protects from being
+    bought twice. A chain that pulled nothing — nothing tracked yet, everyone
+    fresh, every provider call refused — leaves nothing to protect, and
+    starting the cooldown on it is what kept onboarding's first real pull a
+    week away. Media runs that stored nothing are not counted: they are capped
+    per post (MAX_MEDIA_FETCH_ATTEMPTS) and per competitor
+    (MAX_MEDIA_OUTAGE_RUNS), so a caller repeating them buys a bounded few.
+    A stage that raised is counted as having pulled: it may have spent, and
+    the cooldown is the safe side of not knowing."""
+    stages = out.get("stages") or {}
+    if any((stages.get(s) or {}).get("error") for s in ("sync", "media", "vision")):
+        return True
+    if ((stages.get("sync") or {}).get("synced")
+            or (stages.get("media") or {}).get("stored")
+            or (stages.get("vision") or {}).get("analysed")):
+        return True
+    return any((out.get(k) or {}).get("synced") or (out.get(k) or {}).get("error")
+               for k in ("catch_up", "late_catch_up"))
 
 
 async def full_refresh(
     tenant_id: UUID | None = None, limit: int = 30, progress=None,
+    force: bool = False, job_id: str = "",
 ) -> dict:
     """The whole chain, in the only order that works.
 
-        pull posts → download the files → look at them → roll up profiles
+    pull posts → download the media → analyse it → roll up profiles → measure
+    the gap.
 
-    Each stage depends on the one before: you cannot analyse a post whose
-    media never downloaded, and you cannot profile a competitor whose posts
-    were never pulled. Splitting these into four buttons made that ordering
-    the operator's problem and left the last two mostly unclicked — which is
-    why a shelf could sit there with media and no analysis.
+    Each step reads what the previous one wrote. Run separately they raced or
+    were skipped, and the studio sat on posts it never looked at, analyses
+    never rolled up, and a gap table nobody filled. `progress` is called with
+    a dict at each stage so the UI can show where a long run is.
 
-    `progress` is called between stages so a watcher can say WHICH stage is
-    running rather than spinning. Every stage is best-effort: one failing
-    (a capped provider, a dead actor) must not cost the stages that already
-    succeeded, so each is caught and reported rather than raised.
+    Every stage is best-effort: one failing (a capped provider, a dead actor)
+    must not cost the stages that already succeeded, so each is caught and
+    reported rather than raised.
+
+    `force` re-pulls competitors synced within SYNC_FRESH_DAYS, gives the
+    media fetcher's given-up posts another go, and overrides the cooldown;
+    the default leaves them alone, which is what makes three callers on
+    three clocks (scheduler, BM2's Monday, the operator's button) cost one
+    pull a week. It never overrides a chain in flight. Without `force`, a run
+    in which no competitor synced, no file stored and no post was analysed
+    does not re-run the profile rollup (an LLM call per competitor) or the
+    gap: nothing on their side moved, and BM2's Monday call landing after the
+    BM1 tick re-bought both every week.
+
+    `job_id` is the claim the caller already holds (the route claims before
+    it answers); without one this claims for itself, which is the scheduler
+    path. Either way the slot is released here, failure included. A call
+    the clock turns away returns {skipped: "in_flight" | "cooldown"} and
+    runs nothing. A never-synced tracked competitor gets past the cooldown,
+    and that run is only for them (`scope: "unsynced"`, `catch_up`); one
+    tracked while this chain ran is pulled before it ends if anyone asked
+    meanwhile (`catch_up` / `late_catch_up`). See _REFRESH_STATE.
+
+    Over the brand's daily spend cap, or with PAUSE_SPEND on, nothing runs
+    and the reply is {skipped: "spend", reason}: logged, never raised. It is
+    asked before the claim, so a refusal neither holds the slot nor starts
+    the cooldown (a route that claimed first releases in its own finally).
+    sync_all and the media fetcher ask again, so a cap reached mid-chain
+    stops the next paid stage too.
     """
     from . import competitor_gap, competitor_media, competitor_profile, competitor_vision
 
+    gate = await competitor_media.spend_blocked(tenant_id, "competitor refresh")
+    if gate:
+        reason = gate.get("reason") or "spend blocked"
+        return {"skipped": "spend", "reason": reason,
+                "note": f"not run: {reason}", "stages": {}}
+
+    job_id = job_id or f"refresh-{uuid4()}"
+    reused = await try_claim_refresh(tenant_id, job_id, force=force)
+    if reused:
+        logger.info("[competitor_sync] refresh for %s not run: %s (%s)",
+                    _tenant_key(tenant_id), reused["reused"], reused["job_id"])
+        return {"skipped": reused["reused"], "reused_job_id": reused["job_id"],
+                "note": reused["note"], "stages": {}}
+    narrow = (refresh_state(tenant_id) or {}).get("scope") == "unsynced"
+    # Who was waiting for a first pull when this chain began — sync_all lists
+    # the roster a moment later. Whoever is unsynced at the end and is NOT in
+    # here was tracked mid-chain.
+    before = await _unsynced_or_empty(tenant_id)
+
+    def _touch() -> None:
+        touch_refresh(tenant_id, job_id)
+
     def _say(stage: str, n: int) -> None:
+        _touch()
         if progress:
             progress({"stage": stage, "step": n, "steps": 5})
 
     out: dict = {"stages": {}}
-
-    _say("pulling their posts", 1)
+    completed = False
     try:
-        r = await sync_all(limit=limit, days=365, video_cap=10,
-                           concurrency=2, tenant_id=tenant_id)
-        out["stages"]["sync"] = {"posts": r.get("posts_stored", 0),
-                                 "media": r.get("media_stored", 0)}
-    except Exception as e:  # noqa: BLE001
-        out["stages"]["sync"] = {"error": str(e)[:200]}
+        if narrow:
+            out["scope"] = "unsynced"
+            _say("pulling the competitors nobody has pulled yet", 1)
+            try:
+                out["catch_up"] = await _catch_up(before, tenant_id, limit, _touch)
+            except Exception as e:  # noqa: BLE001
+                out["catch_up"] = {"error": str(e)[:200]}
+        else:
+            stages = out["stages"]
+            _say("pulling their posts", 1)
+            try:
+                r = await sync_all(limit=limit, days=365, video_cap=10,
+                                   concurrency=2, tenant_id=tenant_id, force=force)
+                stages["sync"] = {"synced": r.get("synced", 0),
+                                  "posts": r.get("posts_stored", 0),
+                                  "media": r.get("media_stored", 0),
+                                  "skipped": r.get("skipped", 0),
+                                  "items_fetched": r.get("items_fetched", 0),
+                                  "rows_new": r.get("rows_new", 0)}
+                if r.get("spend_blocked"):
+                    stages["sync"]["spend_blocked"] = r["spend_blocked"]
+            except Exception as e:  # noqa: BLE001
+                stages["sync"] = {"error": str(e)[:200]}
 
-    _say("downloading the media", 2)
-    try:
-        r = await competitor_media.fetch_all_missing_media(
-            limit=max(limit, 30), tenant_id=tenant_id)
-        out["stages"]["media"] = {"stored": r.get("stored", 0)}
-    except Exception as e:  # noqa: BLE001
-        out["stages"]["media"] = {"error": str(e)[:200]}
+            _say("downloading the media", 2)
+            try:
+                r = await competitor_media.fetch_all_missing_media(
+                    limit=max(limit, 30), tenant_id=tenant_id, force=force)
+                stages["media"] = {"stored": r.get("stored", 0),
+                                   "actor_runs": r.get("actor_runs", 0),
+                                   "items_fetched": r.get("items_fetched", 0),
+                                   "rows_new": r.get("rows_new", 0)}
+                if r.get("spend_blocked"):
+                    stages["media"]["spend_blocked"] = r["spend_blocked"]
+            except Exception as e:  # noqa: BLE001
+                stages["media"] = {"error": str(e)[:200]}
 
-    _say("looking at what they post", 3)
-    try:
-        r = await competitor_vision.analyze_all(
-            post_cap=14, video_cap=5, tenant_id=tenant_id)
-        out["stages"]["vision"] = {"analysed": r.get("analyzed", 0),
-                                   "ok": r.get("ok", 0)}
-    except Exception as e:  # noqa: BLE001
-        out["stages"]["vision"] = {"error": str(e)[:200]}
+            _say("looking at what they post", 3)
+            try:
+                r = await competitor_vision.analyze_all(
+                    post_cap=14, video_cap=5, tenant_id=tenant_id)
+                stages["vision"] = {"analysed": r.get("analyzed", 0),
+                                    "ok": r.get("ok", 0)}
+            except Exception as e:  # noqa: BLE001
+                stages["vision"] = {"error": str(e)[:200]}
 
-    _say("writing up what they do", 4)
-    try:
-        r = await competitor_profile.build_all_profiles(tenant_id=tenant_id)
-        out["stages"]["profiles"] = {"built": r.get("built", 0)}
-    except Exception as e:  # noqa: BLE001
-        out["stages"]["profiles"] = {"error": str(e)[:200]}
+            # Two weekly clocks reach this chain (the BM1 tick and BM2's Monday
+            # call) and the freshness skip makes the second one's pull free —
+            # but the rollup re-synthesises every competitor with an LLM call
+            # and the gap is recomputed, on a shelf that did not change. Skipped
+            # only when nothing moved AND nothing failed (an errored stage
+            # might have left work for them).
+            if not (force or _chain_pulled(out)):
+                stages["profiles"] = {"skipped": "nothing new on their side"}
+                stages["gap"] = {"skipped": "nothing new on their side"}
+            else:
+                _say("writing up what they do", 4)
+                try:
+                    r = await competitor_profile.build_all_profiles(tenant_id=tenant_id)
+                    stages["profiles"] = {"built": r.get("built", 0)}
+                except Exception as e:  # noqa: BLE001
+                    stages["profiles"] = {"error": str(e)[:200]}
 
-    # The subtraction — what they post that we don't. It was computed only when
-    # somebody opened the gap view, so the table was empty for every brand
-    # nobody had opened it for: two of three, measured 2026-09-19. It belongs
-    # at the end of the chain because it needs BOTH sides, and the analyses it
-    # reads were only just written.
-    _say("measuring the gap", 5)
-    try:
-        r = await competitor_gap.content_gap(tenant_id=tenant_id)
-        out["stages"]["gap"] = {
-            "gaps": len(((r or {}).get("facts") or {}).get("measured_format_shortfall") or []),
-            "insufficient": list((r or {}).get("insufficient") or []),
-        }
-    except Exception as e:  # noqa: BLE001
-        out["stages"]["gap"] = {"error": str(e)[:200]}
+                # The subtraction — what they post that we don't. It was computed
+                # only when somebody opened the gap view, so the table was empty
+                # for every brand nobody had opened it for: two of three, measured
+                # 2026-09-19. It belongs at the end of the chain because it needs
+                # BOTH sides, and the analyses it reads were only just written.
+                _say("measuring the gap", 5)
+                try:
+                    r = await competitor_gap.content_gap(tenant_id=tenant_id)
+                    stages["gap"] = {
+                        "gaps": len(((r or {}).get("facts") or {})
+                                    .get("measured_format_shortfall") or []),
+                        "insufficient": list((r or {}).get("insufficient") or []),
+                    }
+                except Exception as e:  # noqa: BLE001
+                    stages["gap"] = {"error": str(e)[:200]}
 
-    out["status"] = await studio_status(tenant_id)
+        # Someone asked while this ran and was told "in flight"; they will not
+        # ask again. Pull whoever was tracked after the roster was read. Last
+        # before the release so the window for a request to miss both this
+        # check and the cooldown's reopening is the release itself.
+        st = _REFRESH_STATE.get(_tenant_key(tenant_id))
+        if st and st.get("job_id") == job_id and st.pop("rerun", False):
+            new = await _unsynced_or_empty(tenant_id) - before
+            if new:
+                key = "late_catch_up" if "catch_up" in out else "catch_up"
+                try:
+                    out[key] = await _catch_up(new, tenant_id, limit, _touch)
+                except Exception as e:  # noqa: BLE001
+                    out[key] = {"error": str(e)[:200]}
+
+        out["status"] = await studio_status(tenant_id)
+        completed = True
+    finally:
+        # However the chain ended: one that raised is assumed to have spent.
+        pulled = _chain_pulled(out) if completed else True
+        out["cooldown_started"] = pulled
+        release_refresh(tenant_id, job_id, pulled=pulled)
     return out
 
 
 async def run_competitor_refresh(tenant_id: UUID, config: dict | None = None) -> None:
     """Scheduler entry point for the whole chain. Tenant-bound and explicit."""
     cfg = config or {}
-    await full_refresh(tenant_id=tenant_id, limit=int(cfg.get("limit") or 30))
+    await full_refresh(tenant_id=tenant_id, limit=int(cfg.get("limit") or 30),
+                       force=bool(cfg.get("force")))
 
 
 async def shelf_stats(tenant_id: UUID | None = None) -> dict:
@@ -900,10 +1421,14 @@ async def run_competitor_sync(tenant_id: UUID, config: dict | None = None) -> No
         days=int(cfg.get("days") or 90),
         video_cap=int(cfg.get("video_cap") or 3),
         tenant_id=tenant_id,
+        force=bool(cfg.get("force")),
     )
 
 
 __all__ = [
     "gallery", "set_replicate", "replicate_counts",
     "refresh_profile", "sync_competitor", "run_competitor_sync", "sync_all", "list_posts", "shelf_stats",
+    "SYNC_FRESH_DAYS", "is_fresh", "full_refresh", "run_competitor_refresh",
+    "REFRESH_COOLDOWN", "REFRESH_MAX_RUNTIME", "claim_refresh", "release_refresh",
+    "refresh_state", "try_claim_refresh", "touch_refresh", "unsynced_tracked_ids",
 ]

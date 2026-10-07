@@ -24,6 +24,28 @@ from .db import acquire
 
 _PROFILE_COLS = ("kind", "identity", "goals", "pillars", "taboos",
                  "platforms", "peers", "constraints", "intake_done")
+
+# What finishing the intake switches on, and how often each runs (hours).
+#
+# competitor_refresh is FIRST because finishing onboarding should leave the
+# brand looking at real competitor posts, not an empty shelf — the scheduler
+# runs a job with no last_run_at immediately, so the first pull still happens
+# the moment the intake lands. After that it is WEEKLY, not daily. The old 24
+# meant a paid Xpoz/Apify pull of every tracked competitor, plus an Apify
+# re-scrape for every post whose media never stored, every single day, on
+# content that barely moves day to day; with ~10-20 peers across six brands
+# that was a few hundred pay-per-result runs a week re-fetching posts already
+# on the shelf. BM2's Monday refresh_shelves believed the cadence was weekly
+# all along. The weekly prescription reads the shelf at the same cadence.
+# Rows seeded at 24 before this change are moved to 168 by migration 070.
+INTAKE_JOBS: tuple[tuple[str, int], ...] = (
+    ("competitor_refresh", 168),
+    ("daily_brand_research", 24),
+    ("brand_interview", 12),
+    ("playbook_refresh", 168),
+    ("peer_snapshot", 168),
+    ("weekly_prescription", 168),
+)
 _JSON_COLS = {"identity", "goals", "pillars", "taboos", "platforms",
               "peers", "constraints"}
 
@@ -79,17 +101,7 @@ async def upsert_brand_profile(
             # brand is: the competitor shelf, daily research, the continuous
             # deep interview, and the strategy loop (playbooks weekly, peers
             # weekly, a fresh Prescription every Monday-ish).
-            # competitor_refresh is FIRST and runs daily at first: finishing
-            # onboarding should leave the brand looking at real posts from its
-            # competitors, not an empty shelf it has to go and fill by hand.
-            # The weekly prescription reads that shelf, so it has to exist
-            # before the first plan is composed.
-            for kind, cadence in (("competitor_refresh", 24),
-                                  ("daily_brand_research", 24),
-                                  ("brand_interview", 12),
-                                  ("playbook_refresh", 168),
-                                  ("peer_snapshot", 168),
-                                  ("weekly_prescription", 168)):
+            for kind, cadence in INTAKE_JOBS:
                 await conn.execute(
                     """INSERT INTO scheduled_jobs (tenant_id, kind, cadence_hours)
                        VALUES ($1, $2, $3)

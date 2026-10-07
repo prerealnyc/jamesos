@@ -29,6 +29,7 @@ from io import BytesIO
 
 from PIL import Image, ImageDraw
 
+from . import spend
 from .config import settings
 
 # Reuse the shipped typography so a rendered theme card looks native.
@@ -138,6 +139,7 @@ async def assess_and_propose(images: list[bytes], brand_context: dict | None = N
                       {"role": "user", "content": content}],
             max_tokens=1100, temperature=0.2, response_format={"type": "json_object"},
         )
+        await spend.record_tokens("openai", getattr(resp, "model", "") or "gpt-4o", getattr(resp, "usage", None), "brand_identity.judge")
         out = _json.loads(resp.choices[0].message.content or "{}")
     except Exception as exc:  # noqa: BLE001
         return {"status": "failed", "observed_palettes": observed, "error": str(exc)[:200]}

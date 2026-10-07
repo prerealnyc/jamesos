@@ -10,7 +10,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from . import social_saved, xpoz_intel
+from . import social_saved, spend, xpoz_intel
 from .content import generate_content
 from .models import ContentBrief, ContentDraft
 
@@ -67,6 +67,26 @@ class DraftFromPostRequest(BaseModel):
     extra_instructions: str = ""
 
 
+async def _meter_search(site: str, query: str, platforms: list[str] | None,
+                        result: dict) -> None:
+    """One ledger row per search: search_social sends one Xpoz request per
+    platform, concurrently. The SDK reports no per-call credit cost, so the
+    unit is requests and the row is unpriced. Nothing is recorded when no
+    request went out (no key, blank query, no valid platform, the client
+    never connected — each comes back as a top-level error or an empty
+    platform list)."""
+    plats = [p for p in (platforms or list(xpoz_intel.PLATFORMS))
+             if p in xpoz_intel.PLATFORMS]
+    if not query.strip() or not plats or (result or {}).get("error"):
+        return
+    await spend.record(
+        "xpoz", "search_posts", len(plats), "requests", None, site,
+        {"platforms": plats, "items_fetched": int((result or {}).get("count") or 0)
+            + int((result or {}).get("filtered_out") or 0),
+         "credits_reported": False,
+         "errors": sorted(((result or {}).get("errors") or {}).keys())})
+
+
 @router.get("/research/social/account")
 async def xpoz_account() -> dict:
     """Connected Xpoz account: plan + remaining usage. Cheap status probe."""
@@ -76,19 +96,23 @@ async def xpoz_account() -> dict:
 @router.post("/research/social/search")
 async def xpoz_search(req: SocialSearchRequest) -> dict:
     """Normalized brand-listening search across X / Instagram / TikTok / Reddit."""
-    return await xpoz_intel.search_social(
+    out = await xpoz_intel.search_social(
         req.query, platforms=req.platforms, limit=req.limit,
         start_date=req.start_date, min_likes=req.min_likes,
     )
+    await _meter_search("xpoz_api.search", req.query, req.platforms, out)
+    return out
 
 
 @router.post("/research/social/trending")
 async def xpoz_trending(req: TrendingRequest) -> dict:
     """Top recent posts in a niche, ranked by engagement — content fuel."""
-    return await xpoz_intel.trending_in_niche(
+    out = await xpoz_intel.trending_in_niche(
         req.niche, platforms=req.platforms, limit=req.limit,
         days=req.days, min_likes=req.min_likes,
     )
+    await _meter_search("xpoz_api.trending", req.niche, req.platforms, out)
+    return out
 
 
 @router.post("/research/social/draft-from-post", response_model=ContentDraft)
