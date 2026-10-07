@@ -46,20 +46,6 @@ logger = logging.getLogger("design_templates")
 # the brand's feed look MORE repetitive than the nine formats, not less.
 MIN_LIBRARY = 3
 
-# Below THIS many drawable layouts a brand tops itself up from the house
-# catalogue. A SECOND number on purpose, because MIN_LIBRARY answers a different
-# question: "have I enough variety to rotate without looking repetitive" (and
-# under it, fall back to the nine hand-built formats), where this one asks "am I
-# thin enough to be worth stocking".
-#
-# Collapsing the two is what kept adoption dead. Measured against production
-# 2026-10-01: the thinnest brand had 4 drawable layouts and MIN_LIBRARY was 3, so
-# no brand was ever short enough to trigger a top-up. And simply RAISING
-# MIN_LIBRARY would have been worse than leaving it alone — that brand would adopt
-# the 4 layouts in the pool, still sit under a raised floor at 8, and _pick_once
-# would hand back None, so a brand that draws from its own 4 layouts today would
-# stop using learned layouts altogether and fall back to the nine formats.
-STOCK_BELOW = 12
 # How many active layouts pick() weighs at once, in rotation order.
 PICK_WINDOW = 200
 
@@ -69,6 +55,15 @@ PICK_WINDOW = 200
 # not most of the time. Mirrors REFERENCE_SHARE, which fixed the same starvation
 # one stage earlier, at learning.
 NICHE_SHARE = 0.25
+
+# What share of picks may come from the shared catalogue once a brand has a
+# library of its own. Not a cap on what it may OWN — a cap on how much of the
+# feed is other people's shapes while the brand's own niche evidence exists.
+#
+# It governs nothing for a brand-new brand: with no library of its own there is
+# no competing lane, so a day-one brand draws entirely from the catalogue, which
+# is exactly what "a new brand should get good templates immediately" means.
+HOUSE_SHARE = 0.25
 
 # The brand's OWN posts, read back as layouts — the "give me more of what I
 # already make" lane. Same share as niche, and a governed minority for the same
@@ -312,38 +307,19 @@ async def count(tenant_id: UUID | str | None, *, active_only: bool = True) -> in
 async def pick(tenant_id: UUID | str | None) -> dict | None:
     """The layout autopilot should use next, or None to use the nine formats.
 
-    Two attempts, and the second only ever happens to a brand that is SHORT —
-    fewer than STOCK_BELOW drawable layouts. Such a brand tops itself up from the
-    house catalogue and asks again, which is how a brand-new brand gets learned
-    layouts on day one instead of waiting for its own competitor scrape to finish.
+    NO THRESHOLD. The shared catalogue is read on every pick and ranked by how
+    well each layout suits THIS brand — niche first, then whether the brand's own
+    evidence says it makes that kind of post at all. The old design topped a brand
+    up only when its library fell under STOCK_BELOW, which asked "is the shelf
+    low" and never "does this fit", so a brand with 242 layouts could not see a
+    new template however well it matched. Roy, 2026-10-07: "it should adopt and
+    pick it by itself."
 
-    The trigger is the COUNT, not a failed pick. Keying it on "pick returned
-    nothing" meant a brand only ever stocked itself once it had too little to draw
-    at all, so every brand sitting just above the floor stayed there forever.
-
-    Topping up here rather than once at signup is deliberate: seeding at creation
-    strands a brand that later drops back under the line (layouts retire
-    themselves after repeated QA failures), and nothing would notice. Adoption is
-    idempotent, so asking on every short pick costs one query and changes nothing
-    when the catalogue is empty or already drained into this brand.
-
-    A top-up that cannot clear MIN_LIBRARY must not cost a brand what it already
-    had: if the first attempt produced a pick, that pick is returned even when the
-    catalogue added nothing. Stocking can only improve the answer — it can never
-    replace a working library with the nine formats.
+    A catalogue row is copied into the brand at the moment it is PICKED rather
+    than in a speculative batch, so a brand only ever owns what it actually drew,
+    and the per-brand counters start from its first real use.
     """
-    got, have = await _pick_once(tenant_id)
-    if have >= STOCK_BELOW:
-        return got
-    try:
-        from . import house_layouts
-
-        if (await house_layouts.adopt(tenant_id)).get("adopted"):
-            again, _ = await _pick_once(tenant_id)
-            if again is not None:
-                return again
-    except Exception:  # noqa: BLE001 — the nine hand-built formats are a fine fallback
-        logger.warning("could not top up from the house catalogue", exc_info=True)
+    got, _ = await _pick_once(tenant_id)
     return got
 
 
@@ -376,7 +352,7 @@ async def _pick_once(tenant_id: UUID | str | None) -> tuple[dict | None, int]:
     async with acquire(tenant_id) as conn:
         rows = await conn.fetch(
             f"""SELECT id, spec, kind, source_handle, source_url, source_platform,
-                      source_kind, times_used
+                      source_kind, times_used, house_layout_id
                  FROM (
                    SELECT *, row_number() OVER (
                             PARTITION BY {_LANE_SQL}
@@ -401,10 +377,28 @@ async def _pick_once(tenant_id: UUID | str | None) -> tuple[dict | None, int]:
             spec = json.loads(spec)
         if drawable(spec):
             good.append((r, spec))
-    if len(good) < MIN_LIBRARY:
-        return None, len(good)
-
     n_drawable = len(good)
+
+    # THE CATALOGUE AS A SOURCE. Read every time, not when a shelf runs low — a
+    # threshold only ever asked "is the library thin", never "does this layout
+    # suit this brand", so a well-stocked brand could not see a new template
+    # however well it matched. Ranked by fit: the brand's niche first, then
+    # whether its own evidence says it makes that KIND of post at all.
+    house: list[dict] = []
+    try:
+        from . import house_layouts as _hl
+
+        async with acquire(tenant_id) as conn:
+            niches = await _hl.tenant_niches(conn, tenant_id)
+            profile = _hl.type_profile([g[1] for g in good])
+            house = await _hl.candidates(conn, tenant_id, niches=niches, profile=profile)
+    except Exception:  # noqa: BLE001 — the brand's own library is a fine answer
+        logger.warning("could not read the house catalogue", exc_info=True)
+
+    # The floor counts both sources: a day-one brand owns nothing and the
+    # catalogue is the only thing it can draw.
+    if len(good) + len(house) < MIN_LIBRARY:
+        return None, n_drawable
 
     def _used(rec) -> int:
         # Tolerant on purpose: the picker's tests build rows by hand, and a
@@ -414,6 +408,38 @@ async def _pick_once(tenant_id: UUID | str | None) -> tuple[dict | None, int]:
             return int(rec["times_used"] or 0)
         except (KeyError, TypeError, ValueError):
             return 0
+
+    def _house_id(rec):
+        try:
+            return rec["house_layout_id"]
+        except (KeyError, TypeError):
+            return None
+
+    # Is the catalogue under-served in what this brand has ACTUALLY drawn? Read
+    # from times_used rather than kept as state, the same way the other lanes
+    # self-correct. A brand with nothing of its own has no competing lane, so
+    # share is 0 and the catalogue takes the pick.
+    if house:
+        used_all = sum(_used(g[0]) for g in good)
+        used_house = sum(_used(g[0]) for g in good if _house_id(g[0]))
+        share = (used_house / used_all) if used_all else 0.0
+        if share < HOUSE_SHARE:
+            best = house[0]
+            spec = best["spec"]
+            if isinstance(spec, str):
+                spec = json.loads(spec)
+            if drawable(spec):
+                try:
+                    async with acquire(tenant_id) as conn:
+                        await _hl.adopt_one(conn, best)
+                except Exception:  # noqa: BLE001 — drawing it matters, owning it can wait
+                    logger.warning("could not adopt %s on pick", best.get("id"), exc_info=True)
+                return {
+                    "id": str(best["id"]), "spec": spec, "kind": best["kind"],
+                    "source_handle": "", "source_url": str(best["source_url"] or ""),
+                    "source_platform": "house",
+                    "source_kind": _hl._adopt_kind(best["source_kind"]),
+                }, n_drawable
 
     lanes: dict[str, list] = {}
     for g in good:
@@ -723,9 +749,9 @@ async def learn_from_reference(
 
 
 __all__ = [
-    "MIN_LIBRARY", "STOCK_BELOW", "RETIRE_AFTER_QA_FAILS", "MAX_READ_ATTEMPTS",
+    "MIN_LIBRARY", "RETIRE_AFTER_QA_FAILS", "MAX_READ_ATTEMPTS",
     "fingerprint", "usable",
     "prepare", "drawable", "base_role", "save", "count",
     "pick", "mark_used", "mark_qa", "mark_verdict", "learn_from_competitors",
-    "learn_from_reference", "NICHE_SHARE", "OWN_SHARE",
+    "learn_from_reference", "NICHE_SHARE", "OWN_SHARE", "HOUSE_SHARE",
 ]

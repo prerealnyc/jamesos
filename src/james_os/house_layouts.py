@@ -489,4 +489,118 @@ async def adopt(tenant_id: UUID | str | None, *, limit: int = ADOPT_BATCH,
 
 __all__ = ["SHAREABLE", "ADOPT_BATCH", "family_key", "promote", "ingest", "retag",
            "retype", "catalogue", "review", "adopt", "ADOPT_SOURCE_KIND",
-           "niche_tokens", "niche_rank", "tenant_niches"]
+           "niche_tokens", "niche_rank", "tenant_niches",
+           "type_profile", "fit_rank", "candidates", "adopt_one"]
+
+
+# ───────────────────────────────── the pool as a source, not a top-up ──
+#
+# Roy, 2026-10-07: "I do not want the user to pick templates. We are building an
+# intelligent system, so it should adopt and pick it by itself. And whenever a
+# new brand onboards, it should learn what kind of templates it should make."
+#
+# So the catalogue stops being a shelf that gets restocked when it runs low and
+# becomes a SOURCE the picker reads every time, ranked by how well each layout
+# suits this brand. The threshold was never a judgement about fit — it only ever
+# asked "is the shelf low", which is why a brand with 242 layouts could never see
+# a new template however well it matched.
+#
+# A row is copied into the brand at the MOMENT IT IS PICKED, not in a speculative
+# batch of eight. The copy is still necessary (see WHY FORK above: the counters
+# are per-brand and RLS makes a shared row silently unwritable), but copying on
+# use means a brand only ever owns what it actually drew.
+
+
+def type_profile(specs) -> dict:
+    """What KINDS of post this brand's own evidence says it makes.
+
+    Classifies the layouts a brand has learned from its own niche and counts the
+    types. This is the "learn what it should make" half: a golf resort whose
+    competitors post offers and stats gets offer and stat layouts from the
+    catalogue, not testimonials, without anyone saying so.
+
+    Derived rather than stored — it moves as the brand learns, and there is
+    nothing to migrate or keep in step.
+    """
+    from .layout_types import classify
+
+    out: dict[str, int] = {}
+    for spec in specs or []:
+        if not isinstance(spec, dict):
+            continue
+        t = classify(spec).get("type") or ""
+        if t and t != "other":
+            out[t] = out.get(t, 0) + 1
+    return out
+
+
+def fit_rank(brand_niches, profile: dict, layout_niches, layout_type: str) -> tuple:
+    """How well one catalogue layout suits this brand. Higher sorts first.
+
+    (niche, type, popularity) as a tuple so the comparison is explicit and
+    testable rather than a weighted sum nobody can reason about:
+
+      niche  — niche_rank: matching > untagged > tagged for someone else
+      type   — does this brand's own library already contain this KIND of post?
+               A type the brand demonstrably uses beats one it never makes.
+      pop    — how common that type is in its library, as the tiebreak.
+    """
+    t = str(layout_type or "")
+    seen = int(profile.get(t, 0)) if profile else 0
+    # A brand with no profile yet (day one) scores every type 0, so niche alone
+    # decides — which is the right answer when there is no evidence to use.
+    return (niche_rank(brand_niches, layout_niches), 1 if seen else 0, seen)
+
+
+async def candidates(
+    conn, tenant_id, *, niches=None, profile: dict | None = None, limit: int = 40,
+) -> list[dict]:
+    """Approved catalogue layouts this brand has NOT already taken, best fit first.
+
+    `conn` must be the TENANT's connection: the "already taken" check reads
+    design_templates, which is RLS-scoped.
+    """
+    if not tenant_id:
+        return []
+    mine = await conn.fetch(
+        "SELECT house_layout_id::text h FROM design_templates "
+        "WHERE house_layout_id IS NOT NULL")
+    taken = {r["h"] for r in mine}
+
+    async with acquire(None) as pool_conn:
+        rows = await pool_conn.fetch(
+            """SELECT id::text, kind, spec, fingerprint, source_kind, source_url,
+                      source_image_uri, niches, layout_type,
+                      (approvals - rejections) AS score, adopted_count
+                 FROM house_layouts
+                WHERE status = 'approved'
+             ORDER BY (approvals - rejections) DESC, adopted_count DESC, created_at
+                LIMIT $1""", CANDIDATE_POOL)
+
+    out = [dict(r) for r in rows if r["id"] not in taken]
+    out.sort(key=lambda r: fit_rank(niches, profile or {}, r["niches"], r["layout_type"]),
+             reverse=True)
+    return out[: max(1, int(limit))]
+
+
+async def adopt_one(conn, layout: dict) -> str | None:
+    """Copy ONE catalogue row into the brand, at the moment it is picked.
+
+    `conn` must be the tenant's. Idempotent via design_templates_house_uniq, so a
+    race between two renders costs nothing.
+    """
+    spec = layout["spec"]
+    if isinstance(spec, str):
+        spec = json.loads(spec)
+    return await conn.fetchval(
+        """INSERT INTO design_templates
+               (kind, spec, fingerprint, source_kind, source_url,
+                source_image_uri, status, house_layout_id)
+           VALUES ($1, $2::jsonb, $3, $4, $5, $6, 'active', $7::uuid)
+           ON CONFLICT DO NOTHING
+           RETURNING id::text""",
+        str(layout["kind"] or ""), json.dumps(spec), str(layout["fingerprint"] or ""),
+        _adopt_kind(layout["source_kind"]), str(layout["source_url"] or ""),
+        str(layout["source_image_uri"] or ""), layout["id"])
+
+
