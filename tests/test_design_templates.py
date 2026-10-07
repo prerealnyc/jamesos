@@ -581,143 +581,190 @@ def test_pausing_a_layout_that_does_not_exist_reports_nothing(monkeypatch):
     assert asyncio.run(dt.set_paused("t", "nope", True)) is None
 
 
-# ------------------------------------- stocking a thin brand from the catalogue
+# ------------------------- the shared catalogue as a SOURCE, not a top-up
 #
-# STOCK_BELOW exists because MIN_LIBRARY was being asked two different questions.
-# Measured against production 2026-10-01: the thinnest brand held 4 drawable
-# layouts and MIN_LIBRARY was 3, so NO brand was ever short enough for the
-# adopt-on-pick path to fire — the catalogue was wired up and inert. Raising
-# MIN_LIBRARY instead would have been actively worse, and the test named
-# ...keeps_its_own_layouts_when... below is the one that pins why.
+# Roy, 2026-10-07: "I do not want the user to pick templates. We are building an
+# intelligent system, so it should adopt and pick it by itself."
+#
+# The old contract was "top the brand up when its library falls under
+# STOCK_BELOW". That asked whether the shelf was LOW, never whether a layout
+# FITS, so a brand with 242 layouts could not see a new template however well it
+# matched — and in production none of the five brands was ever under the line, so
+# 29 curated layouts reached nobody for a week. The threshold is gone. These
+# tests pin what replaced it.
 
 
-def _stocking_picker(rows, monkeypatch, *, adopted: int, after=None):
-    """The picker over `rows`, with a house catalogue that adopts `adopted` rows.
+def _spec_for(roles, treatment="full_bleed_photo"):
+    return {"kind": "graphic_card", "background": {"treatment": treatment},
+            "elements": [{"role": r, "box": {"x": .05, "y": .6, "w": .9, "h": .2},
+                          "size": "xl", "align": "left", "text": "x"} for r in roles]}
 
-    `after` is what the SECOND _pick_once call sees, so a test can model a top-up
-    that genuinely added layouts as well as one that added none.
-    """
+
+def _house_row(i, *, tags=None, ltype="offer_card", roles=("cta", "headline", "subhead")):
+    import json as _json
+    return {"id": f"h{i}", "kind": "graphic_card", "spec": _json.dumps(_spec_for(roles)),
+            "fingerprint": f"hf{i}", "source_kind": "curated", "source_url": "",
+            "source_image_uri": "", "niches": list(tags or []), "layout_type": ltype,
+            "score": 0, "adopted_count": 0}
+
+
+def _wire(monkeypatch, own_rows, house_rows, *, brand_niche="golf resort"):
+    """Route each query by its SQL so the picker, the niche read, the
+    already-taken read and the catalogue read each get the right shape."""
     import contextlib
 
-    seen = {"adopt_calls": 0, "fetches": 0}
-    state = {"rows": rows}
+    seen = {"adopted": [], "catalogue_reads": 0}
 
     class _C:
-        async def fetch(self, sql, *args):
-            seen["fetches"] += 1
-            return state["rows"]
+        async def fetch(self, sql, *a):
+            if "FROM competitors" in sql:
+                return [{"niche": brand_niche}] if brand_niche else []
+            if "house_layout_id::text" in sql:
+                return []                      # this brand has taken none yet
+            if "FROM house_layouts" in sql:
+                seen["catalogue_reads"] += 1
+                return house_rows
+            return own_rows
+        async def fetchval(self, sql, *a):
+            if "INSERT INTO design_templates" in sql:
+                seen["adopted"].append(a[-1])  # house_layout_id is the last arg
+                return "new-row"
+            return None
+        async def execute(self, sql, *a):
+            return None
 
     @contextlib.asynccontextmanager
     async def _acq(tenant_id=None):
         yield _C()
 
-    async def _adopt(tenant_id, **kw):
-        seen["adopt_calls"] += 1
-        if adopted and after is not None:
-            state["rows"] = after
-        return {"adopted": adopted}
-
     monkeypatch.setattr(dt, "acquire", _acq)
     from james_os import house_layouts as hl
-    monkeypatch.setattr(hl, "adopt", _adopt)
+    monkeypatch.setattr(hl, "acquire", _acq)
     return seen
 
 
-def test_a_well_stocked_brand_is_never_asked_to_adopt(monkeypatch):
-    """The common case must cost exactly one query. A brand at or above
-    STOCK_BELOW is not short, so the catalogue is not consulted at all."""
+def test_a_well_stocked_brand_DOES_consult_the_catalogue(monkeypatch):
+    """The inversion. The previous contract asserted the opposite — that a brand
+    at or above the line never looks — and that is precisely the behaviour that
+    left 29 curated layouts unreachable by every brand."""
     import asyncio
 
-    seen = _stocking_picker(_lane_rows(n_other=dt.STOCK_BELOW, n_niche=0),
-                            monkeypatch, adopted=0)
+    seen = _wire(monkeypatch, _lane_rows(n_other=50, n_niche=0), [_house_row(1, tags=["golf"])])
     got = asyncio.run(dt.pick("t"))
+    assert seen["catalogue_reads"] >= 1, "a stocked brand must still see new templates"
     assert got is not None
-    assert seen["adopt_calls"] == 0, "a stocked brand must not touch the catalogue"
-    assert seen["fetches"] == 1, "and must not pay for a second pick"
 
 
-def test_a_thin_brand_tops_itself_up_even_though_it_could_already_draw(monkeypatch):
-    """THE behaviour change. 4 drawable layouts clears MIN_LIBRARY, so the old
-    code — which only stocked a brand when the pick came back empty — left this
-    brand thin forever. It is below STOCK_BELOW, so it now stocks itself."""
+def test_a_day_one_brand_draws_entirely_from_the_catalogue(monkeypatch):
+    """Nothing of its own, so no competing lane and no share to govern. This is
+    what 'a new brand should get good templates immediately' has to mean."""
     import asyncio
 
-    thin = _lane_rows(n_other=4, n_niche=0)
-    assert len(thin) >= dt.MIN_LIBRARY, "fixture must be able to draw already"
-    assert len(thin) < dt.STOCK_BELOW, "fixture must be short"
-    seen = _stocking_picker(thin, monkeypatch, adopted=8,
-                            after=_lane_rows(n_other=12, n_niche=0))
-    assert asyncio.run(dt.pick("t")) is not None
-    assert seen["adopt_calls"] == 1
-
-
-def test_a_thin_brand_keeps_its_own_layouts_when_the_catalogue_adds_nothing(monkeypatch):
-    """THE REGRESSION GUARD, and the reason MIN_LIBRARY was not simply raised.
-
-    A brand under the stock line whose top-up finds an empty or already-drained
-    catalogue must still draw from what it has. Raising MIN_LIBRARY to 12 would
-    have made exactly this brand — 4 of its own layouts, a 4-layout pool — stop
-    using learned layouts altogether and fall back to the nine formats. Stocking
-    may only ever improve the answer.
-    """
-    import asyncio
-
-    seen = _stocking_picker(_lane_rows(n_other=4, n_niche=0), monkeypatch, adopted=0)
+    seen = _wire(monkeypatch, [], [_house_row(i, tags=["golf"]) for i in range(5)])
     got = asyncio.run(dt.pick("t"))
-    assert seen["adopt_calls"] == 1, "it should have tried"
-    assert got is not None, "an empty catalogue must not cost the brand its own layouts"
-    assert got["source_kind"] == "competitor"
+    assert got is not None, "a brand with no library of its own must still draw"
+    assert got["source_platform"] == "house"
+    assert seen["adopted"], "and it must take ownership of what it drew"
 
 
-def test_a_brand_with_nothing_drawable_still_falls_back_to_the_nine_formats(monkeypatch):
-    """Below MIN_LIBRARY with no help available, None is the right answer — the
-    nine hand-built formats are better than rotating two lucky reads."""
+def test_the_pick_is_decided_by_FIT_not_by_order(monkeypatch):
+    """A golf brand whose own library is all offers. Offered a testimonial tagged
+    for knitting first and a golf-tagged offer last, it must take the offer."""
     import asyncio
 
-    seen = _stocking_picker(_lane_rows(n_other=1, n_niche=0), monkeypatch, adopted=0)
-    assert asyncio.run(dt.pick("t")) is None
-    assert seen["adopt_calls"] == 1
+    own = _lane_rows(n_other=4, n_niche=0)
+    for r in own:                      # its evidence: it makes offers
+        r["spec"] = __import__("json").dumps(_spec_for(["cta", "headline", "subhead"]))
+    house = [_house_row(1, tags=["knitting"], ltype="testimonial", roles=("byline", "headline")),
+             _house_row(2, tags=[], ltype="testimonial", roles=("byline", "headline")),
+             _house_row(3, tags=["golf"], ltype="offer_card")]
+    _wire(monkeypatch, own, house)
+    got = asyncio.run(dt.pick("t"))
+    assert got["id"] == "h3", f"fit must beat position, got {got['id']}"
 
 
-def test_shortness_is_counted_across_both_lanes_not_within_one(monkeypatch):
-    """`good` is narrowed to a single lane before the pick is returned, so taking
-    the count at the end would report one lane's size. A brand holding
-    STOCK_BELOW layouts split across the two lanes is NOT short."""
+def test_an_off_niche_layout_loses_to_an_untagged_one(monkeypatch):
     import asyncio
 
-    half = dt.STOCK_BELOW // 2
-    seen = _stocking_picker(_lane_rows(n_other=half, n_niche=dt.STOCK_BELOW - half),
-                            monkeypatch, adopted=0)
-    assert asyncio.run(dt.pick("t")) is not None
-    assert seen["adopt_calls"] == 0, "both lanes together clear the stock line"
+    # Three candidates, because below MIN_LIBRARY across BOTH sources the right
+    # answer is the nine formats, not a ranking question.
+    house = [_house_row(1, tags=["political candidates"]),
+             _house_row(2, tags=[]),
+             _house_row(3, tags=["knitting"])]
+    _wire(monkeypatch, [], house)
+    assert asyncio.run(dt.pick("t"))["id"] == "h2", "untagged beats tagged-for-someone-else"
 
 
-def test_a_catalogue_that_raises_never_breaks_a_pick(monkeypatch):
-    """Stocking is a nicety; producing a post is not. A catalogue that throws
-    must leave the brand's own pick untouched."""
+def test_the_catalogue_cannot_take_over_a_brand_that_has_its_own(monkeypatch):
+    """HOUSE_SHARE bounds it once there IS a library to compete with. Without
+    this, catalogue rows have no last_used_at and the picker's NULLS-FIRST
+    rotation would hand them every slot until they were all spent."""
     import asyncio
 
+    own = _lane_rows(n_other=6, n_niche=0, used_other=10)
+    for g in own:                      # most use has already come FROM the house
+        g["house_layout_id"] = "x"
+    _wire(monkeypatch, own, [_house_row(1, tags=["golf"])])
+    got = asyncio.run(dt.pick("t"))
+    assert got["source_platform"] != "house", "over its share, the brand's own lane draws"
+
+
+def test_what_it_draws_it_owns(monkeypatch):
+    """Copy-on-pick. The counters the picker sorts on are per-brand and a shared
+    row cannot hold them, so the winner is forked at the moment it is used — not
+    in a speculative batch of eight."""
+    import asyncio
+
+    seen = _wire(monkeypatch, [], [_house_row(7, tags=["golf"]),
+                                   _house_row(8, tags=[]), _house_row(9, tags=[])])
+    got = asyncio.run(dt.pick("t"))
+    assert got["id"] == "h7", "the best-fitting one is the one drawn"
+    assert seen["adopted"] == ["h7"], "and ONLY that row is copied in — not a batch"
+
+
+def test_a_catalogue_that_raises_never_costs_a_brand_its_pick(monkeypatch):
+    """Drawing a post matters; reaching the catalogue is a nicety."""
+    import asyncio
     import contextlib
 
+    own = _lane_rows(n_other=5, n_niche=0)
+
     class _C:
-        async def fetch(self, sql, *args):
-            return _lane_rows(n_other=4, n_niche=0)
+        async def fetch(self, sql, *a):
+            if "FROM house_layouts" in sql or "FROM competitors" in sql:
+                raise RuntimeError("catalogue unreachable")
+            if "house_layout_id::text" in sql:
+                return []
+            return own
+        async def fetchval(self, sql, *a):
+            return None
+        async def execute(self, sql, *a):
+            return None
 
     @contextlib.asynccontextmanager
     async def _acq(tenant_id=None):
         yield _C()
 
-    async def _boom(tenant_id, **kw):
-        raise RuntimeError("catalogue unreachable")
-
     monkeypatch.setattr(dt, "acquire", _acq)
     from james_os import house_layouts as hl
-    monkeypatch.setattr(hl, "adopt", _boom)
+    monkeypatch.setattr(hl, "acquire", _acq)
     assert asyncio.run(dt.pick("t")) is not None
 
 
-def test_the_stock_line_sits_above_the_draw_floor(monkeypatch):
-    """They answer different questions, and the ordering is what makes stocking
-    able to fire at all. If they were equal, a brand would only ever stock itself
-    at the moment it could no longer draw — the inert state this replaced."""
-    assert dt.STOCK_BELOW > dt.MIN_LIBRARY
+def test_nothing_anywhere_still_means_the_nine_formats(monkeypatch):
+    """Below MIN_LIBRARY across BOTH sources, None is the honest answer — two
+    learned layouts on rotation look more repetitive than the nine, not less."""
+    import asyncio
+
+    _wire(monkeypatch, _lane_rows(n_other=1, n_niche=0), [])
+    assert asyncio.run(dt.pick("t")) is None
+
+
+def test_the_floor_counts_the_catalogue_too(monkeypatch):
+    """One of its own plus three in the catalogue clears MIN_LIBRARY=3. Counting
+    only the brand's own rows would tell a day-one brand it has nothing."""
+    import asyncio
+
+    _wire(monkeypatch, _lane_rows(n_other=1, n_niche=0),
+          [_house_row(i, tags=["golf"]) for i in range(3)])
+    assert asyncio.run(dt.pick("t")) is not None
