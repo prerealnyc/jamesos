@@ -589,7 +589,7 @@ async def pick_house(tenant_id: UUID | str | None, house_layout_id: str) -> dict
         # earlier, or the same shape the brand learned itself — whatever its
         # status. Only an active one may be drawn.
         mine = await conn.fetchrow(
-            "SELECT status, house_layout_id::text AS h FROM design_templates "
+            "SELECT status FROM design_templates "
             "WHERE id = $1::uuid", own_id)
     if not mine or str(mine["status"] or "") != "active":
         return None
@@ -598,9 +598,13 @@ async def pick_house(tenant_id: UUID | str | None, house_layout_id: str) -> dict
         "source_handle": "", "source_url": str(row["source_url"] or ""),
         "source_platform": "house",
         "source_kind": _hl._adopt_kind(row["source_kind"]),
-        # The brand row's own provenance when it has one; the pinned id otherwise
-        # (a shape the brand learned itself — the same layout by fingerprint).
-        "house_layout_id": str(mine["h"] or house_layout_id),
+        # Always the PINNED id: the spec drawn is the pinned row's, and adopt_one
+        # only ever matches the brand row by that id or by that exact
+        # fingerprint. The brand row's own provenance can name a different
+        # catalogue row of the same shape (an old row discarded, then the shape
+        # re-ingested under a new id) — reporting that would make a correct
+        # pinned render look like it was drawn from another layout.
+        "house_layout_id": str(house_layout_id),
     }
 
 

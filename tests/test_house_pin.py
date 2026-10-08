@@ -148,6 +148,19 @@ def test_a_pin_on_a_shape_the_brand_learned_itself_still_names_the_pin(monkeypat
     assert got["id"] == "own-self" and got["house_layout_id"] == HID
 
 
+def test_a_pin_names_the_pin_even_when_the_brand_row_came_from_an_older_twin(monkeypatch):
+    """The brand forked H_old; H_old was discarded and the same shape came back
+    as HID. adopt_one matches the old fork by fingerprint, but the picture is
+    HID's spec, so the render must say HID — BM2 retires a pinned piece whose
+    provenance names another layout."""
+    _wire(monkeypatch, house=_house(), insert=None, existing="own-old",
+          mine_h="99999999-8888-7777-6666-555555555555")
+    got = asyncio.run(dt.pick_house(TENANT, HID))
+    assert got["id"] == "own-old", "mark_used still moves the brand's existing row"
+    assert got["house_layout_id"] == HID
+    assert got["spec"] == GOOD, "the pinned row's shape is what is drawn"
+
+
 def test_no_tenant_or_no_id_is_None_without_touching_anything(monkeypatch):
     seen = _wire(monkeypatch, house=_house())
     assert asyncio.run(dt.pick_house(None, HID)) is None
