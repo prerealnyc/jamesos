@@ -44,7 +44,7 @@ from urllib.parse import urlparse
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from . import caption_backfill, caption_burn
 from .config import settings
@@ -262,6 +262,23 @@ class GenerateRequest(BaseModel):
     # false → a reel SCRIPT draft, matching the safe product default.
     render: bool = False
     callback_url: str | None = None
+    # post/designed/learned only: draw THIS catalogue layout (a house_layouts id)
+    # instead of letting design_templates.pick() choose — BM2's showcase of the
+    # newest house layouts. Forked into the brand like any pick; a row that is
+    # missing, unapproved or undrawable falls back to the nine, as any failed
+    # learned render does. Empty = today's behaviour.
+    house_layout_id: str = ""
+
+    @field_validator("house_layout_id")
+    @classmethod
+    def _house_layout_id_is_a_uuid(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            return ""
+        try:
+            return str(UUID(v))
+        except ValueError as exc:
+            raise ValueError("house_layout_id must be empty or a UUID") from exc
 
 
 class BatchRequest(BaseModel):
@@ -447,6 +464,7 @@ async def _run_generate(job_id: str, tenant_id: UUID, req: GenerateRequest) -> N
             made = await _make_text_post(
                 idea, req.platform, tenant_id, image_kind=req.image_kind,
                 force_format=req.force_format, feedback=req.feedback,
+                house_layout_id=req.house_layout_id,
                 canvas=((req.image_width, req.image_height)
                         if req.image_width > 0 and req.image_height > 0 else None),
                 extra_sizes=tuple(
@@ -611,6 +629,10 @@ async def v1_queue(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
             # approval card can say where the layout came from.
             "payload->>'design_template_id' AS design_template_id, "
             "payload->'design_template_source' AS design_template_source, "
+            # True when the caller pinned a catalogue layout (house_layout_id on
+            # /v1/generate) — BM2 tells its showcase pieces apart by it.
+            "coalesce(payload->'house_layout_pinned' = 'true'::jsonb, false) "
+            "AS house_layout_pinned, "
             # A regenerated post already records the original it replaces (see
             # the regenerate endpoint), but the queue never returned it — so a
             # redo arrived in the approval board looking like an unrelated new
@@ -657,6 +679,7 @@ async def v1_queue(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
             "image_urls_by_size": _arr(r["image_urls_by_size"]) or None,
             "design_template_id": r["design_template_id"] or None,
             "design_template_source": _arr(r["design_template_source"]) or None,
+            "house_layout_pinned": bool(r["house_layout_pinned"]),
             # Present only on a redo: which post it replaces, which version it is,
             # and the feedback it was rebuilt from.
             "regen_of": r["regen_of"], "version": r["version"],
@@ -2433,8 +2456,13 @@ async def v1_design_template_verdict(
     that land get drawn more and ones that don't fade (never deleted)."""
     from . import design_templates
 
-    await design_templates.mark_verdict(tenant_id, str(template_id), body.approved)
-    return {"ok": True}
+    # A verdict for a layout this brand does not hold (wrong tenant, a catalogue
+    # id, a deleted row) used to answer ok while RLS updated nothing — so the
+    # caller believed it had taught a layout it had not.
+    counts = await design_templates.mark_verdict(tenant_id, str(template_id), body.approved)
+    if counts is None:
+        raise HTTPException(404, "no such layout for this brand")
+    return {"ok": True, **counts}
 
 
 # ── the video editor ─────────────────────────────────────────────────────────
@@ -2984,6 +3012,23 @@ async def v1_house_layouts(
     return await house_layouts.catalogue(
         status=status.strip(), layout_type=layout_type.strip(), niche=niche.strip(),
         limit=limit, offset=offset, harvested=harvested, run_id=run_id.strip())
+
+
+@router.get("/house-layouts/for-brand")
+async def v1_house_layouts_for_brand(tenant_id: TenantDep, limit: int = 8) -> dict[str, Any]:
+    """The approved, drawable catalogue layouts that suit THIS brand, on-niche
+    first and latest first within each tier — what a showcase offers, and what
+    /v1/generate's house_layout_id then renders.
+
+    Tenant-bound like every brand route (bound key, or platform key plus
+    X-Tenant-Id): the niche and the "already drawn" exclusion are this brand's.
+    Declared before any /house-layouts/{layout_id} route so the literal segment
+    is matched first."""
+    from . import house_layouts
+
+    if not 1 <= int(limit) <= house_layouts.FOR_BRAND_MAX:
+        raise HTTPException(422, f"limit must be 1..{house_layouts.FOR_BRAND_MAX}")
+    return await house_layouts.for_brand(tenant_id, limit=limit)
 
 
 @router.post("/house-layouts/upload", status_code=201)

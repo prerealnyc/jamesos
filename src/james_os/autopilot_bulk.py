@@ -181,6 +181,7 @@ async def _make_text_post(
     image_kind: str = "james", avoid_fmt: str = "", force_format: str = "",
     feedback: str = "", canvas: tuple[int, int] | None = None,
     extra_sizes: tuple[tuple[int, int], ...] = (),
+    house_layout_id: str = "",
 ) -> dict:
     """One text+image post: on-voice draft → queue → attach an image.
 
@@ -196,7 +197,10 @@ async def _make_text_post(
     `feedback` carries the owner's standing rejection notes (what they keep saying
     is off-brand). It steers BOTH the text draft and the designed image away from
     what's been rejected — so a fresh post learns from past rejects, not just a
-    same-post regeneration."""
+    same-post regeneration.
+
+    `house_layout_id` pins one catalogue layout for a designed + "learned" post
+    (see main._generate_learned_post_image); empty for every other caller."""
     from .content import strip_internal_labels
     steer = _TEXT_STEER + trend_steer(idea) + _avoid_steer(feedback)
     draft = await generate_content(
@@ -232,6 +236,7 @@ async def _make_text_post(
                         # The same design re-laid-out at every other network's
                         # shape — one post, not one post per size.
                         extra_sizes=extra_sizes,
+                        house_layout_id=house_layout_id,
                     )
             except Exception as _exc:  # noqa: BLE001 — designed failed → hero photo below
                 # Loudly, not silently: a swallowed failure here is exactly why a

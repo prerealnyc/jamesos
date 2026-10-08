@@ -2045,6 +2045,7 @@ async def _generate_carousel_post(action_id, topic, draft_text, tenant_id,
 async def _generate_learned_post_image(
     action_id, topic: str, draft_text: str, tenant_id,
     *, extra_sizes: tuple[tuple[int, int], ...] = (), guidance: str = "",
+    house_layout_id: str = "",
 ) -> tuple[str, str] | None:
     """Render a post from a layout in the brand's design-template library.
 
@@ -2057,13 +2058,22 @@ async def _generate_learned_post_image(
     Every platform shape: the primary is drawn at whatever canvas the caller set
     (image_compose.canvas), and each extra size re-lays-out the SAME layout, copy
     and photo — a learned spec's boxes are fractions of the frame, so it reflows.
+
+    `house_layout_id` PINS one catalogue layout instead of letting pick()
+    choose (BM2's showcase of the newest house layouts). It is forked into the
+    brand like any pick; if it cannot be drawn or owned this returns None and
+    the post falls back to the nine — never to some other learned layout, which
+    would look like the pinned one rendered when it did not.
     """
     from . import design_templates, image_compose, template_clone
     from .media import create_media
     from .media import storage as media_storage
     from .spec_render import render_spec
 
-    learned = await design_templates.pick(tenant_id)
+    if house_layout_id:
+        learned = await design_templates.pick_house(tenant_id, house_layout_id)
+    else:
+        learned = await design_templates.pick(tenant_id)
     if not learned:
         return None
     # Numbered repeat roles, collisions resolved, empty frames dropped — the
@@ -2112,6 +2122,14 @@ async def _generate_learned_post_image(
             return None
         if _rev.get("status") == "ok":
             await design_templates.mark_qa(tenant_id, tid, True)
+        else:
+            # The reviewer could not judge it (no key, an error, a timeout) and
+            # the render ships unreviewed — said out loud, because a QA gate that
+            # silently stops gating looks exactly like one that passes.
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "design QA did not review learned layout %s (status=%r) — shipping it "
+                "unreviewed", tid, _rev.get("status"))
 
     tenant = str(tenant_id or settings.default_tenant_id)
     served_uri, file_path = await asyncio.to_thread(
@@ -2160,7 +2178,14 @@ async def _generate_learned_post_image(
                 "design_template_source": {
                     "kind": learned.get("source_kind"), "handle": learned.get("source_handle"),
                     "url": learned.get("source_url"), "platform": learned.get("source_platform"),
+                    # The catalogue row a forked layout came from, so a post can be
+                    # traced to the house layout behind it. Absent for a layout the
+                    # brand learned itself.
+                    **({"house_layout_id": str(learned["house_layout_id"])}
+                       if learned.get("house_layout_id") else {}),
                 },
+                # The caller asked for THIS catalogue layout by id (BM2 showcase).
+                **({"house_layout_pinned": True} if house_layout_id else {}),
                 # The layout AND the words on it, so a redo can rebuild this card
                 # in its own design (api_v1._rebuild_cloned_action) instead of
                 # replacing it with an unrelated one.
@@ -2252,6 +2277,7 @@ async def _generate_designed_post_image(
     force_photo: str = "", base_spec: dict | None = None, _qa_attempt: int = 0,
     extra_sizes: tuple[tuple[int, int], ...] = (),
     edit_photo_instruction: str = "",
+    house_layout_id: str = "",
 ) -> tuple[str, str]:
     """Art-director → text-free background (Soul James or cinematic scene) →
     Pillow-composited quote card / meme → persist + attach to the action.
@@ -2291,7 +2317,9 @@ async def _generate_designed_post_image(
         try:
             _learned = await _generate_learned_post_image(
                 action_id, topic, draft_text, tenant_id, extra_sizes=extra_sizes,
-                guidance="\n".join(x for x in ((feedback or "").strip(), (avoid or "").strip()) if x))
+                guidance="\n".join(x for x in ((feedback or "").strip(), (avoid or "").strip()) if x),
+                # A pinned catalogue layout (BM2 showcase); "" = let pick() choose.
+                house_layout_id=house_layout_id)
         except Exception:  # noqa: BLE001 — the nine are always the safety net
             import logging as _logging
             _logging.getLogger(__name__).warning(
