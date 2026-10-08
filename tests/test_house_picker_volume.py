@@ -102,7 +102,9 @@ def test_the_exclusion_is_in_sql_before_a_400_row_limit(monkeypatch):
     assert args[3] == hl.CANDIDATE_POOL == 400
     # the coarse pre-sort: exact tag overlap with the brand's niches, lowercased
     assert "(niches && $3::text[]) DESC" in order
-    assert args[2] == ["golf resort", "golf"]
+    # ...then the brand's vocabulary labels, so rows tagged with a label (ingest
+    # and the niche backfill write them) survive the LIMIT too
+    assert args[2] == ["golf resort", "golf", "hospitality"]
     assert "family_key" in sql.split("FROM house_layouts")[0]
     assert order.index("niches &&") < order.index("approvals - rejections") \
         < order.index("adopted_count") < order.index("created_at DESC")

@@ -9,6 +9,7 @@ This is deterministic — it does not depend on env-var vs .env precedence
 (config.py calls load_dotenv(override=True), so env-var tricks don't work).
 """
 
+import pytest
 import pytest_asyncio
 
 from james_os import db as db_module
@@ -46,6 +47,17 @@ if "supabase.co" in settings.database_url or "pooler.supabase.com" in settings.d
         "Refusing to run tests against a Supabase database — tests "
         "truncate tables. Point TEST_DATABASE_URL at a local Postgres."
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_niche_vision(monkeypatch):
+    """An upload with no niche tags is now READ for them (niche_vocab, a paid
+    gpt-4o call). Every ingest test that tags nothing would otherwise make that
+    call whenever a .env with a real key is on the path. No client unless a test
+    installs its own stub."""
+    from james_os import niche_vocab
+
+    monkeypatch.setattr(niche_vocab, "_client", lambda: None)
 
 
 @pytest_asyncio.fixture(autouse=True)

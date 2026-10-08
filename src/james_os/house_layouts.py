@@ -29,12 +29,14 @@ refused here — enforced in `promote`, and by the table's CHECK.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+from . import niche_vocab
 from .db import acquire
 
 logger = logging.getLogger(__name__)
@@ -119,6 +121,54 @@ def clean_niches(values, *, limit: int = MAX_NICHES) -> list[str]:
     return out[:limit]
 
 
+# ── vocabulary labels a row carries that nobody typed ──
+#
+# Ingest, the harvest and the backfill add niche_vocab labels to a row's niches
+# so ranking and the `niches && $tags` pre-sort find it ('golf resort' is also
+# 'golf' and 'hospitality'; an untagged upload read as 'real estate'). But the
+# harvest's balance caps and its per-niche coverage (house_harvest._COUNTS_SQL,
+# harvest_stats) count rows by EXACT tag membership, and harvest tags are often
+# labels themselves ('golf', 'real estate', 'commercial real estate'). Counted
+# naively, every labelled 'golf resort' row held a 'golf' harvest at caps it had
+# not reached, and ~313 curated uploads labelled by the backfill would have made
+# 'real estate' look covered to BM2's seed/steady decision so it stopped
+# harvesting it. So the labels ADDED are listed in harvest_meta.niche_labels
+# (a jsonb column every row has since 071 — no migration, no deploy ordering)
+# and the counts skip a tag that is only there as a label.
+LABELS_KEY = "niche_labels"
+
+
+def with_labels(typed) -> tuple[list[str], list[str]]:
+    """(typed tags followed by their vocabulary labels, the labels nobody typed)."""
+    tags = clean_niches(typed)
+    stored = clean_niches(tags + niche_vocab.canonical(tags))
+    return stored, [t for t in stored if t not in tags]
+
+
+def counted_tag_sql(tag: str, alias: str = "") -> str:
+    """SQL: `tag` is one of the row's niches AND was typed/harvested, not added
+    as a vocabulary label. What the harvest's caps and stats count by."""
+    a = f"{alias}." if alias else ""
+    return (f"({tag} = ANY({a}niches) AND NOT (COALESCE({a}harvest_meta->'{LABELS_KEY}', "
+            f"'[]'::jsonb) ? {tag}))")
+
+
+# ON CONFLICT ... DO UPDATE fragment for harvest_meta, beside _NICHE_UNION_SQL:
+# the union of both writes' added labels, minus any tag EITHER write carried as a
+# real tag (a curator typing 'golf' on a row that had it only as a label makes
+# it count from then on).
+_LABELS_MERGE_SQL = f"""jsonb_set(house_layouts.harvest_meta, '{{{LABELS_KEY}}}', to_jsonb(ARRAY(
+        SELECT DISTINCT e.x
+          FROM jsonb_array_elements_text(
+                 COALESCE(house_layouts.harvest_meta->'{LABELS_KEY}', '[]'::jsonb)
+                 || COALESCE(EXCLUDED.harvest_meta->'{LABELS_KEY}', '[]'::jsonb)) AS e(x)
+         WHERE NOT (e.x = ANY(house_layouts.niches) AND NOT
+                    COALESCE(house_layouts.harvest_meta->'{LABELS_KEY}', '[]'::jsonb) ? e.x)
+           AND NOT (e.x = ANY(EXCLUDED.niches) AND NOT
+                    COALESCE(EXCLUDED.harvest_meta->'{LABELS_KEY}', '[]'::jsonb) ? e.x)
+      ORDER BY e.x)))"""
+
+
 MAX_BRAND_TAGS = 64
 
 
@@ -135,6 +185,12 @@ def brand_tag_keys(niches) -> list[str]:
     fell out of the LIMIT by recency. Per niche: the whole string as
     clean_niches keeps it, its canonical form (commas read as spaces), and each
     comma-separated piece in canonical form. Distinct, first-seen order.
+
+    Then the brand's VOCABULARY labels (niche_vocab.canonical), last. Ingest and
+    the backfill now tag catalogue rows with labels ('golf', 'travel'), and a
+    pre-sort that offered only the brand's own phrases ('golf resort', 'tour
+    operator') would overlap none of them — those rows would fall out of the
+    LIMIT by recency exactly as the comma-split ones did.
     """
     from .house_harvest import canon_niche
 
@@ -159,6 +215,8 @@ def brand_tag_keys(niches) -> list[str]:
         _add(canon)
         for piece in raw.split(","):
             _add(canon_niche(piece))
+    for label in niche_vocab.canonical(niches):
+        _add(label)
     return out[:MAX_BRAND_TAGS]
 
 
@@ -197,9 +255,18 @@ def niche_tokens(values) -> set[str]:
 def niche_rank(brand_niches, layout_niches) -> int:
     """How well a catalogue layout suits a brand. Higher is better.
 
-      2+  shares N meaningful words with the brand's niche (2 + N)
+      2+  a match (2 + N)
       1   carries NO tags at all — generic, suits anybody
       0   tagged, but for a different niche
+
+    WHEN BOTH SIDES MAP TO THE VOCABULARY (niche_vocab.canonical), the labels
+    decide: no shared label is 0 whatever words the phrases share — that is what
+    ends 'commercial spaceport' matching 'commercial real estate' on a filler
+    word, for every such pair rather than the one a stopword patched. N is the
+    shared labels plus the shared meaningful words, so within a match the closer
+    phrase still ranks higher ('luxury golf resort' suits 'golf resort' better
+    than 'golf', both of which share the label golf). Only when either side maps
+    to nothing does the word overlap alone decide, as it did before.
 
     Untagged beats off-niche on purpose. 12 of the 17 live pool rows carry no
     tags, so filtering strictly on a match would hand most brands nothing at all
@@ -211,8 +278,12 @@ def niche_rank(brand_niches, layout_niches) -> int:
             if t is not None and str(t).strip()]
     if not tags:
         return 1
-    shared = niche_tokens(brand_niches) & niche_tokens(tags)
-    return 2 + len(shared) if shared else 0
+    words = niche_tokens(brand_niches) & niche_tokens(tags)
+    mine, theirs = set(niche_vocab.canonical(brand_niches)), set(niche_vocab.canonical(tags))
+    if mine and theirs:
+        labels = mine & theirs
+        return 2 + len(labels) + len(words) if labels else 0
+    return 2 + len(words) if words else 0
 
 
 async def tenant_niches(conn, tenant_id) -> list[str]:
@@ -369,20 +440,23 @@ async def ingest(
     if not can_draw:
         why = undrawable_reason(spec)
         note = (f"not drawable: {why}" + (f" | {note}" if note else ""))
-    tags = clean_niches(niches)
+    tags, inferred, added = await _ingest_niches(niches, image, image_uri)
 
     async with acquire(None) as conn:
         row = await conn.fetchrow(
             """INSERT INTO house_layouts
                    (kind, spec, fingerprint, family_key, source_kind, source_url,
                     source_image_uri, layout_type, label, title, niches,
-                    uploaded_by, status, review_note, reviewed_by, reviewed_at)
+                    uploaded_by, status, review_note, reviewed_by, reviewed_at,
+                    harvest_meta)
                VALUES ($1, $2::jsonb, $3, $4, 'curated', $5, $6, $7, $8, $9, $10,
-                       $11, $12, $13, $14, CASE WHEN $12 = 'approved' THEN now() END)
+                       $11, $12, $13, $15, CASE WHEN $12 = 'approved' THEN now() END,
+                       $14::jsonb)
                ON CONFLICT (fingerprint) WHERE fingerprint <> ''
                DO UPDATE SET
                    title       = COALESCE(NULLIF(EXCLUDED.title, ''), house_layouts.title),
                    niches      = """ + _NICHE_UNION_SQL + """,
+                   harvest_meta = """ + _LABELS_MERGE_SQL + """,
                    layout_type = EXCLUDED.layout_type,
                    label       = EXCLUDED.label,
                    updated_at  = now()
@@ -390,6 +464,7 @@ async def ingest(
             str(spec.get("kind") or ""), json.dumps(spec), fp, family_key(spec),
             source_url[:500], image_uri[:500], named["type"], named["label"],
             title[:200], tags, by[:200], status, note[:500],
+            json.dumps({LABELS_KEY: added}),
             by[:200] if status == "approved" else "")
     # The STORED status, read back. A re-upload of an approved shape with
     # approve=False leaves it approved (status is never touched on conflict), and
@@ -399,8 +474,40 @@ async def ingest(
         "ok": True, "house_layout_id": row["id"], "duplicate": not row["fresh"],
         "layout_type": named["type"], "label": named["label"],
         "status": str(stored or status), "regions": named["regions"],
-        "drawable": can_draw,
+        "drawable": can_draw, "niches": tags, "niches_inferred": inferred,
     }
+
+
+async def _ingest_niches(niches, image: bytes,
+                         image_uri: str) -> tuple[list[str], bool, list[str]]:
+    """(the tags an upload is stored with, whether they were read off the image,
+    which of them are labels nobody typed — see LABELS_KEY).
+
+    Typed tags are kept as typed PLUS their vocabulary labels, so 'golf resort'
+    is also findable as 'golf' and 'hospitality'. With NO tags the image is read
+    for them: 313 of 324 approved uploads (2026-10-08) arrived untagged and so
+    ranked as generic for every brand — a golf course offered to a law firm on
+    equal terms with a quote card. The read prefers the stored https copy (no
+    upload of up to 15 MB inline) and falls back to the bytes in hand. A failed
+    read stores [] and the upload goes on: a missing tag costs ranking, a
+    failed upload costs the layout.
+    """
+    if clean_niches(niches):
+        stored, added = with_labels(niches)
+        return stored, False, added
+    src = image_uri if str(image_uri or "").startswith(("https://", "http://")) else image
+    try:
+        # Bounded here too, above the client's own timeout: the upload must go
+        # on untagged rather than wait on the model.
+        labels = await asyncio.wait_for(niche_vocab.infer_from_image(src), INGEST_READ_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning("niche inference timed out on upload; stored untagged")
+        labels = []
+    except Exception:  # noqa: BLE001 — infer_from_image never raises; belt and braces
+        logger.warning("niche inference raised on upload", exc_info=True)
+        labels = []
+    stored = clean_niches(niche_vocab.canonical(labels))
+    return stored, bool(labels), list(stored)
 
 
 def undrawable_reason(spec: dict | None) -> str:
@@ -428,6 +535,8 @@ async def retag(layout_id: str, *, title: str | None = None,
     if niches is not None:
         args.append([t.strip()[:60] for t in niches if t and t.strip()][:12])
         sets.append(f"niches = ${len(args)}")
+        # Exactly what the curator typed, so none of it is an added label any more.
+        sets.append(f"harvest_meta = harvest_meta - '{LABELS_KEY}'")
     if not sets:
         return {"ok": False, "reason": "nothing to change"}
     async with acquire(None) as conn:
@@ -672,7 +781,10 @@ __all__ = ["SHAREABLE", "ADOPT_BATCH", "family_key", "promote", "ingest", "retag
            "type_profile", "fit_rank", "candidates", "adopt_one",
            "interleave_families", "clean_niches", "CANDIDATE_POOL", "MAX_NICHES",
            "RECENT_FAMILIES", "HOUSE_FRESH_DAYS", "is_fresh", "undrawable_reason",
-           "for_brand"]
+           "for_brand", "with_labels", "counted_tag_sql", "LABELS_KEY", "record_verdict", "record_outcome", "outcomes_for",
+           "outcome_score", "outcome_evidence", "outcome_term",
+           "OUTCOME_MIN_EVIDENCE", "OUTCOME_STEP", "outcome_keys", "lift_of", "template_outcome",
+           "OUTCOME_NEUTRAL", "LIFT_MAX", "infer_niches_backfill"]
 
 
 # ───────────────────────────────── the pool as a source, not a top-up ──
@@ -740,16 +852,22 @@ def is_fresh(created_at, *, now: datetime | None = None) -> int:
 
 
 def fit_rank(brand_niches, profile: dict, layout_niches, layout_type: str,
-             created_at=None, *, now: datetime | None = None) -> tuple:
+             created_at=None, *, now: datetime | None = None,
+             outcome: float | None = None) -> tuple:
     """How well one catalogue layout suits this brand. Higher sorts first.
 
-    (niche, new, type, popularity) as a tuple so the comparison is explicit and
-    testable rather than a weighted sum nobody can reason about:
+    (niche, new, outcome, type, popularity) as a tuple so the comparison is
+    explicit and testable rather than a weighted sum nobody can reason about:
 
       niche  — niche_rank: matching > untagged > tagged for someone else
       new    — created within HOUSE_FRESH_DAYS. Right AFTER niche on purpose:
                the latest layouts reach a brand before older ones of the SAME
                fit, but a fresh off-niche row never jumps a matching one.
+      outcome — what owners in this brand's niche said and what its posts
+               measured (outcome_term: neutral until there are a few results,
+               then the smoothed score in coarse steps). After `new` so a result
+               never buries the latest rows; a caller that passes none gets
+               OUTCOME_NEUTRAL and today's order.
       type   — does this brand's own library already contain this KIND of post?
                A type the brand demonstrably uses beats one it never makes.
       pop    — how common that type is in its library, as the tiebreak.
@@ -758,8 +876,9 @@ def fit_rank(brand_niches, profile: dict, layout_niches, layout_type: str,
     seen = int(profile.get(t, 0)) if profile else 0
     # A brand with no profile yet (day one) scores every type 0, so niche alone
     # decides — which is the right answer when there is no evidence to use.
+    score = OUTCOME_NEUTRAL if outcome is None else float(outcome)
     return (niche_rank(brand_niches, layout_niches), is_fresh(created_at, now=now),
-            1 if seen else 0, seen)
+            score, 1 if seen else 0, seen)
 
 
 def interleave_families(rows: list[dict]) -> list[dict]:
@@ -833,6 +952,8 @@ async def candidates(
                       created_at DESC
                 LIMIT $4""",
             sorted(taken), sorted(held), brand_tags, CANDIDATE_POOL)
+        # Every candidate's results in ONE query, not one per row.
+        results = await outcomes_for([r["id"] for r in rows or []], conn=pool_conn)
 
     # Belt and braces: the same exclusion again, so a row the SQL let through
     # (or a stand-in connection that ignores the arguments) is still never offered.
@@ -841,13 +962,16 @@ async def candidates(
     recent = {str(f) for f in (recent_families or []) if f}
 
     now = datetime.now(UTC)
+    labels = niche_vocab.canonical(niches)
 
     def _rank(r: dict) -> tuple:
-        niche, new, *rest = fit_rank(niches, profile or {}, r.get("niches"),
-                                     r.get("layout_type"), r.get("created_at"), now=now)
+        niche, new, outcome, *rest = fit_rank(
+            niches, profile or {}, r.get("niches"), r.get("layout_type"),
+            r.get("created_at"), now=now,
+            outcome=outcome_term(results.get(str(r["id"]), []), labels))
         fam = str(r.get("family_key") or "")
         fresh = 0 if (fam and fam in recent) else 1
-        return (niche, new, fresh, *rest)
+        return (niche, new, outcome, fresh, *rest)
 
     out.sort(key=_rank, reverse=True)
     return interleave_families(out)[: max(1, int(limit))]
@@ -980,9 +1104,13 @@ async def for_brand(tenant_id, *, limit: int = 8) -> dict:
              ORDER BY (niches && $1::text[]) DESC, created_at DESC
                 LIMIT $2""",
             brand_tag_keys(niches), CANDIDATE_POOL)
+        results = await outcomes_for([r["id"] for r in rows or []], conn=pool_conn)
 
     me = str(tenant_id).lower()
     mine_tokens = niche_tokens(niches)
+    # A vocabulary label ('golf', 'travel') is generic, not another brand's
+    # phrase, so it is shown when it is one of THIS brand's labels.
+    mine_labels = set(niche_vocab.canonical(niches))
     out: list[dict] = []
     for r in rows or []:
         hid, fp = str(r["id"]), str(r["fingerprint"] or "")
@@ -1007,7 +1135,8 @@ async def for_brand(tenant_id, *, limit: int = 8) -> dict:
             "created_at": created.isoformat() if hasattr(created, "isoformat")
             else str(created or ""),
             # Ranked on every tag; SHOWN only the ones that are this brand's own.
-            "niches": [t for t in tags if niche_tokens(t) & mine_tokens],
+            "niches": [t for t in tags
+                       if niche_tokens(t) & mine_tokens or t.lower() in mine_labels],
             "type": ltype,
             "name": (str(r["title"] or "").strip() or str(r["label"] or "").strip()
                      or display_name(ltype)),
@@ -1017,6 +1146,7 @@ async def for_brand(tenant_id, *, limit: int = 8) -> dict:
             "tier": _tier(niche_rank(niches, tags)),
             "already_forked": forked,
             "_ts": created,
+            "_new": is_fresh(created),
         })
 
     def _ts(d: dict) -> float:
@@ -1033,8 +1163,416 @@ async def for_brand(tenant_id, *, limit: int = 8) -> dict:
         return 0.0
 
     # Latest first, then a STABLE sort by tier keeps that order inside each tier.
-    out.sort(key=_ts, reverse=True)
-    out.sort(key=lambda d: _TIER_ORDER[d["tier"]])
+    # Inside a tier, fresh rows first and then what owners and posts in this
+    # brand's niche rated better (fit_rank's order). With no results every score
+    # is neutral and fresh rows are the newest anyway, so the order is exactly
+    # latest-first, as before.
     for d in out:
-        d.pop("_ts", None)
+        d["_score"] = outcome_term(results.get(d["id"], []), mine_labels)
+    out.sort(key=_ts, reverse=True)
+    out.sort(key=lambda d: (_TIER_ORDER[d["tier"]], -d["_new"], -d["_score"]))
+    for d in out:
+        for k in ("_ts", "_new", "_score"):
+            d.pop(k, None)
     return {"niche": list(niches), "layouts": out[:want]}
+
+
+# ───────────────────────────────────────── learning from results, per niche ──
+#
+# What a layout EARNED, kept per catalogue row and per canonical niche: owners'
+# approvals and rejections of posts drawn on it (design_templates.mark_verdict),
+# and measured engagement against the brand's baseline (/outcome). Per niche
+# because "approved by golf brands" says nothing about a law firm.
+#
+# Measured 2026-10-08: no owner has ever sent a verdict on a learned post, and
+# 20 of 1845 BM2 artifacts carry metrics, none learned. So this fills as data
+# arrives, and the score is built for that: priors make NO data exactly neutral
+# and keep ONE result from swinging the order.
+
+OUTCOME_NEUTRAL = 0.5          # (0+1)/(0+0+2) x (0+2)/(0+2): no evidence at all
+LIFT_MAX = 5.0                 # one viral post must not read as a 50x layout
+
+# Conditional on the catalogue row still existing. design_templates.house_layout_id
+# has no foreign key (067 adds a bare uuid) and review 'discard' and harvest
+# revoke hard-delete catalogue rows, so a brand's fork can point at nothing. A
+# plain INSERT then raised ForeignKeyViolation and /outcome answered 500 on every
+# retry — and BM2 marks only what succeeded, so it would retry that post forever.
+_OUTCOME_UPSERT = """
+    INSERT INTO house_layout_outcomes AS o
+           (house_layout_id, niche, approvals, rejections, measured, lift_sum)
+    SELECT $1::uuid, n, $3, $4, $5, $6::numeric FROM unnest($2::text[]) AS n
+     WHERE EXISTS (SELECT 1 FROM house_layouts h WHERE h.id = $1::uuid)
+    ON CONFLICT (house_layout_id, niche) DO UPDATE SET
+        approvals  = o.approvals  + EXCLUDED.approvals,
+        rejections = o.rejections + EXCLUDED.rejections,
+        measured   = o.measured   + EXCLUDED.measured,
+        lift_sum   = o.lift_sum   + EXCLUDED.lift_sum,
+        updated_at = now()"""
+
+
+def outcome_keys(niches) -> list[str]:
+    """The niche keys a result is filed under: the brand's canonical labels, or
+    '' for a brand whose niche maps to nothing (so its results still count for
+    brands that likewise have none, instead of vanishing)."""
+    return niche_vocab.canonical(niches) or [""]
+
+
+def _rows_written(status) -> int:
+    try:
+        return int(str(status or "").rsplit(" ", 1)[-1])
+    except ValueError:
+        return 0
+
+
+async def _upsert_outcome(house_layout_id: str, niches, *, a: int, r: int,
+                          m: int, lift: float) -> list[str]:
+    """The keys written, or [] when the catalogue row no longer exists."""
+    import asyncpg
+
+    keys = outcome_keys(niches)
+    try:
+        async with acquire(None) as conn:
+            status = await conn.execute(_OUTCOME_UPSERT, str(house_layout_id), keys,
+                                        a, r, m, float(lift))
+    except asyncpg.ForeignKeyViolationError:
+        return []       # discarded between the EXISTS and the write: same answer
+    return keys if _rows_written(status) else []
+
+
+async def record_verdict(house_layout_id: str, niches, approved: bool) -> list[str]:
+    """One owner verdict on a post drawn from this catalogue row, filed under each
+    of the brand's canonical niches. Returns the keys written ([] when the row
+    has been discarded)."""
+    return await _upsert_outcome(house_layout_id, niches, a=1 if approved else 0,
+                                 r=0 if approved else 1, m=0, lift=0.0)
+
+
+async def record_outcome(house_layout_id: str, niches, lift: float) -> list[str]:
+    """One measured result (lift = engagement / the brand's baseline), filed under
+    each of the brand's canonical niches. Returns the keys written ([] when the
+    row has been discarded)."""
+    return await _upsert_outcome(house_layout_id, niches, a=0, r=0, m=1,
+                                 lift=max(0.0, min(LIFT_MAX, float(lift))))
+
+
+def lift_of(engagement, baseline) -> float:
+    """engagement / baseline, clamped to [0, LIFT_MAX]. No usable baseline is 1.0:
+    'no information', but still counted as one measured result."""
+    try:
+        e, b = float(engagement), float(baseline or 0)
+    except (TypeError, ValueError):
+        return 1.0
+    if not (b > 0) or e != e or b == float("inf"):
+        return 1.0
+    return round(max(0.0, min(LIFT_MAX, e / b)), 4)
+
+
+_OUTCOMES_SQL = """SELECT house_layout_id::text AS h, niche, approvals, rejections,
+                          measured, lift_sum
+                     FROM house_layout_outcomes
+                    WHERE house_layout_id = ANY($1::uuid[])"""
+
+
+async def outcomes_for(ids, *, conn=None) -> dict[str, list[dict]]:
+    """{house_layout_id: [{niche, approvals, rejections, measured, lift_sum}]} for
+    every id, in ONE query. Fail-soft to {} — every score neutral, today's order —
+    because the picker must not stop drawing when this table is missing (code
+    deployed before migration 073) or unreadable.
+
+    `conn` is the catalogue connection the caller already holds; the read runs
+    in a SAVEPOINT on it, so a missing table cannot abort the caller's
+    transaction, and the picker pays for no second connection."""
+    want = sorted({str(i) for i in ids or [] if i})
+    if not want:
+        return {}
+    try:
+        if conn is not None:
+            async with conn.transaction():
+                rows = await conn.fetch(_OUTCOMES_SQL, want)
+        else:
+            async with acquire(None) as own:
+                rows = await own.fetch(_OUTCOMES_SQL, want)
+        out: dict[str, list[dict]] = {}
+        for r in rows or []:
+            out.setdefault(str(r["h"]), []).append({
+                "niche": str(r["niche"] or ""), "approvals": int(r["approvals"] or 0),
+                "rejections": int(r["rejections"] or 0), "measured": int(r["measured"] or 0),
+                "lift_sum": float(r["lift_sum"] or 0)})
+        return out
+    except Exception:  # noqa: BLE001 — neutral ordering beats no ordering
+        logger.warning("house_layout_outcomes unreadable; ranking without results",
+                       exc_info=True)
+        return {}
+
+
+def outcome_evidence(rows, brand_labels) -> tuple[int, int, int, float]:
+    """(approvals, rejections, measured, lift_sum) for this brand, each result
+    counted ONCE.
+
+    A result is filed under EVERY label of the brand that sent it ('golf resort'
+    -> golf AND hospitality), so summing a reader's labels counted it once per
+    label it shared: one rejection read 0.33 for a 'golf' brand, 0.25 for
+    'commercial real estate' (2 labels) and 0.20 for 'parenting humor' (3), and
+    one lift-5 post read 1.17 / 1.5 / 1.7. 10 of the 14 live brand niches map to
+    2+ labels, so the priors' smoothing was halved for most brands. Instead the
+    brand reads the ONE of its labels with the most evidence: a brand whose
+    labels were all written together sees each result once, and a brand that
+    shares only 'golf' with a golf-course brand still reads golf's record.
+    """
+    keys = set(brand_labels or []) or {""}
+    best: tuple[int, int, int, float] = (0, 0, 0, 0.0)
+    # Walked in label order and replaced only on MORE evidence, so equal evidence
+    # goes to the alphabetically first label whatever order the rows came in.
+    mine = sorted((o for o in rows or [] if str(o.get("niche") or "") in keys),
+                  key=lambda o: str(o.get("niche") or ""))
+    for o in mine:
+        ev = (int(o.get("approvals") or 0), int(o.get("rejections") or 0),
+              int(o.get("measured") or 0), float(o.get("lift_sum") or 0))
+        if ev[0] + ev[1] + ev[2] > best[0] + best[1] + best[2]:
+            best = ev
+    return best
+
+
+def outcome_score(rows, brand_labels) -> float:
+    """Smoothed approval rate x smoothed lift, from this brand's best-evidenced
+    niche ('' when it has none) — see outcome_evidence for why not a sum.
+
+      verdict = (a + 1) / (a + r + 2)        no verdicts      -> 0.5
+      perf    = (lift_sum + 2) / (measured + 2)   no measurements -> 1.0
+
+    So no data is OUTCOME_NEUTRAL, five golf approvals read 0.86 for any golf
+    brand and stay 0.5 for a real-estate one, and one rejection reads 0.33
+    whether the brand has one label or three.
+    """
+    a, r, m, lift = outcome_evidence(rows, brand_labels)
+    return round(((a + 1) / (a + r + 2)) * ((lift + 2) / (m + 2)), 2)
+
+
+# Results needed before the score may move a row at all, and the step it moves in.
+# The sort is a strict tuple: smoothing made one rejection read 0.33 instead of 0,
+# but 0.33 < 0.5 still dropped that row below EVERY unrated row of equal fit and
+# freshness, and in the picker above family rotation and type fit too — one
+# result swung the order outright. Below the minimum the term is neutral; above
+# it, scores within a step of each other tie and the later terms decide.
+OUTCOME_MIN_EVIDENCE = 3
+OUTCOME_STEP = 0.1
+
+
+def outcome_term(rows, brand_labels) -> float:
+    """The value fit_rank sorts on: OUTCOME_NEUTRAL until this brand's niche has
+    OUTCOME_MIN_EVIDENCE results on the row, then outcome_score in OUTCOME_STEP
+    steps."""
+    a, r, m, _ = outcome_evidence(rows, brand_labels)
+    if a + r + m < OUTCOME_MIN_EVIDENCE:
+        return OUTCOME_NEUTRAL
+    return round(round(outcome_score(rows, brand_labels) / OUTCOME_STEP) * OUTCOME_STEP, 2)
+
+
+async def template_outcome(tenant_id, template_id: str, engagement, baseline) -> dict | None:
+    """A measured result for a post drawn on one of THIS brand's layouts.
+
+    None when the brand holds no such row (the route's 404 — RLS hides another
+    brand's). A layout the brand learned itself has no catalogue row to credit,
+    so nothing is recorded and that is said: house_layout_id None, niches [].
+    """
+    lift = lift_of(engagement, baseline)
+    async with acquire(tenant_id) as conn:
+        row = await conn.fetchrow(
+            "SELECT house_layout_id::text AS h FROM design_templates WHERE id = $1::uuid",
+            str(template_id))
+        if not row:
+            return None
+        hid = row["h"]
+        niches = await tenant_niches(conn, tenant_id) if hid else []
+    if not hid:
+        return {"ok": True, "house_layout_id": None, "niches": [], "lift": lift,
+                "recorded": False}
+    keys = await record_outcome(hid, niches, lift)
+    if not keys:
+        # The fork outlived its catalogue row (discarded or revoked). Nothing to
+        # credit, and saying ok lets the caller mark the post instead of retrying
+        # a write that can never succeed.
+        return {"ok": True, "house_layout_id": None, "niches": [], "lift": lift,
+                "recorded": False, "reason": "catalogue row discarded"}
+    return {"ok": True, "house_layout_id": hid, "niches": keys, "lift": lift,
+            "recorded": True}
+
+
+# ─────────────────────────────────────── backfill: tag what nobody tagged ──
+
+INFER_CONCURRENCY = 4
+INFER_MAX = 1000
+INGEST_READ_TIMEOUT = 25.0
+# Where the backfill notes a read that wrote no tags, so the next run moves on:
+# {"at": iso, "status": "generic" | "failed"}. Without it the newest untagged
+# rows — quote cards the model rightly calls generic, or images whose stored copy
+# is gone — were picked first on EVERY run, so once `limit` of them piled up the
+# backfill paid for the same reads forever and never reached older uploads.
+READ_KEY = "niche_read"
+# A failed read (unreachable image, model error) is worth one more try later.
+FAILED_READ_RETRY = timedelta(days=7)
+
+
+def _labels_of(row) -> set[str]:
+    try:
+        got = row["labels"]
+    except (KeyError, IndexError):
+        return set()
+    if isinstance(got, str):
+        try:
+            got = json.loads(got)
+        except ValueError:
+            return set()
+    return {str(t) for t in got or []} if isinstance(got, list) else set()
+
+
+async def infer_niches_backfill(*, limit: int = 100, dry_run: bool = False) -> dict:
+    """Give approved catalogue rows vocabulary labels.
+
+    Untagged rows (313 of 324 approved uploads on 2026-10-08) are READ: one
+    detail-"low" gpt-4o call on the stored image, at most `limit` of them, four
+    at a time. Rows that carry text tags but not their labels get the labels
+    from the words, with no call. dry_run reads nothing and writes nothing: it
+    counts and prices.
+
+    Refuses the PAID half, and says why, when there is no OpenAI key or
+    PAUSE_SPEND is set; the free half still runs. A row the model says carries
+    nothing industry-specific stays untagged (generic) and is noted, so it is
+    never read again; a failed read is retried after FAILED_READ_RETRY.
+    """
+    from .config import settings
+
+    limit = max(1, min(int(limit), INFER_MAX))
+    async with acquire(None) as conn:
+        rows = await conn.fetch(
+            f"""SELECT id::text, niches, source_image_uri,
+                       COALESCE(harvest_meta->'{LABELS_KEY}', '[]'::jsonb) AS labels,
+                       harvest_meta->'{READ_KEY}' AS read_note
+                  FROM house_layouts
+                 WHERE status = 'approved' ORDER BY created_at DESC""")
+    empty, relabel = [], []
+    for r in rows or []:
+        tags = clean_niches(r["niches"])
+        if not tags:
+            empty.append(r)
+            continue
+        want = clean_niches(tags + niche_vocab.canonical(tags))
+        if want != list(r["niches"] or []):
+            had = _labels_of(r)
+            relabel.append((r, want, [t for t in want if t in had or t not in tags]))
+    def _note(r) -> dict:
+        try:
+            n = r["read_note"]
+        except (KeyError, IndexError):
+            return {}
+        if isinstance(n, str):
+            try:
+                n = json.loads(n)
+            except ValueError:
+                return {}
+        return n if isinstance(n, dict) else {}
+
+    now = datetime.now(UTC)
+    never, retry, judged_generic = [], [], 0
+    for r in empty:
+        if not str(r["source_image_uri"] or "").strip():
+            continue
+        note = _note(r)
+        if note.get("status") == "generic":
+            judged_generic += 1           # read once, nothing industry-specific: done
+            continue
+        if note.get("status") == "failed":
+            try:
+                at = datetime.fromisoformat(str(note.get("at")))
+            except ValueError:
+                at = None
+            if at and (now - (at if at.tzinfo else at.replace(tzinfo=UTC))) < FAILED_READ_RETRY:
+                continue                  # cooling off
+            retry.append(r)
+            continue
+        never.append(r)
+    # Never-read rows first, then failures whose cool-off has passed.
+    to_read = (never + retry)[:limit]
+    per = niche_vocab.est_usd_per_image()
+    report = {"scanned": len(rows or []), "inferred": 0, "labelled_from_text": 0,
+              "still_untagged": len(empty), "failed": 0, "est_usd": 0.0,
+              "judged_generic": judged_generic, "dry_run": bool(dry_run)}
+
+    if dry_run:
+        report.update(inferred=len(to_read), labelled_from_text=len(relabel),
+                      still_untagged=len(empty) - len(to_read),
+                      est_usd=round(len(to_read) * per, 4))
+        return report
+
+    labelled = 0
+    for r, want, added in relabel:
+        async with acquire(None) as conn:
+            # Only if the tags are still what was read: a curator's retag since
+            # wins over a backfill computed from the old ones.
+            got = await conn.fetchval(
+                "UPDATE house_layouts SET niches = $2::text[], "
+                f"harvest_meta = jsonb_set(harvest_meta, '{{{LABELS_KEY}}}', $4::jsonb), "
+                "updated_at = now() "
+                "WHERE id = $1::uuid AND niches = $3::text[] RETURNING id",
+                r["id"], want, list(r["niches"] or []), json.dumps(added))
+        labelled += 1 if got else 0
+    report["labelled_from_text"] = labelled
+
+    if to_read and not niche_vocab.has_key():
+        report["vision_skipped"] = "no OpenAI key: untagged rows were not read"
+        return report
+    if to_read and settings.pause_spend:
+        report["vision_skipped"] = "PAUSE_SPEND is set: untagged rows were not read"
+        return report
+
+    sem = asyncio.Semaphore(INFER_CONCURRENCY)
+    calls = inferred = failed = generic = 0
+
+    async def _mark(row_id: str, status: str) -> None:
+        try:
+            async with acquire(None) as conn:
+                await conn.execute(
+                    "UPDATE house_layouts SET harvest_meta = jsonb_set("
+                    f"COALESCE(harvest_meta, '{{}}'::jsonb), '{{{READ_KEY}}}', $2::jsonb) "
+                    "WHERE id = $1::uuid AND cardinality(niches) = 0",
+                    row_id, json.dumps({"at": datetime.now(UTC).isoformat(),
+                                        "status": status}))
+        except Exception:  # noqa: BLE001 — a lost note costs one re-read, nothing more
+            logger.warning("could not note the niche read of %s", row_id, exc_info=True)
+
+    async def _one(r) -> None:
+        nonlocal calls, inferred, failed, generic
+        async with sem:
+            got = await niche_vocab.infer_detail(str(r["source_image_uri"]))
+        if got.get("status") == "no_key":
+            failed += 1
+            return
+        calls += 1
+        if got.get("status") != "ok":
+            failed += 1
+            await _mark(r["id"], "failed")
+            return
+        labels = clean_niches(niche_vocab.canonical(got.get("labels") or []))
+        if not labels:
+            generic += 1
+            await _mark(r["id"], "generic")   # read fine: nothing industry-specific
+            return
+        try:
+            async with acquire(None) as conn:
+                done = await conn.fetchval(
+                    "UPDATE house_layouts SET niches = $2::text[], "
+                    f"harvest_meta = jsonb_set(harvest_meta, '{{{LABELS_KEY}}}', $3::jsonb), "
+                    "updated_at = now() "
+                    "WHERE id = $1::uuid AND cardinality(niches) = 0 RETURNING id",
+                    r["id"], labels, json.dumps(labels))
+        except Exception:  # noqa: BLE001 — one row's write must not end the run
+            logger.warning("could not write inferred niches for %s", r["id"], exc_info=True)
+            failed += 1
+            return
+        inferred += 1 if done else 0
+
+    await asyncio.gather(*(_one(r) for r in to_read))
+    report.update(inferred=inferred, failed=failed,
+                  judged_generic=judged_generic + generic,
+                  still_untagged=len(empty) - inferred, est_usd=round(calls * per, 4))
+    return report

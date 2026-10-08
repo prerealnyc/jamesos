@@ -173,6 +173,23 @@ def parse_niches(niches) -> list[str]:
     return out
 
 
+def _with_labels(tags: list[str]) -> tuple[list[str], list[str]]:
+    """(the harvest's text tags followed by their vocabulary labels, the labels
+    added) — no vision call, the words are already there. The harvest tags a row
+    with the BRAND's free-text niche ('tour packages', 'golf resort'); a brand
+    whose own phrase differs ('tour operator', 'public golf courses in
+    Wisconsin') shared no word with it and ranked the row off-niche. 'travel'
+    and 'golf' are what both phrases mean.
+
+    The added labels go into harvest_meta.niche_labels, and the balance caps and
+    harvest_stats skip them (house_layouts.counted_tag_sql): they count by
+    MEMBERSHIP, not position, so a 'golf resort' row's added 'golf' would
+    otherwise count toward a 'golf' harvest's family and type caps."""
+    from .house_layouts import with_labels
+
+    return with_labels(tags)
+
+
 def resolve_policy(policy: dict | None) -> dict:
     """The caller's policy over the defaults, each value clamped to its range.
     Unknown keys are ignored; a value that is not a number is an input error."""
@@ -334,19 +351,28 @@ def _is_plain_photo(spec: dict) -> bool:
     return spec.get("kind") == "photo_forward" and len(els) < 2 and not decos
 
 
-_COUNTS_SQL = """
-    SELECT count(*) FILTER (WHERE family_key = $2 AND $1 = ANY(niches)) AS family_in_niche,
-           count(*) FILTER (WHERE family_key = $2)                      AS family_global,
-           count(*) FILTER (WHERE layout_type = $3 AND $1 = ANY(niches)) AS type_in_niche,
-           count(*) FILTER (WHERE $1 = ANY(niches))                     AS niche_approved
+def _counts_sql() -> str:
+    # A tag counts only where it was harvested or typed, never where it is an
+    # added vocabulary label — see house_layouts.LABELS_KEY.
+    from .house_layouts import counted_tag_sql
+
+    tagged = counted_tag_sql("$1")
+    return f"""
+    SELECT count(*) FILTER (WHERE family_key = $2 AND {tagged}) AS family_in_niche,
+           count(*) FILTER (WHERE family_key = $2)              AS family_global,
+           count(*) FILTER (WHERE layout_type = $3 AND {tagged}) AS type_in_niche,
+           count(*) FILTER (WHERE {tagged})                     AS niche_approved
       FROM house_layouts
      WHERE status = 'approved'"""
+
+
+_COUNTS_SQL = _counts_sql()
 
 _LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('house_harvest:' || $1))"
 
 
 def _insert_sql() -> str:
-    from .house_layouts import _NICHE_UNION_SQL
+    from .house_layouts import _LABELS_MERGE_SQL, _NICHE_UNION_SQL
 
     return f"""
     INSERT INTO house_layouts
@@ -363,6 +389,9 @@ def _insert_sql() -> str:
         -- the shape is already here: another niche finding it is evidence it
         -- suits that niche too, so its tags are UNIONED. Status is left alone.
         niches     = {_NICHE_UNION_SQL},
+        -- everything else in harvest_meta is the FIRST finder's provenance and
+        -- stays; only the list of added labels follows the unioned niches.
+        harvest_meta = {_LABELS_MERGE_SQL},
         updated_at = now()
     RETURNING id::text, (created_at = updated_at) AS fresh, status, niches"""
 
@@ -491,6 +520,9 @@ async def harvest_ingest(
         stored_meta["spec_hint"] = v["spec_hint"]
     if v["spec_hint_dropped"]:
         stored_meta["spec_hint_dropped"] = v["spec_hint_dropped"]
+    from .house_layouts import LABELS_KEY
+
+    stored_tags, stored_meta[LABELS_KEY] = _with_labels(tags)
 
     # 7. the decision and 8. the write, in ONE transaction under a lock on the
     # exact primary niche tag: two requests for one niche cannot both read
@@ -532,7 +564,7 @@ async def harvest_ingest(
             row = await conn.fetchrow(
                 _insert_sql(),
                 shape["kind"], json.dumps(spec), fp, fam, v["source_url"],
-                ltype, shape["label"], v["title"], tags, v["by"], new_status,
+                ltype, shape["label"], v["title"], stored_tags, v["by"], new_status,
                 note[:500], source_key, v["run_id"], json.dumps(stored_meta, default=str))
     except Exception as exc:
         if not _is_source_key_race(exc):
@@ -574,7 +606,12 @@ async def harvest_ingest(
 
 async def harvest_stats(niches: list[str]) -> dict:
     """Coverage per niche tag, for BM2's seed/steady decision, its type-deficit
-    upload order and its report. Membership is exact: tag = ANY(niches)."""
+    upload order and its report. Membership is exact: tag = ANY(niches), and a
+    tag that is only an added vocabulary label does not count (LABELS_KEY) — or
+    ~313 curated uploads labelled 'real estate' by the backfill would read as
+    real-estate coverage and BM2 would stop harvesting it."""
+    from .house_layouts import counted_tag_sql
+
     tags: list[str] = []
     for n in niches or []:
         t = canon_niche(n)[:MAX_NICHE_LEN]
@@ -601,13 +638,13 @@ async def harvest_stats(niches: list[str]) -> dict:
                                               AND h.created_at > now() - interval '24 hours')
                                 AS recent
                       FROM unnest($1::text[]) AS tag
-                      JOIN house_layouts h ON tag = ANY(h.niches)
+                      JOIN house_layouts h ON {counted_tag_sql("tag", "h")}
                      WHERE h.status IN ('approved', 'candidate')
                   GROUP BY 1, 2, 3, 4""", tags)
             fams = await conn.fetch(
-                """SELECT tag, count(DISTINCT h.family_key) AS families
+                f"""SELECT tag, count(DISTINCT h.family_key) AS families
                      FROM unnest($1::text[]) AS tag
-                     JOIN house_layouts h ON tag = ANY(h.niches)
+                     JOIN house_layouts h ON {counted_tag_sql("tag", "h")}
                     WHERE h.status = 'approved' AND h.family_key <> ''
                  GROUP BY 1""", tags)
         tot = await conn.fetchrow(

@@ -316,6 +316,21 @@ def test_type_share_only_applies_once_the_niche_has_a_pool():
     assert hh.decide(under, layout_type="offer_card", approve=True, policy=pol) == ("approved", "")
 
 
+def test_a_harvested_row_is_stored_with_its_vocabulary_labels(rig):
+    """The harvest tags a row with the brand's own phrase; a brand whose phrase
+    differs shared no word with it. The labels are added from the words, with no
+    vision call beyond the layout read, and the primary tag stays first because
+    the balance caps count by it."""
+    r = rig()
+    out = _go(niches=["Golf Resort", "golf"])
+    _, _sql, args = next(c for c in r.conn.calls if "INSERT INTO house_layouts" in c[1])
+    assert args[8] == ["golf resort", "golf", "hospitality"]
+    assert r.reads == ["image/png"], "one read: the layout's, nothing for the niche"
+    lock = next(c for c in r.conn.calls if "pg_advisory_xact_lock" in c[1])
+    assert lock[2] == ("golf resort",)
+    assert out["niches"] == ["golf resort", "golf", "hospitality"]
+
+
 def test_approve_defaults_off_and_holds(rig):
     r = rig()
     out = asyncio.run(hh.harvest_ingest(PNG, source_key=KEY, niches=["golf"],

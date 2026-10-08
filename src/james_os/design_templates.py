@@ -673,9 +673,27 @@ async def mark_verdict(
     async with acquire(tenant_id) as conn:
         row = await conn.fetchrow(
             f"UPDATE design_templates SET {col} = {col} + 1, updated_at = now() "
-            "WHERE id = $1::uuid RETURNING approvals, rejections", template_id)
+            "WHERE id = $1::uuid "
+            "RETURNING approvals, rejections, house_layout_id::text AS house_layout_id",
+            template_id)
     if not row:
         return None
+    # A verdict on a layout forked from the catalogue is also evidence about the
+    # CATALOGUE row, for every brand in this niche. Before this it moved only
+    # the brand's own fork, so what one golf brand learned taught no other golf
+    # brand anything. Best effort: the brand's own counters above are the
+    # verdict, and a failure here must never turn it into an error.
+    hid = row.get("house_layout_id") if hasattr(row, "get") else None
+    if hid:
+        try:
+            from . import house_layouts as _hl
+
+            async with acquire(tenant_id) as conn:
+                niches = await _hl.tenant_niches(conn, tenant_id)
+            await _hl.record_verdict(str(hid), niches, bool(approved))
+        except Exception:  # noqa: BLE001
+            logger.warning("could not file the verdict on catalogue row %s", hid,
+                           exc_info=True)
     return {"approvals": int(row["approvals"] or 0), "rejections": int(row["rejections"] or 0)}
 
 
