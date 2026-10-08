@@ -499,6 +499,9 @@ async def _pick_once(tenant_id: UUID | str | None) -> tuple[dict | None, int]:
                         "source_handle": "", "source_url": str(best["source_url"] or ""),
                         "source_platform": "house",
                         "source_kind": _hl._adopt_kind(best["source_kind"]),
+                        # Which catalogue row this fork came from, so the post can
+                        # say so (C2) — the brand id above is what gets marked used.
+                        "house_layout_id": str(best["id"]),
                     }, n_drawable
             # None of them could be drawn and owned, so fall through to the
             # brand's own library rather than hand back an id nothing can record.
@@ -535,7 +538,70 @@ async def _pick_once(tenant_id: UUID | str | None) -> tuple[dict | None, int]:
         "id": str(row["id"]), "spec": spec, "kind": row["kind"],
         "source_handle": row["source_handle"], "source_url": row["source_url"],
         "source_platform": row["source_platform"], "source_kind": row["source_kind"],
+        # A row forked from the catalogue earlier still carries its provenance;
+        # "" for a layout the brand learned itself.
+        "house_layout_id": str(_house_id(row) or ""),
     }, n_drawable
+
+
+async def pick_house(tenant_id: UUID | str | None, house_layout_id: str) -> dict | None:
+    """ONE named catalogue layout, as this brand's own row — or None.
+
+    The pinned counterpart of pick(): the caller has already chosen the layout
+    (BM2's showcase asks for a specific house row), so there is no ranking, no
+    HOUSE_SHARE and no MIN_LIBRARY — the question is only whether THIS layout
+    can be drawn and owned by THIS brand. Same return shape as pick(), and the
+    id is the BRAND's row for the same reason: mark_used on a catalogue id
+    updates zero rows and the counters would never move.
+
+    None — and the caller falls back to the nine, exactly like a failed learned
+    render — when the row is missing, not approved, not drawable, cannot be
+    adopted, or the brand's own copy of it is paused or retired. A pin is a
+    request to SHOW a layout, not to overrule the owner switching it off or
+    design QA retiring it for this brand.
+
+    Tenant scoping is pick()'s: the catalogue is read on the unscoped
+    connection (it has no tenant), the fork is written and read back on the
+    tenant's, where RLS confines it to this brand.
+    """
+    if not tenant_id or not house_layout_id:
+        return None
+    from . import house_layouts as _hl
+
+    async with acquire(None) as conn:
+        row = await conn.fetchrow(
+            """SELECT id::text, kind, spec, fingerprint, source_kind, source_url,
+                      source_image_uri, status
+                 FROM house_layouts WHERE id = $1::uuid""",
+            str(house_layout_id))
+    if not row or str(row["status"] or "") != "approved":
+        return None
+    spec = row["spec"]
+    if isinstance(spec, str):
+        spec = json.loads(spec)
+    if not isinstance(spec, dict) or not drawable(spec):
+        return None
+    async with acquire(tenant_id) as conn:
+        own_id = await _hl.adopt_one(conn, dict(row))
+        if not own_id:
+            return None
+        # adopt_one hands back an EXISTING row on conflict — a fork taken
+        # earlier, or the same shape the brand learned itself — whatever its
+        # status. Only an active one may be drawn.
+        mine = await conn.fetchrow(
+            "SELECT status, house_layout_id::text AS h FROM design_templates "
+            "WHERE id = $1::uuid", own_id)
+    if not mine or str(mine["status"] or "") != "active":
+        return None
+    return {
+        "id": str(own_id), "spec": spec, "kind": row["kind"],
+        "source_handle": "", "source_url": str(row["source_url"] or ""),
+        "source_platform": "house",
+        "source_kind": _hl._adopt_kind(row["source_kind"]),
+        # The brand row's own provenance when it has one; the pinned id otherwise
+        # (a shape the brand learned itself — the same layout by fingerprint).
+        "house_layout_id": str(mine["h"] or house_layout_id),
+    }
 
 
 async def set_paused(
@@ -590,13 +656,23 @@ async def mark_qa(tenant_id: UUID | str | None, template_id: str, passed: bool) 
                 "WHERE id = $1::uuid", template_id, RETIRE_AFTER_QA_FAILS)
 
 
-async def mark_verdict(tenant_id: UUID | str | None, template_id: str, approved: bool) -> None:
-    """The owner's approve / reject of a post built on this layout."""
+async def mark_verdict(
+    tenant_id: UUID | str | None, template_id: str, approved: bool,
+) -> dict | None:
+    """The owner's approve / reject of a post built on this layout.
+
+    Returns the layout's counts after the verdict, or None when no row took it.
+    RLS makes an UPDATE of another brand's (or a missing) row touch ZERO rows
+    and say nothing, so without RETURNING a verdict sent with a catalogue id or
+    the wrong tenant looked recorded and taught nothing."""
     col = "approvals" if approved else "rejections"
     async with acquire(tenant_id) as conn:
-        await conn.execute(
+        row = await conn.fetchrow(
             f"UPDATE design_templates SET {col} = {col} + 1, updated_at = now() "
-            "WHERE id = $1::uuid", template_id)
+            "WHERE id = $1::uuid RETURNING approvals, rejections", template_id)
+    if not row:
+        return None
+    return {"approvals": int(row["approvals"] or 0), "rejections": int(row["rejections"] or 0)}
 
 
 # ----------------------------------------------------------- learning the library
@@ -818,6 +894,6 @@ __all__ = [
     "MIN_LIBRARY", "RETIRE_AFTER_QA_FAILS", "MAX_READ_ATTEMPTS",
     "fingerprint", "usable",
     "prepare", "drawable", "base_role", "save", "count",
-    "pick", "mark_used", "mark_qa", "mark_verdict", "learn_from_competitors",
+    "pick", "pick_house", "mark_used", "mark_qa", "mark_verdict", "learn_from_competitors",
     "learn_from_reference", "NICHE_SHARE", "OWN_SHARE", "HOUSE_SHARE",
 ]

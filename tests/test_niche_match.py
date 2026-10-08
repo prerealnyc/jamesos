@@ -39,9 +39,13 @@ def test_an_off_niche_layout_ranks_below_an_untagged_one():
 
 
 def test_more_shared_words_rank_higher():
-    assert (hl.niche_rank("commercial real estate", ["commercial real estate"])
-            > hl.niche_rank("commercial real estate", ["real estate"])
-            > hl.niche_rank("commercial real estate", ["golf"]))
+    # Not "commercial real estate" any more: "commercial" is a stop word (it is
+    # the only word "commercial spaceport" shares with real estate), so that
+    # phrase and "real estate" now match on the same two words.
+    assert (hl.niche_rank("luxury golf resort", ["luxury golf resort"])
+            > hl.niche_rank("luxury golf resort", ["golf resort"])
+            > hl.niche_rank("luxury golf resort", ["golf"])
+            > hl.niche_rank("luxury golf resort", ["politics"]))
 
 
 def test_filler_words_do_not_create_a_match():
