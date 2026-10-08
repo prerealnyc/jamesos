@@ -2515,6 +2515,48 @@ async def v1_design_template_verdict(
     return {"ok": True, **counts}
 
 
+class DesignOutcomeRequest(BaseModel):
+    engagement: float = Field(ge=0, allow_inf_nan=False)
+    baseline: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    measured_at: str
+
+    @field_validator("measured_at")
+    @classmethod
+    def _iso(cls, v: str) -> str:
+        from datetime import datetime as _dt
+
+        try:
+            _dt.fromisoformat(str(v).strip().replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError("measured_at must be an ISO 8601 timestamp") from None
+        return str(v).strip()
+
+
+@router.post("/design-templates/{template_id}/outcome")
+async def v1_design_template_outcome(
+    tenant_id: TenantDep, template_id: UUID, body: DesignOutcomeRequest,
+) -> dict[str, Any]:
+    """How a post drawn on this layout actually performed, against the brand's
+    baseline. Filed on the CATALOGUE row the layout was forked from, per niche,
+    so the picker can prefer what measurably works for brands like this one.
+
+    lift = engagement / baseline, clamped to [0, 5]; no baseline is lift 1.0
+    (counted, no information). A layout the brand learned itself has no
+    catalogue row: ok with house_layout_id null and nothing recorded — and so
+    does a fork whose catalogue row was since discarded (recorded false, reason
+    'catalogue row discarded'), so the caller marks it instead of retrying a
+    write that can never land. 404 when
+    this brand holds no such layout. NOT idempotent — the caller marks what it
+    has reported, so a retry after a 5xx is the caller's to dedupe."""
+    from . import house_layouts
+
+    out = await house_layouts.template_outcome(
+        tenant_id, str(template_id), body.engagement, body.baseline)
+    if out is None:
+        raise HTTPException(404, "no such layout for this brand")
+    return out
+
+
 # ── the video editor ─────────────────────────────────────────────────────────
 #
 # A rendered reel that is 90% right used to have one lever: regenerate — another
@@ -3230,6 +3272,23 @@ async def v1_house_layouts_adopt(
     from . import house_layouts
 
     return await house_layouts.adopt(tenant_id, limit=limit)
+
+
+@router.post("/house-layouts/infer-niches")
+async def v1_house_layouts_infer_niches(
+    _: CuratorDep, limit: int = 100, dry_run: bool = False,
+) -> dict[str, Any]:
+    """Label approved catalogue rows with the niche vocabulary.
+
+    Untagged rows are read off their stored image (one cheap vision call each,
+    at most `limit`); rows with text tags but no labels get them from the words,
+    free. dry_run counts and prices without reading or writing. Reports
+    {scanned, inferred, labelled_from_text, still_untagged, failed, est_usd}."""
+    from . import house_layouts
+
+    if not 1 <= int(limit) <= house_layouts.INFER_MAX:
+        raise HTTPException(422, f"limit must be 1..{house_layouts.INFER_MAX}")
+    return await house_layouts.infer_niches_backfill(limit=limit, dry_run=bool(dry_run))
 
 
 # ───────────────────────────────────────── the nightly niche harvest ──
