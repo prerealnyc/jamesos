@@ -905,7 +905,7 @@ def interleave_families(rows: list[dict]) -> list[dict]:
 
 async def candidates(
     conn, tenant_id, *, niches=None, profile: dict | None = None, limit: int = 40,
-    recent_families=None,
+    recent_families=None, recent_types=None,
 ) -> list[dict]:
     """Approved catalogue layouts this brand has NOT already taken, best fit first.
 
@@ -960,6 +960,11 @@ async def candidates(
     out = [dict(r) for r in rows
            if r["id"] not in taken and str(r["fingerprint"] or "") not in held]
     recent = {str(f) for f in (recent_families or []) if f}
+    # Layout TYPES the brand drew most recently (offer_card, testimonial, …). Every
+    # adoption so far was one of two types while five others sat unused, so a
+    # type the brand has NOT drawn lately wins a tie — inside the same niche,
+    # recency and outcome tier, never across them.
+    recent_t = {str(t) for t in (recent_types or []) if t}
 
     now = datetime.now(UTC)
     labels = niche_vocab.canonical(niches)
@@ -971,7 +976,9 @@ async def candidates(
             outcome=outcome_term(results.get(str(r["id"]), []), labels))
         fam = str(r.get("family_key") or "")
         fresh = 0 if (fam and fam in recent) else 1
-        return (niche, new, outcome, fresh, *rest)
+        lt = str(r.get("layout_type") or "")
+        type_fresh = 0 if (lt and lt in recent_t) else 1
+        return (niche, new, outcome, type_fresh, fresh, *rest)
 
     out.sort(key=_rank, reverse=True)
     return interleave_families(out)[: max(1, int(limit))]

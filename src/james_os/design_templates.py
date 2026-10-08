@@ -334,6 +334,41 @@ async def pick(tenant_id: UUID | str | None) -> dict | None:
 HOUSE_TRIES = 5
 
 
+async def _recent_types(conn, hl) -> list[str]:
+    """layout_type of the brand's most recently USED drawable layouts, newest
+    first — so the catalogue ranking can prefer a KIND of post the brand has
+    not drawn lately (a tiebreak only; see house_layouts.candidates). Same read
+    as _recent_families; never costs a pick."""
+    try:
+        from .layout_types import classify
+        rows = await conn.fetch(
+            """SELECT spec FROM design_templates
+                WHERE status = 'active' AND last_used_at IS NOT NULL
+             ORDER BY last_used_at DESC
+                LIMIT $1""",
+            hl.RECENT_FAMILIES * 3,
+        )
+    except Exception:  # noqa: BLE001 — freshness is a tiebreak; never cost a pick
+        logger.warning("could not read the brand's recent layout types", exc_info=True)
+        return []
+    out: list[str] = []
+    for r in rows or []:
+        try:
+            spec = r["spec"]
+            if isinstance(spec, str):
+                spec = json.loads(spec)
+            if not drawable(spec):
+                continue
+            t = str((classify(spec) or {}).get("type") or "")
+        except Exception:  # noqa: BLE001
+            continue
+        if t:
+            out.append(t)
+        if len(out) >= hl.RECENT_FAMILIES:
+            break
+    return out
+
+
 async def _recent_families(conn, hl) -> list[str]:
     """family_key of the brand's most recently USED drawable layouts, newest
     first — what the catalogue ranking steers away from repeating.
@@ -440,8 +475,9 @@ async def _pick_once(tenant_id: UUID | str | None) -> tuple[dict | None, int]:
             niches = await _hl.tenant_niches(conn, tenant_id)
             profile = _hl.type_profile([g[1] for g in good])
             recent = await _recent_families(conn, _hl)
+            recent_types = await _recent_types(conn, _hl)
             house = await _hl.candidates(conn, tenant_id, niches=niches, profile=profile,
-                                         recent_families=recent)
+                                         recent_families=recent, recent_types=recent_types)
     except Exception:  # noqa: BLE001 — the brand's own library is a fine answer
         logger.warning("could not read the house catalogue", exc_info=True)
 
