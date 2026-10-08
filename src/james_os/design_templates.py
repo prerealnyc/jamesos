@@ -264,24 +264,54 @@ async def save(
     source_handle: str = "",
     source_platform: str = "",
     source_engagement: float = 0.0,
+    outcome: dict | None = None,
 ) -> str | None:
     """Keep a learned layout. Returns its id, or None if it was not usable.
 
     Idempotent twice over: one row per source post, and one row per distinct
     structure. Seeing the same layout again returns the existing row rather than
     adding a duplicate — the library grows by NEW layouts, not by repeats.
+
+    An OWN post whose structure is already held as some other kind (a
+    competitor's or a niche read of the same shape) is the brand's own layout,
+    so that row is relabelled 'own' — but only while it belongs to nobody else:
+    not adopted from the catalogue (house_layout_id) and not in it by shape. A
+    row that is, is left alone and reported. `outcome`, when given, is filled
+    with {template_id, matched_kind, relabelled, created}.
     """
     if not usable(spec):
         return None
     fp = fingerprint(spec)
     async with acquire(tenant_id) as conn:
-        existing = await conn.fetchval(
-            "SELECT id FROM design_templates WHERE fingerprint = $1 "
+        hit = await conn.fetchrow(
+            "SELECT id, source_kind, house_layout_id FROM design_templates WHERE fingerprint = $1 "
             "OR ($2::uuid IS NOT NULL AND source_post_id = $2::uuid) LIMIT 1",
             fp, source_post_id,
         )
-        if existing:
-            return str(existing)
+        if hit:
+            kind, relabelled = str(hit["source_kind"] or ""), False
+            if source_kind == "own" and kind != "own" and hit["house_layout_id"] is None:
+                # It becomes the brand's in full: the brand's post, picture,
+                # handle and engagement replace the other account's, or the
+                # "own templates" view would show a rival's post as the brand's.
+                # The previous kind is kept on the spec for audit.
+                merge = {"relabelled_from": kind}
+                if isinstance(spec.get("source_image"), dict):
+                    merge["source_image"] = spec["source_image"]
+                relabelled = bool(await conn.fetchval(
+                    "UPDATE design_templates SET source_kind = 'own', source_post_id = $2::uuid, "
+                    "source_url = $3, source_image_uri = $4, source_handle = $5, "
+                    "source_platform = $6, source_engagement = $7, spec = spec || $8::jsonb, "
+                    "updated_at = now() "
+                    "WHERE id = $1 AND house_layout_id IS NULL AND NOT EXISTS ("
+                    "SELECT 1 FROM house_layouts h WHERE h.fingerprint = design_templates.fingerprint"
+                    " AND h.fingerprint <> '') RETURNING true", hit["id"],
+                    source_post_id, source_url, source_image_uri, source_handle,
+                    source_platform, float(source_engagement or 0), json.dumps(merge)))
+            if outcome is not None:
+                outcome.update(template_id=str(hit["id"]), matched_kind=kind,
+                               relabelled=relabelled, created=False)
+            return str(hit["id"])
         row = await conn.fetchval(
             """INSERT INTO design_templates
                    (spec, kind, source_kind, source_post_id, source_url,
@@ -295,10 +325,14 @@ async def save(
             source_platform, float(source_engagement or 0), str(spec.get("rubric_version") or ""),
             fp,
         )
+        created = row is not None
         if row is None:  # lost a race to an identical insert — return the winner
             row = await conn.fetchval(
                 "SELECT id FROM design_templates WHERE fingerprint = $1 LIMIT 1", fp
             )
+    if outcome is not None and row:
+        outcome.update(template_id=str(row), matched_kind="" if created else source_kind,
+                       relabelled=False, created=created)
     return str(row) if row else None
 
 

@@ -38,21 +38,78 @@ _STRIP = re.compile(r"(#\w+|@\w+|https?://\S+)")
 _NON_WORD = re.compile(r"[^\w\s-]", re.UNICODE)
 
 
-def _build_query(raw: str) -> str:
+_GENERIC_ANCHOR = "modern professional"
+
+
+def _build_query(raw: str, fallback: str = "") -> str:
     """A short concrete-noun query from a topic/brief. Strips hashtags, mentions,
     URLs, emoji and punctuation, keeps the first few real words; if nothing
-    concrete remains, anchors to the brand's industry so results stay on-theme."""
+    concrete remains, anchors to `fallback` — THIS brand's industry/place (see
+    tenant_anchor) — so results stay on-theme. Never the global
+    settings.brand_industry: that is one brand's text (Tenant Zero's real estate), and
+    a golf course whose topic was all hashtags got suburban houses."""
     q = _STRIP.sub(" ", raw or "")
     q = _NON_WORD.sub(" ", q)
     words = [w for w in q.split() if len(w) > 2][:6]
     out = " ".join(words).strip()
     if len(out) < 3:
-        out = (settings.brand_industry or "modern professional").split(" — ")[0][:80]
+        out = (fallback or _GENERIC_ANCHOR).split(" — ")[0][:80]
     return out[:100]
+
+
+async def tenant_anchor(tenant_id=None) -> str:
+    """The words a thin query falls back to, for THIS tenant.
+
+    The brand's confirmed niche, else its identity's industry, plus its location
+    when the profile names one. The operator's own tenant (the default) keeps
+    the configured industry text, which is genuinely its own. Anything else with
+    no profile gets a neutral anchor — never another brand's industry."""
+    from .db import _request_tenant
+    # Resolved exactly as db.acquire() resolves it (explicit, else the request's,
+    # else the default tenant), so a background render with no request tenant
+    # anchors to the tenant its rows are read as — not to nothing.
+    tid = tenant_id or _request_tenant.get() or settings.default_tenant_id
+    try:
+        from .brands import get_brand_profile
+        prof = await get_brand_profile(tid) if tid else None
+    except Exception:  # noqa: BLE001 — a profile miss must never stop a render
+        prof = None
+    ident = (prof or {}).get("identity") or {}
+    if not isinstance(ident, dict):
+        ident = {}
+    subject = ""
+    if str(ident.get("niche") or "").strip() and ident.get("niche_confirmed_at"):
+        subject = str(ident["niche"]).strip()
+    subject = subject or str(ident.get("industry") or "").strip()
+    place = str(ident.get("location") or ident.get("city") or ident.get("region") or "").strip()
+    if not subject and tid and str(tid) == str(settings.default_tenant_id):
+        subject = (settings.brand_industry or "").split(" — ")[0]
+    out = " ".join(p for p in (subject, place) if p).strip()
+    return out[:80] or _GENERIC_ANCHOR
+
+
+# image URL -> the attribution Unsplash requires for it. Filled by every fetch,
+# so a caller that only kept the 2-tuple (the URL is its hero key) can still
+# write the credit onto the payload with credit_for(url). Bounded: render
+# processes are long-lived.
+_CREDITS: dict[str, dict] = {}
+_CREDITS_MAX = 512
+
+
+def credit_for(url: str) -> dict:
+    """The Unsplash credit for a photo this process fetched, or {}."""
+    return dict(_CREDITS.get(str(url or ""), {}))
+
+
+def _remember_credit(url: str, credit: dict) -> None:
+    if len(_CREDITS) >= _CREDITS_MAX:
+        _CREDITS.pop(next(iter(_CREDITS)))
+    _CREDITS[url] = credit
 
 
 async def fetch_unsplash_hero_credited(
     query: str, *, exclude: Sequence[str] = (), orientation: str = "portrait",
+    tenant_id=None,
 ) -> tuple[str, bytes, dict] | None:
     """(image_url, jpeg_bytes, credit) or None. `exclude` holds hero keys already
     used (Unsplash URLs or ids) so a design-QA retry won't re-serve the same photo.
@@ -66,6 +123,9 @@ async def fetch_unsplash_hero_credited(
     headers = {"Authorization": f"Client-ID {key}", "Accept-Version": "v1"}
     try:
         q = _build_query(query)
+        if q == _GENERIC_ANCHOR:
+            # The topic left nothing concrete — anchor to THIS brand.
+            q = _build_query(query, await tenant_anchor(tenant_id))
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
             r = await c.get(
                 _SEARCH_URL,
@@ -124,6 +184,7 @@ async def fetch_unsplash_hero_credited(
             "photo_url": str((chosen.get("links") or {}).get("html") or ""),
             "download_triggered": bool(dl),
         }
+        _remember_credit(img_url, credit)
         return img_url, data, credit
     except Exception:  # noqa: BLE001 — a stock lookup must never crash a render
         _log.info("unsplash hero fetch failed", exc_info=True)
@@ -132,13 +193,18 @@ async def fetch_unsplash_hero_credited(
 
 async def fetch_unsplash_hero(
     query: str, *, exclude: Sequence[str] = (), orientation: str = "portrait",
+    tenant_id=None,
 ) -> tuple[str, bytes] | None:
     """(image_url, jpeg_bytes) or None — the 2-tuple form for callers that don't
-    persist attribution. Thin wrapper so the license logic lives in one place."""
-    got = await fetch_unsplash_hero_credited(query, exclude=exclude, orientation=orientation)
+    carry attribution in their return. The credit is NOT dropped: it is kept
+    against the URL, and credit_for(url) hands it back. Thin wrapper so the
+    license logic lives in one place."""
+    got = await fetch_unsplash_hero_credited(query, exclude=exclude, orientation=orientation,
+                                             tenant_id=tenant_id)
     if got is None:
         return None
     return got[0], got[1]
 
 
-__all__ = ["fetch_unsplash_hero", "fetch_unsplash_hero_credited"]
+__all__ = ["fetch_unsplash_hero", "fetch_unsplash_hero_credited", "credit_for",
+           "tenant_anchor"]

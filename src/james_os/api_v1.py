@@ -3452,3 +3452,39 @@ async def v1_house_layouts_harvest_revoke(
         return await house_harvest.harvest_revoke(req.run_id, req.by)
     except house_harvest.HarvestInputError as exc:
         raise HTTPException(exc.status, str(exc)) from None
+
+
+# ───────────────────────────────────────────────── the brand's own images ──
+# BM2 scrapes the brand's OWN stated accounts and sends each image here, one
+# per call, with the brand's tenant. Logic lives in own_media; these routes only
+# translate. See own_media's docstring for the verdicts.
+
+from . import own_media as _own_media  # noqa: E402
+
+
+@router.post("/own-media/import")
+async def v1_own_media_import(tenant_id: TenantDep, body: _own_media.OwnMediaImport):
+    """Take ONE of the brand's own posted images: store it as the brand's photo,
+    or keep it as one of the brand's own templates. 200 with a verdict
+    (template | photo | duplicate | undrawable); 503 verdict 'retry' when the
+    read could not happen (nothing was written); 4xx verdict 'rejected'."""
+    from fastapi.responses import JSONResponse
+
+    status, out = await _own_media.import_own_media(tenant_id, body)
+    return JSONResponse(status_code=status, content=out)
+
+
+@router.get("/own-media/summary")
+async def v1_own_media_summary(tenant_id: TenantDep, days: int = 0) -> dict[str, Any]:
+    """The brand's own photos by origin / orientation / has_person, and its own
+    templates by layout type with counts and the newest examples."""
+    return await _own_media.summary(tenant_id, days=days)
+
+
+@router.post("/own-media/caption-backfill")
+async def v1_own_media_caption_backfill(tenant_id: TenantDep, limit: int = 50) -> dict[str, Any]:
+    """Caption this brand's hero photos that were never read (one-off, paid:
+    one low-detail vision call + one embedding per photo)."""
+    from .photo_subject import backfill
+
+    return await backfill(tenant_id, limit=max(1, min(int(limit), 200)))

@@ -2486,6 +2486,11 @@ async def _generate_designed_post_image(
                     if _k == force_photo:
                         _picked = (_k, _b)
                         break
+                if _picked is None:
+                    # Out of the (least-used) rotation pool but still in the
+                    # library: the redo keeps that exact photo.
+                    from .hero_context import library_photo
+                    _picked = await library_photo(tenant_id, force_photo)
                 # Same-photo EDIT on a hero that isn't in the upload library — an
                 # Unsplash/stock hero (its key IS its image URL, so brands with no
                 # uploaded photos land here) or a hero we persisted by URL after a
@@ -2505,7 +2510,11 @@ async def _generate_designed_post_image(
                     except Exception:  # noqa: BLE001 — fall through to a normal pick
                         _picked = None
             if _picked is None:
-                _picked = await pick_hero_bytes(_refs, tenant_id, exclude=exclude_photos)
+                # Hero-led cards show the owner's own photos before scraped ones.
+                from .hero_context import HERO_FORMATS, hero_led_keys
+                _picked = await pick_hero_bytes(
+                    _refs, tenant_id, exclude=exclude_photos,
+                    prefer=(await hero_led_keys(tenant_id)) if fmt in HERO_FORMATS else ())
             if _picked is None and exclude_photos and not _refs:
                 # A SWAP was asked for, but this brand has NO uploaded photos of
                 # its own — its current hero is a stock/Unsplash or previously
@@ -2606,7 +2615,10 @@ async def _generate_designed_post_image(
     if fmt in PHOTO_FORMATS and hero_bytes is None:
         try:
             from .stock_photo import fetch_unsplash_hero_credited
-            _u = await fetch_unsplash_hero_credited(bg_prompt or topic, exclude=exclude_photos)
+            # THIS brand's niche anchors a thin query — a scheduler / autopilot
+            # render has no request tenant to fall back on.
+            _u = await fetch_unsplash_hero_credited(bg_prompt or topic, exclude=exclude_photos,
+                                                    tenant_id=tenant_id)
             if _u:
                 hero_key, hero_bytes, _credit = _u  # url is http → reuse key + persists
         except Exception:  # noqa: BLE001 — a stock lookup must never stop a render
@@ -2694,9 +2706,10 @@ async def _generate_designed_post_image(
             profile_is_logo = False
     if profile_bytes is None:
         try:
-            # Rotate the profile mark too (LRU across the full library) instead of
-            # always stamping refs[0] — the same face on every statement card.
-            refs = await get_hero_photo_files(tenant_id=tenant_id, limit=None)
+            # Rotate the profile mark too (LRU) instead of always stamping
+            # refs[0]. It stands for the ACCOUNT'S FACE, so only the owner's
+            # uploads — never a scraped venue/food shot; none → no mark.
+            refs = await get_hero_photo_files(tenant_id=tenant_id, limit=12, likeness=True)
             if refs:
                 from .photo_pick import pick_hero_bytes
                 picked = await pick_hero_bytes(refs, tenant_id)
@@ -3074,9 +3087,10 @@ async def post_create_batch(req: CreateBatchRequest, background: BackgroundTasks
         hero_urls: list[str] = []
         if image_mode == "photo" and not (req.image_url or "").strip():
             try:
-                from .hero_context import get_hero_context
+                from .hero_context import get_hero_context, rotation_urls
                 ctx = await get_hero_context(tid)
-                hero_urls = list(ctx.photo_urls) if ctx else []
+                # Never a held-back flyer or screenshot as a fresh photo post.
+                hero_urls = rotation_urls(ctx)
             except Exception:  # noqa: BLE001
                 hero_urls = []
 
@@ -3199,9 +3213,10 @@ async def post_backfill_images(
         sem = asyncio.Semaphore(2)
         hero_urls: list[str] = []
         try:
-            from .hero_context import get_hero_context
+            from .hero_context import get_hero_context, rotation_urls
             ctx = await get_hero_context(tid)
-            hero_urls = list(ctx.photo_urls) if ctx else []
+            # Never a held-back flyer or screenshot as a fresh photo post.
+            hero_urls = rotation_urls(ctx)
         except Exception:  # noqa: BLE001
             hero_urls = []
 
@@ -4416,7 +4431,7 @@ async def images_generate(req: PostImageRequest) -> dict:
     # so the SAME person (James) shows up consistently. With no hero photos
     # uploaded, generate_post_image_with_refs transparently falls back to the
     # no-reference generate path.
-    hero_refs = await get_hero_photo_files(tenant_id=_img_tid)
+    hero_refs = await get_hero_photo_files(tenant_id=_img_tid, likeness=True)
     png, meta, err = await generate_post_image_with_refs(
         topic=topic,
         references=hero_refs,
@@ -4909,10 +4924,15 @@ async def autopilot_runs() -> list[dict]:
 
 # ────────────────────────────────────────────────── reference library ──
 
-async def _run_media_analysis(media_id: UUID) -> dict | None:
+async def _run_media_analysis(media_id: UUID, tenant_id: UUID | None = None) -> dict | None:
     """Watch an uploaded reference and persist its style fingerprint. URL
-    references can't be analyzed without the file → marked unsupported."""
-    tenant = settings.default_tenant_id
+    references can't be analyzed without the file → marked unsupported.
+
+    Runs as the ROW's tenant (passed by the upload; else the request's). It ran
+    as the default tenant, so under RLS every other brand's upload was invisible
+    to it and never analysed."""
+    from .db import _request_tenant
+    tenant = tenant_id or _request_tenant.get() or settings.default_tenant_id
     asset = await get_media_for_analysis(media_id, tenant)
     if asset is None:
         return None
@@ -4935,6 +4955,14 @@ async def _run_media_analysis(media_id: UUID) -> dict | None:
     if asset.get("role") in ("broll", "hero_photo", "hero_video"):
         from .reel_vision import describe_media_asset
         await describe_media_asset(media_id, tenant)
+    # A hero PHOTO is captioned for subject matching and is done: the video
+    # perception pass below cannot read a still and only ever marked it failed.
+    if asset.get("role") == "hero_photo":
+        from .photo_subject import read_one
+        got = await read_one(media_id, asset.get("uri", ""), tenant)
+        await set_analysis_status(
+            media_id, "done" if got.get("status") == "read" else "failed", tenant)
+        return got
     # Perception path (other roles). Resolve to a local file first — Supabase-
     # backed uploads aren't on local disk, so we download before ffmpeg.
     import shutil as _shutil
@@ -5023,7 +5051,28 @@ async def media_upload(
                     f"'{_dup['title'] or _dup['id']}' — not re-analyzing it"),
         )
 
-    tenant = str(settings.default_tenant_id)
+    # Store under the REQUESTING brand's tenant prefix (as /media/store does).
+    # This said settings.default_tenant_id, which filed every brand's library
+    # under Tenant Zero's folder. Existing objects are NOT moved: their URL is the key
+    # in the photo-reuse ledger and in stored payloads.
+    from .db import _request_tenant
+    _tid = _request_tenant.get() or settings.default_tenant_id
+    tenant = str(_tid)
+    # A photo is measured once on arrival (size, orientation, full hash, dHash,
+    # sharpness, screenshot) so the render pool can rank it without refetching.
+    _prov = None
+    if role == "hero_photo":
+        try:
+            from .own_media import measure as _measure
+            _m = await asyncio.to_thread(_measure, data)
+            _prov = {k: _m[k] for k in ("width", "height", "orientation", "sha256", "dhash",
+                                        "quality")}
+            _prov["dhash"] = _prov["dhash"] or None
+            # The hash of the bytes actually STORED (measure() hashes an
+            # uprighted copy when the file carries an EXIF rotation).
+            _prov["sha256"] = _hashlib.sha256(data).hexdigest()
+        except Exception:  # noqa: BLE001 — an unmeasurable file is still uploadable
+            _prov = None
     # to_thread: the Supabase storage client is sync HTTP — a big upload
     # pushed inline would freeze the whole server for its duration.
     served_uri, file_path = await asyncio.to_thread(
@@ -5039,15 +5088,16 @@ async def media_upload(
         mime=file.content_type or "",
         tags=[t.strip() for t in tags.split(",") if t.strip()] + [_hash_tag],
         notes=notes,
+        provenance=_prov,
     )
-    background.add_task(_run_media_analysis, UUID(created["id"]))
+    background.add_task(_run_media_analysis, UUID(created["id"]), _tid)
     created["analysis_status"] = "pending"
     # Hero uploads change the brand's recurring-character context; the
     # in-process description cache needs to refresh so the next story
     # render sees the new photos.
     if role in ("hero_photo", "hero_video"):
         from .hero_context import invalidate_cache as _hero_bust
-        _hero_bust()
+        _hero_bust(_tid)
     return created
 
 
@@ -5107,8 +5157,9 @@ async def media_link(req: MediaLinkRequest) -> dict:
         notes=req.notes,
     )
     if req.role in ("hero_photo", "hero_video"):
+        from .db import _request_tenant
         from .hero_context import invalidate_cache as _hero_bust
-        _hero_bust()
+        _hero_bust(_request_tenant.get())
     return created
 
 

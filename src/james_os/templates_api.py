@@ -108,16 +108,21 @@ async def higgsfield_train_soul(req: TrainSoulRequest) -> dict:
     custom-references endpoint. Needs 5–20 hero photos and a paid Higgsfield
     plan; returns the new reference id — training runs ~3–5 min, then refresh
     the Soul list and 'Use for James'."""
+    from .hero_context import origin_of
     from .higgsfield_souls import configured, create_reference
     from .media import list_media
     if not configured():
         return {"ok": False, "error": "Higgsfield API key + secret aren't set. Add them in Settings."}
     photos = await list_media(role="hero_photo", tenant_id=_tenant())
-    urls = [p.get("uri") for p in photos if (p.get("uri") or "").startswith("http")]
+    # A Soul is a FACE model: train it on the photos the OWNER uploaded only.
+    # The library also holds the brand's scraped own posts (a venue, a plate,
+    # a golf hole) and generated pictures — neither is the hero's likeness.
+    urls = [p.get("uri") for p in photos if (p.get("uri") or "").startswith("http")
+            and origin_of(p) == "owner_upload"]
     if len(urls) < 5:
         return {"ok": False,
-                "error": f"Need at least 5 hero photos with public URLs to train a Soul; found {len(urls)}. "
-                         "Upload more to the Hero library first."}
+                "error": f"Need at least 5 hero photos you uploaded (public URLs) to train a Soul; "
+                         f"found {len(urls)}. Upload more to the Hero library first."}
     res = await create_reference(name=req.name, image_urls=urls)
     if res.get("error") or not res.get("reference_id"):
         return {"ok": False, "error": res.get("error") or "training did not start",

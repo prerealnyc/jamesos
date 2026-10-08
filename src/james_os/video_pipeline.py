@@ -371,7 +371,7 @@ async def _render_hero_talking_photo(
     from .hero_context import get_hero_photo_files
     from .imagegen import generate_post_image_with_refs
 
-    refs = await get_hero_photo_files(tenant_id)
+    refs = await get_hero_photo_files(tenant_id, likeness=True)  # the owner's photos only
     if not refs:
         return None, "no hero photos — upload photos of the hero on the Hero page first"
     png, _meta, err = await generate_post_image_with_refs(

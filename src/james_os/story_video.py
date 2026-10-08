@@ -1887,7 +1887,7 @@ async def build_story_audio_assets(
     )
     hero_ctx = await _hero_ctx()
     hero_description = hero_ctx.description if hero_ctx else ""
-    hero_refs = await _hero_files() if hero_ctx else []
+    hero_refs = await _hero_files(likeness=True) if hero_ctx else []
 
     await write_image_prompts(
         beats, brand_context, style, hero_description=hero_description,
@@ -2012,7 +2012,7 @@ async def build_avatar_story_mix_assets(
         )
         hero_ctx = await _hero_ctx()
         hero_description = hero_ctx.description if hero_ctx else ""
-        hero_refs = await _hero_files() if hero_ctx else []
+        hero_refs = await _hero_files(likeness=True) if hero_ctx else []
         await write_image_prompts(
             broll_beats, brand_context, style,
             hero_description=hero_description,
@@ -2355,7 +2355,7 @@ async def build_engaging_avatar_assets(
     )
     hero_ctx = await _hero_ctx()
     hero_description = hero_ctx.description if hero_ctx else ""
-    hero_refs = await _hero_files() if hero_ctx else []
+    hero_refs = await _hero_files(likeness=True) if hero_ctx else []
 
     # Pacing resolution, most-specific wins:
     #   1. explicit per-render preset (broll_pacing param)

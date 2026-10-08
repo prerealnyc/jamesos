@@ -184,7 +184,7 @@ async def _hero_or_placeholder(tenant_id, topic: str,
     # gpt-image-1 draw. Key-gated + fail-safe: any miss falls through to fabricate.
     try:
         from .stock_photo import fetch_unsplash_hero
-        u = await fetch_unsplash_hero(topic)
+        u = await fetch_unsplash_hero(topic, tenant_id=tenant_id)
         if u:
             return u[1], False, u[0]  # bytes, was_generated=False (a real photo), key=url
     except Exception:  # noqa: BLE001 — a stock lookup must never stop a render
@@ -481,10 +481,16 @@ async def _hero_by_key(tenant_id, key: str) -> bytes | None:
     if not key:
         return None
     try:
-        from .hero_context import get_hero_photo_files
+        from .hero_context import get_hero_photo_files, library_photo
         for name, data in await get_hero_photo_files(tenant_id=tenant_id, limit=None):
             if name == key:
                 return data
+        # The rotation pool is re-chosen least-used first, so the photo this
+        # card just used is the one most likely to have left it — fetch it
+        # from the library by its key rather than swapping in another.
+        hit = await library_photo(tenant_id, key)
+        if hit is not None:
+            return hit[1]
     except Exception:  # noqa: BLE001 — a lookup failure is "not found"
         logging.getLogger(__name__).warning("hero lookup failed for %r", key[:80])
     return None
@@ -747,6 +753,9 @@ async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None,
     return {"png": png, "kind": kind, "content": content, "topic": topic,
             "generated_hero": generated, "from": post.get("handle") or "",
             "hero_photo_key": hero_key,
+            # Where the picture came from, and the photographer credit Unsplash
+            # requires when it was stock (kept against the URL by stock_photo).
+            **_image_source(hero_key, generated, hero_bytes),
             # The template itself, and where it came from. Without these a cloned
             # post could never be rebuilt in its own design: the spec was a live
             # vision read that was thrown away, and the source post id was never
@@ -869,7 +878,23 @@ _DRAWN_HEROES = 2
 _STOCK_HEROES = 4
 
 
-async def _stock_pool(topics: list[str]) -> list[tuple[str, bytes]]:
+def _image_source(hero_key, generated: bool, hero_bytes) -> dict:
+    """{image_source, hero_credit?} for a payload — cheap, no network."""
+    if hero_bytes is None:
+        return {"image_source": "none"}
+    if generated:
+        return {"image_source": "generated"}
+    try:
+        from .stock_photo import credit_for
+        credit = credit_for(str(hero_key or ""))
+    except Exception:  # noqa: BLE001
+        credit = {}
+    if credit:
+        return {"image_source": "unsplash", "hero_credit": credit}
+    return {"image_source": "library" if hero_key else "unknown"}
+
+
+async def _stock_pool(topics: list[str], tenant_id=None) -> list[tuple[str, bytes]]:
     """A few real photographs for this brand's subject matter, best-effort."""
     out: list[tuple[str, bytes]] = []
     seen: set[str] = set()
@@ -885,7 +910,7 @@ async def _stock_pool(topics: list[str]) -> list[tuple[str, bytes]]:
             continue
         seen.add(q.lower())
         try:
-            got = await fetch_unsplash_hero(q)
+            got = await fetch_unsplash_hero(q, tenant_id=tenant_id)
         except Exception:  # noqa: BLE001 — a stock miss never costs the batch
             continue
         if got:
@@ -955,7 +980,7 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
     if allowed:
         _emit(done=0, total=n, stage="Using the post styles you chose…")
 
-    stock = await _stock_pool([str(p.get("topic") or "") for p in posts[:8]])
+    stock = await _stock_pool([str(p.get("topic") or "") for p in posts[:8]], tenant_id)
     if stock:
         _emit(done=0, total=n, stage=f"Found {len(stock)} photos to build on…")
 
@@ -1039,6 +1064,10 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
                     "clone_source_url": cloned.get("source_url") or "",
                     **({"hero_photo_key": cloned["hero_photo_key"]}
                        if cloned.get("hero_photo_key") else {}),
+                    **({"image_source": cloned["image_source"]}
+                       if cloned.get("image_source") else {}),
+                    **({"hero_credit": cloned["hero_credit"]}
+                       if cloned.get("hero_credit") else {}),
                     "used_placeholder_photo": cloned["generated_hero"],
                     "review_passed": bool(rev.get("passed")),
                 }))

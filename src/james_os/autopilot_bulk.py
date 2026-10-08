@@ -117,17 +117,22 @@ async def _attach_image_to_action(
     """
     import hashlib
 
+    from .hero_context import held_back
     from .media import list_media
 
     photos = await list_media(role="hero_photo", tenant_id=tenant_id)
     # Real uploads ONLY — never AI-generated (source_type='generated'), matching
     # the single hero chokepoint in hero_context.get_hero_context.
-    urls = [
-        (m.get("uri") or "").strip()
-        for m in photos
+    real = [
+        m for m in photos
         if (m.get("uri") or "").startswith("http")
         and (m.get("source_type") or "") != "generated"
     ]
+    # Never a held-back flyer, screenshot or photo with printed text as a fresh
+    # photo post while anything else is there: hero_context.rotation_urls'
+    # rule (and its fallback), applied to the rows listed here.
+    real = [m for m in real if not held_back(m)] or real
+    urls = [(m.get("uri") or "").strip() for m in real]
     if not urls:
         # No real hero photo → leave the post image-less rather than invent one.
         return None

@@ -151,6 +151,13 @@ def _row(r) -> dict:
     d.pop("file_path", None)  # internal; never exposed
     if isinstance(d.get("analysis"), str):
         d["analysis"] = json.loads(d["analysis"])
+    if isinstance(d.get("quality"), str):
+        try:
+            d["quality"] = json.loads(d["quality"])
+        except ValueError:
+            d["quality"] = {}
+    if d.get("taken_at") is not None and hasattr(d["taken_at"], "isoformat"):
+        d["taken_at"] = d["taken_at"].isoformat()
     for k in ("created_at", "updated_at"):
         if d.get(k) is not None:
             d[k] = d[k].isoformat()
@@ -169,21 +176,50 @@ async def create_media(
     tags: list[str] | None = None,
     notes: str = "",
     tenant_id: UUID | None = None,
+    provenance: dict | None = None,
 ) -> dict:
+    """Insert one library row.
+
+    `provenance` carries the migration-072 columns (width, height, orientation,
+    origin, origin_url, origin_ref, rights, taken_at, sha256, dhash, quality,
+    has_person) for callers that measured the file. They are OPTIONAL and only
+    the keys given are written, so every older caller's INSERT is unchanged —
+    and a database that has not had 072 yet still takes the upload: the row is
+    written without them rather than the upload failing (the content-hash tag
+    and the origin tag still carry the essentials)."""
     if role not in ROLES:
         raise ValueError(f"role must be one of {ROLES}")
-    async with acquire(tenant_id) as conn:
-        r = await conn.fetchrow(
-            """
-            INSERT INTO media_assets
-              (role, source_type, uri, file_path, title, platform, mime, tags, notes)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8::text[],$9)
-            RETURNING *
-            """,
-            role, source_type, uri, file_path, title, platform, mime,
-            tags or [], notes,
-        )
+    cols = ["role", "source_type", "uri", "file_path", "title", "platform", "mime",
+            "tags", "notes"]
+    vals: list = [role, source_type, uri, file_path, title, platform, mime,
+                  tags or [], notes]
+    extra = {k: v for k, v in (provenance or {}).items()
+             if k in PROVENANCE_COLS and v is not None}
+
+    def _sql(n_extra: int) -> str:
+        names = cols + list(extra)[:n_extra]
+        ph = []
+        for i, name in enumerate(names, start=1):
+            cast = "::text[]" if name == "tags" else "::jsonb" if name == "quality" else ""
+            ph.append(f"${i}{cast}")
+        return (f"INSERT INTO media_assets ({', '.join(names)}) "
+                f"VALUES ({', '.join(ph)}) RETURNING *")
+
+    ext_vals = [json.dumps(v) if k == "quality" else v for k, v in extra.items()]
+    try:
+        async with acquire(tenant_id) as conn:
+            r = await conn.fetchrow(_sql(len(extra)), *vals, *ext_vals)
+    except Exception as exc:  # noqa: BLE001
+        if not extra or type(exc).__name__ != "UndefinedColumnError":
+            raise
+        async with acquire(tenant_id) as conn:
+            r = await conn.fetchrow(_sql(0), *vals)
     return _row(r)
+
+
+# The provenance columns migration 072 adds (see create_media).
+PROVENANCE_COLS = ("width", "height", "orientation", "origin", "origin_url", "origin_ref",
+                   "rights", "taken_at", "sha256", "dhash", "quality", "has_person")
 
 
 async def list_media(role: str = "", tenant_id: UUID | None = None) -> list[dict]:
