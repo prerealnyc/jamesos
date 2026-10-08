@@ -573,8 +573,14 @@ async def review(layout_id: str, verdict: str, *, by: str = "", note: str = "") 
             gone = await conn.fetchval(
                 "DELETE FROM house_layouts WHERE id = $1::uuid RETURNING id", layout_id)
             return {"ok": bool(gone), "discarded": bool(gone)}
+        # Approving with no note of their own keeps an upload gate's "not
+        # drawable: ..." note. The approval is the curator's call, but wiping the
+        # reason left an approved row every pick skips with no record of why.
         got = await conn.fetchval(
-            "UPDATE house_layouts SET status = $2, reviewed_by = $3, review_note = $4, "
+            "UPDATE house_layouts SET status = $2, reviewed_by = $3, "
+            "review_note = CASE WHEN $2 = 'approved' AND $4 = '' "
+            "                    AND coalesce(review_note, '') LIKE 'not drawable:%' "
+            "                   THEN review_note ELSE $4 END, "
             "reviewed_at = now(), updated_at = now() WHERE id = $1::uuid RETURNING id",
             layout_id, verdict, by[:200], note[:500])
     return {"ok": bool(got), "status": verdict if got else None}
@@ -932,6 +938,15 @@ async def for_brand(tenant_id, *, limit: int = 8) -> dict:
 
     Tenant-scoped: the brand's niche and its holdings are read on ITS connection
     (RLS); the catalogue, which has no tenant, on the unscoped one.
+
+    This is the one TENANT route that reads the catalogue's own metadata, and a
+    row's tags and reference image can come from OTHER brands: the harvest tags
+    a row with the niche of the brand it ran for, and a promoted row keeps the
+    promoting brand's stored image (/media-files/<their tenant>/...). So a brand
+    is shown only the tags that share a word with its own niche, and the image
+    only when the catalogue owns it (uploaded or harvested, promoted_from NULL)
+    or this brand promoted it. The layout itself is shared by design; who else
+    uses it is not.
     """
     if not tenant_id:
         return {"niche": [], "layouts": []}
@@ -958,13 +973,16 @@ async def for_brand(tenant_id, *, limit: int = 8) -> dict:
     async with acquire(None) as pool_conn:
         rows = await pool_conn.fetch(
             """SELECT id::text, kind, spec, fingerprint, source_kind,
-                      source_image_uri, niches, layout_type, label, title, created_at
+                      source_image_uri, niches, layout_type, label, title, created_at,
+                      promoted_from::text AS promoted_from
                  FROM house_layouts
                 WHERE status = 'approved'
              ORDER BY (niches && $1::text[]) DESC, created_at DESC
                 LIMIT $2""",
             brand_tag_keys(niches), CANDIDATE_POOL)
 
+    me = str(tenant_id).lower()
+    mine_tokens = niche_tokens(niches)
     out: list[dict] = []
     for r in rows or []:
         hid, fp = str(r["id"]), str(r["fingerprint"] or "")
@@ -983,16 +1001,19 @@ async def for_brand(tenant_id, *, limit: int = 8) -> dict:
         ltype = str(r["layout_type"] or "") or classify(spec)["type"]
         created = r["created_at"]
         tags = [str(t) for t in (r["niches"] or []) if t is not None and str(t).strip()]
+        promoter = str(r.get("promoted_from") or "").lower()
         out.append({
             "id": hid,
             "created_at": created.isoformat() if hasattr(created, "isoformat")
             else str(created or ""),
-            "niches": tags,
+            # Ranked on every tag; SHOWN only the ones that are this brand's own.
+            "niches": [t for t in tags if niche_tokens(t) & mine_tokens],
             "type": ltype,
             "name": (str(r["title"] or "").strip() or str(r["label"] or "").strip()
                      or display_name(ltype)),
             "source_kind": str(r["source_kind"] or ""),
-            "image_url": str(r["source_image_uri"] or ""),
+            "image_url": (str(r["source_image_uri"] or "")
+                          if not promoter or promoter == me else ""),
             "tier": _tier(niche_rank(niches, tags)),
             "already_forked": forked,
             "_ts": created,

@@ -1120,7 +1120,10 @@ async def _rebuild_cloned_action(
                 # layout, so the verdict on the redo still reaches that layout.
                 **({"image_format": "learned",
                     "design_template_id": payload.get("design_template_id") or "",
-                    "design_template_source": payload.get("design_template_source") or {}}
+                    "design_template_source": payload.get("design_template_source") or {},
+                    # Same layout, so a pinned parent's redo is still the pin.
+                    **({"house_layout_pinned": True}
+                       if payload.get("house_layout_pinned") is True else {})}
                    if learned else
                    {"image_format": "cloned", "cloned_from_competitor": True}),
                 # The layout AS REBUILT — the owner's look change included — and
@@ -1193,6 +1196,12 @@ async def _run_regenerate(
         for k in ("image_url", "media_url", "has_image", "hero_photo_key", "image_format",
                   "image_urls_by_size"):
             new_payload.pop(k, None)
+        # Nor the claim that it was drawn from a PINNED house layout. That flag
+        # describes how the parent's picture was made; a redo composed afresh
+        # (the owner rejected the design) is one of the nine, and a copied flag
+        # told BM2 the pin had rendered when it had not. A redo rebuilt in place
+        # IS that layout again, and _rebuild_cloned_action re-stamps it there.
+        new_payload.pop("house_layout_pinned", None)
         # Nor the parent's hand IMAGE edit. The card editor resumes whatever layout
         # a row carries, so a rebuild that kept edit_layers opened on the rejected
         # parent's canvas — and one save replaced the rebuild's fix with the very
@@ -1771,9 +1780,10 @@ async def v1_post_set_image(
     photo = _edited_photo(layout, {u for u in (cur["image_url"], cur["original_image_url"]) if u})
     # design_template_*: the card is no longer that library layout. Left on the
     # row, approving it credited the layout with a picture the owner made, and a
-    # redo re-adopted the id onto a card of a different design.
+    # redo re-adopted the id onto a card of a different design. The same for
+    # house_layout_pinned: the owner's picture is not the pinned house render.
     drop = ["image_spec", "clone_spec", "clone_content", "image_urls_by_size",
-            "design_template_id", "design_template_source"]
+            "design_template_id", "design_template_source", "house_layout_pinned"]
     patch = {
         "image_url": served, "media_url": served, "has_image": True,
         "edit_layers": layout, "image_edited_by_owner": True,

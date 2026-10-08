@@ -716,3 +716,177 @@ async def test_the_verdict_route_404s_for_a_layout_the_brand_does_not_hold(monke
                     json={"approved": True})
     assert r.status_code == 200
     assert r.json() == {"ok": True, "approvals": 2, "rejections": 0}
+
+
+# ── the brand's view shows only what is the brand's own to see ────────────
+
+
+def test_the_view_hides_other_brands_tags_and_promoted_images(monkeypatch):
+    other = "99999999-9999-9999-9999-999999999999"
+    rows = [
+        dict(_cat(1, tags=["golf", "political candidates"]), promoted_from=None),
+        dict(_cat(2, tags=["commercial spaceport"], days=2), promoted_from=other),
+        dict(_cat(3, days=3), promoted_from=str(TENANT).upper()),
+        dict(_cat(4, days=4), source_image_uri="/media-files/house/abc.png"),
+    ]
+    seen = _wire_view(monkeypatch, rows)
+    out = asyncio.run(hl.for_brand(TENANT))
+    by = {d["id"][-1]: d for d in out["layouts"]}
+    # ranked on every tag, shown only the brand's own
+    assert by["1"]["tier"] == "niche" and by["1"]["niches"] == ["golf"]
+    assert by["2"]["tier"] == "off_niche" and by["2"]["niches"] == []
+    # another brand's promoted image is a path into ITS media; this brand's own
+    # promotion and catalogue-owned images are shown
+    assert by["2"]["image_url"] == ""
+    assert by["3"]["image_url"] == "https://img/3.png"
+    assert by["4"]["image_url"] == "/media-files/house/abc.png"
+    assert by["1"]["image_url"] == "https://img/1.png"
+    assert seen["tenants"] == [TENANT, None]
+
+
+def test_approving_a_held_upload_keeps_its_not_drawable_note(monkeypatch):
+    seen = {}
+
+    class _C:
+        async def fetchval(self, sql, *a):
+            seen["sql"], seen["args"] = sql, a
+            return HID
+
+    @contextlib.asynccontextmanager
+    async def _acq(tenant_id=None):
+        yield _C()
+
+    monkeypatch.setattr(hl, "acquire", _acq)
+    assert asyncio.run(hl.review(HID, "approved", by="curator")) == \
+        {"ok": True, "status": "approved"}
+    sql = " ".join(seen["sql"].split())
+    assert "LIKE 'not drawable:%'" in sql and "THEN review_note ELSE $4" in sql
+    assert seen["args"] == (HID, "approved", "curator", "")
+
+
+# ── house_layout_pinned describes the picture, not the lineage ────────────
+
+
+_PINNED_PARENT = {
+    "topic": "t", "content": "words", "image_format": "learned",
+    "image_url": "https://old.png", "design_template_id": "brand-row",
+    "design_template_source": {"kind": "niche", "house_layout_id": HID},
+    "house_layout_pinned": True, "clone_spec": {"kind": "graphic_card"}, "version": "1",
+}
+
+
+def _wire_regenerate(monkeypatch, parent):
+    from james_os import main as _main
+
+    inserted: list[dict] = []
+    rebuilt: list[dict] = []
+
+    class _C:
+        async def fetchrow(self, sql, *a):
+            return {"payload": json.dumps(parent), "rejection_reason_code": ""}
+
+        async def fetchval(self, sql, *a):
+            inserted.append(json.loads(a[0]))
+            return "new-id"
+
+    @contextlib.asynccontextmanager
+    async def _acq(tenant_id=None):
+        yield _C()
+
+    async def _designed(new_id, topic, content, tenant_id, **kw):
+        return "https://nine.png", "quote"
+
+    async def _rebuild(new_id, payload, feedback, tenant_id, **kw):
+        rebuilt.append(payload)
+        return "https://same.png", "learned"
+
+    monkeypatch.setattr(api_v1, "acquire", _acq)
+    monkeypatch.setattr(api_v1, "_rebuild_cloned_action", _rebuild)
+    monkeypatch.setattr(_main, "_generate_designed_post_image", _designed)
+    return inserted, rebuilt
+
+
+@pytest.mark.parametrize("feedback,in_place", [
+    ("i hate this design, new layout please", False),
+    ("make it brighter", True),
+])
+def test_a_redo_does_not_inherit_the_pinned_flag(monkeypatch, feedback, in_place):
+    inserted, rebuilt = _wire_regenerate(monkeypatch, _PINNED_PARENT)
+    api_v1._JOBS["j-pin"] = {"id": "j-pin", "status": "queued"}
+    try:
+        asyncio.run(api_v1._run_regenerate("j-pin", TENANT, UUID(HID), feedback, ""))
+        assert api_v1._JOBS["j-pin"]["status"] == "done", api_v1._JOBS["j-pin"]
+    finally:
+        api_v1._JOBS.pop("j-pin", None)
+    assert "house_layout_pinned" not in inserted[0]
+    # rebuilt in place is the SAME layout, and is handed the parent's payload,
+    # from which _rebuild_cloned_action re-stamps the flag
+    assert bool(rebuilt) is in_place
+    if in_place:
+        assert rebuilt[0]["house_layout_pinned"] is True
+
+
+@pytest.mark.parametrize("pinned", [True, False])
+def test_an_in_place_rebuild_restamps_the_flag_only_for_a_pinned_parent(monkeypatch, pinned):
+    from james_os import template_clone
+
+    written: dict = {}
+
+    class _Conn:
+        async def execute(self, sql, new_id, payload):
+            written.update(json.loads(payload))
+
+    @contextlib.asynccontextmanager
+    async def _acq(tenant_id=None):
+        yield _Conn()
+
+    class _Store:
+        def save(self, tenant, png, name):
+            return f"file://{name}", "/tmp/x"
+
+    async def _rebuild(payload, feedback, tenant_id, **kw):
+        return {"png": b"p", "kind": "graphic_card", "spec": {}, "content": {}}
+
+    monkeypatch.setattr(api_v1, "acquire", _acq)
+    monkeypatch.setattr(template_clone, "rebuild_design", _rebuild)
+    monkeypatch.setattr("james_os.media.storage", lambda: _Store())
+    parent = dict(_PINNED_PARENT)
+    if not pinned:
+        parent.pop("house_layout_pinned")
+    served, fmt = asyncio.run(api_v1._rebuild_cloned_action("new", parent, "brighter", TENANT))
+    assert fmt == "learned"
+    assert written["design_template_source"]["house_layout_id"] == HID
+    assert written.get("house_layout_pinned") is (True if pinned else None)
+
+
+def test_an_owner_image_edit_drops_the_pinned_flag(monkeypatch):
+    from uuid import uuid4
+
+    wrote: list = []
+
+    class _C:
+        async def fetchrow(self, sql, *a):
+            return {"status": "pending", "payload": json.dumps(_PINNED_PARENT),
+                    "image_url": "https://old.png", "original_image_url": None}
+
+        async def execute(self, sql, *a):
+            wrote.append((sql, a))
+            return "UPDATE 1"
+
+    @contextlib.asynccontextmanager
+    async def _acq(tenant_id=None):
+        yield _C()
+
+    class Up:
+        filename, content_type = "edited.png", "image/png"
+
+        async def read(self):
+            return b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+
+    monkeypatch.setattr(api_v1, "acquire", _acq)
+    monkeypatch.setattr("james_os.media.storage",
+                        lambda: type("S", (), {"save": lambda self, t, d, n: ("https://e.png", "/tmp/e")})())
+    asyncio.run(api_v1.v1_post_set_image(uuid4(), TENANT, file=Up(), doc="{}", slide=None))
+    _sql, args = wrote[-1]
+    drop = args[2]
+    assert {"design_template_id", "design_template_source", "house_layout_pinned"} <= set(drop)
