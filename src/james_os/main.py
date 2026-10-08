@@ -232,7 +232,18 @@ async def _check_rls_enforced() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import asyncio
+    import logging
 
+    # The service's own INFO lines (autopilot batches, render QA verdicts,
+    # competitor sync counts) were never configured anywhere, so the root
+    # logger sat at WARNING and dropped them all. Railway got access logs and
+    # tracebacks, nothing between. force=True beats any library that touched
+    # the root first; uvicorn's loggers don't propagate, so nothing doubles.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
     await init_pool()
     # Refuse-to-boot (or at least shout) when tenant isolation is off.
     await _check_rls_enforced()
@@ -1438,6 +1449,21 @@ class _AgentRunRequest(BaseModel):
     prompt: str
 
 
+def _bound_tenant(request: Request) -> UUID | None:
+    """The tenant auth_middleware attached to this request, as a UUID.
+
+    None only when the middleware set nothing — a public path, which /agent
+    is not — and then the agent falls back to the default tenant exactly as
+    the header-less case always did. A header is never consulted here."""
+    raw = getattr(request.state, "tenant_id", None)
+    if not raw:
+        return None
+    try:
+        return UUID(str(raw))
+    except ValueError:
+        return None
+
+
 @app.post("/agent/run", status_code=201)
 async def agent_run(
     req: _AgentRunRequest, background: BackgroundTasks, request: Request
@@ -1446,20 +1472,14 @@ async def agent_run(
     actual tool-use loop runs in the background, persisting state to
     agent_runs as it goes so the UI can poll for live updates.
 
-    Runs under the caller's brand: BM2's service client sends X-Tenant-Id, so
-    the agent's write tools (generate_post/carousel/reel, approve, edit_caption)
-    land on THAT brand's tenant, not the default. Absent header (BM1's own /ask
-    'Do' UI) falls back to the default tenant, exactly as before."""
+    Runs under the caller's brand: the tenant auth_middleware bound to this
+    request (a session's own tenant, a brand key's tenant, or the platform key's
+    verified X-Tenant-Id). The handler takes that binding and never resolves a
+    tenant on its own."""
     from .agent import create_run, run_agent
     if not req.prompt.strip():
         raise HTTPException(status_code=400, detail="prompt is required")
-    tenant_id: UUID | None = None
-    raw_tid = request.headers.get("x-tenant-id")
-    if raw_tid:
-        try:
-            tenant_id = UUID(raw_tid.strip())
-        except ValueError:
-            tenant_id = None
+    tenant_id = _bound_tenant(request)
     row = await create_run(req.prompt.strip(), tenant_id)
     background.add_task(run_agent, UUID(row["id"]), tenant_id)
     return row
