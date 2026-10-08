@@ -387,7 +387,7 @@ class _SqlPool:
 
 
 def test_a_comma_niche_brand_keeps_its_older_harvested_rows_past_the_limit(monkeypatch):
-    """Trouvailler's niche is 'tour packages, travel and holidays'; the harvest
+    """A travel brand's niche is 'tour packages, travel and holidays'; the harvest
     stores its rows as ['tour packages', 'travel and holidays']. With the whole
     string as the only pre-sort tag, newer off-niche rows filled the LIMIT and the
     older travel rows were never seen by fit_rank."""

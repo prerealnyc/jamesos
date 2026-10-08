@@ -19,7 +19,7 @@ from james_os.designed_render import PHOTO_FORMATS, _photoless_ground, render_de
 
 pytestmark = pytest.mark.nodb
 
-# The 8-key set mike, spaceport and trouvaillertours actually carry (minus the
+# The 8-key set most live brands actually carry (minus the
 # "learned" slot, which get_enabled_formats strips).
 PHOTO_BRAND = {"carousel", "editorial_split", "framed_print", "full_bleed", "hero_quote",
                "minimal_over", "statement"}

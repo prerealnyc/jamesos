@@ -922,7 +922,7 @@ async def candidates(
     # "Already taken" is BOTH: a row forked from this catalogue entry, and a
     # layout of the same SHAPE the brand learned for itself. Checking only
     # house_layout_id offers back shapes it already has — measured on
-    # trouvaillertours 2026-10-07, 12 of the pool's fingerprints were already in
+    # one travel brand, 2026-10-07, 12 of the pool's fingerprints were already in
     # its own library — and `design_templates_fingerprint_uniq` then refuses the
     # insert, so the pick could never be recorded against anything.
     mine = await conn.fetch(
