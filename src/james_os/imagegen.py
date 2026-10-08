@@ -313,14 +313,19 @@ _DESIGN_DIRECTOR_SYSTEM = (
     "Within the brand's own words, prefer a SPECIFIC claim — a number, a "
     "contrarian line, or a concrete result ALREADY PRESENT in the draft — over a "
     "question or a vague adjective. No clichés, no hype words.\n"
-    "FORMAT PRIORITY: when two or more formats would fit this post well, PREFER "
-    "the newest template, `bold_statement` (the text + brand-name poster) — it is "
-    "the brand's current house style, so make it your default choice for any "
-    "declarative claim, contrast, hard truth or mantra. Only pass it over when the "
-    "post is CLEARLY better as another format: a dominant number/superlative → "
-    "big_stat, several distinct points → carousel, or a genuinely photo-led moment "
-    "where the image carries the post → full_bleed/minimal_over/framed_print. "
-    "Across a batch, still vary — but let bold_statement lead the rotation."
+    # Brand-neutral on purpose. This used to name bold_statement "the brand's
+    # current house style" and let it lead the rotation — one brand's look, told
+    # to every brand. A brand that wants text-only cards says so in its allowed
+    # set (the [ALLOWED FORMATS] note + _clamp_format), not here.
+    "FORMAT CHOICE: there is no default format — choose what THIS post needs, and "
+    "VARY formats across posts so the feed is a designed mix, never one card type "
+    "repeated. When a photo-led layout is allowed (full_bleed, editorial_split, "
+    "minimal_over, framed_print, hero_quote, statement), PREFER it over a "
+    "text-only card: a real photo with a short line stops the scroll better than "
+    "type alone. Choose a text-only card (brand_quote, bold_statement, big_stat) "
+    "when the post genuinely stands on its words — a dominant number → big_stat — "
+    "or when only text cards are allowed. Several distinct points → a carousel. "
+    "Never repeat the format a variety note says was just used."
 )
 
 

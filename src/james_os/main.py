@@ -2278,6 +2278,7 @@ async def _generate_designed_post_image(
     extra_sizes: tuple[tuple[int, int], ...] = (),
     edit_photo_instruction: str = "",
     house_layout_id: str = "",
+    fallback_format: str = "", avoid_template_id: str = "", is_redo: bool = False,
 ) -> tuple[str, str]:
     """Art-director → text-free background (Soul James or cinematic scene) →
     Pillow-composited quote card / meme → persist + attach to the action.
@@ -2294,15 +2295,25 @@ async def _generate_designed_post_image(
     a styling-only redo (e.g. "make the text white") passes the rejected version's
     photo key to REUSE the exact same picture, so the redo IS the same image with
     only the requested restyle changed — not a new photo. It wins over
-    exclude_photos, and falls back to a normal pick if that photo is gone."""
+    exclude_photos, and falls back to a normal pick if that photo is gone.
+
+    `fallback_format` is BM2's built-in rotation pick for an order that asked for
+    "learned": a learned miss draws THAT (when the brand allows it) instead of an
+    art-director free pick. See format_fallback. `avoid_template_id` is the
+    learned layout the brand's last two posts were both drawn from: a learned
+    render that comes back as that layout again is redrawn once (unless pinned).
+    `is_redo` marks a regeneration (v1_post_regenerate): it never takes a learned
+    layout, which could not carry the owner's required correction."""
     import httpx
 
+    from . import format_fallback as _ff
     from .brand_kit import get_brand_kit
     from .designed_render import ALL_FORMATS, PHOTO_FORMATS, render_designed
     from .hero_context import get_hero_photo_files
     from .imagegen import direct_designed_image, generate_post_image
     from .media import create_media
     from .media import storage as media_storage
+    _learned_t0, _learned_miss = _ff.now(), ""   # why learned missed, if it did
 
     # ── A LEARNED LAYOUT, WHEN ASKED FOR ────────────────────────────────
     # "learned" is the rotation slot BM2 gives a share of its image orders: draw
@@ -2325,9 +2336,29 @@ async def _generate_designed_post_image(
             _logging.getLogger(__name__).warning(
                 "learned layout failed for %s — using the nine", action_id, exc_info=True)
             _learned = None
+            _learned_miss = "error"
+        # A pinned catalogue layout (house showcase) is exactly what was asked
+        # for, so it is never swapped for an "unrepeated" one.
+        if _learned and avoid_template_id and not house_layout_id:
+            _learned = await _ff.unrepeated(
+                action_id, tenant_id, avoid_template_id, _learned,
+                lambda: _generate_learned_post_image(
+                    action_id, topic, draft_text, tenant_id, extra_sizes=extra_sizes,
+                    guidance="\n".join(x for x in ((feedback or "").strip(),
+                                                   (avoid or "").strip()) if x),
+                    house_layout_id=house_layout_id))
         if _learned:
+            await _ff.stamp(action_id, tenant_id,
+                            {"requested_format": "learned", "fallback_reason": "none"})
             return _learned
-        force_format = ""   # let the art director choose among the nine
+        _learned_miss = _learned_miss or await _ff.miss_reason(tenant_id, _learned_t0)
+    if _learned_miss:
+        # BM2's rotation pick for this order when the brand allows it; else ""
+        # and the art director chooses (inside the allowed set) as before.
+        force_format = await _ff.fallback_for(tenant_id, fallback_format)
+        await _ff.stamp(action_id, tenant_id, {
+            "requested_format": "learned", "fallback_reason": _learned_miss,
+            "fallback_format": force_format})
 
     # Per-tenant design-intelligence switch: enables the 8-format brain + the
     # brand palette for THIS brand only, without touching the rest.
@@ -2344,11 +2375,41 @@ async def _generate_designed_post_image(
         _allowed = await get_enabled_formats(tenant_id)
     except Exception:  # noqa: BLE001
         _allowed = None
-    # None = no restriction; an EMPTY set = the admin turned OFF every designed
-    # template for this brand → don't produce a designed image at all (the caller
-    # falls back to a plain post). Only an explicit empty set short-circuits.
+    # None = no restriction. An EMPTY set (every designed template off, or a
+    # learned-only list) used to return no designed image at all, so the caller
+    # attached a bare hero photo. It now means photo layouts + learned: learned
+    # first on a fresh post, then full_bleed over the brand's photo / Unsplash /
+    # a palette ground (render_designed never hands it a text card).
     if _allowed is not None and not _allowed:
-        return "", ""
+        _allowed = _ff.effective_allowed(_allowed)
+        _fresh = not base_spec and not force_photo and _qa_attempt == 0 and not is_redo
+        # Only an UNPINNED fresh post tries learned here: a redo (feedback the
+        # art director must satisfy) or an order that named a format did not ask
+        # for one — and an order that asked for "learned" already tried above.
+        if _fresh and not _learned_miss and not force_format:
+            _learned_t0 = _ff.now()
+            try:
+                _learned = await _generate_learned_post_image(
+                    action_id, topic, draft_text, tenant_id, extra_sizes=extra_sizes,
+                    guidance="\n".join(x for x in ((feedback or "").strip(),
+                                                   (avoid or "").strip()) if x))
+                _learned_miss = "" if _learned else await _ff.miss_reason(tenant_id, _learned_t0)
+            except Exception:  # noqa: BLE001 — the photo layouts are the safety net
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "learned layout failed for %s (nothing enabled)", action_id, exc_info=True)
+                _learned, _learned_miss = None, "error"
+            if _learned:
+                await _ff.stamp(action_id, tenant_id, {
+                    "requested_format": "learned", "fallback_reason": "none",
+                    "allowed_empty": True})
+                return _learned
+            force_format = _ff.EMPTY_SET_FALLBACK
+            await _ff.stamp(action_id, tenant_id, {
+                "requested_format": "learned", "fallback_reason": _learned_miss,
+                "fallback_format": force_format, "allowed_empty": True})
+        elif force_format and force_format not in _allowed and not base_spec:
+            force_format = _ff.EMPTY_SET_FALLBACK
     # Voice first: give the art director THIS brand's real cadence so the card
     # headline sounds like the brand, with the hook/CTA playbook as structure only.
     if base_spec and edit_photo_instruction:
@@ -2668,6 +2729,7 @@ async def _generate_designed_post_image(
             fmt, spec, kit=kit, hero_bytes=hero_bytes,
             profile_bytes=profile_bytes, profile_is_logo=profile_is_logo,
             handle=handle, tuning=_tuning, palette=kit.get("palette"),
+            allowed=_allowed,
         )
 
     # ── DESIGN QA GATE ──────────────────────────────────────────────────
@@ -2787,6 +2849,7 @@ async def _generate_designed_post_image(
                     fmt, spec, kit=kit, hero_bytes=hero_bytes,
                     profile_bytes=profile_bytes, profile_is_logo=profile_is_logo,
                     handle=handle, tuning=_tuning, palette=kit.get("palette"),
+                    allowed=_allowed,
                 )
         await _lc.keep(action_id, tenant_id, _lc.capture(_redraw, _LImage.open(_LBIO(out)).size),
                        of=served_uri)
@@ -2824,6 +2887,7 @@ async def _generate_designed_post_image(
                         fmt, spec, kit=kit, hero_bytes=hero_bytes,
                         profile_bytes=profile_bytes, profile_is_logo=profile_is_logo,
                         handle=handle, tuning=_tuning, palette=kit.get("palette"),
+                        allowed=_allowed,
                     )
                 if not _out:
                     continue

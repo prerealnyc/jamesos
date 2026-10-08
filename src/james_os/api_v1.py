@@ -241,6 +241,15 @@ class GenerateRequest(BaseModel):
     # post/designed only: pin the layout for an explicit build (e.g. 'carousel').
     # An explicit force is honored even when the design switch is off.
     force_format: str = ""
+    # post/designed only, with force_format="learned": the built-in format BM2's
+    # rotation would have chosen for this order, drawn when the learned layout
+    # misses (thin library, design QA, error) and the brand allows it — instead
+    # of an art-director free pick. Empty = today's behaviour.
+    fallback_format: str = ""
+    # post/designed only, with force_format="learned": the learned layout the
+    # brand's last two image posts were both drawn from. A learned render that
+    # comes back as that layout again is redrawn once. Empty = today's behaviour.
+    avoid_template_id: str = ""
     # post/designed only: render the image at THIS size instead of the 4:5
     # default — the destination platform's best shape (1600x900 for X,
     # 1080x1920 for a Reel, 1000x1500 for a Pin). Both must be > 0 to take
@@ -465,6 +474,9 @@ async def _run_generate(job_id: str, tenant_id: UUID, req: GenerateRequest) -> N
                 idea, req.platform, tenant_id, image_kind=req.image_kind,
                 force_format=req.force_format, feedback=req.feedback,
                 house_layout_id=req.house_layout_id,
+                # Sent only when set, so a caller that never heard of it is untouched.
+                **({"fallback_format": req.fallback_format} if req.fallback_format else {}),
+                **({"avoid_template_id": req.avoid_template_id} if req.avoid_template_id else {}),
                 canvas=((req.image_width, req.image_height)
                         if req.image_width > 0 and req.image_height > 0 else None),
                 extra_sizes=tuple(
@@ -1336,6 +1348,7 @@ async def _run_regenerate(
                     # In-place photo edit: keep the spec (same layout + text), edit the
                     # CURRENT photo's pixels. reason is the owner's change ("brighter").
                     edit_photo_instruction=(reason if photo_edit else ""),
+                    is_redo=True,
                 )
         job["result"] = {
             "action_id": str(new_id), "regen_of": str(parent_id),

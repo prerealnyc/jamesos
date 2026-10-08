@@ -39,6 +39,12 @@ _NEUTRAL_ROLES = [
 ]
 
 
+# The stand-in for an unknown format name when the brand does not allow the
+# brand_quote text card: photo-led layouts first, text-only last.
+_UNKNOWN_ORDER = ("full_bleed", "editorial_split", "minimal_over", "framed_print",
+                  "statement", "hero_quote", "bold_statement", "big_stat")
+
+
 def needs_photo(fmt: str) -> bool:
     return fmt in PHOTO_FORMATS
 
@@ -63,15 +69,65 @@ def _v2_palette(kit: dict | None, palette) -> dict:
     return {"palette": _NEUTRAL_ROLES}
 
 
+def _photoless_ground(pal: dict) -> bytes:
+    """A tasteful stand-in photograph in the brand's OWN palette: a diagonal wash
+    from the ground colour toward a deepened accent, lit by a soft off-centre
+    glow. Used when a photo layout has no photo and the brand does not allow the
+    text card that used to replace it — so the post keeps its layout and its
+    brand, and never becomes another brand's navy quote card."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    from .image_compose import _h, _w
+
+    p = cv._pal(pal)
+    w, h = _w(), _h()
+    deep = cv._mix(p["accent"], p["bg"], 0.55)
+    down = Image.linear_gradient("L")                      # 0 at the top → 255 at the foot
+    wash = Image.blend(down, down.rotate(90), 0.5).resize((w, h))   # top-left → bottom-right
+    ground = Image.composite(Image.new("RGB", (w, h), deep),
+                             Image.new("RGB", (w, h), p["bg"]), wash)
+    # A soft light upper-left, so the plate reads as lit rather than flat.
+    glow = Image.radial_gradient("L").resize((int(w * 1.4), int(h * 1.4)))
+    glow = glow.point(lambda v: max(0, 150 - v))           # bright centre, fades out
+    mask = Image.new("L", (w, h))
+    mask.paste(glow, (-int(w * 0.45), -int(h * 0.5)))
+    lit = Image.new("RGB", (w, h), cv._mix(p["surface"], p["accent"], 0.35))
+    ground = Image.composite(lit, ground, mask)
+    buf = BytesIO()
+    ground.save(buf, "PNG")
+    return buf.getvalue()
+
+
 def render_designed(
     fmt: str, spec: dict, *, kit: dict | None = None, hero_bytes: bytes | None = None,
     profile_bytes: bytes | None = None, profile_is_logo: bool = False,
     handle: str = "", tuning: dict | None = None, palette=None,
+    allowed: set[str] | None = None,
 ) -> tuple[bytes, str]:
     """Render `spec` in `fmt`. Returns (png_bytes, fmt_actually_used) — the used
     format can differ from the request when a photo layout falls back to a text
-    card because no photo was available."""
+    card because no photo was available.
+
+    `allowed` is the brand's enabled set (None = no restriction). The photoless
+    fallback to brand_quote_card only happens where brand_quote is allowed; any
+    other brand keeps the layout it asked for, drawn over a palette ground
+    (_photoless_ground) — the photoless route was the one way James's navy quote
+    card reached brands that never enabled it."""
     kit = kit or {}
+    if allowed is not None and "brand_quote" not in allowed:
+        if fmt in PHOTO_FORMATS and not hero_bytes:
+            hero_bytes = _photoless_ground(_v2_palette(kit, palette))
+        elif fmt not in ALL_FORMATS:
+            # An unknown name used to become the text card; take the brand's first
+            # allowed layout instead, photo-led first.
+            for alt in _UNKNOWN_ORDER:
+                if alt in allowed:
+                    return render_designed(alt, spec, kit=kit, hero_bytes=hero_bytes,
+                                           profile_bytes=profile_bytes,
+                                           profile_is_logo=profile_is_logo, handle=handle,
+                                           tuning=tuning, palette=palette, allowed=allowed)
     q = (spec.get("quote") or "").strip()
     emph = (spec.get("emphasis") or "").strip()
     headline = (spec.get("headline") or spec.get("quote") or "").strip()
