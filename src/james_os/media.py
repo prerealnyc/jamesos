@@ -149,6 +149,11 @@ def _row(r) -> dict:
     d["id"] = str(d["id"])
     d.pop("tenant_id", None)
     d.pop("file_path", None)  # internal; never exposed
+    # Internal too: 1024 floats per photo that only photo_subject reads, through
+    # its own query. Passed through, a pgvector value is not JSON, and every
+    # endpoint returning a library row (GET /media, a hero photo edit) answered
+    # 500 once the subject reader had filled it in for the hero photos.
+    d.pop("subject_embedding", None)
     if isinstance(d.get("analysis"), str):
         d["analysis"] = json.loads(d["analysis"])
     if isinstance(d.get("quality"), str):
@@ -158,8 +163,8 @@ def _row(r) -> dict:
             d["quality"] = {}
     if d.get("taken_at") is not None and hasattr(d["taken_at"], "isoformat"):
         d["taken_at"] = d["taken_at"].isoformat()
-    for k in ("created_at", "updated_at"):
-        if d.get(k) is not None:
+    for k in ("created_at", "updated_at", "subject_read_at"):
+        if d.get(k) is not None and hasattr(d[k], "isoformat"):
             d[k] = d[k].isoformat()
     return d
 
