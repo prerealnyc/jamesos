@@ -238,6 +238,12 @@ class GenerateRequest(BaseModel):
     platform: str = "instagram"
     title: str | None = None
     image_kind: Literal["james", "designed", "scene"] = "james"   # post only; scene = a fresh gpt-image-1 draw from the brief
+    # scene only: the picture to draw, already composed from the brand's profile,
+    # niche and idea by the caller (the brief stays what the CAPTION is written
+    # from), and the shape to draw it at — gpt-image-1 only does these three.
+    # Both empty = the scene is drawn from the topic at 1:1, as before.
+    scene_prompt: str = Field("", max_length=2000)
+    scene_aspect: Literal["", "1:1", "9:16", "16:9"] = ""
     # post/designed only: pin the layout for an explicit build (e.g. 'carousel').
     # An explicit force is honored even when the design switch is off.
     force_format: str = ""
@@ -504,6 +510,8 @@ async def _run_generate(job_id: str, tenant_id: UUID, req: GenerateRequest) -> N
                 # Sent only when set, so a caller that never heard of it is untouched.
                 **({"fallback_format": req.fallback_format} if req.fallback_format else {}),
                 **({"avoid_template_id": req.avoid_template_id} if req.avoid_template_id else {}),
+                **({"scene_prompt": req.scene_prompt.strip()} if req.scene_prompt.strip() else {}),
+                **({"scene_aspect": req.scene_aspect} if req.scene_aspect else {}),
                 canvas=((req.image_width, req.image_height)
                         if req.image_width > 0 and req.image_height > 0 else None),
                 extra_sizes=tuple(

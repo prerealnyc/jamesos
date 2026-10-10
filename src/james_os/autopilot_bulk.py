@@ -188,6 +188,7 @@ async def _make_text_post(
     extra_sizes: tuple[tuple[int, int], ...] = (),
     house_layout_id: str = "",
     fallback_format: str = "", avoid_template_id: str = "",
+    scene_prompt: str = "", scene_aspect: str = "",
 ) -> dict:
     """One text+image post: on-voice draft → queue → attach an image.
 
@@ -266,6 +267,7 @@ async def _make_text_post(
                 image_url, fmt = await _generate_scene_post_image(
                     draft.action_id, idea.get("topic", ""),
                     draft.draft or idea.get("topic", ""), tenant_id, feedback=feedback,
+                    scene_prompt=scene_prompt, aspect=scene_aspect,
                 )
             except Exception as _exc:  # noqa: BLE001 — scene failed → hero photo below
                 import logging as _logging

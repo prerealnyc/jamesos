@@ -2235,35 +2235,141 @@ async def _generate_learned_post_image(
     return served_uri, "learned"
 
 
+def _scene_logger():
+    import logging as _logging
+    return _logging.getLogger(__name__)
+
+
+# How many of the brand's own photos ride along as style references on a
+# generated scene. gpt-image-1's edit endpoint takes several; past three the
+# look gets averaged into mush and the request gets slow.
+SCENE_REF_PHOTOS = 3
+# How many library photos to rank before taking the best SCENE_REF_PHOTOS.
+SCENE_REF_POOL = 8
+# The whole image prompt for a scene: style + composed description + palette +
+# context + the brand's written guidelines. The default 1300 is sized for a short
+# topic and cut the guidelines off a composed scene; gpt-image-1 takes far more.
+SCENE_PROMPT_CAP = 3200
+
+
+async def _scene_reference_photos(tenant_id, subject: str) -> list[tuple[str, bytes]]:
+    """The brand's own photos closest to this scene, as style references.
+
+    Real library photos only (get_hero_photo_files with a limit: the ranked
+    library, own posts included, shrunk to 1024) — never AI likeness references
+    of a person, because these set a LOOK, not a face. Ranked by subject when an
+    embedder is available, so a fairway scene borrows the fairway shots rather
+    than the lobby. Empty on an empty library or any failure: the scene is then
+    drawn from text alone, exactly as before."""
+    try:
+        from .hero_context import get_hero_photo_files
+
+        refs = await get_hero_photo_files(tenant_id=tenant_id, limit=SCENE_REF_POOL)
+        if not refs:
+            return []
+        # Never a flyer or a screenshot as a reference: text in a reference
+        # invites text into the picture.
+        try:
+            from .hero_context import get_hero_context
+
+            ctx = await get_hero_context(tenant_id)
+            held = set(getattr(ctx, "held_back_urls", None) or [])
+            if held:
+                refs = [r for r in refs if r[0] not in held]
+        except Exception:  # noqa: BLE001 — unfiltered beats none
+            _scene_logger().warning("could not read held-back photos", exc_info=True)
+        if not refs:
+            return []
+        try:
+            from .photo_subject import subject_ranked
+
+            refs = await subject_ranked(tenant_id, subject, refs) or refs
+        except Exception:  # noqa: BLE001 — unranked references are still the brand's
+            _scene_logger().warning("could not rank scene references by subject", exc_info=True)
+        return list(refs[:SCENE_REF_PHOTOS])
+    except Exception:  # noqa: BLE001 — references are a bonus, never a blocker
+        _scene_logger().warning("scene reference photos unavailable", exc_info=True)
+        return []
+
+
+async def _palette_line(tenant_id) -> str:
+    """The brand's colours as one prompt line, or "" when it has none on file.
+
+    The STORED palette only. ensure_brand_palette never returns empty — with
+    nothing stored it hands back a neutral charcoal-and-slate floor, and pushing
+    that into a scene as "the brand's colours" would be a lie that darkens the
+    picture. It also derives and saves a palette as a side effect, which a scene
+    should not trigger."""
+    try:
+        from .brand_identity import get_brand_palette
+
+        palette = await get_brand_palette(tenant_id) or []
+    except Exception:  # noqa: BLE001
+        return ""
+    swatches = [
+        f"{(p.get('label') or p.get('role') or '').strip()} {p.get('hex')}".strip()
+        for p in palette if isinstance(p, dict) and p.get("hex")
+    ][:5]
+    if not swatches:
+        return ""
+    return ("Let the brand's colours carry through naturally in light, objects or "
+            "setting, never as flat graphics: " + ", ".join(swatches) + ".")
+
+
 async def _generate_scene_post_image(
     action_id, topic: str, draft_text: str, tenant_id, *,
-    aspect: str = "", feedback: str = "",
+    aspect: str = "", feedback: str = "", scene_prompt: str = "",
 ) -> tuple[str, str]:
     """A FRESH, brand-relevant image drawn from a description — the generative
     "imagine this" door (the copilot's 'Generate an image' path), as opposed to the
-    designed quote/meme CARD machine or a real library photo. Runs gpt-image-1 through
-    imagegen.generate_post_image (which folds in the brand's visual style guidelines),
-    then persists + attaches to the action exactly like the designed path. No text is
-    composited on top — the picture IS the deliverable; the caption stays a separate,
-    editable field.
+    designed quote/meme CARD machine or a real library photo. No text is composited
+    on top — the picture IS the deliverable; the caption stays a separate, editable
+    field. Persisted and attached to the action exactly like the designed path.
+
+    What makes it the BRAND's picture rather than a stock one:
+      * `scene_prompt` — a scene description the caller composed from the brand's
+        profile, niche and the idea (BM2 does this); falls back to the topic;
+      * the brand's colours, as a line in the prompt;
+      * up to SCENE_REF_PHOTOS of the brand's own photos as style references
+        (gpt-image-1's edit endpoint), so the light, place and grade match the
+        brand's feed. Any failure on that path draws from text alone.
+    The brand's written visual guidelines are folded in by imagegen either way —
+    SCENE_PROMPT_CAP leaves them room after a composed description.
 
     Returns (served_uri, "scene"). Raises on any failure so _make_text_post's caller
     can fall back to a real hero photo rather than leave the post imageless."""
-    from .imagegen import generate_post_image
+    from .imagegen import generate_post_image, generate_post_image_with_refs
     from .media import create_media
     from .media import storage as media_storage
 
+    scene = (scene_prompt or "").strip() or (topic or draft_text or "").strip()
+    palette = await _palette_line(tenant_id)
+    subject = f"{scene} {palette}" if palette else scene
     steer = (feedback or "").strip()
     brief = "\n".join(x for x in ((draft_text or "").strip(), steer and f"Avoid: {steer}") if x)
     # "1:1" is a real gpt-image-1 size (1024x1024) and a universal feed shape; the
     # scene picture IS the deliverable (no Pillow crop/compose afterwards), so it must
     # be asked for at a supported ratio — "4:5" is NOT in _SIZE_FOR_ASPECT and would
     # silently fall back to landscape 1536x1024.
-    png, meta, err = await generate_post_image(
-        topic=(topic or draft_text or "").strip(),
-        platform="instagram", brief=brief[:1200], aspect=aspect or "1:1",
-        tenant_id=tenant_id,
-    )
+    shape = aspect or "1:1"
+    # References are matched on the scene alone: the palette line would otherwise
+    # be most of what the photo matcher reads for a short request.
+    refs = await _scene_reference_photos(tenant_id, scene)
+    png, meta, err = None, {}, ""
+    if refs:
+        png, meta, err = await generate_post_image_with_refs(
+            topic=subject, references=refs, platform="instagram", brief=brief[:1200],
+            aspect=shape, tenant_id=tenant_id, ref_mode="brand_style",
+            prompt_cap=SCENE_PROMPT_CAP,
+        )
+        if err or not png:
+            _scene_logger().warning("scene with brand references failed (%s) — drawing from text alone", err)
+            refs = []
+    if not png:
+        png, meta, err = await generate_post_image(
+            topic=subject, platform="instagram", brief=brief[:1200], aspect=shape,
+            tenant_id=tenant_id, prompt_cap=SCENE_PROMPT_CAP,
+        )
     if err or not png:
         raise RuntimeError(err or "scene image generation returned no bytes")
     tenant = str(tenant_id or settings.default_tenant_id)
@@ -2287,6 +2393,9 @@ async def _generate_scene_post_image(
             json.dumps({
                 "image_url": served_uri, "media_url": served_uri,
                 "has_image": True, "image_prompt": prompt,
+                # Which of the brand's own photos set the look — provenance, and
+                # the honest answer to "why does this look like us".
+                "scene_reference_photos": [name for name, _ in refs],
             }),
         )
     return served_uri, "scene"

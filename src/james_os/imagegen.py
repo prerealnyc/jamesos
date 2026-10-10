@@ -159,13 +159,17 @@ async def generate_seed_image(prompt: str, aspect: str = "9:16") -> tuple[str | 
 
 
 def _build_post_prompt(
-    topic: str, brief: str, style: str, brand_guidelines: str = ""
+    topic: str, brief: str, style: str, brand_guidelines: str = "", cap: int = 1300,
 ) -> str:
     """Compose the final text prompt for a post hero image. The style
     prefix is the lever — same topic, different prefix = different
     aesthetic. Unknown style falls back to editorial silently rather
     than crashing the render. When brand_guidelines are supplied they are
-    woven in so the image follows the brand's visual rules."""
+    woven in so the image follows the brand's visual rules.
+
+    `cap` bounds the whole prompt. The default suits a short topic; a caller
+    that sends a composed scene description must raise it, or the brand's
+    guidelines — last in the prompt — are the first thing cut."""
     prefix = POST_STYLES.get(style.lower(), POST_STYLES[_DEFAULT_STYLE])
     parts = [prefix, f"Subject: {topic.strip()}."]
     if brief.strip():
@@ -175,7 +179,7 @@ def _build_post_prompt(
             "Follow the brand's visual guidelines exactly: "
             f"{brand_guidelines.strip()[:500]}"
         )
-    return " ".join(parts)[:1300]
+    return " ".join(parts)[:cap]
 
 
 _IMG_DIRECTOR_SYSTEM = (
@@ -812,6 +816,7 @@ async def generate_post_image(
     aspect: str = "",
     style: str = _DEFAULT_STYLE,
     tenant_id=None,
+    prompt_cap: int = 1300,
 ) -> tuple[bytes | None, dict, str]:
     """Topic → PNG bytes for a shareable post hero image.
 
@@ -839,7 +844,7 @@ async def generate_post_image(
     if chosen_style not in POST_STYLES:
         chosen_style = _DEFAULT_STYLE
     guidelines = await _brand_visual_directive(tenant_id)
-    full_prompt = _build_post_prompt(topic, brief, chosen_style, guidelines)
+    full_prompt = _build_post_prompt(topic, brief, chosen_style, guidelines, cap=prompt_cap)
     try:
         res = await client.images.generate(
             model=settings.image_model,
@@ -873,6 +878,21 @@ async def generate_post_image(
     return png, meta, ""
 
 
+# What the brand's own photos are for when they ride along on a generated scene.
+# Without the "copy nothing" half, gpt-image-1 tends to return a lightly edited
+# reference instead of the picture that was asked for.
+_BRAND_STYLE_REF_NOTE = (
+    "The attached photos are this brand's own photography, given only as a visual "
+    "reference. Match their setting, light, colour grade, materials and "
+    "photographic feel so the new picture clearly belongs to the same brand. "
+    "Draw the NEW scene described above: do not copy any reference, its "
+    "composition or its exact objects. Never reproduce any person or face from "
+    "the attached photos: they may be guests or staff who never agreed to appear "
+    "in an advert. If the subject needs people, draw new, unidentifiable people. "
+    "No text, words, letters, logos or watermarks."
+)
+
+
 async def generate_post_image_with_refs(
     topic: str,
     *,
@@ -882,8 +902,15 @@ async def generate_post_image_with_refs(
     aspect: str = "",
     style: str = _DEFAULT_STYLE,
     tenant_id=None,
+    ref_mode: str = "person",
+    prompt_cap: int = 1300,
 ) -> tuple[bytes | None, dict, str]:
     """Topic + reference image bytes → PNG bytes.
+
+    `ref_mode` says what the references are FOR. "person" (the default, and
+    every existing caller) keeps one recurring person consistent across beats.
+    "brand_style" treats them as the brand's own photography: match its look,
+    draw a new scene, copy nothing.
 
     Calls gpt-image-1's edit endpoint instead of generate, passing 1-3
     reference photos as visual conditioning. Used for hero-tagged
@@ -903,7 +930,7 @@ async def generate_post_image_with_refs(
     if not references:
         return await generate_post_image(
             topic, platform=platform, brief=brief, aspect=aspect, style=style,
-            tenant_id=tenant_id,
+            tenant_id=tenant_id, prompt_cap=prompt_cap,
         )
     client = _client()
     if client is None:
@@ -925,13 +952,22 @@ async def generate_post_image_with_refs(
     # subject from the references — without this nudge, gpt-image-1 will
     # sometimes ignore the reference identity for stylistic reasons.
     guidelines = await _brand_visual_directive(tenant_id)
-    edit_prompt = (
-        _build_post_prompt(topic, brief, chosen_style, guidelines)
-        + " The recurring person from the reference photos must be "
-        "rendered as the subject of this scene with the same face, "
-        "build, hair, beard, and signature dress. Do not substitute "
-        "a different person."
-    )[:1000]
+    if ref_mode == "brand_style":
+        # The references are the brand's own photography, there to set the LOOK
+        # (place, light, grade, materials) — not a subject to reproduce. The note
+        # goes after the capped body so no cut can ever remove it.
+        edit_prompt = (
+            _build_post_prompt(topic, brief, chosen_style, guidelines, cap=prompt_cap)
+            + " " + _BRAND_STYLE_REF_NOTE
+        )
+    else:
+        edit_prompt = (
+            _build_post_prompt(topic, brief, chosen_style, guidelines)
+            + " The recurring person from the reference photos must be "
+            "rendered as the subject of this scene with the same face, "
+            "build, hair, beard, and signature dress. Do not substitute "
+            "a different person."
+        )[:1000]
     # OpenAI's SDK accepts file-like inputs for images.edit. BytesIO
     # works directly; gpt-image-1 reads bytes regardless of extension.
     # Ref names are source URLs (reuse-ledger identity) — synthesize a
