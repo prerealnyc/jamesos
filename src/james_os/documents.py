@@ -393,12 +393,19 @@ async def document_to_events_async(
     """Async path. Audio/video → Whisper transcript → events (event_type
     'voice_memo'); images → vision OCR; everything else → text extraction
     (full format coverage incl. PPTX/XLSX/HTML/RTF)."""
+    from . import transcription
     from .transcription import is_audio
 
     if is_audio(filename):
         r = await _transcribe_capped(data, filename)
         if r.skipped:
-            raise ValueError(r.reason or "transcription failed")
+            # TranscriptionError, not a bare ValueError: transcription.py
+            # defines it so a caller can tell a transcription failure from any
+            # other bad input, and tests/test_documents.py has asserted that
+            # contract since this path was written (ab590ec). The only caller,
+            # main.py's upload route, catches Exception and returns 422, so the
+            # type is invisible to every consumer.
+            raise transcription.TranscriptionError(r.reason or "transcription failed")
         return _build_events(filename, data, r.text, "voice_memo", category or "voice_corpus")
     if is_ocrable("", filename):
         r = await describe_image(data, filename, "")
