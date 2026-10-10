@@ -389,29 +389,104 @@ def _rehost_ext(content_type: str, url: str) -> str:
     return ".mp4"
 
 
+# Hostnames reserved by RFC 2606/6761 and RFC 6762 — names that can never be a
+# real media host, so a URL on one is a placeholder somebody shipped by mistake.
+# netguard does NOT catch these: example.com resolves to a real public address,
+# so url_public_status calls it 'public' and happily fetches it.
+_RESERVED_HOSTS = frozenset({"example.com", "example.net", "example.org", "localhost"})
+_RESERVED_SUFFIXES = (
+    ".example.com", ".example.net", ".example.org",
+    ".localhost", ".test", ".invalid", ".example", ".local",
+)
+
+
+def _placeholder_host(url: str) -> str:
+    """The reserved/placeholder hostname this URL points at, or ''.
+
+    Matched on the PARSED HOSTNAME, never on a substring of the url. A
+    substring test both over-blocks (cdn.myexample.com, example.community) and
+    under-blocks, since `evil.com/?x=example.com` would sail past it while
+    `https://example.com.attacker.net/` would not be caught by a naive
+    endswith on the url either.
+    """
+    host = (urlparse(url).hostname or "").lower().rstrip(".")
+    if not host:
+        return ""
+    if host in _RESERVED_HOSTS or host.endswith(_RESERVED_SUFFIXES):
+        return host
+    return ""
+
+
 @router.post("/media/rehost")
 async def v1_media_rehost(body: MediaRehost, tenant_id: TenantDep) -> dict[str, Any]:
     """Download a third-party, time-limited media URL (e.g. an OpusClip signed mp4
     that expires ~30 days) and re-host it to OUR durable storage for this tenant,
     returning the permanent public URL. Lets BM2.0 stop its clip library from
-    rotting. No-op (returns the URL) when it's already on our public storage."""
+    rotting. No-op (returns the URL) when it's already on our public storage.
+
+    WHAT THE STATUS CODES MEAN, because this endpoint used to answer 502 to
+    everything and so blamed itself for its callers' mistakes — 29 times in one
+    day, all of them the same placeholder url, which read as an outage here and
+    went unexamined for days:
+        400  the url is not http(s) at all
+        422  the INPUT is wrong and retrying it will not help: a reserved
+             placeholder host, an address we must not fetch, a 4xx from the
+             source, or a 200 carrying no bytes
+        502  OUR side or the source's side genuinely failed: a transport error,
+             an unresolvable host (possibly a transient resolver fault — see
+             netguard.url_public_status), or a 5xx from the source
+        500  we fetched it and our own durable storage refused to keep it
+    """
     url = (body.url or "").strip()
     if not url.startswith("http"):
         raise HTTPException(400, "url must be http(s)")
     if "supabase.co/storage/v1/object/public" in url:
         return {"url": url, "durable": True, "rehosted": False}
+
+    # One WARNING per refusal, carrying the tenant, the host and the reason —
+    # never the full url, which is routinely a signed CDN link.
+    host = (urlparse(url).hostname or "").lower()
+
+    placeholder = _placeholder_host(url)
+    if placeholder:
+        _log.warning("rehost refused: tenant=%s host=%s reason=placeholder-host",
+                     tenant_id, placeholder)
+        raise HTTPException(422, "source URL is not a real public media URL")
+
+    from .netguard import url_public_status
+    status = await url_public_status(url, allow_http=True)
+    if status == "blocked":
+        _log.warning("rehost refused: tenant=%s host=%s reason=not-a-public-address",
+                     tenant_id, host)
+        raise HTTPException(422, "source URL is not a real public media URL")
+    if status == "unresolved":
+        # Deliberately 502, not 422: netguard cannot tell a bogus hostname from
+        # a resolver blip, and telling a caller "this input is permanently bad"
+        # on a transient DNS fault would make it discard a real, finished file.
+        _log.warning("rehost refused: tenant=%s host=%s reason=unresolved", tenant_id, host)
+        raise HTTPException(502, "could not resolve the source host")
+
     from .media import storage as media_storage
     import httpx
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as c:
+            # NOTE: raise_for_status() used to be here, inside this blanket
+            # handler, which is precisely how a 404 from the source became a
+            # 502 from us. The status is now read below, outside it.
             r = await c.get(url, follow_redirects=True)
-            r.raise_for_status()
             data = r.content
             content_type = str(r.headers.get("content-type", ""))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 — a transport failure IS our 502
         raise HTTPException(502, f"could not fetch source media ({type(exc).__name__})") from exc
+    if 400 <= r.status_code < 500:
+        _log.warning("rehost refused: tenant=%s host=%s reason=source-%d",
+                     tenant_id, host, r.status_code)
+        raise HTTPException(422, f"source returned {r.status_code}")
+    if r.status_code >= 500:
+        raise HTTPException(502, f"source returned {r.status_code}")
     if not data:
-        raise HTTPException(502, "source media was empty")
+        _log.warning("rehost refused: tenant=%s host=%s reason=empty-body", tenant_id, host)
+        raise HTTPException(422, "source returned an empty body")
     safe = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in (body.label or "clip"))[:60] or "clip"
     try:
         durable, _ = await asyncio.to_thread(
