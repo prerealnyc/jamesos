@@ -191,6 +191,28 @@ async def test_revoke_with_a_blank_run_id_is_400(monkeypatch):
     assert r.status_code == 400
 
 
+def _real_routes(routes):
+    """Every actual route, in registration order.
+
+    `include_router` used to flatten its routes straight into the parent's
+    `routes`; newer Starlette (1.7, which CI resolves) leaves a wrapper object
+    there instead — it carries its own `.routes` and has no `.name`, so asking
+    the first MATCHING ENTRY for its name raised
+    `AttributeError: '_IncludedRouter' object has no attribute 'name'` in CI
+    while passing locally on an older pin. Descend through anything that holds
+    routes of its own, so what we match against is always a real route and the
+    assertions below never touch a wrapper.
+    """
+    out = []
+    for r in routes:
+        inner = getattr(r, "routes", None)
+        if inner:
+            out.extend(_real_routes(inner))
+        else:
+            out.append(r)
+    return out
+
+
 def test_no_parameterised_route_can_shadow_the_harvest_paths():
     """Starlette matches in registration order; a /house-layouts/{id}... route
     with the same method and segment count would win if it came first."""
@@ -203,9 +225,12 @@ def test_no_parameterised_route_can_shadow_the_harvest_paths():
             ("POST", "/v1/house-layouts/harvest/revoke"): "v1_house_layouts_harvest_revoke"}
     for (method, path), name in want.items():
         scope = {"type": "http", "method": method, "path": path, "root_path": ""}
-        first = next(r for r in app.router.routes
-                     if getattr(r, "matches", None) and r.matches(scope)[0] == Match.FULL)
-        assert first.name == name, (path, first.name)
+        first = next((r for r in _real_routes(app.router.routes)
+                      if getattr(r, "matches", None)
+                      and r.matches(scope)[0] == Match.FULL), None)
+        assert first is not None, (path, "no route matched at all")
+        assert getattr(first, "name", None) == name, (
+            path, type(first).__name__, getattr(first, "name", None))
         assert not re.search(r"\{", first.path)
 
 
