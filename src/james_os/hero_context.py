@@ -108,10 +108,34 @@ def origin_of(m: dict) -> str:
     return str(m.get("origin") or "owner_upload")
 
 
+# What a photo's subject read says when the picture is a screen, not a scene:
+# a reel cover of someone talking over a news page reads as a photo to the
+# pixel measures and only the description gives it away.
+_SCREEN_WORDS = ("news article", "news segment", "news studio", "news report", "screenshot",
+                 "screen grab", "screengrab", "tweet", "text message", "web page", "webpage",
+                 "television screen", "tv screen", "headline on screen", "phone screen")
+
+
+_HOLD_EDGE = 720  # a reel cover (480px) blown up to a 1080 card; a feed photo is 1080+
+
+
 def held_back(m: dict) -> bool:
-    """Text already on the picture, or a screenshot: not a background to draw on."""
+    """Not a background to draw on: text already on the picture, a screenshot,
+    a screen grab (by its subject read), or a picture under _HOLD_EDGE on its
+    short side (a reel cover). Every rotation keeps these out while anything
+    else is there (rotation_urls), never deletes them."""
     q = _quality(m)
-    return bool(q.get("has_text") or q.get("screenshot"))
+    if q.get("has_text") or q.get("screenshot"):
+        return True
+    try:
+        edge = q.get("short_edge") or (min(int(m["width"]), int(m["height"]))
+                                        if m.get("width") and m.get("height") else 0)
+        if edge and int(edge) < _HOLD_EDGE:
+            return True
+    except (TypeError, ValueError):
+        pass
+    cap = str(m.get("subject_caption") or "").lower()
+    return any(w in cap for w in _SCREEN_WORDS)
 
 
 def _quality(m: dict) -> dict:

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 
 import httpx
 
@@ -36,6 +37,54 @@ async def _fetch_bytes(url: str) -> bytes | None:
             return r.content
     except Exception:  # noqa: BLE001
         return None
+
+
+# Lines a model writes when it does not know the brand's facts: template
+# filler, not copy. A slot holding one is left empty rather than printed.
+_PLACEHOLDER = re.compile(
+    r"\b(john|jane)\s+(doe|smith)\b|\byour\s+(name|brand|company|business|handle|"
+    r"website|logo|agency|team)\b|@\s*your|\byour_?handle\b|@?user_?name\b|"
+    r"\blorem\b|\bipsum\b|\[[^\]]*\]|\{[^}]*\}|<[^>]*>|\bexample\.(com|org)\b|"
+    r"\byourwebsite\b|\b123\s+main\b|\b(brand|company)\s+name\b|\bx{3,}\b",
+    re.IGNORECASE)
+
+
+def is_placeholder(text: str) -> bool:
+    return bool(_PLACEHOLDER.search(text or ""))
+
+
+async def _brand_facts(tenant_id) -> dict:
+    """The brand's real name, handle and website from its brand kit ('' when
+    unknown). Best-effort: a failed read means no facts, never invented ones."""
+    try:
+        from .brand_kit import get_brand_kit
+        kit = await get_brand_kit(tenant_id)
+    except Exception:  # noqa: BLE001
+        return {"name": "", "handle": "", "website": ""}
+    handle = str(kit.get("handle") or "").strip()
+    if handle and not handle.startswith("@") and " " not in handle and "." not in handle:
+        handle = "@" + handle
+    return {"name": str(kit.get("display_name") or "").strip(), "handle": handle,
+            "website": str(kit.get("website") or "").strip()}
+
+
+def ground_copy(content: dict, roles: list, facts: dict) -> dict:
+    """Bylines are brand FACTS, not copy: the first byline is the brand's name,
+    the next its handle or website, and a byline the brand has no fact for is
+    dropped rather than invented (a model asked for "the brand name" without
+    being told it writes "John Doe Real Estate"). Any other line that reads
+    like template filler is dropped too."""
+    out = {r: v for r, v in content.items() if not is_placeholder(v)}
+    known = [v for v in (facts.get("name"), facts.get("handle") or facts.get("website"))
+             if v and not is_placeholder(v)]
+    bylines = sorted((r for r in roles if r == "byline" or r.startswith("byline#")),
+                     key=lambda r: int(r.split("#")[1]) if "#" in r else 1)
+    for i, r in enumerate(bylines):
+        if i < len(known):
+            out[r] = known[i]
+        elif i < 2:
+            out.pop(r, None)  # a name / handle slot the brand has no fact for
+    return out
 
 
 async def _fill_copy(
@@ -65,6 +114,7 @@ async def _fill_copy(
     from .llm import get_llm
 
     voice, profile = await _brand_voice_and_profile(tenant_id)
+    facts = await _brand_facts(tenant_id)
     system = (
         "You write SHORT on-image copy for a brand's social post, filling a "
         "template's slots in the BRAND's voice. Each role is a few words: a "
@@ -93,6 +143,9 @@ async def _fill_copy(
     user = (
         f"BRAND VOICE:\n{(voice or '')[:1500]}\n\n"
         f"BRAND:\n{(profile or '')[:800]}\n\n"
+        + (f"BRAND NAME: {facts['name']}\n" if facts["name"] else "")
+        + "Never invent a person's name, a handle, a website or a placeholder "
+          "(no 'John Doe', 'Your Name', '@yourhandle'); leave such a line out.\n\n"
         + about
         + (f"THE OWNER'S STANDING FEEDBACK — obey it:\n{guidance.strip()[:1200]}\n\n"
            if (guidance or "").strip() else "")
@@ -104,7 +157,9 @@ async def _fill_copy(
             max_tokens=300, temperature=0.6)
     except Exception:  # noqa: BLE001
         out = {}
-    return {r: str((out or {}).get(r, "")).strip() for r in roles if str((out or {}).get(r, "")).strip()}
+    written = {r: str((out or {}).get(r, "")).strip() for r in roles
+               if str((out or {}).get(r, "")).strip()}
+    return ground_copy(written, roles, facts)
 
 
 async def _brand_palette(tenant_id):
