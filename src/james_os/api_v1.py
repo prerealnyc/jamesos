@@ -3528,3 +3528,35 @@ async def v1_own_media_caption_backfill(tenant_id: TenantDep, limit: int = 50) -
     from .photo_subject import backfill
 
     return await backfill(tenant_id, limit=max(1, min(int(limit), 200)))
+
+
+# ---------------------------------------------------------------------------
+# One brand-styled picture on its own, for the card editor's "Generate" door.
+# ---------------------------------------------------------------------------
+
+
+class SceneImageRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=2000)
+    aspect: Literal["1:1", "9:16", "16:9"] = "1:1"
+    title: str = Field("", max_length=200)
+    brand_context: str = Field("", max_length=1500)
+
+
+@router.post("/scene-image")
+async def v1_scene_image(req: SceneImageRequest, tenant_id: TenantDep) -> dict[str, Any]:
+    """Draw one picture in the brand's world (scene_image.draw) and return its URL.
+
+    Synchronous on purpose: the owner is looking at the editor waiting for it, and
+    the draw is one or two image calls. The kill switch and the brand's daily cap
+    are checked first — this is a paid call an owner can press repeatedly."""
+    if settings.pause_spend:
+        raise HTTPException(409, "Spending is paused, so pictures can't be drawn until it's switched back on.")
+    from . import scene_image, spend
+
+    if await spend.over_cap(tenant_id):
+        raise HTTPException(409, "Today's spending cap for this brand is reached. Try again tomorrow or raise the cap.")
+    try:
+        return await scene_image.draw(tenant_id, req.prompt, aspect=req.aspect, title=req.title,
+                                      brand_context=req.brand_context)
+    except RuntimeError as exc:
+        raise HTTPException(422, str(exc)) from exc

@@ -13,6 +13,10 @@ from pgvector import Vector
 
 from james_os import media
 
+import pytest
+
+pytestmark = pytest.mark.nodb
+
 
 def _hero_row(**over):
     now = datetime.now(timezone.utc)
