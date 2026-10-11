@@ -2316,6 +2316,33 @@ async def _palette_line(tenant_id) -> str:
             "setting, never as flat graphics: " + ", ".join(swatches) + ".")
 
 
+async def _scene_logo(tenant_id, png: bytes) -> tuple[bytes, bool]:
+    """The brand's logo stamped on a generated scene, as the owner set it up.
+
+    Off when the brand switched its logo off (brand look logo_show), in the corner
+    it chose when it chose one, else the quietest corner. No logo uploaded, an
+    unreadable file, or any failure: the picture is returned untouched — a scene
+    is never lost to its logo."""
+    try:
+        from .brand_identity import get_brand_look
+
+        look = await get_brand_look(tenant_id)
+        if not look.get("logo_show", True):
+            return png, False
+        from .template_clone import _brand_logo
+
+        logo = await _brand_logo(tenant_id)
+        if not logo:
+            return png, False
+        from .image_compose import stamp_logo
+
+        out = await asyncio.to_thread(stamp_logo, png, logo, str(look.get("logo_position") or ""))
+        return out, True
+    except Exception:  # noqa: BLE001 — the picture without a logo beats no picture
+        _scene_logger().warning("could not stamp the brand logo on a scene", exc_info=True)
+        return png, False
+
+
 async def _generate_scene_post_image(
     action_id, topic: str, draft_text: str, tenant_id, *,
     aspect: str = "", feedback: str = "", scene_prompt: str = "",
@@ -2332,7 +2359,8 @@ async def _generate_scene_post_image(
       * the brand's colours, as a line in the prompt;
       * up to SCENE_REF_PHOTOS of the brand's own photos as style references
         (gpt-image-1's edit endpoint), so the light, place and grade match the
-        brand's feed. Any failure on that path draws from text alone.
+        brand's feed. Any failure on that path draws from text alone;
+      * the brand's logo, stamped onto the finished picture (_scene_logo).
     The brand's written visual guidelines are folded in by imagegen either way —
     SCENE_PROMPT_CAP leaves them room after a composed description.
 
@@ -2372,6 +2400,10 @@ async def _generate_scene_post_image(
         )
     if err or not png:
         raise RuntimeError(err or "scene image generation returned no bytes")
+    # The brand's mark, composited after the model is done (a model asked to draw a
+    # logo redraws it as a smudge). Edits redraw the scene and stamp it again, so a
+    # logo'd picture is never fed back into the image model.
+    png, logo_applied = await _scene_logo(tenant_id, png)
     tenant = str(tenant_id or settings.default_tenant_id)
     served_uri, file_path = await asyncio.to_thread(
         media_storage().save, tenant, png, "scene.png"
@@ -2396,6 +2428,7 @@ async def _generate_scene_post_image(
                 # Which of the brand's own photos set the look — provenance, and
                 # the honest answer to "why does this look like us".
                 "scene_reference_photos": [name for name, _ in refs],
+                "logo_applied": logo_applied,
             }),
         )
     return served_uri, "scene"
