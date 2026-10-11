@@ -13,6 +13,8 @@ fake image.
 """
 
 import base64
+import contextlib
+import contextvars
 import json as _json
 import re
 
@@ -158,8 +160,84 @@ async def generate_seed_image(prompt: str, aspect: str = "9:16") -> tuple[str | 
     return f"data:image/png;base64,{b64}", ""
 
 
+# Who the brand is and what this post is about, for every image prompt built
+# while a render is running. Set once per post (image_brief) by the code that
+# knows both — _make_text_post, the regenerate job — and read here, so the
+# designed card's background, a generated scene, a placeholder photo and a
+# rebuilt scene all carry the same context without threading two more arguments
+# through every renderer. A ContextVar, like image_compose.canvas: per task, so
+# concurrent renders for different brands never see each other's brief.
+_IMAGE_BRIEF: "contextvars.ContextVar[dict | None]" = contextvars.ContextVar(
+    "image_brief", default=None)
+
+
+# Contact details have no business in a picture prompt: a model draws a phone
+# number as signage, and they are personal data sent to the image provider.
+_CONTACT = re.compile(
+    r"https?://\S+|www\.\S+|\b[\w.+-]+@[\w-]+\.[\w.]+\b|(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")
+# Writer instructions that ride in a brief's opening line, not a topic.
+_INSTRUCTION_LEAD = re.compile(r"^\s*(?:\w+:\s*)?(?:REDO|REPURPOSE)\b", re.I)
+
+
+def _scrub(text: str) -> str:
+    return " ".join(_CONTACT.sub("", text or "").split())
+
+
+def post_topic_line(title: str = "", topic: str = "", caption: str = "") -> str:
+    """What a post is about, for its image prompts: its title or topic, plus the
+    opening of its caption when that adds something.
+
+    A brief is not a topic. Brand Manager's brief for a redo opens "REDO — the
+    owner REJECTED…" and a repurpose "REPURPOSE — adapt…", and either would reach
+    the image model as the subject; those, and anything too long to be a topic,
+    are passed over for the caption."""
+    subject = ""
+    for cand in (title, topic):
+        line = " ".join(str(cand or "").split("\n", 1)[0].split())
+        if not line or _INSTRUCTION_LEAD.match(line):
+            continue
+        line = re.sub(r"^(?:post|video|carousel):\s*", "", line, flags=re.I)
+        if len(line) <= 200:
+            subject = line[:160]
+            break
+    cap = " ".join(str(caption or "").split())
+    if cap and cap[:60].lower() not in subject.lower():
+        return f"{subject} — {cap[:240]}" if subject else cap[:300]
+    return subject
+
+
+@contextlib.contextmanager
+def image_brief(brand: str = "", topic: str = ""):
+    """Every image prompt built inside this block carries the brand's background
+    and the post's topic. Empty values add nothing, so a caller with no context
+    renders exactly as before. Links, emails and phone numbers are dropped from
+    both."""
+    b = _scrub(brand)[:700]
+    t = _scrub(topic)[:400]
+    token = _IMAGE_BRIEF.set({"brand": b, "topic": t} if (b or t) else None)
+    try:
+        yield
+    finally:
+        _IMAGE_BRIEF.reset(token)
+
+
+def _brief_lines(subject: str) -> list[str]:
+    """The brand-background and topic lines for the current render, if any."""
+    ib = _IMAGE_BRIEF.get() or {}
+    out: list[str] = []
+    brand = ib.get("brand") or ""
+    if brand:
+        out.append("Brand background (let it shape the place, people, light and mood; "
+                   f"never write it as text): {brand.rstrip('.')}.")
+    topic = ib.get("topic") or ""
+    if topic and topic.lower()[:80] not in (subject or "").lower():
+        out.append(f"This post is about: {topic.rstrip('.')}.")
+    return out
+
+
 def _build_post_prompt(
     topic: str, brief: str, style: str, brand_guidelines: str = "", cap: int = 1300,
+    with_brief: bool = True,
 ) -> str:
     """Compose the final text prompt for a post hero image. The style
     prefix is the lever — same topic, different prefix = different
@@ -171,7 +249,12 @@ def _build_post_prompt(
     that sends a composed scene description must raise it, or the brand's
     guidelines — last in the prompt — are the first thing cut."""
     prefix = POST_STYLES.get(style.lower(), POST_STYLES[_DEFAULT_STYLE])
-    parts = [prefix, f"Subject: {topic.strip()}."]
+    # Who the brand is and what the post is about ride right after the subject,
+    # with their own budget on top of `cap`, so adding them never cuts the
+    # guidelines that come last.
+    context_lines = _brief_lines(topic) if with_brief else []
+    cap += sum(len(x) + 1 for x in context_lines)
+    parts = [prefix, f"Subject: {topic.strip()}.", *context_lines]
     if brief.strip():
         parts.append(f"Context: {brief.strip()[:240]}")
     if brand_guidelines.strip():
@@ -961,8 +1044,10 @@ async def generate_post_image_with_refs(
             + " " + _BRAND_STYLE_REF_NOTE
         )
     else:
+        # Unchanged by the per-render brief: this prompt is cut at 1000 with the
+        # same-face instruction LAST, and context lines in front would cut it off.
         edit_prompt = (
-            _build_post_prompt(topic, brief, chosen_style, guidelines)
+            _build_post_prompt(topic, brief, chosen_style, guidelines, with_brief=False)
             + " The recurring person from the reference photos must be "
             "rendered as the subject of this scene with the same face, "
             "build, hair, beard, and signature dress. Do not substitute "

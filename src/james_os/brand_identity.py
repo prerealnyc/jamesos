@@ -573,3 +573,48 @@ __all__ = ["extract_palette", "assess_and_propose", "render_palette_card",
            "get_enabled_formats", "set_enabled_formats",
            "get_brand_font", "set_brand_font",
            "get_brand_look", "set_brand_look"]
+
+
+# Who the brand is, in one line, for image prompts when the caller sent none.
+# Cached briefly: a batch renders many posts for one brand back to back.
+_BACKGROUND_TTL_S = 600.0
+_BACKGROUND_CACHE: dict[str, tuple[float, str]] = {}
+
+
+async def brand_background(tenant_id=None) -> str:
+    """The brand's name and what it is in, from what the engine itself holds —
+    the fallback for image prompts when Brand Manager sent no brand_context (an
+    older caller, or a job the engine runs on its own). "" when it knows nothing."""
+    import time as _time
+
+    from . import db as _db
+
+    # The tenant the row belongs to, resolved BEFORE keying the cache: a caller
+    # may pass None and rely on the request's tenant (agent runs do), and keying
+    # those on "" would hand one brand's name to the next brand's posts.
+    tid = tenant_id or _db._request_tenant.get() or settings.default_tenant_id
+    key = str(tid or "")
+    hit = _BACKGROUND_CACHE.get(key)
+    if hit and _time.monotonic() - hit[0] < _BACKGROUND_TTL_S:
+        return hit[1]
+    try:
+        from .brand_kit import _own_name
+        from .house_layouts import tenant_niches
+
+        async with _db.acquire(tid) as conn:
+            row = await conn.fetchrow(
+                "SELECT name, config FROM tenants WHERE id = "
+                "current_setting('app.current_tenant', true)::uuid")
+            niches = await tenant_niches(conn, tid)
+    except Exception:  # noqa: BLE001 — a missing background never blocks a render
+        return ""  # not cached: one blip must not blank the brand for ten minutes
+    # The brand's own display name, never a placeholder ("Tenant Zero") or a
+    # signup's email local-part — brand_kit already knows which is which.
+    name = " ".join(_own_name(row["name"] if row else "", row["config"] if row else None).split())
+    niche = "; ".join(n for n in (niches or [])[:3] if n)
+    if name and niche:
+        line = f"{name}, in {niche}"
+    else:
+        line = name or (f"a brand in {niche}" if niche else "")
+    _BACKGROUND_CACHE[key] = (_time.monotonic(), line)
+    return line
