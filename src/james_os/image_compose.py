@@ -1225,6 +1225,30 @@ def stamp_logo(png: bytes, logo_bytes: bytes, position: str = "") -> bytes:
     read, a translucent plate goes behind it. Raises on an unreadable logo, so the
     caller keeps the picture without one."""
     base = Image.open(BytesIO(png)).convert("RGBA")
+    out = Image.alpha_composite(base, _logo_layer(base, logo_bytes, position))
+    return _png(out)
+
+
+def stamp_logo_layers(png: bytes, logo_bytes: bytes, position: str = "") -> tuple[bytes, dict]:
+    """stamp_logo, plus the stamped mark as a layer of its own: (stamped PNG,
+    {png, x, y, w, h}) — the badge is exactly what was composited (mark, and its
+    shadow or plate when it got one), cropped to its box, so a card editor can
+    offer the clean picture with the logo as a movable piece and put it back
+    pixel-for-pixel. Raises like stamp_logo."""
+    base = Image.open(BytesIO(png)).convert("RGBA")
+    layer = _logo_layer(base, logo_bytes, position)
+    out = Image.alpha_composite(base, layer)
+    box = layer.getchannel("A").getbbox() or (0, 0, 1, 1)
+    badge = layer.crop(box)
+    buf = BytesIO()
+    badge.save(buf, format="PNG")  # RGBA: _png would flatten the piece onto black
+    return _png(out), {"png": buf.getvalue(), "x": box[0], "y": box[1],
+                       "w": box[2] - box[0], "h": box[3] - box[1]}
+
+
+def _logo_layer(base: Image.Image, logo_bytes: bytes, position: str = "") -> Image.Image:
+    """The transparent layer stamp_logo composites onto `base`: the mark at its
+    corner, with a soft shadow or a contrast plate when it needs one."""
     logo = Image.open(BytesIO(logo_bytes)).convert("RGBA")
     # Judged BEFORE trimming: a mark on a transparent canvas is transparent even
     # when the mark itself is a solid shape, and trimming would hide that.
@@ -1260,8 +1284,7 @@ def stamp_logo(png: bytes, logo_bytes: bytes, position: str = "") -> bytes:
         layer.paste(shadow.filter(ImageFilter.GaussianBlur(max(1, round(W * 0.004)))),
                     (x0 + off, y0 + off))
     layer.alpha_composite(mark, (x0, y0))
-    out = Image.alpha_composite(base, layer)
-    return _png(out)
+    return layer
 
 
 def fit_to_frame(png: bytes, width: int, height: int) -> bytes:

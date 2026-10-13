@@ -178,3 +178,57 @@ async def test_a_broken_logo_never_costs_the_picture(scene):
     assert kind == "scene" and uri == "file://scene-1080x1080.png"
     assert scene["payload"]["logo_applied"] is False
     assert _red_bbox(scene["saved"]) is None
+
+
+# ------------------------------------------------------------ the logo as a layer
+
+
+def test_the_logo_layer_is_exactly_what_was_stamped():
+    """stamp_logo_layers gives the same picture as stamp_logo, plus the mark as a
+    piece that, put back on the clean picture at its box, rebuilds it exactly."""
+    clean = _busy_left_plain_right()
+    flat = image_compose.stamp_logo(clean, _mark())
+    stamped, badge = image_compose.stamp_logo_layers(clean, _mark())
+    assert stamped == flat
+    base = Image.open(BytesIO(clean)).convert("RGBA")
+    piece = Image.open(BytesIO(badge["png"])).convert("RGBA")
+    assert piece.size == (badge["w"], badge["h"])
+    layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    layer.paste(piece, (badge["x"], badge["y"]))
+    rebuilt = Image.alpha_composite(base, layer)
+    assert list(rebuilt.getdata()) == list(Image.open(BytesIO(flat)).convert("RGBA").getdata())
+
+
+async def test_the_scene_keeps_its_clean_frame_and_logo_as_layers(scene, monkeypatch):
+    from james_os import layer_capture
+
+    kept = {}
+
+    async def _keep(action_id, tenant_id, cap, *, of, drift_=0.0, slide=None):
+        kept.update(action_id=action_id, cap=cap, of=of)
+        return {}
+
+    monkeypatch.setattr(layer_capture, "keep", _keep)
+    uri, _ = await _draw()
+    assert kept["action_id"] == "act-1" and kept["of"] == uri
+    cap = kept["cap"]
+    assert tuple(cap["canvas"]) == (1080, 1080) and cap["texts"] == []
+    (logo,) = cap["images"]
+    assert logo["kind"] == "logo" and logo["w"] > 0 and logo["h"] > 0
+    assert _red_bbox(cap["plate"]) is None, "the plate is the picture WITHOUT the logo"
+    assert _red_bbox(logo["png"]) is not None
+
+
+async def test_no_layers_without_a_stamped_logo(scene, monkeypatch):
+    from james_os import layer_capture
+
+    calls = []
+
+    async def _keep(*a, **k):
+        calls.append(a)
+        return {}
+
+    monkeypatch.setattr(layer_capture, "keep", _keep)
+    scene["look"] = {"logo_show": False}
+    await _draw()
+    assert calls == []

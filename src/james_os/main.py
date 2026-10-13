@@ -2380,6 +2380,36 @@ async def _draw_scene(subject: str, brief: str, native: str, refs, tenant_id):
     return png, meta, False
 
 
+async def _scene_logo_layer(tenant_id, png: bytes) -> dict | None:
+    """The logo _scene_logo stamps on this frame, as a piece of its own:
+    {png, x, y, w, h} in this frame's pixels, or None when no logo is stamped.
+
+    Same look, same logo, same corner rule — image_compose._logo_layer is shared
+    by stamp_logo and stamp_logo_layers — so the piece sits exactly where the
+    stamped mark does. Kept with the clean frame as the post's render_layers, it
+    lets the card editor offer the logo as something to move, resize or remove
+    instead of pixels baked into the picture (the owner's ask, 2026-10-13)."""
+    try:
+        from .brand_identity import get_brand_look
+
+        look = await get_brand_look(tenant_id)
+        if not look.get("logo_show", True):
+            return None
+        from .template_clone import _brand_logo
+
+        logo = await _brand_logo(tenant_id)
+        if not logo:
+            return None
+        from .image_compose import stamp_logo_layers
+
+        _, badge = await asyncio.to_thread(
+            stamp_logo_layers, png, logo, str(look.get("logo_position") or ""))
+        return badge
+    except Exception:  # noqa: BLE001 — the picture is never lost to its layers
+        _scene_logger().warning("could not lift the brand logo off a scene", exc_info=True)
+        return None
+
+
 async def _generate_scene_post_image(
     action_id, topic: str, draft_text: str, tenant_id, *,
     aspect: str = "", feedback: str = "", scene_prompt: str = "",
@@ -2435,6 +2465,7 @@ async def _generate_scene_post_image(
 
     by_size: dict[str, str] = {}
     primary_uri, primary_path, prompt = "", "", ""
+    primary_clean: tuple[bytes, tuple[int, int]] | None = None
     used_refs, logo_applied = False, False
     canvases = list(groups.items())
     drawn = await asyncio.gather(
@@ -2459,6 +2490,7 @@ async def _generate_scene_post_image(
                 # The brand's mark, composited after the crop so it sits right in every
                 # frame (a model asked to draw a logo redraws it as a smudge). Edits redraw
                 # the scene and stamp again, so a logo'd picture never feeds the model.
+                clean = framed
                 framed, stamped = await _scene_logo(tenant_id, framed)
                 uri, path = await asyncio.to_thread(
                     media_storage().save, tenant, framed, f"scene-{w}x{h}.png")
@@ -2470,6 +2502,9 @@ async def _generate_scene_post_image(
             by_size[f"{w}x{h}"] = uri
             if shp == primary:
                 primary_uri, primary_path, logo_applied = uri, path, stamped
+                # The primary frame as it was before the logo, for its layers:
+                # the extra sizes stay flat stamped pictures for syndication.
+                primary_clean = (clean, (w, h)) if stamped else None
     served_uri = primary_uri
     try:
         await create_media(
@@ -2497,6 +2532,22 @@ async def _generate_scene_post_image(
                 "logo_applied": logo_applied,
             }),
         )
+    # The primary picture as layers — the clean frame under the logo as a piece of
+    # its own — so the card editor can move, resize or remove the logo the way it
+    # does on a designed card. Best-effort: without them the editor works on top
+    # of the flat picture, as before.
+    if primary_clean is not None:
+        try:
+            badge = await _scene_logo_layer(tenant_id, primary_clean[0])
+            if badge:
+                from . import layer_capture as _lc
+
+                await _lc.keep(action_id, tenant_id, {
+                    "canvas": primary_clean[1], "plate": primary_clean[0], "texts": [],
+                    "images": [{**badge, "kind": "logo", "z": 1}],
+                }, of=served_uri)
+        except Exception:  # noqa: BLE001 — never costs the picture
+            _scene_logger().warning("could not keep the scene's layers for %s", action_id, exc_info=True)
     return served_uri, "scene"
 
 
