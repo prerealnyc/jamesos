@@ -169,12 +169,12 @@ async def test_no_logo_uploaded_leaves_the_picture_alone(scene):
     scene["logo"] = None
     await _draw()
     assert scene["payload"]["logo_applied"] is False
-    assert scene["saved"] == _busy_left_plain_right()
+    assert _red_bbox(scene["saved"]) is None
 
 
 async def test_a_broken_logo_never_costs_the_picture(scene):
     scene["logo"] = b"not an image"
     uri, kind = await _draw()
-    assert kind == "scene" and uri == "file://scene.png"
+    assert kind == "scene" and uri == "file://scene-1080x1080.png"
     assert scene["payload"]["logo_applied"] is False
-    assert scene["saved"] == _busy_left_plain_right()
+    assert _red_bbox(scene["saved"]) is None

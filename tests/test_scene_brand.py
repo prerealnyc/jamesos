@@ -27,7 +27,21 @@ from james_os import api_v1, brand_identity, hero_context, imagegen, main, media
 
 pytestmark = pytest.mark.nodb
 
-_PNG = b"\x89PNG-fake"
+_NATIVE = {"1:1": (1024, 1024), "9:16": (1024, 1536), "16:9": (1536, 1024)}
+
+
+def _real_png(aspect="1:1") -> bytes:
+    """A real picture at gpt-image-1's native size for that canvas."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", _NATIVE.get(aspect, (1024, 1024)), (40, 90, 160)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+_PNG = _real_png()
 _REFS = [(f"https://cdn.example/brand/photo-{i}.jpg", f"bytes-{i}".encode()) for i in range(5)]
 
 
@@ -53,13 +67,18 @@ def scene(monkeypatch):
 
     async def _with_refs(topic, *, references, **kw):
         seen["refs_call"] = {"topic": topic, "references": references, **kw}
+        seen.setdefault("draws", []).append(("refs", kw.get("aspect")))
         if seen["refs_err"]:
             return None, {}, seen["refs_err"]
-        return _PNG, {"prompt": "refs prompt"}, ""
+        return _real_png(kw.get("aspect", "1:1")), {"prompt": "refs prompt"}, ""
 
     async def _plain(topic, **kw):
         seen["plain_call"] = {"topic": topic, **kw}
-        return _PNG, {"prompt": "plain prompt"}, ""
+        seen.setdefault("draws", []).append(("plain", kw.get("aspect")))
+        return _real_png(kw.get("aspect", "1:1")), {"prompt": "plain prompt"}, ""
+
+    async def _no_logo(tenant_id, png):
+        return png, False
 
     async def _none(*a, **kw):
         return None
@@ -85,6 +104,7 @@ def scene(monkeypatch):
     monkeypatch.setattr(media, "storage", lambda: _Store())
     monkeypatch.setattr(media, "create_media", _none)
     monkeypatch.setattr(main, "acquire", _acq)
+    monkeypatch.setattr(main, "_scene_logo", _no_logo)
     return seen
 
 
@@ -98,7 +118,7 @@ async def _draw(**kw):
 
 async def test_the_brands_own_photos_set_the_look(scene):
     uri, kind = await _draw(scene_prompt="A red-tailed hawk gliding over a desert fairway at dawn.")
-    assert kind == "scene" and uri == "file://scene.png"
+    assert kind == "scene" and uri == "file://scene-1080x1080.png"
     call = scene["refs_call"]
     assert call["ref_mode"] == "brand_style"
     # real library photos, never likeness references; best subject matches first
@@ -114,7 +134,7 @@ async def test_the_brands_own_photos_set_the_look(scene):
     assert scene["ranked_on"] == "A red-tailed hawk gliding over a desert fairway at dawn."
     # provenance: which of the brand's photos set the look
     assert scene["payload"]["scene_reference_photos"] == [n for n, _ in call["references"]]
-    assert scene["payload"]["image_url"] == "file://scene.png"
+    assert scene["payload"]["image_url"] == "file://scene-1080x1080.png"
 
 
 async def test_no_description_falls_back_to_the_topic(scene):
@@ -125,6 +145,7 @@ async def test_no_description_falls_back_to_the_topic(scene):
 async def test_the_requested_shape_is_drawn(scene):
     await _draw(aspect="9:16")
     assert scene["refs_call"]["aspect"] == "9:16"
+    assert scene["payload"]["image_urls_by_size"] == {"1080x1920": "file://scene-1080x1920.png"}
 
 
 async def test_an_empty_library_draws_from_text_alone(scene):
@@ -138,7 +159,7 @@ async def test_an_empty_library_draws_from_text_alone(scene):
 async def test_a_failed_reference_draw_falls_back_and_says_so(scene):
     scene["refs_err"] = "image edit failed: 400"
     uri, _ = await _draw(scene_prompt="A heron at first light.")
-    assert uri == "file://scene.png"
+    assert uri == "file://scene-1080x1080.png"
     assert scene["plain_call"]["topic"].startswith("A heron at first light.")
     # the picture was NOT drawn from the references, so the post must not claim it was
     assert scene["payload"]["scene_reference_photos"] == []
@@ -159,8 +180,9 @@ def test_the_request_only_takes_shapes_gpt_image_can_draw():
     assert api_v1.GenerateRequest(brief="x").scene_prompt == ""
     assert api_v1.GenerateRequest(brief="x").scene_aspect == ""
     assert api_v1.GenerateRequest(brief="x", scene_aspect="9:16").scene_aspect == "9:16"
+    assert api_v1.GenerateRequest(brief="x", scene_aspect="4:5").scene_aspect == "4:5"
     with pytest.raises(ValidationError):
-        api_v1.GenerateRequest(brief="x", scene_aspect="4:5")
+        api_v1.GenerateRequest(brief="x", scene_aspect="3:2")
     with pytest.raises(ValidationError):
         api_v1.GenerateRequest(brief="x", scene_prompt="y" * 2001)
 

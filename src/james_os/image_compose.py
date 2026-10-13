@@ -1262,3 +1262,15 @@ def stamp_logo(png: bytes, logo_bytes: bytes, position: str = "") -> bytes:
     layer.alpha_composite(mark, (x0, y0))
     out = Image.alpha_composite(base, layer)
     return _png(out)
+
+
+def fit_to_frame(png: bytes, width: int, height: int) -> bytes:
+    """A picture cut and scaled to exact pixels: cover-fit (no bars, no squash),
+    centred, nudged a touch above centre so a horizon or a face is kept rather
+    than the ground. How a generated scene drawn on one of gpt-image-1's three
+    canvases becomes 1080x1350, 1080x1920 or 1920x1080."""
+    img = Image.open(BytesIO(png)).convert("RGB")
+    out = ImageOps.fit(img, (int(width), int(height)), method=Image.LANCZOS, centering=(0.5, 0.45))
+    buf = BytesIO()
+    out.save(buf, format="PNG")
+    return buf.getvalue()

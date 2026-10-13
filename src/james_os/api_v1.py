@@ -243,7 +243,11 @@ class GenerateRequest(BaseModel):
     # from), and the shape to draw it at — gpt-image-1 only does these three.
     # Both empty = the scene is drawn from the topic at 1:1, as before.
     scene_prompt: str = Field("", max_length=2000)
-    scene_aspect: Literal["", "1:1", "9:16", "16:9"] = ""
+    scene_aspect: Literal["", "1:1", "4:5", "9:16", "16:9"] = ""
+    # scene only: other shapes to deliver the same picture in (main.SCENE_SHAPES).
+    # Shapes on the primary's canvas are crops of the same draw; another canvas is
+    # another paid draw. Empty = the primary shape only, as before.
+    scene_sizes: list[Literal["1:1", "4:5", "9:16", "16:9"]] = Field(default_factory=list, max_length=4)
     # Who the brand is — composed by Brand Manager from the brand's profile (its
     # name, niche, place, offer, audience). Every image prompt for this post
     # carries it (imagegen.image_brief). Empty = the engine's own one-line
@@ -517,6 +521,7 @@ async def _run_generate(job_id: str, tenant_id: UUID, req: GenerateRequest) -> N
                 **({"avoid_template_id": req.avoid_template_id} if req.avoid_template_id else {}),
                 **({"scene_prompt": req.scene_prompt.strip()} if req.scene_prompt.strip() else {}),
                 **({"scene_aspect": req.scene_aspect} if req.scene_aspect else {}),
+                **({"scene_sizes": tuple(req.scene_sizes)} if req.scene_sizes else {}),
                 **({"brand_context": req.brand_context.strip()} if req.brand_context.strip() else {}),
                 canvas=((req.image_width, req.image_height)
                         if req.image_width > 0 and req.image_height > 0 else None),

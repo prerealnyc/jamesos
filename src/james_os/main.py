@@ -2343,9 +2343,46 @@ async def _scene_logo(tenant_id, png: bytes) -> tuple[bytes, bool]:
         return png, False
 
 
+# The shapes a generated scene can be delivered in, and how each is made.
+# gpt-image-1 draws only three native canvases (1024 square, 1024x1536 tall,
+# 1536x1024 wide), so each shape names the native canvas it is cut from and the
+# exact platform pixels it is delivered at. 4:5 and 9:16 share the tall canvas:
+# one draw, two crops.
+SCENE_SHAPES: dict[str, tuple[str, tuple[int, int]]] = {
+    "1:1": ("1:1", (1080, 1080)),    # square feed post
+    "4:5": ("9:16", (1080, 1350)),   # portrait feed post (Instagram, Facebook)
+    "9:16": ("9:16", (1080, 1920)),  # story / reel cover / TikTok
+    "16:9": ("16:9", (1920, 1080)),  # X, LinkedIn link, YouTube, blog
+}
+
+
+async def _draw_scene(subject: str, brief: str, native: str, refs, tenant_id):
+    """One native gpt-image-1 draw: the brand's photos as style references when
+    there are any, else text alone. Returns (png, meta, used_refs)."""
+    from .imagegen import generate_post_image, generate_post_image_with_refs
+
+    if refs:
+        png, meta, err = await generate_post_image_with_refs(
+            topic=subject, references=refs, platform="instagram", brief=brief[:1200],
+            aspect=native, tenant_id=tenant_id, ref_mode="brand_style",
+            prompt_cap=SCENE_PROMPT_CAP,
+        )
+        if png and not err:
+            return png, meta, True
+        _scene_logger().warning("scene with brand references failed (%s) — drawing from text alone", err)
+    png, meta, err = await generate_post_image(
+        topic=subject, platform="instagram", brief=brief[:1200], aspect=native,
+        tenant_id=tenant_id, prompt_cap=SCENE_PROMPT_CAP,
+    )
+    if err or not png:
+        raise RuntimeError(err or "scene image generation returned no bytes")
+    return png, meta, False
+
+
 async def _generate_scene_post_image(
     action_id, topic: str, draft_text: str, tenant_id, *,
     aspect: str = "", feedback: str = "", scene_prompt: str = "",
+    extra_shapes: tuple[str, ...] = (),
 ) -> tuple[str, str]:
     """A FRESH, brand-relevant image drawn from a description — the generative
     "imagine this" door (the copilot's 'Generate an image' path), as opposed to the
@@ -2360,13 +2397,21 @@ async def _generate_scene_post_image(
       * up to SCENE_REF_PHOTOS of the brand's own photos as style references
         (gpt-image-1's edit endpoint), so the light, place and grade match the
         brand's feed. Any failure on that path draws from text alone;
-      * the brand's logo, stamped onto the finished picture (_scene_logo).
+      * the brand's logo, stamped onto each finished size (_scene_logo).
     The brand's written visual guidelines are folded in by imagegen either way —
     SCENE_PROMPT_CAP leaves them room after a composed description.
 
-    Returns (served_uri, "scene"). Raises on any failure so _make_text_post's caller
-    can fall back to a real hero photo rather than leave the post imageless."""
-    from .imagegen import generate_post_image, generate_post_image_with_refs
+    Sizes: `aspect` is the primary shape (a SCENE_SHAPES key; "" = 1:1) and
+    `extra_shapes` any others wanted. Shapes that share a native canvas share ONE
+    draw and are cropped from it; a shape on another canvas is another draw. Every
+    size is cropped to its exact platform pixels and logo-stamped after the crop,
+    and all of them are recorded in image_urls_by_size. A failed extra draw drops
+    that size, never the post.
+
+    Returns (served_uri, "scene") for the primary. Raises on any failure of the
+    primary so _make_text_post's caller can fall back to a real hero photo rather
+    than leave the post imageless."""
+    from .image_compose import fit_to_frame
     from .media import create_media
     from .media import storage as media_storage
 
@@ -2375,44 +2420,49 @@ async def _generate_scene_post_image(
     subject = f"{scene} {palette}" if palette else scene
     steer = (feedback or "").strip()
     brief = "\n".join(x for x in ((draft_text or "").strip(), steer and f"Avoid: {steer}") if x)
-    # "1:1" is a real gpt-image-1 size (1024x1024) and a universal feed shape; the
-    # scene picture IS the deliverable (no Pillow crop/compose afterwards), so it must
-    # be asked for at a supported ratio — "4:5" is NOT in _SIZE_FOR_ASPECT and would
-    # silently fall back to landscape 1536x1024.
-    shape = aspect or "1:1"
+    primary = aspect if aspect in SCENE_SHAPES else "1:1"
+    shapes = [primary] + [x for x in dict.fromkeys(extra_shapes or ()) if x in SCENE_SHAPES and x != primary]
+    # One draw per native canvas, primary's first.
+    groups: dict[str, list[str]] = {}
+    for shp in shapes:
+        groups.setdefault(SCENE_SHAPES[shp][0], []).append(shp)
     # References are matched on the scene alone: the palette line would otherwise
     # be most of what the photo matcher reads for a short request.
     refs = await _scene_reference_photos(tenant_id, scene)
-    png, meta, err = None, {}, ""
-    if refs:
-        png, meta, err = await generate_post_image_with_refs(
-            topic=subject, references=refs, platform="instagram", brief=brief[:1200],
-            aspect=shape, tenant_id=tenant_id, ref_mode="brand_style",
-            prompt_cap=SCENE_PROMPT_CAP,
-        )
-        if err or not png:
-            _scene_logger().warning("scene with brand references failed (%s) — drawing from text alone", err)
-            refs = []
-    if not png:
-        png, meta, err = await generate_post_image(
-            topic=subject, platform="instagram", brief=brief[:1200], aspect=shape,
-            tenant_id=tenant_id, prompt_cap=SCENE_PROMPT_CAP,
-        )
-    if err or not png:
-        raise RuntimeError(err or "scene image generation returned no bytes")
-    # The brand's mark, composited after the model is done (a model asked to draw a
-    # logo redraws it as a smudge). Edits redraw the scene and stamp it again, so a
-    # logo'd picture is never fed back into the image model.
-    png, logo_applied = await _scene_logo(tenant_id, png)
     tenant = str(tenant_id or settings.default_tenant_id)
-    served_uri, file_path = await asyncio.to_thread(
-        media_storage().save, tenant, png, "scene.png"
-    )
-    prompt = str(meta.get("prompt") or topic or "")[:500]
+
+    by_size: dict[str, str] = {}
+    primary_uri, primary_path, prompt = "", "", ""
+    used_refs, logo_applied = False, False
+    for native, members in groups.items():
+        is_primary_group = primary in members
+        try:
+            png, meta, drew_with_refs = await _draw_scene(subject, brief, native, refs, tenant_id)
+        except Exception:
+            if is_primary_group:
+                raise
+            _scene_logger().warning("extra scene size(s) %s failed — left out", members, exc_info=True)
+            continue
+        if is_primary_group:
+            used_refs = drew_with_refs
+            prompt = str(meta.get("prompt") or topic or "")[:500]
+        for shp in members:
+            w, h = SCENE_SHAPES[shp][1]
+            framed = await asyncio.to_thread(fit_to_frame, png, w, h)
+            # The brand's mark, composited after the crop so it sits right in every
+            # frame (a model asked to draw a logo redraws it as a smudge). Edits redraw
+            # the scene and stamp again, so a logo'd picture never feeds the model.
+            framed, stamped = await _scene_logo(tenant_id, framed)
+            uri, path = await asyncio.to_thread(
+                media_storage().save, tenant, framed, f"scene-{w}x{h}.png")
+            by_size[f"{w}x{h}"] = uri
+            if shp == primary:
+                primary_uri, primary_path, logo_applied = uri, path, stamped
+    served_uri = primary_uri
     try:
         await create_media(
             role="post_image", source_type="generated", uri=served_uri,
-            file_path=file_path, title=(topic or "Generated image")[:120],
+            file_path=primary_path, title=(topic or "Generated image")[:120],
             platform="instagram", mime="image/png",
             tags=["style:scene", "generated"], notes=prompt, tenant_id=tenant_id,
         )
@@ -2425,9 +2475,13 @@ async def _generate_scene_post_image(
             json.dumps({
                 "image_url": served_uri, "media_url": served_uri,
                 "has_image": True, "image_prompt": prompt,
+                # Every size this picture was delivered in, primary included, so each
+                # network posts its own shape.
+                "image_urls_by_size": by_size,
+                "scene_shape": primary,
                 # Which of the brand's own photos set the look — provenance, and
                 # the honest answer to "why does this look like us".
-                "scene_reference_photos": [name for name, _ in refs],
+                "scene_reference_photos": [name for name, _ in refs] if used_refs else [],
                 "logo_applied": logo_applied,
             }),
         )
