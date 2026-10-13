@@ -243,11 +243,11 @@ class GenerateRequest(BaseModel):
     # from), and the shape to draw it at — gpt-image-1 only does these three.
     # Both empty = the scene is drawn from the topic at 1:1, as before.
     scene_prompt: str = Field("", max_length=2000)
-    scene_aspect: Literal["", "1:1", "4:5", "9:16", "16:9"] = ""
+    scene_aspect: Literal["", "1:1", "4:5", "2:3", "9:16", "16:9"] = ""
     # scene only: other shapes to deliver the same picture in (main.SCENE_SHAPES).
     # Shapes on the primary's canvas are crops of the same draw; another canvas is
     # another paid draw. Empty = the primary shape only, as before.
-    scene_sizes: list[Literal["1:1", "4:5", "9:16", "16:9"]] = Field(default_factory=list, max_length=4)
+    scene_sizes: list[Literal["1:1", "4:5", "2:3", "9:16", "16:9"]] = Field(default_factory=list, max_length=5)
     # Who the brand is — composed by Brand Manager from the brand's profile (its
     # name, niche, place, offer, audience). Every image prompt for this post
     # carries it (imagegen.image_brief). Empty = the engine's own one-line

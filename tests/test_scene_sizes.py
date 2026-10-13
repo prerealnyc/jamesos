@@ -2,7 +2,7 @@
 
 gpt-image-1 draws three native canvases (square, 1024x1536 tall, 1536x1024
 wide). A scene is delivered at exact platform pixels — 1080x1080, 1080x1350,
-1080x1920, 1920x1080 — cut from the right canvas, and several shapes that share
+1000x1500, 1080x1920, 1920x1080 — cut from the right canvas, and several shapes that share
 a canvas share ONE paid draw. The things that would go wrong quietly:
 
   * a size labelled 1080x1350 that is really some other shape;
@@ -11,6 +11,7 @@ a canvas share ONE paid draw. The things that would go wrong quietly:
   * the logo placed before the crop, and then cut off.
 """
 
+import asyncio
 import contextlib
 import json
 from io import BytesIO
@@ -33,7 +34,8 @@ def _png(size):
 
 @pytest.fixture
 def world(monkeypatch):
-    seen = {"draws": [], "saved": {}, "payload": {}, "fail": set(), "logo_calls": 0}
+    seen = {"draws": [], "saved": {}, "payload": {}, "fail": set(), "logo_calls": 0,
+            "events": [], "bad_save": set()}
 
     async def _photos(tenant_id=None, limit=None, *, likeness=False):
         return []
@@ -41,6 +43,9 @@ def world(monkeypatch):
     async def _plain(topic, **kw):
         aspect = kw.get("aspect")
         seen["draws"].append(aspect)
+        seen["events"].append(("start", aspect))
+        await asyncio.sleep(0)
+        seen["events"].append(("end", aspect))
         if aspect in seen["fail"]:
             return None, {}, "the model refused"
         return _png(_NATIVE[aspect]), {"prompt": "p"}, ""
@@ -58,6 +63,8 @@ def world(monkeypatch):
 
     class _Store:
         def save(self, tenant, png, name):
+            if name in seen["bad_save"]:
+                raise OSError("disk full")
             seen["saved"][name] = Image.open(BytesIO(png)).size
             return f"file://{name}", f"/tmp/{name}"
 
@@ -86,6 +93,7 @@ async def _draw(**kw):
 @pytest.mark.parametrize("shape,native,pixels", [
     ("1:1", "1:1", (1080, 1080)),
     ("4:5", "9:16", (1080, 1350)),
+    ("2:3", "9:16", (1000, 1500)),
     ("9:16", "9:16", (1080, 1920)),
     ("16:9", "16:9", (1920, 1080)),
 ])
@@ -114,6 +122,15 @@ async def test_every_size_is_three_draws_and_four_pictures(world):
     assert world["payload"]["image_url"] == uri
 
 
+async def test_the_canvases_are_drawn_at_the_same_time(world):
+    # Three draws one after another is three model waits; the caller's poll
+    # budget is about one. Every draw has to have started before any finishes.
+    await _draw(aspect="4:5", extra_shapes=("1:1", "9:16", "16:9"))
+    starts = [i for i, (kind, _) in enumerate(world["events"]) if kind == "start"]
+    first_end = next(i for i, (kind, _) in enumerate(world["events"]) if kind == "end")
+    assert len(starts) == 3 and max(starts) < first_end
+
+
 async def test_the_logo_goes_on_after_the_crop_on_every_size(world):
     await _draw(aspect="1:1", extra_shapes=("4:5", "9:16", "16:9"))
     assert world["logo_calls"] == 4
@@ -125,6 +142,19 @@ async def test_a_failed_extra_size_is_left_out_not_the_post(world):
     uri, _ = await _draw(aspect="4:5", extra_shapes=("16:9",))
     assert uri == "file://scene-1080x1350.png"
     assert set(world["payload"]["image_urls_by_size"]) == {"1080x1350"}
+
+
+async def test_an_extra_size_that_cannot_be_saved_is_left_out_not_the_post(world):
+    world["bad_save"] = {"scene-1920x1080.png"}
+    uri, _ = await _draw(aspect="4:5", extra_shapes=("16:9", "9:16"))
+    assert uri == "file://scene-1080x1350.png"
+    assert set(world["payload"]["image_urls_by_size"]) == {"1080x1350", "1080x1920"}
+
+
+async def test_a_primary_that_cannot_be_saved_still_raises(world):
+    world["bad_save"] = {"scene-1080x1350.png"}
+    with pytest.raises(OSError):
+        await _draw(aspect="4:5", extra_shapes=("16:9",))
 
 
 async def test_a_failed_primary_still_raises_so_a_real_photo_is_used(world):
@@ -151,5 +181,6 @@ def test_the_request_takes_extra_sizes():
     r = api_v1.GenerateRequest(brief="x", scene_aspect="4:5", scene_sizes=["9:16", "16:9"])
     assert r.scene_sizes == ["9:16", "16:9"]
     assert api_v1.GenerateRequest(brief="x").scene_sizes == []
+    assert api_v1.GenerateRequest(brief="x", scene_aspect="2:3").scene_aspect == "2:3"
     with pytest.raises(Exception):
         api_v1.GenerateRequest(brief="x", scene_sizes=["3:2"])

@@ -2346,11 +2346,12 @@ async def _scene_logo(tenant_id, png: bytes) -> tuple[bytes, bool]:
 # The shapes a generated scene can be delivered in, and how each is made.
 # gpt-image-1 draws only three native canvases (1024 square, 1024x1536 tall,
 # 1536x1024 wide), so each shape names the native canvas it is cut from and the
-# exact platform pixels it is delivered at. 4:5 and 9:16 share the tall canvas:
-# one draw, two crops.
+# exact platform pixels it is delivered at. 4:5, 2:3 and 9:16 share the tall
+# canvas: one draw, several crops.
 SCENE_SHAPES: dict[str, tuple[str, tuple[int, int]]] = {
     "1:1": ("1:1", (1080, 1080)),    # square feed post
     "4:5": ("9:16", (1080, 1350)),   # portrait feed post (Instagram, Facebook)
+    "2:3": ("9:16", (1000, 1500)),   # standard pin
     "9:16": ("9:16", (1080, 1920)),  # story / reel cover / TikTok
     "16:9": ("16:9", (1920, 1080)),  # X, LinkedIn link, YouTube, blog
 }
@@ -2405,8 +2406,9 @@ async def _generate_scene_post_image(
     `extra_shapes` any others wanted. Shapes that share a native canvas share ONE
     draw and are cropped from it; a shape on another canvas is another draw. Every
     size is cropped to its exact platform pixels and logo-stamped after the crop,
-    and all of them are recorded in image_urls_by_size. A failed extra draw drops
-    that size, never the post.
+    and all of them are recorded in image_urls_by_size. The canvases are drawn at
+    the same time, so every size costs the wait of one draw. A failed extra size
+    is left out, never the post.
 
     Returns (served_uri, "scene") for the primary. Raises on any failure of the
     primary so _make_text_post's caller can fall back to a real hero photo rather
@@ -2434,27 +2436,37 @@ async def _generate_scene_post_image(
     by_size: dict[str, str] = {}
     primary_uri, primary_path, prompt = "", "", ""
     used_refs, logo_applied = False, False
-    for native, members in groups.items():
+    canvases = list(groups.items())
+    drawn = await asyncio.gather(
+        *(_draw_scene(subject, brief, native, refs, tenant_id) for native, _ in canvases),
+        return_exceptions=True,
+    )
+    for (native, members), got in zip(canvases, drawn):
         is_primary_group = primary in members
-        try:
-            png, meta, drew_with_refs = await _draw_scene(subject, brief, native, refs, tenant_id)
-        except Exception:
-            if is_primary_group:
-                raise
-            _scene_logger().warning("extra scene size(s) %s failed — left out", members, exc_info=True)
+        if isinstance(got, BaseException):
+            if is_primary_group or not isinstance(got, Exception):
+                raise got
+            _scene_logger().warning("extra scene size(s) %s failed — left out", members, exc_info=got)
             continue
+        png, meta, drew_with_refs = got
         if is_primary_group:
             used_refs = drew_with_refs
             prompt = str(meta.get("prompt") or topic or "")[:500]
         for shp in members:
             w, h = SCENE_SHAPES[shp][1]
-            framed = await asyncio.to_thread(fit_to_frame, png, w, h)
-            # The brand's mark, composited after the crop so it sits right in every
-            # frame (a model asked to draw a logo redraws it as a smudge). Edits redraw
-            # the scene and stamp again, so a logo'd picture never feeds the model.
-            framed, stamped = await _scene_logo(tenant_id, framed)
-            uri, path = await asyncio.to_thread(
-                media_storage().save, tenant, framed, f"scene-{w}x{h}.png")
+            try:
+                framed = await asyncio.to_thread(fit_to_frame, png, w, h)
+                # The brand's mark, composited after the crop so it sits right in every
+                # frame (a model asked to draw a logo redraws it as a smudge). Edits redraw
+                # the scene and stamp again, so a logo'd picture never feeds the model.
+                framed, stamped = await _scene_logo(tenant_id, framed)
+                uri, path = await asyncio.to_thread(
+                    media_storage().save, tenant, framed, f"scene-{w}x{h}.png")
+            except Exception:
+                if shp == primary:
+                    raise
+                _scene_logger().warning("scene size %s could not be made — left out", shp, exc_info=True)
+                continue
             by_size[f"{w}x{h}"] = uri
             if shp == primary:
                 primary_uri, primary_path, logo_applied = uri, path, stamped
