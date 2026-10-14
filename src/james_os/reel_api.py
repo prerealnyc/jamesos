@@ -386,6 +386,59 @@ async def make_reel_status(job_id: str) -> dict:
     return {"job_id": job_id, **out}
 
 
+# ── captions on the owner's own recording ─────────────────────────────
+
+_CAPTION_JOBS: dict[str, dict] = {}
+# A script read to camera on a phone. The finished-reel door takes podcasts and
+# allows far more; this one holds the whole file in memory while it is stored.
+_CAPTION_UPLOAD_MAX = 1024 * 1024 * 1024
+
+
+@router.post("/video/caption-upload", status_code=202)
+async def caption_upload(
+    background: BackgroundTasks,
+    file: UploadFile = File(...),
+    title: str = Form(default=""),
+    platform: str = Form(default="instagram"),
+    caption_style: str = Form(default=""),
+) -> dict:
+    """A recording → the same recording with captions of what was said.
+
+    No B-roll, no music, no headline: see caption_upload. Poll
+    GET /video/caption-upload/{job_id}; the finished job carries the production
+    id (so the caption editor can move them later) and the captioned file."""
+    if not (file.content_type or "").startswith("video/"):
+        raise HTTPException(status_code=400,
+                            detail="upload the recording as a video file (mp4/mov/webm)")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty file")
+    if len(data) > _CAPTION_UPLOAD_MAX:
+        raise HTTPException(status_code=413, detail="the recording is over 1 GB")
+    from .caption_upload import run
+
+    tenant = _tenant()                       # captured BEFORE add_task
+    job_id, job = _new_job(_CAPTION_JOBS, kind="caption_upload", stage="uploading",
+                           production_id="", final_url="")
+    _stage(job, "uploading")
+    background.add_task(run, job, tenant=tenant, data=data,
+                        filename=file.filename or "recording.mp4", title=title.strip(),
+                        platform=platform, caption_style=caption_style)
+    return {"job_id": job_id, "status": "running"}
+
+
+@router.get("/video/caption-upload/{job_id}")
+async def caption_upload_status(job_id: str) -> dict:
+    from .caption_upload import progress
+
+    job = _CAPTION_JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    out = {k: v for k, v in job.items() if not k.startswith("_")}
+    out["progress"] = progress(job)
+    return {"job_id": job_id, **out}
+
+
 # ── describing assets so they can be matched ─────────────────────────
 
 _DESCRIBE_JOBS: dict[str, dict] = {}
