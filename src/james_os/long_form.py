@@ -208,15 +208,41 @@ def is_youtube_url(url: str) -> bool:
     return bool(_YOUTUBE_RE.match((url or "").strip()))
 
 
-async def _apify_youtube_resolve(youtube_url: str) -> tuple[str, str, int]:
+# The download actor gives each attempt at most 300 s (perVideoTimeoutSecs is
+# capped there). Through the residential proxy that is roughly 200–300 MB, so a
+# long talk at 720p can never finish: a ~1 GB podcast died at 17 % on
+# 2026-10-14. Smaller renditions are tried in turn, so a long video comes in at a
+# lower resolution instead of not at all. Failed attempts are not charged by the
+# actor; each start costs one actor-start event.
+_YT_QUALITY_LADDER = ("720p", "480p", "360p")
+_YT_PER_VIDEO_TIMEOUT_S = 300
+
+
+def _redact(msg: str) -> str:
+    """Strip the Apify token from text that is stored and shown to the owner.
+
+    The token used to ride in the query string, and httpx puts the full URL in
+    its error message — so a 403 printed the key on the import card for anyone
+    who could see the page."""
+    out = str(msg or "")
+    key = (settings.apify_api_key or "").strip()
+    if key:
+        out = out.replace(key, "[redacted]")
+    return _re.sub(r"(token=)[^&\s'\"]+", r"\1[redacted]", out)
+
+
+async def _apify_youtube_resolve(youtube_url: str) -> tuple[str, str, int, str]:
     """Run the Apify YouTube-download actor and return
-    (download_url_with_token, title, size_bytes).
+    (download_url, title, size_bytes, quality).
 
     Apify's residential proxy fetches the video where a datacenter yt-dlp is
     IP-blocked. Uses an async run + poll (not run-sync) so a long podcast download
     isn't capped by the ~280s run-sync limit. The actor drops the mp4 into its run
-    key-value store and reports a `downloadUrl` to it; that URL needs the API token
-    appended to authorize the fetch.
+    key-value store and reports a `downloadUrl` to it, fetched with the same
+    Authorization header — the token never goes into a URL.
+
+    Tries _YT_QUALITY_LADDER in order and returns the first rendition that
+    downloads; raises with every attempt's reason when none does.
     """
     import httpx
 
@@ -225,50 +251,64 @@ async def _apify_youtube_resolve(youtube_url: str) -> tuple[str, str, int]:
         raise RuntimeError("Apify is not configured (APIFY_API_KEY) — can't import from YouTube")
     actor = (settings.youtube_download_actor or "memo23~youtube-video-downloader").strip()
     base = "https://api.apify.com/v2"
-    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0)) as c:
-        r = await c.post(
-            f"{base}/acts/{actor}/runs",
-            params={"token": key},
-            json={"videoUrls": [youtube_url]},
-        )
-        r.raise_for_status()
-        run = r.json().get("data") or {}
-        run_id = run.get("id")
-        if not run_id:
-            raise RuntimeError("Apify did not start a run")
-        status = str(run.get("status") or "")
-        waited = 0.0
-        deadline = 20 * 60  # a long download can take minutes; cap so we never hang
-        while status in ("", "READY", "RUNNING") and waited < deadline:
-            await asyncio.sleep(5)
-            waited += 5
-            g = await c.get(f"{base}/actor-runs/{run_id}", params={"token": key})
-            g.raise_for_status()
-            status = str((g.json().get("data") or {}).get("status") or "")
-        if status != "SUCCEEDED":
-            raise RuntimeError(f"Apify download did not complete (status: {status or 'timed out'})")
-        d = await c.get(f"{base}/actor-runs/{run_id}/dataset/items", params={"token": key})
-        d.raise_for_status()
-        items = d.json()
-    if not items:
-        raise RuntimeError("Apify returned no video for that YouTube URL")
-    it = items[0] if isinstance(items, list) else items
-    download = ""
-    for field in ("downloadUrl", "download_url", "downloadable_video_link", "mediaUrl", "videoUrl"):
-        v = it.get(field)
-        if isinstance(v, str) and v.startswith("http"):
-            download = v
-            break
-    if not download:
-        raise RuntimeError("Apify item had no downloadable video URL")
-    sep = "&" if "?" in download else "?"
-    download_auth = f"{download}{sep}token={key}"
-    title = str(it.get("title") or "").strip()
-    try:
-        size = int(it.get("fileSizeBytes") or 0)
-    except (TypeError, ValueError):
-        size = 0
-    return download_auth, title, size
+    headers = {"Authorization": f"Bearer {key}"}
+    tried: list[str] = []
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0), headers=headers) as c:
+        for quality in _YT_QUALITY_LADDER:
+            r = await c.post(
+                f"{base}/acts/{actor}/runs",
+                json={
+                    "videoUrls": [youtube_url],
+                    "quality": quality,
+                    "perVideoTimeoutSecs": _YT_PER_VIDEO_TIMEOUT_S,
+                    # one video, so give it all the bandwidth
+                    "maxConcurrency": 1,
+                },
+            )
+            r.raise_for_status()
+            run = r.json().get("data") or {}
+            run_id = run.get("id")
+            if not run_id:
+                raise RuntimeError("Apify did not start a run")
+            status = str(run.get("status") or "")
+            data: dict = run
+            waited = 0.0
+            deadline = 20 * 60  # a long download can take minutes; cap so we never hang
+            while status in ("", "READY", "RUNNING") and waited < deadline:
+                await asyncio.sleep(5)
+                waited += 5
+                g = await c.get(f"{base}/actor-runs/{run_id}")
+                g.raise_for_status()
+                data = g.json().get("data") or {}
+                status = str(data.get("status") or "")
+            if status != "SUCCEEDED":
+                why = str(data.get("statusMessage") or status or "timed out").strip()
+                tried.append(f"{quality}: {why[:160]}")
+                continue
+            d = await c.get(f"{base}/actor-runs/{run_id}/dataset/items")
+            d.raise_for_status()
+            items = d.json()
+            it = (items[0] if isinstance(items, list) else items) if items else {}
+            download = ""
+            for field in ("downloadUrl", "download_url", "downloadable_video_link", "mediaUrl", "videoUrl"):
+                v = it.get(field) if isinstance(it, dict) else None
+                if isinstance(v, str) and v.startswith("http"):
+                    download = v
+                    break
+            if not download:
+                tried.append(f"{quality}: no downloadable video in the result")
+                continue
+            title = str(it.get("title") or "").strip()
+            try:
+                size = int(it.get("fileSizeBytes") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            return download, title, size, quality
+    raise RuntimeError(
+        "Apify could not download this video at any quality (tried "
+        + "; ".join(tried)
+        + "). A very long video may be too large to download — try a shorter one or upload the file."
+    )
 
 
 async def fetch_from_youtube_then_ingest(
@@ -301,7 +341,7 @@ async def fetch_from_youtube_then_ingest(
         return await _fail(source_id, f"could not start the import: {e}", tenant_id)
 
     try:
-        download_url, resolved_title, size = await _apify_youtube_resolve(youtube_url)
+        download_url, resolved_title, size, _quality = await _apify_youtube_resolve(youtube_url)
     except Exception as e:  # noqa: BLE001
         return await _fail(source_id, f"YouTube fetch failed: {e}", tenant_id)
 
@@ -321,7 +361,8 @@ async def fetch_from_youtube_then_ingest(
         try:
             import httpx
 
-            async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0, connect=15.0)) as c:
+            auth = {"Authorization": f"Bearer {(settings.apify_api_key or '').strip()}"}
+            async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0, connect=15.0), headers=auth) as c:
                 async with c.stream("GET", download_url) as r:
                     r.raise_for_status()
                     with open(local_path, "wb") as fh:
@@ -449,7 +490,7 @@ async def _fail(source_id: UUID, msg: str, tenant_id: UUID | None = None) -> Non
         await conn.execute(
             "UPDATE long_sources SET status='failed', error=$2, "
             "updated_at=now() WHERE id=$1",
-            source_id, msg[:500],
+            source_id, _redact(msg)[:500],
         )
 
 
