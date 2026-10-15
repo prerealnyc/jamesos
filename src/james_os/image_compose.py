@@ -1147,3 +1147,153 @@ __all__ = [
     "quote_card", "meme_card", "statement_card",
     "brand_quote_card", "hero_quote_card", "bold_statement_card", "W", "H",
 ]
+
+
+# ---------------------------------------------------------------- logo on a photo
+#
+# A generated scene is a full-bleed picture with no card around it, so the brand
+# mark has to sit ON the photograph. Composited here, after the image model is
+# done — never asked of the model, which redraws a logo as a smudge.
+
+_LOGO_CORNERS = ("bottom_right", "bottom_left", "top_right", "top_left")
+_LOGO_W = 0.16      # logo width as a share of the picture's width
+_LOGO_MAX_H = 0.10  # ...and never taller than this share of its height
+_LOGO_MARGIN = 0.04  # inset from the edges, as a share of the width
+
+
+def _logo_has_alpha(logo: Image.Image) -> bool:
+    """A real transparent mark, rather than a logo saved on a solid rectangle."""
+    a = logo.getchannel("A")
+    hist = a.histogram()
+    clear = sum(hist[:200])
+    return clear >= 0.05 * (logo.size[0] * logo.size[1])
+
+
+def _rounded(img: Image.Image, radius: int) -> Image.Image:
+    mask = Image.new("L", img.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, img.size[0] - 1, img.size[1] - 1),
+                                           radius=radius, fill=255)
+    out = img.copy()
+    out.putalpha(Image.composite(img.getchannel("A"), Image.new("L", img.size, 0), mask))
+    return out
+
+
+def _corner_box(corner: str, size: tuple[int, int], frame: tuple[int, int], margin: int):
+    w, h = size
+    fw, fh = frame
+    x = margin if corner.endswith("left") else fw - w - margin
+    y = margin if corner.startswith("top") else fh - h - margin
+    return x, y, x + w, y + h
+
+
+def _quietest_corner(base: Image.Image, size: tuple[int, int], margin: int) -> str:
+    """The corner with the least going on, so the mark does not sit on the subject.
+    Edge energy of each candidate box; a small bias keeps bottom-right, the
+    conventional spot, whenever corners are about equally busy."""
+    edges = base.convert("L").filter(ImageFilter.FIND_EDGES)
+    best, best_score = _LOGO_CORNERS[0], None
+    for rank, corner in enumerate(_LOGO_CORNERS):
+        box = _corner_box(corner, size, base.size, margin)
+        region = edges.crop(box)
+        hist = region.histogram()
+        n = max(1, region.size[0] * region.size[1])
+        energy = sum(i * c for i, c in enumerate(hist)) / n
+        score = energy * (1 + 0.08 * rank)
+        if best_score is None or score < best_score:
+            best, best_score = corner, score
+    return best
+
+
+def _luma(img: Image.Image, weights: Image.Image | None = None) -> float:
+    g = img.convert("L")
+    if weights is None:
+        hist = g.histogram()
+        n = max(1, sum(hist))
+        return sum(i * c for i, c in enumerate(hist)) / n
+    gp, wp = g.tobytes(), weights.convert("L").tobytes()
+    total = sum(wp)
+    return (sum(a * b for a, b in zip(gp, wp)) / total) if total else 128.0
+
+
+def stamp_logo(png: bytes, logo_bytes: bytes, position: str = "") -> bytes:
+    """The brand's logo composited onto a finished picture; returns PNG bytes.
+
+    `position` is the brand's chosen corner (top_left … bottom_right); anything
+    else — including the card default "footer" — picks the quietest corner. A
+    transparent mark gets a soft shadow; one saved on a solid background becomes
+    a small rounded tile. When the corner and the logo are too close in tone to
+    read, a translucent plate goes behind it. Raises on an unreadable logo, so the
+    caller keeps the picture without one."""
+    base = Image.open(BytesIO(png)).convert("RGBA")
+    out = Image.alpha_composite(base, _logo_layer(base, logo_bytes, position))
+    return _png(out)
+
+
+def stamp_logo_layers(png: bytes, logo_bytes: bytes, position: str = "") -> tuple[bytes, dict]:
+    """stamp_logo, plus the stamped mark as a layer of its own: (stamped PNG,
+    {png, x, y, w, h}) — the badge is exactly what was composited (mark, and its
+    shadow or plate when it got one), cropped to its box, so a card editor can
+    offer the clean picture with the logo as a movable piece and put it back
+    pixel-for-pixel. Raises like stamp_logo."""
+    base = Image.open(BytesIO(png)).convert("RGBA")
+    layer = _logo_layer(base, logo_bytes, position)
+    out = Image.alpha_composite(base, layer)
+    box = layer.getchannel("A").getbbox() or (0, 0, 1, 1)
+    badge = layer.crop(box)
+    buf = BytesIO()
+    badge.save(buf, format="PNG")  # RGBA: _png would flatten the piece onto black
+    return _png(out), {"png": buf.getvalue(), "x": box[0], "y": box[1],
+                       "w": box[2] - box[0], "h": box[3] - box[1]}
+
+
+def _logo_layer(base: Image.Image, logo_bytes: bytes, position: str = "") -> Image.Image:
+    """The transparent layer stamp_logo composites onto `base`: the mark at its
+    corner, with a soft shadow or a contrast plate when it needs one."""
+    logo = Image.open(BytesIO(logo_bytes)).convert("RGBA")
+    # Judged BEFORE trimming: a mark on a transparent canvas is transparent even
+    # when the mark itself is a solid shape, and trimming would hide that.
+    transparent = _logo_has_alpha(logo)
+    bbox = logo.getchannel("A").getbbox()
+    if bbox:
+        logo = logo.crop(bbox)
+    W, H = base.size
+    lw, lh = logo.size
+    scale = min((W * _LOGO_W) / lw, (H * _LOGO_MAX_H) / lh)
+    size = (max(1, round(lw * scale)), max(1, round(lh * scale)))
+    mark = logo.resize(size, Image.LANCZOS)
+    if not transparent:
+        mark = _rounded(mark, radius=max(2, round(min(size) * 0.14)))
+    margin = round(W * _LOGO_MARGIN)
+    corner = position if position in _LOGO_CORNERS else _quietest_corner(base, size, margin)
+    x0, y0, x1, y1 = _corner_box(corner, size, base.size, margin)
+
+    behind = _luma(base.crop((x0, y0, x1, y1)))
+    ink = _luma(mark, mark.getchannel("A"))
+    layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    if abs(behind - ink) < 70:
+        # Too close in tone to read: a plate in the opposite tone, soft-edged.
+        pad = round(min(size) * 0.28)
+        fill = (12, 14, 20, 120) if ink > 127 else (255, 255, 255, 165)
+        ImageDraw.Draw(layer).rounded_rectangle(
+            (x0 - pad, y0 - pad, x1 + pad, y1 + pad), radius=pad, fill=fill)
+    elif transparent:
+        # A soft shadow so the mark keeps an edge on a busy patch of photo.
+        shadow = Image.new("RGBA", size, (0, 0, 0, 0))
+        shadow.putalpha(mark.getchannel("A").point(lambda a: int(a * 0.45)))
+        off = max(1, round(W * 0.002))
+        layer.paste(shadow.filter(ImageFilter.GaussianBlur(max(1, round(W * 0.004)))),
+                    (x0 + off, y0 + off))
+    layer.alpha_composite(mark, (x0, y0))
+    return layer
+
+
+def fit_to_frame(png: bytes, width: int, height: int) -> bytes:
+    """A picture cut and scaled to exact pixels: cover-fit (no bars, no squash),
+    centred, nudged a touch above centre so a horizon or a face is kept rather
+    than the ground. How a generated scene drawn on one of gpt-image-1's three
+    canvases becomes 1080x1350, 1080x1920 or 1920x1080."""
+    img = Image.open(BytesIO(png)).convert("RGB")
+    out = ImageOps.fit(img, (int(width), int(height)), method=Image.LANCZOS, centering=(0.5, 0.45))
+    buf = BytesIO()
+    out.save(buf, format="PNG")
+    return buf.getvalue()

@@ -188,6 +188,8 @@ async def _make_text_post(
     extra_sizes: tuple[tuple[int, int], ...] = (),
     house_layout_id: str = "",
     fallback_format: str = "", avoid_template_id: str = "",
+    scene_prompt: str = "", scene_aspect: str = "",
+    brand_context: str = "", scene_sizes: tuple[str, ...] = (),
 ) -> dict:
     """One text+image post: on-voice draft → queue → attach an image.
 
@@ -226,58 +228,71 @@ async def _make_text_post(
 
     image_url = None
     fmt: str | None = None
-    try:
-        if image_kind == "designed":
-            try:
-                from . import image_compose as _ic
-                from .main import _generate_designed_post_image
-                # Render at the destination's shape. A cropped picture loses
-                # whatever sat at the top and bottom — which on a quote card is
-                # the quote — so the canvas is set BEFORE the compositor runs
-                # rather than the output being cut to fit afterwards.
-                with _ic.canvas(*(canvas or (0, 0))):
-                    image_url, fmt = await _generate_designed_post_image(
-                        draft.action_id, idea.get("topic", ""),
-                        draft.draft or idea.get("topic", ""), tenant_id, avoid=avoid_fmt,
-                        feedback=feedback, force_format=force_format,
-                        # The same design re-laid-out at every other network's
-                        # shape — one post, not one post per size.
-                        extra_sizes=extra_sizes,
-                        house_layout_id=house_layout_id,
-                        **({"fallback_format": fallback_format} if fallback_format else {}),
-                        **({"avoid_template_id": avoid_template_id} if avoid_template_id else {}),
+    # Every image prompt for this post — the designed card's background, a
+    # generated scene, a placeholder photo — carries who the brand is and what
+    # the post is about. Brand Manager's composed background when it sent one,
+    # else the engine's own line; the topic is the idea plus the caption's opening.
+    from .brand_identity import brand_background
+    from .imagegen import image_brief, post_topic_line
+
+    _bg = (brand_context or "").strip() or await brand_background(tenant_id)
+    _topic = post_topic_line(idea.get("title", ""), strip_internal_labels(idea.get("topic", "")),
+                             draft.draft or "")
+    with image_brief(brand=_bg, topic=_topic):
+        try:
+            if image_kind == "designed":
+                try:
+                    from . import image_compose as _ic
+                    from .main import _generate_designed_post_image
+                    # Render at the destination's shape. A cropped picture loses
+                    # whatever sat at the top and bottom — which on a quote card is
+                    # the quote — so the canvas is set BEFORE the compositor runs
+                    # rather than the output being cut to fit afterwards.
+                    with _ic.canvas(*(canvas or (0, 0))):
+                        image_url, fmt = await _generate_designed_post_image(
+                            draft.action_id, idea.get("topic", ""),
+                            draft.draft or idea.get("topic", ""), tenant_id, avoid=avoid_fmt,
+                            feedback=feedback, force_format=force_format,
+                            # The same design re-laid-out at every other network's
+                            # shape — one post, not one post per size.
+                            extra_sizes=extra_sizes,
+                            house_layout_id=house_layout_id,
+                            **({"fallback_format": fallback_format} if fallback_format else {}),
+                            **({"avoid_template_id": avoid_template_id} if avoid_template_id else {}),
+                        )
+                except Exception as _exc:  # noqa: BLE001 — designed failed → hero photo below
+                    # Loudly, not silently: a swallowed failure here is exactly why a
+                    # "Build carousel" could quietly come back as a plain photo post.
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "designed image failed (force_format=%r) — falling back to a "
+                        "hero photo: %s", force_format, _exc,
                     )
-            except Exception as _exc:  # noqa: BLE001 — designed failed → hero photo below
-                # Loudly, not silently: a swallowed failure here is exactly why a
-                # "Build carousel" could quietly come back as a plain photo post.
-                import logging as _logging
-                _logging.getLogger(__name__).warning(
-                    "designed image failed (force_format=%r) — falling back to a "
-                    "hero photo: %s", force_format, _exc,
+                    image_url, fmt = None, None
+            elif image_kind == "scene":
+                # The generative "imagine this" door: a fresh brand-relevant image drawn
+                # from the description (gpt-image-1 + the brand's visual guidelines), no
+                # card composited on top. Any failure falls through to a real hero photo
+                # below, so the post is never left imageless.
+                try:
+                    from .main import _generate_scene_post_image
+                    image_url, fmt = await _generate_scene_post_image(
+                        draft.action_id, idea.get("topic", ""),
+                        draft.draft or idea.get("topic", ""), tenant_id, feedback=feedback,
+                        scene_prompt=scene_prompt, aspect=scene_aspect,
+                        extra_shapes=tuple(scene_sizes or ()),
+                    )
+                except Exception as _exc:  # noqa: BLE001 — scene failed → hero photo below
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "scene image failed — falling back to a hero photo: %s", _exc)
+                    image_url, fmt = None, None
+            if not image_url:
+                image_url = await _attach_image_to_action(
+                    draft.action_id, idea, platform, draft.draft, tenant_id
                 )
-                image_url, fmt = None, None
-        elif image_kind == "scene":
-            # The generative "imagine this" door: a fresh brand-relevant image drawn
-            # from the description (gpt-image-1 + the brand's visual guidelines), no
-            # card composited on top. Any failure falls through to a real hero photo
-            # below, so the post is never left imageless.
-            try:
-                from .main import _generate_scene_post_image
-                image_url, fmt = await _generate_scene_post_image(
-                    draft.action_id, idea.get("topic", ""),
-                    draft.draft or idea.get("topic", ""), tenant_id, feedback=feedback,
-                )
-            except Exception as _exc:  # noqa: BLE001 — scene failed → hero photo below
-                import logging as _logging
-                _logging.getLogger(__name__).warning(
-                    "scene image failed — falling back to a hero photo: %s", _exc)
-                image_url, fmt = None, None
-        if not image_url:
-            image_url = await _attach_image_to_action(
-                draft.action_id, idea, platform, draft.draft, tenant_id
-            )
-    except Exception:  # noqa: BLE001 — image is additive; keep the queued text
-        image_url = None
+        except Exception:  # noqa: BLE001 — image is additive; keep the queued text
+            image_url = None
 
     return {
         "kind": "text",

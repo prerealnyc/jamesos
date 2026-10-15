@@ -2235,46 +2235,281 @@ async def _generate_learned_post_image(
     return served_uri, "learned"
 
 
-async def _generate_scene_post_image(
-    action_id, topic: str, draft_text: str, tenant_id, *,
-    aspect: str = "", feedback: str = "",
-) -> tuple[str, str]:
-    """A FRESH, brand-relevant image drawn from a description — the generative
-    "imagine this" door (the copilot's 'Generate an image' path), as opposed to the
-    designed quote/meme CARD machine or a real library photo. Runs gpt-image-1 through
-    imagegen.generate_post_image (which folds in the brand's visual style guidelines),
-    then persists + attaches to the action exactly like the designed path. No text is
-    composited on top — the picture IS the deliverable; the caption stays a separate,
-    editable field.
+def _scene_logger():
+    import logging as _logging
+    return _logging.getLogger(__name__)
 
-    Returns (served_uri, "scene"). Raises on any failure so _make_text_post's caller
-    can fall back to a real hero photo rather than leave the post imageless."""
-    from .imagegen import generate_post_image
-    from .media import create_media
-    from .media import storage as media_storage
 
-    steer = (feedback or "").strip()
-    brief = "\n".join(x for x in ((draft_text or "").strip(), steer and f"Avoid: {steer}") if x)
-    # "1:1" is a real gpt-image-1 size (1024x1024) and a universal feed shape; the
-    # scene picture IS the deliverable (no Pillow crop/compose afterwards), so it must
-    # be asked for at a supported ratio — "4:5" is NOT in _SIZE_FOR_ASPECT and would
-    # silently fall back to landscape 1536x1024.
+# How many of the brand's own photos ride along as style references on a
+# generated scene. gpt-image-1's edit endpoint takes several; past three the
+# look gets averaged into mush and the request gets slow.
+SCENE_REF_PHOTOS = 3
+# How many library photos to rank before taking the best SCENE_REF_PHOTOS.
+SCENE_REF_POOL = 8
+# The whole image prompt for a scene: style + composed description + palette +
+# context + the brand's written guidelines. The default 1300 is sized for a short
+# topic and cut the guidelines off a composed scene; gpt-image-1 takes far more.
+SCENE_PROMPT_CAP = 3200
+
+
+async def _scene_reference_photos(tenant_id, subject: str) -> list[tuple[str, bytes]]:
+    """The brand's own photos closest to this scene, as style references.
+
+    Real library photos only (get_hero_photo_files with a limit: the ranked
+    library, own posts included, shrunk to 1024) — never AI likeness references
+    of a person, because these set a LOOK, not a face. Ranked by subject when an
+    embedder is available, so a fairway scene borrows the fairway shots rather
+    than the lobby. Empty on an empty library or any failure: the scene is then
+    drawn from text alone, exactly as before."""
+    try:
+        from .hero_context import get_hero_photo_files
+
+        refs = await get_hero_photo_files(tenant_id=tenant_id, limit=SCENE_REF_POOL)
+        if not refs:
+            return []
+        # Never a flyer or a screenshot as a reference: text in a reference
+        # invites text into the picture.
+        try:
+            from .hero_context import get_hero_context
+
+            ctx = await get_hero_context(tenant_id)
+            held = set(getattr(ctx, "held_back_urls", None) or [])
+            if held:
+                refs = [r for r in refs if r[0] not in held]
+        except Exception:  # noqa: BLE001 — unfiltered beats none
+            _scene_logger().warning("could not read held-back photos", exc_info=True)
+        if not refs:
+            return []
+        try:
+            from .photo_subject import subject_ranked
+
+            refs = await subject_ranked(tenant_id, subject, refs) or refs
+        except Exception:  # noqa: BLE001 — unranked references are still the brand's
+            _scene_logger().warning("could not rank scene references by subject", exc_info=True)
+        return list(refs[:SCENE_REF_PHOTOS])
+    except Exception:  # noqa: BLE001 — references are a bonus, never a blocker
+        _scene_logger().warning("scene reference photos unavailable", exc_info=True)
+        return []
+
+
+async def _palette_line(tenant_id) -> str:
+    """The brand's colours as one prompt line, or "" when it has none on file.
+
+    The STORED palette only. ensure_brand_palette never returns empty — with
+    nothing stored it hands back a neutral charcoal-and-slate floor, and pushing
+    that into a scene as "the brand's colours" would be a lie that darkens the
+    picture. It also derives and saves a palette as a side effect, which a scene
+    should not trigger."""
+    try:
+        from .brand_identity import get_brand_palette
+
+        palette = await get_brand_palette(tenant_id) or []
+    except Exception:  # noqa: BLE001
+        return ""
+    swatches = [
+        f"{(p.get('label') or p.get('role') or '').strip()} {p.get('hex')}".strip()
+        for p in palette if isinstance(p, dict) and p.get("hex")
+    ][:5]
+    if not swatches:
+        return ""
+    return ("Let the brand's colours carry through naturally in light, objects or "
+            "setting, never as flat graphics: " + ", ".join(swatches) + ".")
+
+
+async def _scene_logo(tenant_id, png: bytes) -> tuple[bytes, bool]:
+    """The brand's logo stamped on a generated scene, as the owner set it up.
+
+    Off when the brand switched its logo off (brand look logo_show), in the corner
+    it chose when it chose one, else the quietest corner. No logo uploaded, an
+    unreadable file, or any failure: the picture is returned untouched — a scene
+    is never lost to its logo."""
+    try:
+        from .brand_identity import get_brand_look
+
+        look = await get_brand_look(tenant_id)
+        if not look.get("logo_show", True):
+            return png, False
+        from .template_clone import _brand_logo
+
+        logo = await _brand_logo(tenant_id)
+        if not logo:
+            return png, False
+        from .image_compose import stamp_logo
+
+        out = await asyncio.to_thread(stamp_logo, png, logo, str(look.get("logo_position") or ""))
+        return out, True
+    except Exception:  # noqa: BLE001 — the picture without a logo beats no picture
+        _scene_logger().warning("could not stamp the brand logo on a scene", exc_info=True)
+        return png, False
+
+
+# The shapes a generated scene can be delivered in, and how each is made.
+# gpt-image-1 draws only three native canvases (1024 square, 1024x1536 tall,
+# 1536x1024 wide), so each shape names the native canvas it is cut from and the
+# exact platform pixels it is delivered at. 4:5, 2:3 and 9:16 share the tall
+# canvas: one draw, several crops.
+SCENE_SHAPES: dict[str, tuple[str, tuple[int, int]]] = {
+    "1:1": ("1:1", (1080, 1080)),    # square feed post
+    "4:5": ("9:16", (1080, 1350)),   # portrait feed post (Instagram, Facebook)
+    "2:3": ("9:16", (1000, 1500)),   # standard pin
+    "9:16": ("9:16", (1080, 1920)),  # story / reel cover / TikTok
+    "16:9": ("16:9", (1920, 1080)),  # X, LinkedIn link, YouTube, blog
+}
+
+
+async def _draw_scene(subject: str, brief: str, native: str, refs, tenant_id):
+    """One native gpt-image-1 draw: the brand's photos as style references when
+    there are any, else text alone. Returns (png, meta, used_refs)."""
+    from .imagegen import generate_post_image, generate_post_image_with_refs
+
+    if refs:
+        png, meta, err = await generate_post_image_with_refs(
+            topic=subject, references=refs, platform="instagram", brief=brief[:1200],
+            aspect=native, tenant_id=tenant_id, ref_mode="brand_style",
+            prompt_cap=SCENE_PROMPT_CAP,
+        )
+        if png and not err:
+            return png, meta, True
+        _scene_logger().warning("scene with brand references failed (%s) — drawing from text alone", err)
     png, meta, err = await generate_post_image(
-        topic=(topic or draft_text or "").strip(),
-        platform="instagram", brief=brief[:1200], aspect=aspect or "1:1",
-        tenant_id=tenant_id,
+        topic=subject, platform="instagram", brief=brief[:1200], aspect=native,
+        tenant_id=tenant_id, prompt_cap=SCENE_PROMPT_CAP,
     )
     if err or not png:
         raise RuntimeError(err or "scene image generation returned no bytes")
+    return png, meta, False
+
+
+async def _scene_logo_layer(tenant_id, png: bytes) -> dict | None:
+    """The logo _scene_logo stamps on this frame, as a piece of its own:
+    {png, x, y, w, h} in this frame's pixels, or None when no logo is stamped.
+
+    Same look, same logo, same corner rule — image_compose._logo_layer is shared
+    by stamp_logo and stamp_logo_layers — so the piece sits exactly where the
+    stamped mark does. Kept with the clean frame as the post's render_layers, it
+    lets the card editor offer the logo as something to move, resize or remove
+    instead of pixels baked into the picture (the owner's ask, 2026-10-13)."""
+    try:
+        from .brand_identity import get_brand_look
+
+        look = await get_brand_look(tenant_id)
+        if not look.get("logo_show", True):
+            return None
+        from .template_clone import _brand_logo
+
+        logo = await _brand_logo(tenant_id)
+        if not logo:
+            return None
+        from .image_compose import stamp_logo_layers
+
+        _, badge = await asyncio.to_thread(
+            stamp_logo_layers, png, logo, str(look.get("logo_position") or ""))
+        return badge
+    except Exception:  # noqa: BLE001 — the picture is never lost to its layers
+        _scene_logger().warning("could not lift the brand logo off a scene", exc_info=True)
+        return None
+
+
+async def _generate_scene_post_image(
+    action_id, topic: str, draft_text: str, tenant_id, *,
+    aspect: str = "", feedback: str = "", scene_prompt: str = "",
+    extra_shapes: tuple[str, ...] = (),
+) -> tuple[str, str]:
+    """A FRESH, brand-relevant image drawn from a description — the generative
+    "imagine this" door (the copilot's 'Generate an image' path), as opposed to the
+    designed quote/meme CARD machine or a real library photo. No text is composited
+    on top — the picture IS the deliverable; the caption stays a separate, editable
+    field. Persisted and attached to the action exactly like the designed path.
+
+    What makes it the BRAND's picture rather than a stock one:
+      * `scene_prompt` — a scene description the caller composed from the brand's
+        profile, niche and the idea (BM2 does this); falls back to the topic;
+      * the brand's colours, as a line in the prompt;
+      * up to SCENE_REF_PHOTOS of the brand's own photos as style references
+        (gpt-image-1's edit endpoint), so the light, place and grade match the
+        brand's feed. Any failure on that path draws from text alone;
+      * the brand's logo, stamped onto each finished size (_scene_logo).
+    The brand's written visual guidelines are folded in by imagegen either way —
+    SCENE_PROMPT_CAP leaves them room after a composed description.
+
+    Sizes: `aspect` is the primary shape (a SCENE_SHAPES key; "" = 1:1) and
+    `extra_shapes` any others wanted. Shapes that share a native canvas share ONE
+    draw and are cropped from it; a shape on another canvas is another draw. Every
+    size is cropped to its exact platform pixels and logo-stamped after the crop,
+    and all of them are recorded in image_urls_by_size. The canvases are drawn at
+    the same time, so every size costs the wait of one draw. A failed extra size
+    is left out, never the post.
+
+    Returns (served_uri, "scene") for the primary. Raises on any failure of the
+    primary so _make_text_post's caller can fall back to a real hero photo rather
+    than leave the post imageless."""
+    from .image_compose import fit_to_frame
+    from .media import create_media
+    from .media import storage as media_storage
+
+    scene = (scene_prompt or "").strip() or (topic or draft_text or "").strip()
+    palette = await _palette_line(tenant_id)
+    subject = f"{scene} {palette}" if palette else scene
+    steer = (feedback or "").strip()
+    brief = "\n".join(x for x in ((draft_text or "").strip(), steer and f"Avoid: {steer}") if x)
+    primary = aspect if aspect in SCENE_SHAPES else "1:1"
+    shapes = [primary] + [x for x in dict.fromkeys(extra_shapes or ()) if x in SCENE_SHAPES and x != primary]
+    # One draw per native canvas, primary's first.
+    groups: dict[str, list[str]] = {}
+    for shp in shapes:
+        groups.setdefault(SCENE_SHAPES[shp][0], []).append(shp)
+    # References are matched on the scene alone: the palette line would otherwise
+    # be most of what the photo matcher reads for a short request.
+    refs = await _scene_reference_photos(tenant_id, scene)
     tenant = str(tenant_id or settings.default_tenant_id)
-    served_uri, file_path = await asyncio.to_thread(
-        media_storage().save, tenant, png, "scene.png"
+
+    by_size: dict[str, str] = {}
+    primary_uri, primary_path, prompt = "", "", ""
+    primary_clean: tuple[bytes, tuple[int, int]] | None = None
+    used_refs, logo_applied = False, False
+    canvases = list(groups.items())
+    drawn = await asyncio.gather(
+        *(_draw_scene(subject, brief, native, refs, tenant_id) for native, _ in canvases),
+        return_exceptions=True,
     )
-    prompt = str(meta.get("prompt") or topic or "")[:500]
+    for (native, members), got in zip(canvases, drawn):
+        is_primary_group = primary in members
+        if isinstance(got, BaseException):
+            if is_primary_group or not isinstance(got, Exception):
+                raise got
+            _scene_logger().warning("extra scene size(s) %s failed — left out", members, exc_info=got)
+            continue
+        png, meta, drew_with_refs = got
+        if is_primary_group:
+            used_refs = drew_with_refs
+            prompt = str(meta.get("prompt") or topic or "")[:500]
+        for shp in members:
+            w, h = SCENE_SHAPES[shp][1]
+            try:
+                framed = await asyncio.to_thread(fit_to_frame, png, w, h)
+                # The brand's mark, composited after the crop so it sits right in every
+                # frame (a model asked to draw a logo redraws it as a smudge). Edits redraw
+                # the scene and stamp again, so a logo'd picture never feeds the model.
+                clean = framed
+                framed, stamped = await _scene_logo(tenant_id, framed)
+                uri, path = await asyncio.to_thread(
+                    media_storage().save, tenant, framed, f"scene-{w}x{h}.png")
+            except Exception:
+                if shp == primary:
+                    raise
+                _scene_logger().warning("scene size %s could not be made — left out", shp, exc_info=True)
+                continue
+            by_size[f"{w}x{h}"] = uri
+            if shp == primary:
+                primary_uri, primary_path, logo_applied = uri, path, stamped
+                # The primary frame as it was before the logo, for its layers:
+                # the extra sizes stay flat stamped pictures for syndication.
+                primary_clean = (clean, (w, h)) if stamped else None
+    served_uri = primary_uri
     try:
         await create_media(
             role="post_image", source_type="generated", uri=served_uri,
-            file_path=file_path, title=(topic or "Generated image")[:120],
+            file_path=primary_path, title=(topic or "Generated image")[:120],
             platform="instagram", mime="image/png",
             tags=["style:scene", "generated"], notes=prompt, tenant_id=tenant_id,
         )
@@ -2287,8 +2522,32 @@ async def _generate_scene_post_image(
             json.dumps({
                 "image_url": served_uri, "media_url": served_uri,
                 "has_image": True, "image_prompt": prompt,
+                # Every size this picture was delivered in, primary included, so each
+                # network posts its own shape.
+                "image_urls_by_size": by_size,
+                "scene_shape": primary,
+                # Which of the brand's own photos set the look — provenance, and
+                # the honest answer to "why does this look like us".
+                "scene_reference_photos": [name for name, _ in refs] if used_refs else [],
+                "logo_applied": logo_applied,
             }),
         )
+    # The primary picture as layers — the clean frame under the logo as a piece of
+    # its own — so the card editor can move, resize or remove the logo the way it
+    # does on a designed card. Best-effort: without them the editor works on top
+    # of the flat picture, as before.
+    if primary_clean is not None:
+        try:
+            badge = await _scene_logo_layer(tenant_id, primary_clean[0])
+            if badge:
+                from . import layer_capture as _lc
+
+                await _lc.keep(action_id, tenant_id, {
+                    "canvas": primary_clean[1], "plate": primary_clean[0], "texts": [],
+                    "images": [{**badge, "kind": "logo", "z": 1}],
+                }, of=served_uri)
+        except Exception:  # noqa: BLE001 — never costs the picture
+            _scene_logger().warning("could not keep the scene's layers for %s", action_id, exc_info=True)
     return served_uri, "scene"
 
 
