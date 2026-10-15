@@ -238,6 +238,21 @@ class GenerateRequest(BaseModel):
     platform: str = "instagram"
     title: str | None = None
     image_kind: Literal["james", "designed", "scene"] = "james"   # post only; scene = a fresh gpt-image-1 draw from the brief
+    # scene only: the picture to draw, already composed from the brand's profile,
+    # niche and idea by the caller (the brief stays what the CAPTION is written
+    # from), and the shape to draw it at — gpt-image-1 only does these three.
+    # Both empty = the scene is drawn from the topic at 1:1, as before.
+    scene_prompt: str = Field("", max_length=2000)
+    scene_aspect: Literal["", "1:1", "4:5", "2:3", "9:16", "16:9"] = ""
+    # scene only: other shapes to deliver the same picture in (main.SCENE_SHAPES).
+    # Shapes on the primary's canvas are crops of the same draw; another canvas is
+    # another paid draw. Empty = the primary shape only, as before.
+    scene_sizes: list[Literal["1:1", "4:5", "2:3", "9:16", "16:9"]] = Field(default_factory=list, max_length=5)
+    # Who the brand is — composed by Brand Manager from the brand's profile (its
+    # name, niche, place, offer, audience). Every image prompt for this post
+    # carries it (imagegen.image_brief). Empty = the engine's own one-line
+    # background (brand_identity.brand_background).
+    brand_context: str = Field("", max_length=1500)
     # post/designed only: pin the layout for an explicit build (e.g. 'carousel').
     # An explicit force is honored even when the design switch is off.
     force_format: str = ""
@@ -504,6 +519,10 @@ async def _run_generate(job_id: str, tenant_id: UUID, req: GenerateRequest) -> N
                 # Sent only when set, so a caller that never heard of it is untouched.
                 **({"fallback_format": req.fallback_format} if req.fallback_format else {}),
                 **({"avoid_template_id": req.avoid_template_id} if req.avoid_template_id else {}),
+                **({"scene_prompt": req.scene_prompt.strip()} if req.scene_prompt.strip() else {}),
+                **({"scene_aspect": req.scene_aspect} if req.scene_aspect else {}),
+                **({"scene_sizes": tuple(req.scene_sizes)} if req.scene_sizes else {}),
+                **({"brand_context": req.brand_context.strip()} if req.brand_context.strip() else {}),
                 canvas=((req.image_width, req.image_height)
                         if req.image_width > 0 and req.image_height > 0 else None),
                 extra_sizes=tuple(
@@ -887,6 +906,9 @@ class RegenerateBody(BaseModel):
     sizes: list = Field(default_factory=list)
     # A generated scene to put in the photo slot of a cloned/learned design.
     scene_prompt: str = ""
+    # Who the brand is, as /v1/generate takes it — every image prompt in the
+    # rebuild carries it. Empty = the engine's own one-line background.
+    brand_context: str = Field("", max_length=1500)
     # The owner is editing by hand (not the automatic reject-and-rebuild loop).
     by_owner: bool = False
     # The owner asked to change how the PHOTO looks ("brighter", "make the sky
@@ -1181,6 +1203,7 @@ async def _run_regenerate(
     job_id: str, tenant_id: UUID, parent_id: UUID, feedback: str, force_format: str,
     *, canvas: tuple[int, int] | None = None, extra_sizes: tuple[tuple[int, int], ...] = (),
     scene_prompt: str = "", by_owner: bool = False, edit_photo: bool = False,
+    brand_context: str = "",
 ) -> None:
     """Rebuild the IMAGE for a rejected post, keeping its words.
 
@@ -1198,6 +1221,7 @@ async def _run_regenerate(
         return
     job["status"] = "running"
     job["updated_at"] = _now()
+    _brief_cm = None  # the image brief for this rebuild, entered once the post is read
     try:
         async with acquire(tenant_id) as conn:
             parent = await conn.fetchrow(
@@ -1209,6 +1233,13 @@ async def _run_regenerate(
         if isinstance(payload, str):
             payload = json.loads(payload)
         payload = payload or {}
+        # Every image prompt in this rebuild carries who the brand is and what the
+        # post is about (imagegen.image_brief), reset in the finally below.
+        from .brand_identity import brand_background
+        from .imagegen import image_brief
+        _bg = (brand_context or "").strip() or await brand_background(tenant_id)
+        _brief_cm = image_brief(brand=_bg, topic=_post_topic_line(payload))
+        _brief_cm.__enter__()
 
         # Their words: an explicit feedback argument wins, else the reason they
         # gave when rejecting — so "Regenerate" needs no retyping.
@@ -1393,6 +1424,19 @@ async def _run_regenerate(
         _log.exception("regenerate failed for %s", parent_id)
     finally:
         job["updated_at"] = _now()
+        if _brief_cm is not None:
+            _brief_cm.__exit__(None, None, None)
+
+
+def _post_topic_line(payload: dict) -> str:
+    """What a queued post is about, for its image prompts (imagegen.post_topic_line:
+    its title or topic — never a writer's REDO/REPURPOSE brief — plus the opening
+    of its caption)."""
+    from .imagegen import post_topic_line
+
+    return post_topic_line(
+        str(payload.get("title") or ""), str(payload.get("topic") or ""),
+        str(payload.get("content") or payload.get("caption") or payload.get("draft") or ""))
 
 
 @router.post("/queue/post/{action_id}/regenerate", status_code=202)
@@ -1436,7 +1480,8 @@ async def v1_post_regenerate(
             (int(p[0]), int(p[1])) for p in body.sizes
             if isinstance(p, (list, tuple)) and len(p) == 2
             and int(p[0]) > 0 and int(p[1]) > 0 and (int(p[0]), int(p[1])) != (_w, _h)),
-        scene_prompt=body.scene_prompt, by_owner=body.by_owner, edit_photo=body.edit_photo))
+        scene_prompt=body.scene_prompt, by_owner=body.by_owner, edit_photo=body.edit_photo,
+        brand_context=body.brand_context))
     return {"job_id": job["id"], "status": "queued"}
 
 
@@ -3488,3 +3533,35 @@ async def v1_own_media_caption_backfill(tenant_id: TenantDep, limit: int = 50) -
     from .photo_subject import backfill
 
     return await backfill(tenant_id, limit=max(1, min(int(limit), 200)))
+
+
+# ---------------------------------------------------------------------------
+# One brand-styled picture on its own, for the card editor's "Generate" door.
+# ---------------------------------------------------------------------------
+
+
+class SceneImageRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=2000)
+    aspect: Literal["1:1", "9:16", "16:9"] = "1:1"
+    title: str = Field("", max_length=200)
+    brand_context: str = Field("", max_length=1500)
+
+
+@router.post("/scene-image")
+async def v1_scene_image(req: SceneImageRequest, tenant_id: TenantDep) -> dict[str, Any]:
+    """Draw one picture in the brand's world (scene_image.draw) and return its URL.
+
+    Synchronous on purpose: the owner is looking at the editor waiting for it, and
+    the draw is one or two image calls. The kill switch and the brand's daily cap
+    are checked first — this is a paid call an owner can press repeatedly."""
+    if settings.pause_spend:
+        raise HTTPException(409, "Spending is paused, so pictures can't be drawn until it's switched back on.")
+    from . import scene_image, spend
+
+    if await spend.over_cap(tenant_id):
+        raise HTTPException(409, "Today's spending cap for this brand is reached. Try again tomorrow or raise the cap.")
+    try:
+        return await scene_image.draw(tenant_id, req.prompt, aspect=req.aspect, title=req.title,
+                                      brand_context=req.brand_context)
+    except RuntimeError as exc:
+        raise HTTPException(422, str(exc)) from exc
