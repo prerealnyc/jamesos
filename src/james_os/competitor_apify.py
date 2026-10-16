@@ -130,9 +130,11 @@ async def _run(actor: str, payload: dict) -> tuple[list[dict], str]:
 
 async def _run_call(actor: str, key: str, payload: dict) -> tuple[list[dict], str]:
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
+        # Key in the Authorization header, never the URL (httpx logs URLs).
+        async with httpx.AsyncClient(timeout=_TIMEOUT,
+                                     headers={"Authorization": f"Bearer {key}"}) as c:
             r = await c.post(f"{_BASE}/acts/{actor}/run-sync-get-dataset-items",
-                             params={"token": key, "timeout": _RUN_SECONDS}, json=payload)
+                             params={"timeout": _RUN_SECONDS}, json=payload)
     except Exception as e:  # noqa: BLE001 — a dead actor is not an outage
         return [], f"{type(e).__name__}"
     if r.status_code >= 400:

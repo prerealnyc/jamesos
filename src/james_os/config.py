@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     youtube_api_key: str = ""        # YouTube Data API — trend discovery
     # Apify actor that downloads a single YouTube video (residential proxy, so it
     # works where a datacenter yt-dlp is IP-blocked). Output row carries a
-    # `downloadUrl` KV-store link; append ?token= to fetch the mp4. Swappable
+    # `downloadUrl` KV-store link, fetched with the Authorization header. Swappable
     # without a code change if the actor's output shape ever moves.
     youtube_download_actor: str = "memo23~youtube-video-downloader"
 

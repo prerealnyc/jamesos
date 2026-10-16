@@ -310,7 +310,7 @@ async def _probe(client: httpx.AsyncClient, name: str) -> dict:
                 return {"status": "not_configured", "detail": ""}
             r = await client.get(
                 "https://api.apify.com/v2/users/me",
-                params={"token": settings.apify_api_key},
+                headers={"Authorization": f"Bearer {settings.apify_api_key}"},
             )
             if r.status_code == 200:
                 u = r.json().get("data", {}) or {}

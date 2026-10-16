@@ -153,9 +153,10 @@ async def _run_actor(actor: str, run_input: dict) -> tuple[list[dict], str]:
     key = (settings.apify_api_key or "").strip()
     if not key:
         return [], "Apify is not configured (APIFY_API_KEY)"
-    async with httpx.AsyncClient(timeout=_RUN_TIMEOUT) as c:
-        r = await c.post(f"{_BASE}/acts/{actor}/runs",
-                         params={"token": key}, json=run_input)
+    # Key in the Authorization header, never the URL (httpx logs URLs).
+    async with httpx.AsyncClient(timeout=_RUN_TIMEOUT,
+                                 headers={"Authorization": f"Bearer {key}"}) as c:
+        r = await c.post(f"{_BASE}/acts/{actor}/runs", json=run_input)
         if r.status_code >= 400:
             return [], f"actor start HTTP {r.status_code}: {r.text[:160]}"
         run_id = r.json()["data"]["id"]
@@ -163,7 +164,7 @@ async def _run_actor(actor: str, run_input: dict) -> tuple[list[dict], str]:
         status = "READY"
         for _ in range(_MAX_POLLS):
             await asyncio.sleep(_POLL_SECONDS)
-            g = await c.get(f"{_BASE}/actor-runs/{run_id}", params={"token": key})
+            g = await c.get(f"{_BASE}/actor-runs/{run_id}")
             if g.status_code >= 400:
                 continue
             status = g.json()["data"]["status"]
@@ -171,13 +172,12 @@ async def _run_actor(actor: str, run_input: dict) -> tuple[list[dict], str]:
                 break
         if status == "RUNNING":
             # Stop paying for a run that has outlived its usefulness.
-            await c.post(f"{_BASE}/actor-runs/{run_id}/abort", params={"token": key})
+            await c.post(f"{_BASE}/actor-runs/{run_id}/abort")
             return [], "actor timed out (aborted)"
         if status != "SUCCEEDED":
             return [], f"actor finished {status}"
 
-        d = await c.get(f"{_BASE}/actor-runs/{run_id}/dataset/items",
-                        params={"token": key})
+        d = await c.get(f"{_BASE}/actor-runs/{run_id}/dataset/items")
         if d.status_code >= 400:
             return [], f"dataset HTTP {d.status_code}"
         items = d.json()

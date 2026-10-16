@@ -112,10 +112,12 @@ class ApifyTrendProvider(TrendProvider):
     async def _run_actor(self, actor: str, run_input: dict) -> list[dict]:
         """Run an actor synchronously and return its dataset items."""
         url = f"{_APIFY_BASE}/acts/{actor}/run-sync-get-dataset-items"
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        # Key rides in the Authorization header, never the URL: httpx logs the
+        # full request URL at INFO and puts it in every HTTPStatusError.
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        async with httpx.AsyncClient(timeout=_TIMEOUT, headers=headers) as client:
             r = await client.post(
                 url,
-                params={"token": self.api_key},
                 json=run_input,
             )
         if r.status_code in (401, 403):

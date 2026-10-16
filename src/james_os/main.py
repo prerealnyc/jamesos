@@ -245,6 +245,11 @@ async def lifespan(app: FastAPI):
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         force=True,
     )
+    # After basicConfig (force=True swaps the root handlers): mask API keys
+    # and tokens in every record — app, httpx, uvicorn — before it is written.
+    from .log_redact import install as _install_log_redaction
+
+    _install_log_redaction()
     await init_pool()
     # Refuse-to-boot (or at least shout) when tenant isolation is off.
     await _check_rls_enforced()
