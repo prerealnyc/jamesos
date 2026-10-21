@@ -191,22 +191,47 @@ async def test_revoke_with_a_blank_run_id_is_400(monkeypatch):
     assert r.status_code == 400
 
 
-def test_no_parameterised_route_can_shadow_the_harvest_paths():
-    """Starlette matches in registration order; a /house-layouts/{id}... route
-    with the same method and segment count would win if it came first."""
-    import re
+async def test_no_parameterised_route_can_shadow_the_harvest_paths(monkeypatch, ingest_spy):
+    """Starlette matches in registration order; a /house-layouts/{id}/... route
+    with the same method and segment count would win if it came first — and
+    `/house-layouts/{layout_id}/promote` is registered BEFORE these three.
 
-    from starlette.routing import Match
-    app = _app()
-    want = {("POST", "/v1/house-layouts/harvest"): "v1_house_layouts_harvest",
-            ("GET", "/v1/house-layouts/harvest/stats"): "v1_house_layouts_harvest_stats",
-            ("POST", "/v1/house-layouts/harvest/revoke"): "v1_house_layouts_harvest_revoke"}
-    for (method, path), name in want.items():
-        scope = {"type": "http", "method": method, "path": path, "root_path": ""}
-        first = next(r for r in app.router.routes
-                     if getattr(r, "matches", None) and r.matches(scope)[0] == Match.FULL)
-        assert first.name == name, (path, first.name)
-        assert not re.search(r"\{", first.path)
+    Asserted through the app rather than through the router's internals. The
+    previous version read `.name` off whichever entry in `app.router.routes`
+    matched first, which broke the day a newer Starlette began leaving an
+    `_IncludedRouter` wrapper in that list: green on an older local pin, red in
+    CI, twice. What that list holds is the framework's business and changes
+    between releases; that each path reaches its OWN handler is ours, and a
+    request proves it at any version.
+    """
+    seen = []
+
+    async def fake_stats(niches):
+        seen.append("stats")
+        return {"niches": {}, "total_approved": 0, "harvested_approved": 0}
+
+    async def fake_revoke(run_id, by):
+        seen.append("revoke")
+        return {"run_id": run_id, "rejected": 0, "skipped_human_reviewed": 0}
+
+    monkeypatch.setattr(house_harvest, "harvest_stats", fake_stats)
+    monkeypatch.setattr(house_harvest, "harvest_revoke", fake_revoke)
+
+    r = await _call(_app(), "POST", "/v1/house-layouts/harvest", data=FORM,
+                    files={"file": ("a.png", PNG, "image/png")})
+    assert r.status_code == 200, r.text
+    assert ingest_spy, "POST /harvest reached something other than the harvest handler"
+
+    r = await _call(_app(), "GET", "/v1/house-layouts/harvest/stats?niche=golf")
+    assert r.status_code == 200, r.text
+
+    r = await _call(_app(), "POST", "/v1/house-layouts/harvest/revoke",
+                    json={"run_id": "run-7", "by": "harvest:manual"})
+    assert r.status_code == 200, r.text
+
+    # Each landed in its own handler, in the order called — not in a
+    # parameterised route that happens to be registered earlier.
+    assert seen == ["stats", "revoke"], seen
 
 
 async def test_the_catalogue_takes_the_harvest_filters(monkeypatch):
