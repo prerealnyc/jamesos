@@ -939,6 +939,12 @@ async def _exemplars(tenant_id, k: int = 2) -> list[bytes]:
     return out
 
 
+# How many candidate posts generate_template_samples works on at once. Each
+# attempt is a vision read, a render, a QA review and a caption — 30-60s in a
+# row — so three in flight cuts a six-post batch to a third of the wait. Three,
+# not more: the same cap house_harvest and own_media put on gpt-4o vision reads
+# (_EXTRACT_SEM), and under the four story_video uses for gpt-image-1.
+SAMPLE_CONCURRENCY = 3
 # How many backdrops to draw for a brand that has none of its own. Two, not
 # one, so a set of samples is not the same picture six times — and not six,
 # because each is ~57s of gpt-image-1 and the wait is the whole problem.
@@ -1105,23 +1111,29 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
 
     _emit(done=0, total=n, stage=f"Building your first {n} posts…")
 
-    samples, failed, rejected, reviewed = [], 0, 0, 0
-    for post in posts:
-        if len(samples) >= n:
-            break
+    samples: list[tuple[int, dict]] = []   # (pool index, sample) — ordered at the end
+    failed, rejected, reviewed = 0, 0, 0
+
+    async def _attempt(index: int, post: dict) -> None:
+        """ONE candidate, start to finish: clone → QA → caption → store. The
+        body of the old sequential loop, unchanged; `continue` became `return`."""
+        nonlocal failed, rejected, reviewed
         # Moves on every ATTEMPT, not only on a success. `done` alone cannot:
         # a post that gets rejected leaves it untouched, which is exactly when
         # the owner most needs to see that something is still happening.
         _emit(done=len(samples), total=n,
               stage=f"Building in the style of @{post.get('handle') or 'your niche'}…")
-        hero_key, hero = backdrops[len(samples) % len(backdrops)] if backdrops else ("", None)
+        # Backdrop by POOL position, not by how many have passed so far: with
+        # several in flight the pass count at launch depends on timing, and the
+        # picture a post gets must not.
+        hero_key, hero = backdrops[index % len(backdrops)] if backdrops else ("", None)
         cloned = await clone_post(post, tenant_id, hero_bytes=hero,
                                   hero_generated=bool(hero) and not hero_key,
                                   hero_key=hero_key, stock_pool=stock,
                                   allowed_formats=allowed)
         if not cloned or not cloned.get("png"):
             failed += 1
-            continue
+            return
 
         # PRO-DESIGNER QA GATE — review the rendered post BEFORE it becomes an
         # action, so a broken layout (clipped text, empty pill, bad logo) never
@@ -1133,7 +1145,7 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
                 rejected += 1
                 logger.info("QA rejected a clone from @%s: flaws=%s issues=%s",
                             cloned.get("from"), rev.get("critical_flaws"), rev.get("issues"))
-                continue  # not shown, no action created
+                return  # not shown, no action created
         polish = rev.get("polish_score")
 
         # Passed (or reviewer offline) → caption + action + store.
@@ -1149,13 +1161,13 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
             action_id = None
         if not action_id:
             failed += 1
-            continue
+            return
         try:
             url, _fp = await asyncio.to_thread(
                 media_storage().save, str(tenant_id), cloned["png"], "template-clone.png")
         except Exception:  # noqa: BLE001
             failed += 1
-            continue
+            return
 
         async with acquire(tenant_id) as conn:
             await conn.execute(
@@ -1177,16 +1189,53 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
                     "used_placeholder_photo": cloned["generated_hero"],
                     "review_passed": bool(rev.get("passed")),
                 }))
+        # No await between the count, the emit and the append: `done` rises by
+        # exactly one per finished post however many are in flight.
         made = len(samples) + 1
         _emit(done=made, total=n, stage=f"Built {made} of {n} — "
               f"in the style of @{cloned['from'] or 'your niche'}")
-        samples.append({
+        samples.append((index, {
             "action_id": str(action_id), "image_url": url, "format": "cloned",
             "score": polish, "from": cloned["from"], "topic": cloned["topic"],
             "caption": (getattr(draft, "draft", "") or "")[:300],
             "used_placeholder": cloned["generated_hero"],
-        })
+        }))
 
+    # Up to SAMPLE_CONCURRENCY candidates in flight, launched in pool order, and
+    # GATED so the batch costs exactly what the sequential loop cost. The old
+    # loop attempted candidates one by one and stopped at the n-th pass; a
+    # plain fan-out would start candidates it never would have. The gate: a
+    # candidate is launched only while passed + in_flight < n. Each in-flight
+    # attempt is a slot that may still pass, so nothing is started that could
+    # overshoot; when one fails, its slot launches the next candidate. With
+    # fixed per-candidate outcomes this attempts the same prefix of the pool:
+    # if candidate i is launched here, passes among the earlier candidates
+    # ≤ passed + in_flight < n, so the sequential loop reached i too; and the
+    # loop here ends only when passed == n or the pool is spent, so every
+    # candidate the sequential loop reached is launched here. Shared state is
+    # touched only between awaits (asyncio, one thread); clone_post reads the
+    # stock pool and never writes it. The spend ledger and the reviewer are the
+    # same calls as before — a wider loop does not change who is charged.
+    in_flight: set[asyncio.Task] = set()
+    next_i = 0
+    try:
+        while True:
+            while (next_i < len(posts) and len(in_flight) < SAMPLE_CONCURRENCY
+                   and len(samples) + len(in_flight) < n):
+                in_flight.add(asyncio.create_task(_attempt(next_i, posts[next_i])))
+                next_i += 1
+            if not in_flight:
+                break
+            done_tasks, _ = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+            for t in done_tasks:
+                in_flight.discard(t)
+                t.result()   # an error still ends the job, as it did sequentially
+    except BaseException:
+        for t in in_flight:
+            t.cancel()
+        raise
+
+    samples = [s for _i, s in sorted(samples, key=lambda t: t[0])]
     samples.sort(key=lambda s: (s["score"] is not None, s["score"] or 0), reverse=True)
     note = ""
     if not samples and rejected:
