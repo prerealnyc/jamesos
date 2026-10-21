@@ -2223,8 +2223,11 @@ class ThemeApplyBody(BaseModel):
 @router.post("/brand/theme/propose")
 async def v1_brand_theme_propose(tenant_id: TenantDep) -> dict[str, Any]:
     """Read the brand's OWN post photos and propose a theme (palette + verdict).
-    On-demand; costs one vision call. The `proposed_theme.palette` it returns is
-    exactly what /brand/theme/apply expects, so an owner can accept it as-is."""
+    On-demand; costs one vision call when there are photos, none when there are
+    not. The `proposed_theme.palette` it returns is exactly what
+    /brand/theme/apply expects, so an owner can accept it as-is;
+    `proposed_theme.font_theme` (also top-level `font_theme`) is a key for
+    /brand/font. `source` is 'photos', 'photos+niche' or 'niche'."""
     from . import brand_identity as bi
     from .hero_context import get_hero_photo_files
     try:
@@ -2232,7 +2235,19 @@ async def v1_brand_theme_propose(tenant_id: TenantDep) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         refs = []
     imgs = [b for (_k, b) in (refs or []) if b][:5]
-    res = await bi.assess_and_propose(imgs, {})
+    # The brand's words — name, confirmed niche, voice — ground the proposal.
+    # With photos they go into the SAME vision call as context; with none there
+    # is nothing to look at, so no call is made and the deterministic
+    # word-derived look (palette + font_theme, source='niche') is the answer.
+    ctx = await bi.brand_context(tenant_id)
+    if imgs:
+        res = await bi.assess_and_propose(imgs, ctx)
+    else:
+        res = {"status": "ok", "observed_palettes": [], "has_branding": False,
+               "verdict": "rebuild", "identity_summary": "", "critique": "",
+               "consistency": {}, "distinctiveness": {}, "identity_score": 0.0}
+    res = bi.fill_theme_from_context(res, ctx, has_photos=bool(imgs))
+    res["brand_context"] = ctx
     res["current_palette"] = await bi.get_brand_palette(tenant_id)
     res["design_intel_enabled"] = await bi.get_design_intel_enabled(tenant_id)
     return res

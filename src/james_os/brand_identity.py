@@ -618,3 +618,176 @@ async def brand_background(tenant_id=None) -> str:
         line = name or (f"a brand in {niche}" if niche else "")
     _BACKGROUND_CACHE[key] = (_time.monotonic(), line)
     return line
+
+
+# ── a look from WORDS alone: name, niche and voice ────────────────────────
+# A brand that has uploaded nothing yet still has a name, a confirmed niche and
+# a voice. Those words are enough to suggest a fitting palette and typeface
+# without a vision call: deterministic keyword rules, first match wins, niche
+# before voice before name (the niche is what the owner confirmed; a voice line
+# is how they talk; a name is the weakest hint). Each entry is a role-list
+# palette in the shape /brand/theme/apply accepts plus a font_themes key.
+_WORD_LOOKS: tuple[dict, ...] = (
+    {"key": "luxury", "font_theme": "elegant",
+     "words": ("luxury", "real estate", "realtor", "property", "properties", "golf",
+               "resort", "hotel", "jewel", "wine", "wedding", "yacht", "villa",
+               "interior", "architect", "premium", "refined", "elegant", "upscale",
+               "estate", "boutique"),
+     "name": "Quiet luxury", "type_direction": "high-contrast serif display + humanist sans body",
+     "palette": [
+         {"role": "background", "hex": "#0F1A2B", "label": "Midnight navy"},
+         {"role": "ink", "hex": "#F6F1E7", "label": "Cream"},
+         {"role": "accent", "hex": "#C9A24B", "label": "Gold"},
+         {"role": "surface", "hex": "#1E2D44", "label": "Slate navy"}]},
+    {"key": "performance", "font_theme": "condensed",
+     "words": ("fitness", "gym", "sport", "athlet", "crossfit", "running", "runner",
+               "cycling", "martial", "boxing", "coach", "training", "outdoor",
+               "adventure", "bold", "punchy", "energetic", "high-energy", "intense"),
+     "name": "High energy", "type_direction": "tall condensed display, all-caps headlines",
+     "palette": [
+         {"role": "background", "hex": "#0B0B0D", "label": "Black"},
+         {"role": "ink", "hex": "#FFFFFF", "label": "White"},
+         {"role": "accent", "hex": "#FF4A1C", "label": "Signal orange"},
+         {"role": "surface", "hex": "#1C1C21", "label": "Graphite"}]},
+    {"key": "warm", "font_theme": "friendly",
+     "words": ("food", "restaurant", "cafe", "café", "coffee", "bakery", "kids",
+               "children", "family", "pet", "dog", "cat", "yoga", "wellness", "beauty",
+               "salon", "spa", "craft", "florist", "garden", "community", "warm",
+               "friendly", "playful", "approachable", "fun", "cheerful"),
+     "name": "Warm and friendly", "type_direction": "rounded geometric sans throughout",
+     "palette": [
+         {"role": "background", "hex": "#2B1D17", "label": "Cocoa"},
+         {"role": "ink", "hex": "#FFF6EC", "label": "Linen"},
+         {"role": "accent", "hex": "#E8793A", "label": "Terracotta"},
+         {"role": "surface", "hex": "#45302A", "label": "Clay"}]},
+    {"key": "editorial", "font_theme": "editorial",
+     "words": ("travel", "tour", "holiday", "magazine", "media", "news", "journal",
+               "politic", "candidate", "campaign", "nonprofit", "non-profit", "charity",
+               "church", "education", "school", "university", "author", "book",
+               "publishing", "podcast", "authoritative", "expert", "thoughtful",
+               "storytelling"),
+     "name": "Editorial", "type_direction": "serif display with a clean sans body",
+     "palette": [
+         {"role": "background", "hex": "#101417", "label": "Ink black"},
+         {"role": "ink", "hex": "#F4F1EA", "label": "Paper"},
+         {"role": "accent", "hex": "#B5362E", "label": "Crimson"},
+         {"role": "surface", "hex": "#22282D", "label": "Charcoal"}]},
+    {"key": "professional", "font_theme": "clean",
+     "words": ("law", "legal", "attorney", "finance", "financial", "consult", "accounting",
+               "accountant", "insurance", "bank", "wealth", "b2b", "saas", "tech",
+               "software", "startup", "engineering", "agency", "marketing", "medical",
+               "dental", "clinic", "health", "logistics", "modern", "minimal",
+               "professional", "clear", "direct", "confident", "trustworthy"),
+     "name": "Modern professional", "type_direction": "geometric sans display and body",
+     "palette": [
+         {"role": "background", "hex": "#0C1B33", "label": "Navy"},
+         {"role": "ink", "hex": "#F5F8FC", "label": "White"},
+         {"role": "accent", "hex": "#2E80E4", "label": "Electric blue"},
+         {"role": "surface", "hex": "#16294A", "label": "Deep blue"}]},
+)
+_WORD_LOOK_DEFAULT = {"key": "neutral", "font_theme": "bold", "name": "Clean neutral",
+                      "type_direction": "heavy sans display, tight headlines",
+                      "palette": _NEUTRAL_PALETTE}
+
+
+def _match_look(text: str) -> dict | None:
+    t = " " + " ".join(str(text or "").lower().split()) + " "
+    if not t.strip():
+        return None
+    for look in _WORD_LOOKS:
+        if any(w in t for w in look["words"]):
+            return look
+    return None
+
+
+def suggest_theme_from_context(name: str = "", niche: str = "", voice: str = "") -> dict:
+    """A palette + typeface a brand with no photos can start from, from its
+    words. Pure and deterministic — no model, no network, no database. Returns
+    {name, palette, type_direction, principles, font_theme, matched} where
+    `palette` is the role-list /brand/theme/apply accepts and `font_theme` a
+    font_themes.FONT_THEMES key. `matched` says which input decided it
+    ('niche' | 'voice' | 'name' | '') so the owner can be told why."""
+    matched, look = "", None
+    for field, text in (("niche", niche), ("voice", voice), ("name", name)):
+        look = _match_look(text)
+        if look:
+            matched = field
+            break
+    look = look or _WORD_LOOK_DEFAULT
+    return {
+        "name": look["name"],
+        "palette": [dict(p) for p in look["palette"]],
+        "type_direction": look["type_direction"],
+        "principles": ["one accent colour, never two",
+                       "headlines large, everything else small",
+                       "the same corner for the logo on every post"],
+        "font_theme": look["font_theme"],
+        "matched": matched,
+    }
+
+
+async def brand_context(tenant_id=None) -> dict:
+    """{name, niche, voice, positioning} from what the engine already stores —
+    the brand kit's display name, the confirmed niche, the profile's positioning
+    and a slice of the voice corpus. Every read is best-effort; a missing piece
+    is ''."""
+    ctx = {"name": "", "niche": "", "voice": "", "positioning": ""}
+    try:
+        from .brand_kit import get_brand_kit
+        kit = await get_brand_kit(tenant_id)
+        ctx["name"] = str(kit.get("display_name") or "").strip()
+        ctx["voice"] = str(kit.get("tagline") or "").strip()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from .brands import get_brand_profile
+        p = await get_brand_profile(tenant_id) or {}
+        ident = p.get("identity") or {}
+        ctx["niche"] = " ".join(
+            s for s in [str(ident.get("niche") or "")] + list(ident.get("niche_terms") or [])
+            if str(s).strip())[:300]
+        ctx["name"] = ctx["name"] or str(ident.get("name") or "").strip()
+        ctx["positioning"] = str(ident.get("positioning") or "").strip()[:300]
+        tone = " ".join(str(ident.get(k) or "") for k in ("voice", "tone") if ident.get(k))
+        ctx["voice"] = " ".join(s for s in (ctx["voice"], tone) if s).strip()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from .autopilot import _voice_for_ideation
+        corpus = await _voice_for_ideation(tenant_id)
+        if corpus and not corpus.startswith("(no voice"):
+            ctx["voice"] = (ctx["voice"] + " " + corpus[:600]).strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return ctx
+
+
+def fill_theme_from_context(res: dict, ctx: dict, *, has_photos: bool) -> dict:
+    """Complete a propose result with the word-derived look. With photos the
+    vision result stays primary and only what it left out is filled (a palette
+    when it gave none, always the font key — the model proposes no typeface).
+    Without photos the whole theme is the deterministic suggestion, and
+    `source` says so ('niche'); otherwise 'photos' / 'photos+niche'."""
+    words = suggest_theme_from_context(ctx.get("name", ""), ctx.get("niche", ""),
+                                       ctx.get("voice", ""))
+    suggested = {k: v for k, v in words.items() if k != "matched"}
+    out = dict(res)
+    theme = dict(out["proposed_theme"]) if isinstance(out.get("proposed_theme"), dict) else {}
+    source = "photos"
+    if not has_photos:
+        theme, source = suggested, "niche"
+        if out.get("status") in (None, "no_key", "failed"):
+            out["status"] = "ok"
+        out.setdefault("verdict", "rebuild")
+        out.setdefault("has_branding", False)
+        out.setdefault("observed_palettes", [])
+    elif not theme.get("palette"):
+        theme = {**suggested, **{k: v for k, v in theme.items() if v and k != "palette"}}
+        source = "photos+niche"
+    if not theme.get("font_theme"):
+        theme["font_theme"] = words["font_theme"]
+    out["proposed_theme"] = theme
+    out["font_theme"] = theme["font_theme"]
+    out["source"] = source
+    out["context_matched"] = words["matched"]
+    return out

@@ -176,6 +176,21 @@ async def _brand_palette(tenant_id):
         return None
 
 
+async def _brand_font_theme(tenant_id) -> dict | None:
+    """The typography theme this brand set (POST /v1/brand/font), resolved to the
+    face paths image_compose.brand_fonts() scopes over a render — or None for the
+    default house look, which is also what any read failure yields. The nine
+    designed formats always honoured it; a cloned or learned layout rendered in
+    the house faces whatever the owner had picked."""
+    try:
+        from .brand_identity import get_brand_font
+        from .font_themes import resolve
+        return resolve(await get_brand_font(tenant_id))
+    except Exception:  # noqa: BLE001 — a font read must never stop a render
+        logger.warning("brand font unavailable", exc_info=True)
+        return None
+
+
 async def _brand_logo(tenant_id) -> bytes | None:
     """The brand's uploaded logo bytes (first brand_logo asset), for the design's
     logo slot. Best-effort — None just means no logo is dropped in."""
@@ -418,15 +433,17 @@ async def rebuild_design(
             tenant_id, str(payload.get("topic") or ""), spec=spec)
 
     logo = await _brand_logo(tenant_id) if spec.get("logo_box") else None
-    png, kind = render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo)
+    from . import image_compose
+    font_theme = await _brand_font_theme(tenant_id)
+    with image_compose.brand_fonts(font_theme):
+        png, kind = render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo)
     by_size: dict[str, bytes] = {}
     if sizes:
-        from . import image_compose
         for (w, h) in sizes:
             if not (w > 0 and h > 0):
                 continue
             try:
-                with image_compose.canvas(w, h):
+                with image_compose.canvas(w, h), image_compose.brand_fonts(font_theme):
                     _png, _ = render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo)
                 if _png:
                     by_size[f"{w}x{h}"] = _png
@@ -803,8 +820,10 @@ async def clone_post(post: dict, tenant_id, *, hero_bytes: bytes | None = None,
             spec = {**spec, "background": {**(spec.get("background") or {}),
                                            "treatment": "solid"}}
     logo = await _brand_logo(tenant_id) if spec.get("logo_box") else None
-    png, kind = render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo,
-                            palette=await _brand_palette(tenant_id))
+    from .image_compose import brand_fonts
+    with brand_fonts(await _brand_font_theme(tenant_id)):
+        png, kind = render_spec(spec, content, hero_bytes=hero_bytes, logo_bytes=logo,
+                                palette=await _brand_palette(tenant_id))
     return {"png": png, "kind": kind, "content": content, "topic": topic,
             "generated_hero": generated, "from": post.get("handle") or "",
             "hero_photo_key": hero_key,
@@ -949,6 +968,21 @@ def _image_source(hero_key, generated: bool, hero_bytes) -> dict:
     return {"image_source": "library" if hero_key else "unknown"}
 
 
+async def _found_heroes(tenant_id, stock: list[tuple[str, bytes]]) -> list[tuple[str, bytes]]:
+    """Backdrops a brand with NO photos already has, before anything is drawn:
+    the stock pool only. Each one used here is a gpt-image-1 draw not
+    commissioned.
+
+    Two sources are deliberately NOT backdrops:
+    - house-catalogue pictures (house_layouts.source_image_uri): copies of other
+      accounts' posts the harvest keeps for layout review only. We hold no
+      licence to publish them, and their text or logo would sit under ours.
+    - the brand's logo: clone_post already stamps it in the logo slot, so as
+      the full backdrop too it would show twice on one post.
+    """
+    return [(k, b) for k, b in (stock or []) if b]
+
+
 async def _stock_pool(topics: list[str], tenant_id=None) -> list[tuple[str, bytes]]:
     """A few real photographs for this brand's subject matter, best-effort."""
     out: list[tuple[str, bytes]] = []
@@ -985,11 +1019,18 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
     from .media import storage as media_storage
     from . import render_reviewer
     from .hero_context import get_hero_photo_files
+    from .starter_assets import asset_status
+
+    # What the brand gave us to build with, stated once and carried on EVERY
+    # progress emit and the result: skipped_reason + assets, so the UI can say
+    # "add your logo or photos" while the job runs and after it finishes.
+    refs = await get_hero_photo_files(tenant_id=tenant_id, limit=None)
+    assets = await asset_status(tenant_id, photo_count=len(refs))
 
     def _emit(**p):
         if progress:
             try:
-                progress(p)
+                progress({**p, **assets})
             except Exception:  # noqa: BLE001 — progress is advisory
                 pass
 
@@ -1006,7 +1047,7 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
     seen = {p["id"] for p in posts}
     posts += [p for p in await _top_posts(tenant_id, 60) if p["id"] not in seen]
     if not posts:
-        return {"samples": [], "count": 0,
+        return {"samples": [], "count": 0, **assets,
                 "note": "No competitor posts to learn from yet — confirm a few "
                         "competitors and let their posts sync, then we'll show our "
                         "versions of what's working in your niche."}
@@ -1039,9 +1080,18 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
     if stock:
         _emit(done=0, total=n, stage=f"Found {len(stock)} photos to build on…")
 
-    drawn: list[bytes] = []
-    if not await get_hero_photo_files(tenant_id=tenant_id, limit=None):
-        for i in range(min(_DRAWN_HEROES, n)):
+    # Backdrops for a brand with no photography: (hero_key, bytes). What it
+    # already HAS comes first — the stock pool (never the logo, never the
+    # house catalogue; see _found_heroes) — and a backdrop is drawn only for
+    # the slots those leave empty, so this never commissions more draws than
+    # before and every found picture is one fewer. A drawn backdrop has no key.
+    backdrops: list[tuple[str, bytes]] = []
+    if not refs:
+        backdrops = await _found_heroes(tenant_id, stock)
+        if backdrops:
+            _emit(done=0, total=n,
+                  stage=f"Building on {len(backdrops)} images you already have…")
+        for i in range(max(0, min(_DRAWN_HEROES, n) - len(backdrops))):
             _emit(done=0, total=n,
                   stage=("Drawing a photo to build on…" if i == 0
                          else "Drawing one more to vary the set…"))
@@ -1049,7 +1099,7 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
                 img, _gen, _key = await _hero_or_placeholder(
                     tenant_id, (posts[i] if i < len(posts) else posts[0]).get("topic") or "")
                 if img:
-                    drawn.append(img)
+                    backdrops.append(("", img))
             except Exception:  # noqa: BLE001 — fall back to per-post drawing
                 logger.warning("could not pre-draw a hero", exc_info=True)
 
@@ -1064,9 +1114,10 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
         # the owner most needs to see that something is still happening.
         _emit(done=len(samples), total=n,
               stage=f"Building in the style of @{post.get('handle') or 'your niche'}…")
-        hero = drawn[len(samples) % len(drawn)] if drawn else None
+        hero_key, hero = backdrops[len(samples) % len(backdrops)] if backdrops else ("", None)
         cloned = await clone_post(post, tenant_id, hero_bytes=hero,
-                                  hero_generated=bool(hero), stock_pool=stock,
+                                  hero_generated=bool(hero) and not hero_key,
+                                  hero_key=hero_key, stock_pool=stock,
                                   allowed_formats=allowed)
         if not cloned or not cloned.get("png"):
             failed += 1
@@ -1141,7 +1192,7 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
     if not samples and rejected:
         note = ("We built several but none cleared our design review yet — try again, "
                 "or add a few clean brand photos to build on.")
-    return {"samples": samples, "count": len(samples),
+    return {"samples": samples, "count": len(samples), **assets,
             "failed": failed, "reviewed": reviewed, "rejected": rejected, "note": note}
 
 

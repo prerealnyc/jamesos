@@ -200,13 +200,17 @@ async def generate_first_posts(
                         "Templatize or save as Ideas first."}
 
     has_photos = await _has_hero_photos(tenant_id)
+    # The gap in what the brand gave us (skipped_reason + assets), on every
+    # progress emit and the result — two cheap media reads, no AI.
+    from .starter_assets import asset_status
+    assets = await asset_status(tenant_id)
     drafts, failed = [], []
     last_format = ""
     for i, p in enumerate(picks):
         verdict = p.get("replicate_status") or "saved"
         if progress:
             progress({"stage": f"drafting {i + 1} of {len(picks)}",
-                      "done": i, "total": len(picks)})
+                      "done": i, "total": len(picks), **assets})
         steer = _STEER.get(verdict, _STEER["saved"]) + "\n\n" + _reference(p)
         if (p.get("replicate_note") or "").strip():
             steer += f"\n\nThe brand added: {p['replicate_note'].strip()}"
@@ -275,7 +279,7 @@ async def generate_first_posts(
         })
 
     return {"generated": len(drafts), "drafts": drafts, "failed": failed,
-            "note": ""}
+            "note": "", **assets}
 
 
 async def run_first_posts(tenant_id: UUID, config: dict | None = None) -> None:

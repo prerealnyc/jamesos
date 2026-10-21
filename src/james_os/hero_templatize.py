@@ -334,10 +334,16 @@ async def generate_samples(tenant_id, *, n: int = 6, grade: bool = True, progres
     from .main import _generate_designed_post_image
     from . import design_eye
 
+    from .starter_assets import asset_status
+
+    # skipped_reason + assets ride on every emit and the result, so the owner
+    # can be told "add your logo or photos" from the first poll onward.
+    assets = await asset_status(tenant_id)
+
     def _emit(**p):
         if progress:
             try:
-                progress(p)
+                progress({**p, **assets})
             except Exception:  # noqa: BLE001
                 pass
 
@@ -353,7 +359,7 @@ async def generate_samples(tenant_id, *, n: int = 6, grade: bool = True, progres
         allowed = None
     allowed_photo = {f for f in PHOTO_FORMATS if allowed is None or f in allowed}
     if not allowed_photo:
-        return {"samples": [], "count": 0,
+        return {"samples": [], "count": 0, **assets,
                 "note": "Your enabled templates are text-only right now — turn on a "
                         "photo layout (e.g. minimal_over) to see examples on your photos."}
 
@@ -363,13 +369,13 @@ async def generate_samples(tenant_id, *, n: int = 6, grade: bool = True, progres
     photos = [p for p in pool
               if any(f in allowed_photo for f in (p.get("best_formats") or []))][:n]
     if not photos:
-        return {"samples": [], "count": 0,
+        return {"samples": [], "count": 0, **assets,
                 "note": "No templatizable photos yet — add a few clean, uncluttered "
                         "shots and we'll build examples from them."}
 
     ideas = await generate_ideas(len(photos), {}, tenant_id) or []
     if not ideas:
-        return {"samples": [], "count": 0, "note": "Could not draft example topics."}
+        return {"samples": [], "count": 0, **assets, "note": "Could not draft example topics."}
 
     total = len(photos)
     _emit(done=0, total=total, stage=f"Building your first {total} posts…")
@@ -439,7 +445,7 @@ async def generate_samples(tenant_id, *, n: int = 6, grade: bool = True, progres
 
     # Strong first — a null score (ungraded) sorts below any real score.
     samples.sort(key=lambda s: (s["score"] is not None, s["score"] or 0), reverse=True)
-    return {"samples": samples, "count": len(samples), "failed": failed}
+    return {"samples": samples, "count": len(samples), "failed": failed, **assets}
 
 
 async def list_samples(tenant_id, *, limit: int = 20) -> list[dict]:
