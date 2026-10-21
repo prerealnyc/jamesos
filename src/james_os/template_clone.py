@@ -1113,6 +1113,7 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
 
     samples: list[tuple[int, dict]] = []   # (pool index, sample) — ordered at the end
     failed, rejected, reviewed = 0, 0, 0
+    committing: set[int] = set()   # pool indexes past the point an action row may exist
 
     async def _attempt(index: int, post: dict) -> None:
         """ONE candidate, start to finish: clone → QA → caption → store. The
@@ -1148,7 +1149,10 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
                 return  # not shown, no action created
         polish = rev.get("polish_score")
 
-        # Passed (or reviewer offline) → caption + action + store.
+        # Passed (or reviewer offline) → caption + action + store. From here an
+        # action row may exist, so if another attempt raises this one is left
+        # to finish (see the loop below) rather than cancelled half-stored.
+        committing.add(index)
         try:
             draft = await generate_content(
                 ContentBrief(platform="instagram", format="post",
@@ -1217,12 +1221,15 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
     # stock pool and never writes it. The spend ledger and the reviewer are the
     # same calls as before — a wider loop does not change who is charged.
     in_flight: set[asyncio.Task] = set()
+    index_of: dict[asyncio.Task, int] = {}
     next_i = 0
     try:
         while True:
             while (next_i < len(posts) and len(in_flight) < SAMPLE_CONCURRENCY
                    and len(samples) + len(in_flight) < n):
-                in_flight.add(asyncio.create_task(_attempt(next_i, posts[next_i])))
+                task = asyncio.create_task(_attempt(next_i, posts[next_i]))
+                in_flight.add(task)
+                index_of[task] = next_i
                 next_i += 1
             if not in_flight:
                 break
@@ -1230,7 +1237,20 @@ async def generate_template_samples(tenant_id, *, n: int = 6, grade: bool = True
             for t in done_tasks:
                 in_flight.discard(t)
                 t.result()   # an error still ends the job, as it did sequentially
+    except Exception:
+        # One attempt raised. An attempt still before its caption cannot have
+        # made an action row and has no paid call left worth finishing: cancel
+        # it. One already captioning may have made the row: let it finish, so
+        # the row gets its image and sample instead of being left half-made.
+        # No new calls are started either way; then the error ends the job.
+        for t in in_flight:
+            if index_of.get(t) not in committing:
+                t.cancel()
+        if in_flight:
+            await asyncio.gather(*in_flight, return_exceptions=True)
+        raise
     except BaseException:
+        # The job itself is being cancelled: stop everything, as before.
         for t in in_flight:
             t.cancel()
         raise
