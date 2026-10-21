@@ -18,8 +18,13 @@ def _db(monkeypatch, rows):
     seen = {}
 
     class _Conn:
-        async def fetchrow(self, sql, url):
+        # *args, not (sql, url): production added a tenant-scoping $2 to this
+        # query, so it now passes (sql, url, tenant_id). A double pinned to the
+        # old arity fails with TypeError and reads like a code bug.
+        async def fetchrow(self, sql, *args):
+            url = args[0] if args else None
             seen["sql"], seen["url"] = sql, url
+            seen["params"] = args
             return rows.get(url)
 
     @contextlib.asynccontextmanager

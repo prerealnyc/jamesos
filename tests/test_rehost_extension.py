@@ -18,6 +18,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import pytest
+
+# Without this the whole file is invisible to `pytest -m nodb`, which is the
+# suite the CI gate and the deploy gate actually run.
+pytestmark = pytest.mark.nodb
+
 from james_os.api_v1 import _rehost_ext  # noqa: E402
 
 
